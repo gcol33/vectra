@@ -1,0 +1,156 @@
+# vectra
+
+[![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
+[![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**Columnar Query Engine for Larger-Than-RAM Data in R**
+
+Query datasets that don't fit in memory using familiar dplyr verbs, backed by a pure C11 execution engine and a custom on-disk columnar format. No Java, no Spark, no Arrow dependency: just R and C.
+
+## Quick Start
+
+```r
+library(vectra)
+
+# Write any data.frame to disk
+write_vtr(mtcars, "cars.vtr")
+
+# Build a lazy query, nothing runs until collect()
+tbl("cars.vtr") |>
+  filter(cyl > 4) |>
+  group_by(cyl) |>
+  summarise(avg_mpg = mean(mpg), n = n()) |>
+  collect()
+```
+
+## Statement of Need
+
+Working with datasets larger than available RAM in R typically requires either loading a JVM (JDBC/Spark), linking against a system library (Arrow/DuckDB), or switching languages entirely. These tools are powerful but come with heavy dependency chains that complicate installation and deployment.
+
+vectra takes a different approach: a self-contained C11 engine compiled as a standard R extension with zero external dependencies. Data lives in a custom columnar format (`.vtr`) and flows through a pull-based pipeline one row group at a time, so peak memory stays bounded regardless of file size.
+
+## Features
+
+### dplyr-Compatible Verbs
+
+- **Transform**: `filter()`, `mutate()`, `transmute()`, `select()`, `rename()`, `relocate()`
+- **Aggregate**: `group_by()`, `summarise()`, `count()`, `tally()`, `distinct()`, `reframe()`
+- **Combine**: `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `bind_rows()`, `bind_cols()`
+- **Order**: `arrange()`, `desc()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()`
+- **Inspect**: `explain()`, `print()`, `pull()`
+
+### Window Functions
+
+`row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()` inside grouped `mutate()`.
+
+### Expression Engine
+
+Arithmetic (`+`, `-`, `*`, `/`, `%%`), comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`), boolean logic (`&`, `|`, `!`), `is.na()`, and `across()` for multi-column operations.
+
+### Aggregation Functions
+
+`n()`, `sum()`, `mean()`, `min()`, `max()` with `na.rm` support.
+
+### Zero External Dependencies
+
+The C11 engine compiles with R's standard toolchain. Runtime dependencies are limited to `rlang` and `tidyselect` for NSE handling. No system libraries, no JVM, no compilation flags beyond what `R CMD INSTALL` provides.
+
+## Installation
+
+Development version:
+
+```r
+# install.packages("pak")
+pak::pak("gcol33/vectra")
+```
+
+## Usage Examples
+
+### Filter and Select
+
+```r
+write_vtr(nycflights13::flights, "flights.vtr")
+
+tbl("flights.vtr") |>
+  filter(dep_delay > 60, carrier == "UA") |>
+  select(year, month, day, dep_delay, arr_delay) |>
+  collect()
+```
+
+### Grouped Aggregation
+
+```r
+tbl("flights.vtr") |>
+  group_by(carrier) |>
+  summarise(
+    avg_delay = mean(dep_delay, na.rm = TRUE),
+    n_flights = n()
+  ) |>
+  arrange(desc(avg_delay)) |>
+  collect()
+```
+
+### Joins
+
+```r
+write_vtr(airlines, "airlines.vtr")
+
+tbl("flights.vtr") |>
+  left_join(tbl("airlines.vtr"), by = "carrier") |>
+  select(name, dep_delay) |>
+  group_by(name) |>
+  summarise(avg_delay = mean(dep_delay, na.rm = TRUE)) |>
+  collect()
+```
+
+### Inspect the Execution Plan
+
+```r
+tbl("flights.vtr") |>
+  filter(month == 1) |>
+  select(carrier, dep_delay) |>
+  group_by(carrier) |>
+  summarise(n = n()) |>
+  explain()
+```
+
+### Multi-Row-Group Writes
+
+```r
+# Write in 100k-row chunks for streaming reads
+write_vtr(big_df, "big.vtr", batch_size = 100000)
+```
+
+## How It Works
+
+1. `write_vtr()` serializes a data.frame into a columnar `.vtr` file split into row groups
+2. `tbl()` opens the file and returns a lazy `vectra_node`
+3. Each verb (`filter`, `select`, `mutate`, ...) appends a plan node without reading data
+4. `collect()` pulls batches through the node tree one row group at a time
+5. The C engine evaluates expressions, applies filters via selection vectors (zero-copy), hashes groups, and joins using hash tables
+
+## Support
+
+> "Software is like sex: it's better when it's free." -- Linus Torvalds
+
+I'm a PhD student who builds R packages in my free time because I believe good tools should be free and open. I started these projects for my own work and figured others might find them useful too.
+
+If this package saved you some time, buying me a coffee is a nice way to say thanks. It helps with my coffee addiction.
+
+[![Buy Me A Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
+
+## License
+
+MIT (see the LICENSE.md file)
+
+## Citation
+
+```bibtex
+@software{vectra,
+  author = {Colling, Gilles},
+  title = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
+  year = {2026},
+  url = {https://github.com/gcol33/vectra}
+}
+```

@@ -3,3 +3,12 @@
 ^LICENSE\.md$
 ^\.github$
 ^CLAUDE\.md$
+^\.claude$
+^docs$
+^pkgdown$
+^_pkgdown\.yml$
+^README\.Rmd$
+^cran-comments\.md$
+^codecov\.yml$
+.*\.tar\.gz$
+.*\.Rcheck$
