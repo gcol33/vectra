@@ -1,0 +1,21 @@
+Package: vectra
+Title: Columnar Query Engine for Larger-Than-RAM Data
+Version: 0.1.0
+Authors@R: person("Gilles", "Colling", role = c("aut", "cre"),
+    email = "gilles.colling@boku.ac.at")
+Description: A minimal columnar query engine with lazy execution on datasets
+    larger than RAM. Provides dplyr-like verbs (filter, select, mutate,
+    group_by, summarise) backed by a pure C11 pull-based execution engine
+    and a custom on-disk format (.vtr).
+License: MIT + file LICENSE
+Depends: R (>= 4.1.0)
+Encoding: UTF-8
+Imports:
+    tidyselect,
+    rlang
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Suggests:
+    bit64,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
