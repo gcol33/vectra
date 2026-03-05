@@ -26,9 +26,9 @@ tbl("cars.vtr") |>
 
 ## Statement of Need
 
-Working with datasets larger than available RAM in R typically requires either loading a JVM (JDBC/Spark), linking against a system library (Arrow/DuckDB), or switching languages entirely. These tools are powerful but come with heavy dependency chains that complicate installation and deployment.
+Querying datasets larger than RAM in R usually means pulling in a JVM (Spark), a system library (Arrow/DuckDB), or leaving R altogether. These work, but the dependency chains are heavy and installation is fragile.
 
-vectra takes a different approach: a self-contained C11 engine compiled as a standard R extension with zero external dependencies. Data lives in a custom columnar format (`.vtr`) and flows through a pull-based pipeline one row group at a time, so peak memory stays bounded regardless of file size.
+vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries, no runtime configuration. Data lives in a columnar `.vtr` format and streams through a pull-based pipeline one row group at a time, so peak memory stays bounded regardless of file size.
 
 ## Features
 
