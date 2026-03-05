@@ -4,9 +4,9 @@
 [![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Columnar Query Engine for Larger-Than-RAM Data in R**
+**Analyze Datasets Larger Than Your RAM with dplyr Syntax**
 
-Query datasets that don't fit in memory using familiar dplyr verbs, backed by a pure C11 execution engine and a custom on-disk columnar format. No Java, no Spark, no Arrow dependency: just R and C.
+The `vectra` package lets you filter, join, group, and summarise files that would crash `read.csv()`, using the same verbs you already know. Queries are lazy, memory stays bounded, and results arrive as ordinary data.frames. One dependency to install, zero to configure.
 
 ## Quick Start
 
