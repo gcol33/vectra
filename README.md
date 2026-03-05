@@ -6,7 +6,7 @@
 
 **Analyze Datasets Larger Than Your RAM with dplyr Syntax**
 
-The `vectra` package lets you filter, join, group, and summarise files that would crash `read.csv()`, using the same verbs you already know. Queries are lazy, memory stays bounded, and results arrive as ordinary data.frames. One dependency to install, zero to configure.
+The `vectra` package lets you filter, join, group, and summarise files that would crash `read.csv()`. Queries are lazy, memory stays bounded, and results arrive as ordinary data.frames. Write dplyr pipelines, run them on 50 GB files, get coffee while it streams.
 
 ## Quick Start
 
