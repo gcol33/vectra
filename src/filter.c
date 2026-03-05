@@ -7,7 +7,9 @@
 #include <string.h>
 
 /* Build a selection vector from a boolean mask applied to a batch.
-   If the batch already has a sel, compose the two. */
+   The mask is evaluated on full physical rows (length == batch->n_rows).
+   If the batch already has a sel, compose: only keep physical rows that
+   are in the existing sel AND pass the mask. */
 static void apply_mask_sel(VecBatch *batch, const VecArray *mask) {
     int64_t n_logical = vec_batch_logical_rows(batch);
 
@@ -15,9 +17,8 @@ static void apply_mask_sel(VecBatch *batch, const VecArray *mask) {
     int32_t n_sel = 0;
     for (int64_t li = 0; li < n_logical; li++) {
         int64_t pi = vec_batch_physical_row(batch, li);
-        if (vec_array_is_valid(mask, li) && mask->buf.bln[li])
+        if (vec_array_is_valid(mask, pi) && mask->buf.bln[pi])
             n_sel++;
-        (void)pi;
     }
 
     int32_t *sel = (int32_t *)malloc(
@@ -27,7 +28,7 @@ static void apply_mask_sel(VecBatch *batch, const VecArray *mask) {
     int32_t j = 0;
     for (int64_t li = 0; li < n_logical; li++) {
         int64_t pi = vec_batch_physical_row(batch, li);
-        if (vec_array_is_valid(mask, li) && mask->buf.bln[li])
+        if (vec_array_is_valid(mask, pi) && mask->buf.bln[pi])
             sel[j++] = (int32_t)pi;
     }
 

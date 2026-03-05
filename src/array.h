@@ -33,4 +33,8 @@ static inline int64_t vec_validity_bytes(int64_t n) {
     return (n + 7) / 8;
 }
 
+/* Gather selected rows into a new dense VecArray.
+   If sel is NULL, copies all rows 0..n-1 (where n = src->length). */
+VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n);
+
 #endif /* VECTRA_ARRAY_H */

@@ -173,8 +173,20 @@ static VecBatch *sort_next_batch(VecNode *self) {
 
     VecBatch *batch;
     while ((batch = sn->child->next_batch(sn->child)) != NULL) {
-        for (int c = 0; c < n_cols; c++)
-            vec_builder_append_array(&builders[c], &batch->columns[c]);
+        if (!batch->sel) {
+            for (int c = 0; c < n_cols; c++)
+                vec_builder_append_array(&builders[c], &batch->columns[c]);
+        } else {
+            int64_t n_logical = vec_batch_logical_rows(batch);
+            for (int c = 0; c < n_cols; c++)
+                vec_builder_reserve(&builders[c], n_logical);
+            for (int64_t li = 0; li < n_logical; li++) {
+                int64_t pi = vec_batch_physical_row(batch, li);
+                for (int c = 0; c < n_cols; c++)
+                    vec_builder_append_one(&builders[c],
+                                           &batch->columns[c], pi);
+            }
+        }
         vec_batch_free(batch);
     }
 

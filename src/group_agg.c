@@ -205,15 +205,18 @@ static VecBatch *group_agg_next_batch(VecNode *self) {
     KeyArena arena;
     arena_init(&arena, ga->n_keys, key_types);
 
-    /* Consume all child batches */
+    /* Consume all child batches (sel-aware: no compaction needed) */
     VecBatch *batch;
     while ((batch = ga->child->next_batch(ga->child)) != NULL) {
-        /* Extract key columns as pointers */
+        /* Extract key columns as pointers (physical arrays) */
         VecArray *batch_keys = (VecArray *)malloc((size_t)ga->n_keys * sizeof(VecArray));
         for (int k = 0; k < ga->n_keys; k++)
             batch_keys[k] = batch->columns[key_indices[k]];
 
-        for (int64_t r = 0; r < batch->n_rows; r++) {
+        int64_t n_logical = vec_batch_logical_rows(batch);
+        for (int64_t li = 0; li < n_logical; li++) {
+            int64_t r = vec_batch_physical_row(batch, li);
+
             /* Hash the key */
             uint64_t h = 0;
             for (int k = 0; k < ga->n_keys; k++) {

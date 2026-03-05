@@ -62,3 +62,69 @@ void vec_array_set_all_valid(VecArray *arr) {
     int64_t vbytes = vec_validity_bytes(arr->length);
     memset(arr->validity, 0xFF, (size_t)vbytes);
 }
+
+VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n) {
+    int64_t n = (int64_t)sel_n;
+    VecArray dst = vec_array_alloc(src->type, n);
+
+    switch (src->type) {
+    case VEC_INT64:
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                dst.buf.i64[j] = src->buf.i64[pi];
+            }
+        }
+        break;
+    case VEC_DOUBLE:
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                dst.buf.dbl[j] = src->buf.dbl[pi];
+            }
+        }
+        break;
+    case VEC_BOOL:
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                dst.buf.bln[j] = src->buf.bln[pi];
+            }
+        }
+        break;
+    case VEC_STRING: {
+        /* Compute total string bytes */
+        int64_t total = 0;
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi))
+                total += src->buf.str.offsets[pi + 1] -
+                         src->buf.str.offsets[pi];
+        }
+        free(dst.buf.str.data);
+        dst.buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
+        dst.buf.str.data_len = total;
+
+        int64_t off = 0;
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            dst.buf.str.offsets[j] = off;
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                int64_t s = src->buf.str.offsets[pi];
+                int64_t slen = src->buf.str.offsets[pi + 1] - s;
+                if (slen > 0)
+                    memcpy(dst.buf.str.data + off,
+                           src->buf.str.data + s, (size_t)slen);
+                off += slen;
+            }
+        }
+        dst.buf.str.offsets[sel_n] = off;
+        break;
+    }
+    }
+    return dst;
+}

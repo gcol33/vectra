@@ -158,3 +158,23 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     vectra_error("unknown expr kind: %d", expr->kind);
     return NULL;
 }
+
+void vec_expr_collect_colrefs(const VecExpr *expr, char **col_names,
+                              int n_cols, uint8_t *needed) {
+    if (!expr) return;
+    if (expr->kind == EXPR_COL_REF) {
+        for (int i = 0; i < n_cols; i++) {
+            if (strcmp(col_names[i], expr->col_name) == 0) {
+                needed[i] = 1;
+                break;
+            }
+        }
+        return;
+    }
+    vec_expr_collect_colrefs(expr->left, col_names, n_cols, needed);
+    vec_expr_collect_colrefs(expr->right, col_names, n_cols, needed);
+    vec_expr_collect_colrefs(expr->operand, col_names, n_cols, needed);
+    vec_expr_collect_colrefs(expr->cond, col_names, n_cols, needed);
+    vec_expr_collect_colrefs(expr->then_expr, col_names, n_cols, needed);
+    vec_expr_collect_colrefs(expr->else_expr, col_names, n_cols, needed);
+}

@@ -119,11 +119,25 @@ SEXP vec_collect(VecNode *root) {
     for (int i = 0; i < n_cols; i++)
         builders[i] = vec_builder_init(schema->col_types[i]);
 
-    /* Pull batches */
+    /* Pull batches (sel-aware) */
     VecBatch *batch;
     while ((batch = root->next_batch(root)) != NULL) {
-        for (int i = 0; i < n_cols; i++)
-            vec_builder_append_array(&builders[i], &batch->columns[i]);
+        if (!batch->sel) {
+            /* Fast path: no selection vector, bulk append */
+            for (int i = 0; i < n_cols; i++)
+                vec_builder_append_array(&builders[i], &batch->columns[i]);
+        } else {
+            /* Selection vector: append selected rows one by one */
+            int64_t n_logical = vec_batch_logical_rows(batch);
+            for (int i = 0; i < n_cols; i++)
+                vec_builder_reserve(&builders[i], n_logical);
+            for (int64_t li = 0; li < n_logical; li++) {
+                int64_t pi = vec_batch_physical_row(batch, li);
+                for (int i = 0; i < n_cols; i++)
+                    vec_builder_append_one(&builders[i],
+                                           &batch->columns[i], pi);
+            }
+        }
         vec_batch_free(batch);
     }
 

@@ -10,10 +10,12 @@
 #include "project.h"
 #include "group_agg.h"
 #include "sort.h"
+#include "topn.h"
 #include "limit.h"
 #include "join.h"
 #include "window.h"
 #include "concat.h"
+#include "csv_write.h"
 #include "expr.h"
 #include "error.h"
 #include <stdlib.h>
@@ -392,6 +394,10 @@ static void node_get_children(VecNode *node, VecNode **children, int *n_children
         WindowNode *wn = (WindowNode *)node;
         children[0] = wn->child;
         *n_children = 1;
+    } else if (strcmp(kind, "TopNNode") == 0) {
+        TopNNode *tn = (TopNNode *)node;
+        children[0] = tn->child;
+        *n_children = 1;
     } else if (strcmp(kind, "ConcatNode") == 0) {
         ConcatNode *cn = (ConcatNode *)node;
         int show = cn->n_children < 16 ? cn->n_children : 16;
@@ -444,6 +450,12 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
         WindowNode *wn = (WindowNode *)node;
         return snprintf(buf, (size_t)bufsize,
                         "materializes, %d fns", wn->n_wins);
+    }
+    if (strcmp(kind, "TopNNode") == 0) {
+        TopNNode *tn = (TopNNode *)node;
+        return snprintf(buf, (size_t)bufsize,
+                        "heap, k=%lld, %d keys",
+                        (long long)tn->limit, tn->n_keys);
     }
     if (strcmp(kind, "ConcatNode") == 0) {
         ConcatNode *cn = (ConcatNode *)node;
@@ -782,6 +794,31 @@ SEXP C_limit_node(SEXP node_xptr, SEXP n_sexp) {
     return wrap_node((VecNode *)ln);
 }
 
+/* --- C_topn_node --- */
+
+SEXP C_topn_node(SEXP node_xptr, SEXP col_names_sexp,
+                  SEXP desc_sexp, SEXP n_sexp) {
+    VecNode *child = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+
+    const VecSchema *schema = &child->output_schema;
+    int n_keys = Rf_length(col_names_sexp);
+
+    SortKey *keys = (SortKey *)malloc((size_t)n_keys * sizeof(SortKey));
+    for (int k = 0; k < n_keys; k++) {
+        const char *nm = CHAR(STRING_ELT(col_names_sexp, k));
+        int idx = vec_schema_find_col(schema, nm);
+        if (idx < 0)
+            vectra_error("topn: column not found: %s", nm);
+        keys[k].col_index = idx;
+        keys[k].descending = LOGICAL(desc_sexp)[k];
+    }
+
+    int64_t limit = (int64_t)Rf_asReal(n_sexp);
+    TopNNode *tn = topn_node_create(child, n_keys, keys, limit);
+    return wrap_node((VecNode *)tn);
+}
+
 /* --- C_join_node --- */
 
 SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
@@ -890,4 +927,15 @@ SEXP C_concat_node(SEXP node_xptrs) {
     }
     ConcatNode *cn = concat_node_create(n, children);
     return wrap_node((VecNode *)cn);
+}
+
+/* --- C_write_csv --- */
+
+SEXP C_write_csv(SEXP node_xptr, SEXP path_sexp) {
+    VecNode *node = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+    csv_write_node(node, path);
+    node->free_node(node);
+    return R_NilValue;
 }

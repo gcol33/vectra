@@ -650,13 +650,9 @@ slice_min <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 #' @export
 slice_min.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   order_col <- as.character(substitute(order_by))
-  # Sort ascending by column, then take first n
-  col_names <- order_col
-  desc_flags <- FALSE
-  new_xptr <- .Call(C_sort_node, .data$.node, col_names, desc_flags)
-  sorted <- structure(list(.node = new_xptr, .path = .data$.path),
-                      class = "vectra_node")
-  slice_head(sorted, n = n)
+  new_xptr <- .Call(C_topn_node, .data$.node, order_col, FALSE,
+                    as.double(n))
+  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
 }
 
 #' @rdname slice_head
@@ -668,13 +664,9 @@ slice_max <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 #' @export
 slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   order_col <- as.character(substitute(order_by))
-  # Sort descending by column, then take first n
-  col_names <- order_col
-  desc_flags <- TRUE
-  new_xptr <- .Call(C_sort_node, .data$.node, col_names, desc_flags)
-  sorted <- structure(list(.node = new_xptr, .path = .data$.path),
-                      class = "vectra_node")
-  slice_head(sorted, n = n)
+  new_xptr <- .Call(C_topn_node, .data$.node, order_col, TRUE,
+                    as.double(n))
+  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
 }
 
 # Parse an aggregation expression like sum(x), mean(y, na.rm = TRUE), n()

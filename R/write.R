@@ -1,3 +1,49 @@
+#' Write query results or a data.frame to a CSV file
+#'
+#' For `vectra_node` inputs, data is streamed batch-by-batch to disk without
+#' materializing the full result in memory. For `data.frame` inputs, the data
+#' is written directly.
+#'
+#' @param x A `vectra_node` (lazy query) or a `data.frame`.
+#' @param path File path for the output CSV file.
+#' @param ... Reserved for future use.
+#'
+#' @return Invisible `NULL`.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars[1:5, ], f)
+#' csv <- tempfile(fileext = ".csv")
+#' tbl(f) |> write_csv(csv)
+#' unlink(c(f, csv))
+#'
+#' @export
+write_csv <- function(x, path, ...) {
+  UseMethod("write_csv")
+}
+
+#' @export
+write_csv.vectra_node <- function(x, path, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  .Call(C_write_csv, x$.node, path)
+  invisible(NULL)
+}
+
+#' @export
+write_csv.data.frame <- function(x, path, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  tmp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(tmp))
+  write_vtr(x, tmp)
+  node <- tbl(tmp)
+  .Call(C_write_csv, node$.node, path)
+  invisible(NULL)
+}
+
 #' Write a data.frame to a .vtr file
 #'
 #' Serializes an R data.frame into the vectra1 on-disk format.

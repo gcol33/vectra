@@ -162,8 +162,20 @@ static void join_build(JoinNode *jn) {
 
     VecBatch *batch;
     while ((batch = jn->right->next_batch(jn->right)) != NULL) {
-        for (int c = 0; c < jn->r_ncols; c++)
-            vec_builder_append_array(&r_builders[c], &batch->columns[c]);
+        if (!batch->sel) {
+            for (int c = 0; c < jn->r_ncols; c++)
+                vec_builder_append_array(&r_builders[c], &batch->columns[c]);
+        } else {
+            int64_t n_logical = vec_batch_logical_rows(batch);
+            for (int c = 0; c < jn->r_ncols; c++)
+                vec_builder_reserve(&r_builders[c], n_logical);
+            for (int64_t li = 0; li < n_logical; li++) {
+                int64_t pi = vec_batch_physical_row(batch, li);
+                for (int c = 0; c < jn->r_ncols; c++)
+                    vec_builder_append_one(&r_builders[c],
+                                           &batch->columns[c], pi);
+            }
+        }
         vec_batch_free(batch);
     }
 
@@ -232,25 +244,26 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
     const VecSchema *lschema = &jn->left->output_schema;
     int l_ncols = lschema->n_cols;
     int out_ncols = jn->base.output_schema.n_cols;
-    int64_t p_nrows = pbatch->n_rows;
+    int64_t p_logical = vec_batch_logical_rows(pbatch);
 
     /* Initialize output builders with reserve for expected output */
     VecArrayBuilder *out = (VecArrayBuilder *)calloc(
         (size_t)out_ncols, sizeof(VecArrayBuilder));
     for (int c = 0; c < out_ncols; c++) {
         out[c] = vec_builder_init(jn->base.output_schema.col_types[c]);
-        vec_builder_reserve(&out[c], p_nrows);
+        vec_builder_reserve(&out[c], p_logical);
     }
 
-    /* For left_join/full_join: track which probe rows got at least one match */
+    /* For left_join/full_join: track which logical probe rows got a match */
     uint8_t *probe_matched = NULL;
     if (jn->kind == JOIN_LEFT || jn->kind == JOIN_FULL) {
-        int64_t nbytes = (p_nrows + 7) / 8;
+        int64_t nbytes = (p_logical + 7) / 8;
         probe_matched = (uint8_t *)calloc(nbytes > 0 ? (size_t)nbytes : 1, 1);
     }
 
-    /* Vectorized pre-hash: compute all probe hashes in one pass */
-    uint64_t *phash = (uint64_t *)malloc((size_t)p_nrows * sizeof(uint64_t));
+    /* Vectorized pre-hash: compute hashes for logical rows only */
+    uint64_t *phash = (uint64_t *)malloc(
+        (size_t)(p_logical > 0 ? p_logical : 1) * sizeof(uint64_t));
     if (!phash) vectra_error("alloc failed for probe hash array");
 
     /* Fast path: 1-key with specialized hash to avoid per-row dispatch */
@@ -258,105 +271,116 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         const VecArray *pkey = &pbatch->columns[jn->lkey_idx[0]];
         switch (pkey->type) {
         case VEC_INT64:
-            for (int64_t i = 0; i < p_nrows; i++)
-                phash[i] = vec_array_is_valid(pkey, i)
-                    ? hash_i64(pkey->buf.i64[i])
+            for (int64_t li = 0; li < p_logical; li++) {
+                int64_t pi = vec_batch_physical_row(pbatch, li);
+                phash[li] = vec_array_is_valid(pkey, pi)
+                    ? hash_i64(pkey->buf.i64[pi])
                     : (FNV_OFFSET ^ 0xFF);
+            }
             break;
         case VEC_DOUBLE:
-            for (int64_t i = 0; i < p_nrows; i++)
-                phash[i] = vec_array_is_valid(pkey, i)
-                    ? hash_dbl(pkey->buf.dbl[i])
+            for (int64_t li = 0; li < p_logical; li++) {
+                int64_t pi = vec_batch_physical_row(pbatch, li);
+                phash[li] = vec_array_is_valid(pkey, pi)
+                    ? hash_dbl(pkey->buf.dbl[pi])
                     : (FNV_OFFSET ^ 0xFF);
+            }
             break;
         case VEC_STRING:
-            for (int64_t i = 0; i < p_nrows; i++)
-                phash[i] = vec_array_is_valid(pkey, i)
+            for (int64_t li = 0; li < p_logical; li++) {
+                int64_t pi = vec_batch_physical_row(pbatch, li);
+                phash[li] = vec_array_is_valid(pkey, pi)
                     ? hash_str(pkey->buf.str.data,
-                               pkey->buf.str.offsets[i],
-                               pkey->buf.str.offsets[i + 1])
+                               pkey->buf.str.offsets[pi],
+                               pkey->buf.str.offsets[pi + 1])
                     : (FNV_OFFSET ^ 0xFF);
+            }
             break;
         default:
-            for (int64_t i = 0; i < p_nrows; i++)
-                phash[i] = hash_join_key(pbatch->columns, jn->lkey_idx,
-                                         jn->n_keys, i);
+            for (int64_t li = 0; li < p_logical; li++) {
+                int64_t pi = vec_batch_physical_row(pbatch, li);
+                phash[li] = hash_join_key(pbatch->columns, jn->lkey_idx,
+                                           jn->n_keys, pi);
+            }
             break;
         }
     } else {
         /* Generic composite key hash */
-        for (int64_t i = 0; i < p_nrows; i++)
-            phash[i] = hash_join_key(pbatch->columns, jn->lkey_idx,
-                                     jn->n_keys, i);
+        for (int64_t li = 0; li < p_logical; li++) {
+            int64_t pi = vec_batch_physical_row(pbatch, li);
+            phash[li] = hash_join_key(pbatch->columns, jn->lkey_idx,
+                                       jn->n_keys, pi);
+        }
     }
 
-    /* Probe each row using pre-computed hashes */
-    for (int64_t lr = 0; lr < p_nrows; lr++) {
-        int64_t br = jht_probe(&jn->jht, phash[lr],
+    /* Probe each logical row using pre-computed hashes */
+    for (int64_t li = 0; li < p_logical; li++) {
+        int64_t pr = vec_batch_physical_row(pbatch, li);
+        int64_t br = jht_probe(&jn->jht, phash[li],
                                 pbatch->columns, jn->lkey_idx,
                                 jn->r_cols, jn->rkey_idx,
-                                jn->n_keys, lr);
+                                jn->n_keys, pr);
 
         switch (jn->kind) {
         case JOIN_SEMI:
             if (br >= 0) {
                 for (int c = 0; c < l_ncols; c++)
-                    vec_builder_append_one(&out[c], &pbatch->columns[c], lr);
+                    vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
             }
             break;
 
         case JOIN_ANTI:
             if (br < 0) {
                 for (int c = 0; c < l_ncols; c++)
-                    vec_builder_append_one(&out[c], &pbatch->columns[c], lr);
+                    vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
             }
             break;
 
         case JOIN_INNER:
             while (br >= 0) {
                 for (int c = 0; c < l_ncols; c++)
-                    vec_builder_append_one(&out[c], &pbatch->columns[c], lr);
+                    vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
                 for (int j = 0; j < jn->r_non_key_count; j++)
                     vec_builder_append_one(&out[l_ncols + j],
                         &jn->r_cols[jn->r_non_key_idx[j]], br);
                 br = jht_chain_next(&jn->jht, br,
                     pbatch->columns, jn->lkey_idx,
-                    jn->r_cols, jn->rkey_idx, jn->n_keys, lr);
+                    jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
             }
             break;
 
         case JOIN_LEFT:
             if (br >= 0) {
-                probe_matched[lr / 8] |= (uint8_t)(1 << (lr % 8));
+                probe_matched[li / 8] |= (uint8_t)(1 << (li % 8));
                 while (br >= 0) {
                     for (int c = 0; c < l_ncols; c++)
                         vec_builder_append_one(&out[c],
-                            &pbatch->columns[c], lr);
+                            &pbatch->columns[c], pr);
                     for (int j = 0; j < jn->r_non_key_count; j++)
                         vec_builder_append_one(&out[l_ncols + j],
                             &jn->r_cols[jn->r_non_key_idx[j]], br);
                     br = jht_chain_next(&jn->jht, br,
                         pbatch->columns, jn->lkey_idx,
-                        jn->r_cols, jn->rkey_idx, jn->n_keys, lr);
+                        jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
                 }
             }
             break;
 
         case JOIN_FULL:
             if (br >= 0) {
-                probe_matched[lr / 8] |= (uint8_t)(1 << (lr % 8));
+                probe_matched[li / 8] |= (uint8_t)(1 << (li % 8));
                 while (br >= 0) {
                     jn->build_matched[br / 8] |=
                         (uint8_t)(1 << (br % 8));
                     for (int c = 0; c < l_ncols; c++)
                         vec_builder_append_one(&out[c],
-                            &pbatch->columns[c], lr);
+                            &pbatch->columns[c], pr);
                     for (int j = 0; j < jn->r_non_key_count; j++)
                         vec_builder_append_one(&out[l_ncols + j],
                             &jn->r_cols[jn->r_non_key_idx[j]], br);
                     br = jht_chain_next(&jn->jht, br,
                         pbatch->columns, jn->lkey_idx,
-                        jn->r_cols, jn->rkey_idx, jn->n_keys, lr);
+                        jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
                 }
             }
             break;
@@ -367,10 +391,11 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
 
     /* left_join / full_join: emit unmatched probe rows with NA right columns */
     if (jn->kind == JOIN_LEFT || jn->kind == JOIN_FULL) {
-        for (int64_t lr = 0; lr < p_nrows; lr++) {
-            if (probe_matched[lr / 8] & (1 << (lr % 8))) continue;
+        for (int64_t li = 0; li < p_logical; li++) {
+            if (probe_matched[li / 8] & (1 << (li % 8))) continue;
+            int64_t pr = vec_batch_physical_row(pbatch, li);
             for (int c = 0; c < l_ncols; c++)
-                vec_builder_append_one(&out[c], &pbatch->columns[c], lr);
+                vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
             /* Bulk NA fill for all right non-key columns */
             for (int j = 0; j < jn->r_non_key_count; j++)
                 vec_builder_append_na(&out[l_ncols + j]);

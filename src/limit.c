@@ -14,85 +14,34 @@ static VecBatch *limit_next_batch(VecNode *self) {
     VecBatch *batch = ln->child->next_batch(ln->child);
     if (!batch) return NULL;
 
+    int64_t logical_n = vec_batch_logical_rows(batch);
     int64_t remaining = ln->max_rows - ln->rows_emitted;
-    if (batch->n_rows <= remaining) {
-        ln->rows_emitted += batch->n_rows;
+
+    if (logical_n <= remaining) {
+        /* Whole batch fits within limit */
+        ln->rows_emitted += logical_n;
         return batch;
     }
 
-    /* Need to truncate this batch */
-    int64_t keep = remaining;
-    VecBatch *out = vec_batch_alloc(batch->n_cols, keep);
+    /* Need to truncate: keep only first `keep` logical rows.
+       Build a sel of the first `keep` physical row indices, then gather. */
+    int32_t keep = (int32_t)remaining;
+    int32_t *trunc_sel = (int32_t *)malloc((size_t)keep * sizeof(int32_t));
+    for (int32_t li = 0; li < keep; li++)
+        trunc_sel[li] = (int32_t)vec_batch_physical_row(batch, (int64_t)li);
+
+    VecBatch *out = vec_batch_alloc(batch->n_cols, (int64_t)keep);
     for (int c = 0; c < batch->n_cols; c++) {
-        VecArray *src = &batch->columns[c];
-        VecArray dst = vec_array_alloc(src->type, keep);
-
-        switch (src->type) {
-        case VEC_INT64:
-            for (int64_t i = 0; i < keep; i++) {
-                if (vec_array_is_valid(src, i)) {
-                    vec_array_set_valid(&dst, i);
-                    dst.buf.i64[i] = src->buf.i64[i];
-                } else {
-                    vec_array_set_null(&dst, i);
-                }
-            }
-            break;
-        case VEC_DOUBLE:
-            for (int64_t i = 0; i < keep; i++) {
-                if (vec_array_is_valid(src, i)) {
-                    vec_array_set_valid(&dst, i);
-                    dst.buf.dbl[i] = src->buf.dbl[i];
-                } else {
-                    vec_array_set_null(&dst, i);
-                }
-            }
-            break;
-        case VEC_BOOL:
-            for (int64_t i = 0; i < keep; i++) {
-                if (vec_array_is_valid(src, i)) {
-                    vec_array_set_valid(&dst, i);
-                    dst.buf.bln[i] = src->buf.bln[i];
-                } else {
-                    vec_array_set_null(&dst, i);
-                }
-            }
-            break;
-        case VEC_STRING: {
-            int64_t total = 0;
-            for (int64_t i = 0; i < keep; i++) {
-                if (vec_array_is_valid(src, i))
-                    total += src->buf.str.offsets[i + 1] - src->buf.str.offsets[i];
-            }
-            free(dst.buf.str.data);
-            dst.buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
-            dst.buf.str.data_len = total;
-            int64_t off = 0;
-            for (int64_t i = 0; i < keep; i++) {
-                dst.buf.str.offsets[i] = off;
-                if (vec_array_is_valid(src, i)) {
-                    vec_array_set_valid(&dst, i);
-                    int64_t s = src->buf.str.offsets[i];
-                    int64_t slen = src->buf.str.offsets[i + 1] - s;
-                    memcpy(dst.buf.str.data + off, src->buf.str.data + s, (size_t)slen);
-                    off += slen;
-                } else {
-                    vec_array_set_null(&dst, i);
-                }
-            }
-            dst.buf.str.offsets[keep] = off;
-            break;
-        }
-        }
-
-        out->columns[c] = dst;
+        out->columns[c] = vec_array_gather(&batch->columns[c],
+                                            trunc_sel, keep);
         const char *nm = batch->col_names[c];
         out->col_names[c] = (char *)malloc(strlen(nm) + 1);
         strcpy(out->col_names[c], nm);
     }
 
+    free(trunc_sel);
     vec_batch_free(batch);
-    ln->rows_emitted += keep;
+    ln->rows_emitted += (int64_t)keep;
     return out;
 }
 

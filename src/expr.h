@@ -69,4 +69,9 @@ void vec_expr_free(VecExpr *expr);
    Caller must free the result. */
 VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch);
 
+/* Walk an expression tree and mark all referenced column names.
+   needed[i] is set to 1 if column col_names[i] is referenced. */
+void vec_expr_collect_colrefs(const VecExpr *expr, char **col_names,
+                              int n_cols, uint8_t *needed);
+
 #endif /* VECTRA_EXPR_H */
