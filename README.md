@@ -32,25 +32,69 @@ vectra takes a different approach: a self-contained C11 engine compiled as a sta
 
 ## Features
 
-### dplyr-Compatible Verbs
+### I/O & Storage
 
-- **Transform**: `filter()`, `mutate()`, `transmute()`, `select()`, `rename()`, `relocate()`
-- **Aggregate**: `group_by()`, `summarise()`, `count()`, `tally()`, `distinct()`, `reframe()`
-- **Combine**: `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `bind_rows()`, `bind_cols()`
-- **Order**: `arrange()`, `desc()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()`
-- **Inspect**: `explain()`, `print()`, `pull()`
+- **`write_vtr()`**: Serialize any data.frame to the `.vtr` columnar format
+  - Supported types: integer, double, logical, character, `bit64::integer64`
+  - Multi-row-group writes via `batch_size` for streaming reads
+  - NA support with per-column validity bitmaps
+
+- **`tbl()`**: Open a `.vtr` file as a lazy query
+  - No data is read until `collect()` is called
+  - Column pruning: only columns referenced by the query are loaded
+
+### Transformation Verbs
+
+- **`filter()`**: Row filtering with arbitrary boolean expressions
+  - Arithmetic, comparisons, `&`, `|`, `!`, `is.na()`
+  - Zero-copy via selection vectors (no row duplication)
+
+- **`mutate()` / `transmute()`**: Column expressions
+  - Arithmetic (`+`, `-`, `*`, `/`, `%%`), comparisons, boolean logic
+  - `across()` for multi-column operations
+  - Window functions in grouped context (see below)
+
+- **`select()` / `rename()` / `relocate()`**: Column selection and reordering
+  - Full `tidyselect` support (`starts_with()`, `where()`, etc.)
+
+### Aggregation
+
+- **`group_by()` + `summarise()`**: Hash-based grouped aggregation
+  - Aggregation functions: `n()`, `sum()`, `mean()`, `min()`, `max()`
+  - `na.rm` support on all aggregation functions
+  - `.groups` parameter for controlling residual grouping
+
+- **`count()` / `tally()`**: Shorthand counting with optional `wt` column
+- **`distinct()`**: Unique row selection via hash grouping
+- **`reframe()`**: Multi-row grouped summaries
+
+### Joins
+
+- **`left_join()` / `inner_join()` / `right_join()` / `full_join()`**: Hash joins
+  - Natural join (common columns), named keys (`c("a" = "b")`), or explicit `by`
+  - Suffix handling for overlapping non-key columns
+
+- **`semi_join()` / `anti_join()`**: Filtering joins
+- **`bind_rows()` / `bind_cols()`**: Concatenation across queries
 
 ### Window Functions
 
-`row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()` inside grouped `mutate()`.
+- **Ranking**: `row_number()`, `rank()`, `dense_rank()`
+- **Offset**: `lag()`, `lead()` with configurable offset and default
+- **Cumulative**: `cumsum()`, `cummean()`, `cummin()`, `cummax()`
+- Used inside grouped `mutate()` for per-group computation
 
-### Expression Engine
+### Ordering & Slicing
 
-Arithmetic (`+`, `-`, `*`, `/`, `%%`), comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`), boolean logic (`&`, `|`, `!`), `is.na()`, and `across()` for multi-column operations.
+- **`arrange()`**: Multi-column sorting with `desc()` for descending order
+- **`slice_head()` / `slice_tail()`**: First or last n rows
+- **`slice_min()` / `slice_max()`**: Rows with extreme values in a column
 
-### Aggregation Functions
+### Inspection
 
-`n()`, `sum()`, `mean()`, `min()`, `max()` with `na.rm` support.
+- **`explain()`**: Print the full execution plan tree with node types and schemas
+- **`print()`**: Column names and types without reading data
+- **`pull()`**: Extract a single column as a vector
 
 ### Zero External Dependencies
 
@@ -67,18 +111,22 @@ pak::pak("gcol33/vectra")
 
 ## Usage Examples
 
-### Filter and Select
+### Basic Query (`filter` + `select`)
 
 ```r
+library(vectra)
+
+# Write a data.frame to disk
 write_vtr(nycflights13::flights, "flights.vtr")
 
+# Lazy query: nothing runs until collect()
 tbl("flights.vtr") |>
   filter(dep_delay > 60, carrier == "UA") |>
   select(year, month, day, dep_delay, arr_delay) |>
   collect()
 ```
 
-### Grouped Aggregation
+### Grouped Aggregation (`group_by` + `summarise`)
 
 ```r
 tbl("flights.vtr") |>
@@ -91,16 +139,50 @@ tbl("flights.vtr") |>
   collect()
 ```
 
-### Joins
+### Joins Across Files
 
 ```r
-write_vtr(airlines, "airlines.vtr")
+write_vtr(nycflights13::airlines, "airlines.vtr")
 
 tbl("flights.vtr") |>
   left_join(tbl("airlines.vtr"), by = "carrier") |>
-  select(name, dep_delay) |>
   group_by(name) |>
   summarise(avg_delay = mean(dep_delay, na.rm = TRUE)) |>
+  collect()
+```
+
+### Window Functions
+
+```r
+# Per-carrier cumulative delay and ranking
+tbl("flights.vtr") |>
+  filter(month == 1) |>
+  group_by(carrier) |>
+  mutate(rn = row_number(), cum_delay = cumsum(dep_delay)) |>
+  select(carrier, dep_delay, rn, cum_delay) |>
+  collect()
+```
+
+### Multi-Column Operations (`across`)
+
+```r
+tbl("flights.vtr") |>
+  group_by(carrier) |>
+  summarise(across(c(dep_delay, arr_delay), mean, na.rm = TRUE)) |>
+  collect()
+```
+
+### Streaming Large Files
+
+```r
+# Write in 100k-row chunks for bounded memory reads
+write_vtr(big_df, "big.vtr", batch_size = 100000)
+
+# Query still works the same way
+tbl("big.vtr") |>
+  filter(x > 0) |>
+  group_by(g) |>
+  summarise(total = sum(x)) |>
   collect()
 ```
 
@@ -113,13 +195,12 @@ tbl("flights.vtr") |>
   group_by(carrier) |>
   summarise(n = n()) |>
   explain()
-```
-
-### Multi-Row-Group Writes
-
-```r
-# Write in 100k-row chunks for streaming reads
-write_vtr(big_df, "big.vtr", batch_size = 100000)
+#> vectra execution plan
+#>
+#>   GroupAgg [carrier] -> [n]
+#>     Project [carrier, dep_delay]
+#>       Filter
+#>         Scan flights.vtr
 ```
 
 ## How It Works
