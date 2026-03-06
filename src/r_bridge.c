@@ -293,6 +293,7 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
         VecBatch *batch = df_to_batch(df);
         /* Build schema with annotations */
         VecSchema schema;
+        memset(&schema, 0, sizeof(schema));
         schema.n_cols = batch->n_cols;
         schema.col_names = batch->col_names;
         schema.col_types = (VecType *)malloc((size_t)batch->n_cols * sizeof(VecType));
@@ -905,6 +906,7 @@ SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists) {
         ext_types[i] = schema->col_types[i];
     }
     VecSchema ext_schema;
+    memset(&ext_schema, 0, sizeof(ext_schema));
     ext_schema.n_cols = schema_n;
     ext_schema.col_names = ext_names;
     ext_schema.col_types = ext_types;
