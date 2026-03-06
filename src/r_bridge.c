@@ -1060,7 +1060,7 @@ SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
     R_ClearExternalPtr(right_xptr);
 
     const char *kind_str = CHAR(STRING_ELT(kind_sexp, 0));
-    JoinKind kind;
+    JoinKind kind = JOIN_INNER;
     if (strcmp(kind_str, "inner") == 0) kind = JOIN_INNER;
     else if (strcmp(kind_str, "left") == 0) kind = JOIN_LEFT;
     else if (strcmp(kind_str, "full") == 0) kind = JOIN_FULL;

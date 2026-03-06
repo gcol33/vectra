@@ -184,9 +184,7 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
         }
 
         batch->columns[c] = arr;
-        free(col_nulls[c]); free(col_i64[c]); free(col_dbl[c]);
-        free(col_bln[c]);
-        /* Free remaining string pointers for null rows */
+        /* Free remaining string pointers for null rows (before freeing col_nulls) */
         if (col_str_ptrs[c]) {
             for (int64_t r = 0; r < n_rows; r++)
                 if (col_nulls[c] && col_nulls[c][r] && col_str_ptrs[c][r])
@@ -194,6 +192,8 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
             free(col_str_ptrs[c]);
         }
         if (col_str_lens[c]) free(col_str_lens[c]);
+        free(col_nulls[c]); free(col_i64[c]); free(col_dbl[c]);
+        free(col_bln[c]);
     }
 
     return batch;

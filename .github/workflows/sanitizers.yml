@@ -54,7 +54,16 @@ jobs:
                            INSTALL_opts = "--no-multiarch")
         shell: Rscript {0}
 
+      - name: Find libasan path
+        id: asan
+        run: |
+          ASAN_LIB=$(gcc -print-file-name=libasan.so)
+          echo "lib=$ASAN_LIB" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Run tests under sanitizers
+        env:
+          LD_PRELOAD: ${{ steps.asan.outputs.lib }}
         run: |
           library(testthat)
           library(vectra)
