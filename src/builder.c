@@ -91,8 +91,9 @@ void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
         /* Copy string data */
         int64_t sdata_len = arr->buf.str.offsets[arr->length] - arr->buf.str.offsets[0];
         ensure_str_data(b, sdata_len);
-        memcpy(b->str_data + b->str_data_len,
-               arr->buf.str.data + arr->buf.str.offsets[0], (size_t)sdata_len);
+        if (sdata_len > 0)
+            memcpy(b->str_data + b->str_data_len,
+                   arr->buf.str.data + arr->buf.str.offsets[0], (size_t)sdata_len);
         /* Copy offsets (rebased) */
         for (int64_t i = 0; i < arr->length; i++) {
             b->str_offsets[b->length + i] =
