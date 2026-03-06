@@ -22,6 +22,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_csv_scan_node", (DL_FUNC) &C_csv_scan_node,  2},
     {"C_sql_scan_node", (DL_FUNC) &C_sql_scan_node,  3},
     {"C_write_sqlite",  (DL_FUNC) &C_write_sqlite,   3},
+    {"C_tiff_scan_node", (DL_FUNC) &C_tiff_scan_node, 2},
+    {"C_tiff_scan_meta", (DL_FUNC) &C_tiff_scan_meta, 1},
+    {"C_write_tiff",     (DL_FUNC) &C_write_tiff,     3},
     {NULL, NULL, 0}
 };
 

@@ -20,6 +20,8 @@
 #include "sql_scan.h"
 #include "sql_write.h"
 #include "sqlite_format.h"
+#include "tiff_scan.h"
+#include "tiff_write.h"
 #include "expr.h"
 #include "error.h"
 #include <stdlib.h>
@@ -368,7 +370,7 @@ static void node_get_children(VecNode *node, VecNode **children, int *n_children
     const char *kind = node->kind ? node->kind : "Unknown";
 
     if (strcmp(kind, "ScanNode") == 0 || strcmp(kind, "CsvScanNode") == 0 ||
-        strcmp(kind, "SqlScanNode") == 0) {
+        strcmp(kind, "SqlScanNode") == 0 || strcmp(kind, "TiffScanNode") == 0) {
         *n_children = 0;
     } else if (strcmp(kind, "FilterNode") == 0) {
         FilterNode *fn = (FilterNode *)node;
@@ -430,6 +432,11 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
         SqlScanNode *sn = (SqlScanNode *)node;
         return snprintf(buf, (size_t)bufsize, "streaming sql, %d cols",
                         sn->n_cols);
+    }
+    if (strcmp(kind, "TiffScanNode") == 0) {
+        TiffScanNode *tn = (TiffScanNode *)node;
+        return snprintf(buf, (size_t)bufsize, "streaming tiff, %d bands",
+                        tn->n_bands);
     }
     if (strcmp(kind, "FilterNode") == 0)
         return snprintf(buf, (size_t)bufsize, "streaming");
@@ -976,6 +983,58 @@ SEXP C_write_sqlite(SEXP node_xptr, SEXP path_sexp, SEXP table_sexp) {
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
     const char *table = CHAR(STRING_ELT(table_sexp, 0));
     sql_write_node(node, path, table);
+    node->free_node(node);
+    return R_NilValue;
+}
+
+SEXP C_tiff_scan_node(SEXP path_sexp, SEXP batch_size_sexp) {
+    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
+    int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
+    TiffScanNode *sn = tiff_scan_node_create(fpath, batch_size);
+    return wrap_node((VecNode *)sn);
+}
+
+SEXP C_tiff_scan_meta(SEXP node_xptr) {
+    VecNode *node = unwrap_node(node_xptr);
+    if (!node->kind || strcmp(node->kind, "TiffScanNode") != 0)
+        vectra_error("not a TiffScanNode");
+    TiffScanNode *sn = (TiffScanNode *)node;
+    TiffReader *r = sn->reader;
+
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 5));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 5));
+
+    SET_STRING_ELT(names, 0, Rf_mkChar("width"));
+    SET_STRING_ELT(names, 1, Rf_mkChar("height"));
+    SET_STRING_ELT(names, 2, Rf_mkChar("nbands"));
+    SET_STRING_ELT(names, 3, Rf_mkChar("gt"));
+    SET_STRING_ELT(names, 4, Rf_mkChar("nodata"));
+
+    SET_VECTOR_ELT(result, 0, Rf_ScalarReal((double)tiff_reader_width(r)));
+    SET_VECTOR_ELT(result, 1, Rf_ScalarReal((double)tiff_reader_height(r)));
+    SET_VECTOR_ELT(result, 2, Rf_ScalarInteger(tiff_reader_nbands(r)));
+
+    SEXP gt_sexp = PROTECT(Rf_allocVector(REALSXP, 6));
+    const double *gt = tiff_reader_geotransform(r);
+    memcpy(REAL(gt_sexp), gt, 6 * sizeof(double));
+    SET_VECTOR_ELT(result, 3, gt_sexp);
+
+    if (tiff_reader_has_nodata(r))
+        SET_VECTOR_ELT(result, 4, Rf_ScalarReal(tiff_reader_nodata(r)));
+    else
+        SET_VECTOR_ELT(result, 4, Rf_ScalarReal(NA_REAL));
+
+    Rf_setAttrib(result, R_NamesSymbol, names);
+    UNPROTECT(3);
+    return result;
+}
+
+SEXP C_write_tiff(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
+    VecNode *node = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+    int use_deflate = Rf_asLogical(compress_sexp);
+    tiff_write_node(node, path, use_deflate);
     node->free_node(node);
     return R_NilValue;
 }

@@ -19,7 +19,7 @@ A \code{vectra_node} object representing a lazy scan of the table.
 \description{
 Opens a SQLite database and lazily scans a table. Column types are inferred
 from declared types in the CREATE TABLE statement. All filtering, grouping,
-and aggregation is handled by vectra's C engine — no SQL parsing needed.
+and aggregation is handled by vectra's C engine --- no SQL parsing needed.
 No data is read until \code{\link[=collect]{collect()}} is called.
 }
 \examples{

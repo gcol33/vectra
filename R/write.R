@@ -95,6 +95,53 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
   invisible(NULL)
 }
 
+#' Write query results to a GeoTIFF file
+#'
+#' The data must contain `x` and `y` columns (pixel center coordinates) and
+#' one or more numeric band columns. Grid dimensions and geotransform are
+#' inferred from the x/y coordinate arrays. Missing pixels are written as NaN.
+#'
+#' @param x A `vectra_node` (lazy query) or a `data.frame`.
+#' @param path File path for the output GeoTIFF file.
+#' @param compress Logical; use DEFLATE compression? Default `FALSE`.
+#' @param ... Reserved for future use.
+#'
+#' @return Invisible `NULL`.
+#'
+#' @examples
+#' \dontrun{
+#' tbl_tiff("climate.tif") |>
+#'   filter(band1 > 25) |>
+#'   write_tiff("filtered.tif")
+#' }
+#'
+#' @export
+write_tiff <- function(x, path, compress = FALSE, ...) {
+  UseMethod("write_tiff")
+}
+
+#' @export
+write_tiff.vectra_node <- function(x, path, compress = FALSE, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  .Call(C_write_tiff, x$.node, path, as.logical(compress))
+  invisible(NULL)
+}
+
+#' @export
+write_tiff.data.frame <- function(x, path, compress = FALSE, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  tmp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(tmp))
+  write_vtr(x, tmp)
+  node <- tbl(tmp)
+  .Call(C_write_tiff, node$.node, path, as.logical(compress))
+  invisible(NULL)
+}
+
 #' Write a data.frame to a .vtr file
 #'
 #' Serializes an R data.frame into the vectra1 on-disk format.
