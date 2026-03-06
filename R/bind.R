@@ -25,11 +25,12 @@ bind_rows <- function(..., .id = NULL) {
   if (all_nodes && is.null(.id) && length(dots) >= 2) {
     schemas <- lapply(dots, function(x) .Call(C_node_schema, x$.node))
     ref <- schemas[[1]]
-    all_match <- all(vapply(schemas[-1], function(s) {
-      identical(s$name, ref$name) && identical(s$type, ref$type)
+    # Require same column names; types can differ (C engine coerces)
+    names_match <- all(vapply(schemas[-1], function(s) {
+      identical(s$name, ref$name)
     }, logical(1)))
 
-    if (all_match) {
+    if (names_match) {
       xptrs <- lapply(dots, function(x) x$.node)
       new_xptr <- .Call(C_concat_node, xptrs)
       return(structure(list(.node = new_xptr, .path = NULL),

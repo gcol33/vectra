@@ -99,10 +99,10 @@ select <- function(.data, ...) {
 #' @export
 select.vectra_node <- function(.data, ...) {
   schema <- .Call(C_node_schema, .data$.node)
-  col_names <- schema$name
-  names(col_names) <- col_names
+  proxy <- schema_proxy(schema)
 
-  sel <- tidyselect::eval_select(rlang::expr(c(...)), data = col_names)
+  sel <- tidyselect::eval_select(rlang::expr(c(...)), data = proxy)
+  col_names <- schema$name
   out_names <- names(sel)
 
   n <- length(out_names)
@@ -142,7 +142,8 @@ mutate.vectra_node <- function(.data, ...) {
   dots <- eval(substitute(alist(...)))
   # Expand across() calls
   schema <- .Call(C_node_schema, .data$.node)
-  dots <- expand_across(dots, schema$name, parent.frame())
+  proxy <- schema_proxy(schema)
+  dots <- expand_across(dots, schema$name, parent.frame(), proxy)
   dot_names <- names(dots)
   if (is.null(dot_names) || any(dot_names == ""))
     stop("all mutate expressions must be named")
@@ -238,7 +239,8 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
   dots <- eval(substitute(alist(...)))
   # Expand across() calls
   schema <- .Call(C_node_schema, .data$.node)
-  dots <- expand_across(dots, schema$name, parent.frame())
+  proxy <- schema_proxy(schema)
+  dots <- expand_across(dots, schema$name, parent.frame(), proxy)
   dot_names <- names(dots)
   if (is.null(dot_names) || any(dot_names == ""))
     stop("all summarise expressions must be named")
@@ -292,9 +294,9 @@ rename <- function(.data, ...) {
 rename.vectra_node <- function(.data, ...) {
   schema <- .Call(C_node_schema, .data$.node)
   existing <- schema$name
-  names(existing) <- existing
+  proxy <- schema_proxy(schema)
 
-  sel <- tidyselect::eval_rename(rlang::expr(c(...)), data = existing)
+  sel <- tidyselect::eval_rename(rlang::expr(c(...)), data = proxy)
   new_names <- names(sel)
   old_names <- unname(existing[sel])
 
@@ -328,17 +330,17 @@ relocate <- function(.data, ..., .before = NULL, .after = NULL) {
 relocate.vectra_node <- function(.data, ..., .before = NULL, .after = NULL) {
   schema <- .Call(C_node_schema, .data$.node)
   existing <- schema$name
-  names(existing) <- existing
+  proxy <- schema_proxy(schema)
 
-  sel <- tidyselect::eval_select(rlang::expr(c(...)), data = existing)
+  sel <- tidyselect::eval_select(rlang::expr(c(...)), data = proxy)
   to_move <- unname(existing[sel])
 
   .before <- if (!missing(.before)) {
-    bsel <- tidyselect::eval_select(rlang::enquo(.before), data = existing)
+    bsel <- tidyselect::eval_select(rlang::enquo(.before), data = proxy)
     unname(existing[bsel])
   } else NULL
   .after <- if (!missing(.after)) {
-    asel <- tidyselect::eval_select(rlang::enquo(.after), data = existing)
+    asel <- tidyselect::eval_select(rlang::enquo(.after), data = proxy)
     unname(existing[asel])
   } else NULL
 
@@ -422,13 +424,15 @@ distinct <- function(.data, ..., .keep_all = FALSE) {
 
 #' @export
 distinct.vectra_node <- function(.data, ..., .keep_all = FALSE) {
-  col_exprs <- eval(substitute(alist(...)))
   schema <- .Call(C_node_schema, .data$.node)
+  proxy <- schema_proxy(schema)
 
+  col_exprs <- eval(substitute(alist(...)))
   if (length(col_exprs) == 0) {
     key_names <- schema$name
   } else {
-    key_names <- vapply(col_exprs, as.character, character(1))
+    sel <- tidyselect::eval_select(rlang::expr(c(...)), data = proxy)
+    key_names <- unname(schema$name[sel])
   }
 
   if (.keep_all && length(col_exprs) > 0) {

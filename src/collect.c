@@ -18,6 +18,66 @@ static int use_bit64(void) {
     return 0;
 }
 
+/* Convert VecArray to R SEXP, then apply annotation (Date/POSIXct/factor).
+   Returns a new SEXP if factor, or the same col with class attrs set. */
+static SEXP apply_annotation(SEXP col, const char *ann) {
+    if (!ann) return col;
+
+    if (strcmp(ann, "Date") == 0) {
+        Rf_setAttrib(col, R_ClassSymbol, Rf_mkString("Date"));
+        return col;
+    }
+    if (strncmp(ann, "POSIXct|", 8) == 0) {
+        const char *tz = ann + 8;
+        SEXP cls = PROTECT(Rf_allocVector(STRSXP, 2));
+        SET_STRING_ELT(cls, 0, Rf_mkChar("POSIXct"));
+        SET_STRING_ELT(cls, 1, Rf_mkChar("POSIXt"));
+        Rf_setAttrib(col, R_ClassSymbol, cls);
+        if (tz[0] != '\0')
+            Rf_setAttrib(col, Rf_install("tzone"), Rf_mkString(tz));
+        UNPROTECT(1);
+        return col;
+    }
+    if (strncmp(ann, "factor", 6) == 0) {
+        /* "factor|lev1|lev2|..." -> convert string column to factor */
+        R_xlen_t n = XLENGTH(col);
+        /* Parse levels */
+        int n_levels = 0;
+        const char *p = ann + 6;
+        while (*p == '|') { n_levels++; p++; while (*p && *p != '|') p++; }
+        SEXP levels = PROTECT(Rf_allocVector(STRSXP, n_levels));
+        p = ann + 6;
+        for (int i = 0; i < n_levels; i++) {
+            p++; /* skip '|' */
+            const char *start = p;
+            while (*p && *p != '|') p++;
+            SET_STRING_ELT(levels, i, Rf_mkCharLen(start, (int)(p - start)));
+        }
+        /* Convert strings to integer codes */
+        SEXP icol = PROTECT(Rf_allocVector(INTSXP, n));
+        int *ip = INTEGER(icol);
+        for (R_xlen_t i = 0; i < n; i++) {
+            if (STRING_ELT(col, i) == NA_STRING) {
+                ip[i] = NA_INTEGER;
+            } else {
+                const char *val = CHAR(STRING_ELT(col, i));
+                ip[i] = NA_INTEGER;
+                for (int j = 0; j < n_levels; j++) {
+                    if (strcmp(val, CHAR(STRING_ELT(levels, j))) == 0) {
+                        ip[i] = j + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        Rf_setAttrib(icol, R_LevelsSymbol, levels);
+        Rf_setAttrib(icol, R_ClassSymbol, Rf_mkString("factor"));
+        UNPROTECT(2);
+        return icol;
+    }
+    return col;
+}
+
 /* Convert a VecArray to an R SEXP column */
 static SEXP array_to_sexp(const VecArray *arr, int want_bit64) {
     SEXP col;
@@ -149,7 +209,12 @@ SEXP vec_collect(VecNode *root) {
     for (int i = 0; i < n_cols; i++) {
         VecArray arr = vec_builder_finish(&builders[i]);
         if (i == 0) total_rows = arr.length;
-        SET_VECTOR_ELT(df, i, array_to_sexp(&arr, want_bit64));
+        SEXP col = array_to_sexp(&arr, want_bit64);
+        /* Apply type annotation (Date, POSIXct, factor) */
+        const char *ann = (schema->col_annotations)
+                          ? schema->col_annotations[i] : NULL;
+        col = apply_annotation(col, ann);
+        SET_VECTOR_ELT(df, i, col);
         SET_STRING_ELT(names, i,
             Rf_mkCharCE(schema->col_names[i], CE_UTF8));
         vec_array_free(&arr);

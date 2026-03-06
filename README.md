@@ -1,223 +1,92 @@
 # vectra
 
 [![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
+[![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml)
 [![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Analyze Datasets Larger Than Your RAM with dplyr Syntax**
+vectra is an R-native columnar query engine for datasets larger than RAM.
 
-The `vectra` package lets you filter, join, group, and summarise files that would crash `read.csv()`. Write dplyr pipelines against 50 GB files on a laptop with 8 GB of RAM, and get a data.frame back.
+Write dplyr-style pipelines against multi-GB files on a laptop. Data streams through a C11 pull-based engine one row group at a time, so peak memory stays bounded regardless of file size.
 
 ## Quick Start
 
 ```r
 library(vectra)
 
-# Write any data.frame to disk
-write_vtr(mtcars, "cars.vtr")
+write_vtr(big_df, "data.vtr", batch_size = 100000)
 
-# Build a lazy query, nothing runs until collect()
-tbl("cars.vtr") |>
-  filter(cyl > 4) |>
-  group_by(cyl) |>
-  summarise(avg_mpg = mean(mpg), n = n()) |>
+tbl("data.vtr") |>
+  filter(x > 0, region == "EU") |>
+  left_join(tbl("lookup.vtr"), by = "id") |>
+  group_by(region) |>
+  summarise(total = sum(value), n = n()) |>
   collect()
 ```
 
-## Statement of Need
+Nothing runs until `collect()`. Use `explain()` to see the plan:
 
-Querying datasets larger than RAM in R usually means pulling in a JVM (Spark), a system library (Arrow/DuckDB), or leaving R altogether. These work, but the dependency chains are heavy and installation is fragile.
+```r
+tbl("data.vtr") |>
+  filter(x > 0) |>
+  select(id, x) |>
+  explain()
+#> vectra execution plan
+#>
+#>   Project [id, x]
+#>     Filter [x > 0]
+#>       Scan data.vtr
+#>
+#> Output columns (2):
+#>   id <double>
+#>   x <double>
+```
 
-vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries, no runtime configuration. Data lives in a columnar `.vtr` format and streams through a pull-based pipeline one row group at a time, so peak memory stays bounded regardless of file size.
+## Why vectra
+
+Querying large datasets in R usually means Arrow, DuckDB, or Spark. These work, but the dependency chains are heavy and installation is fragile.
+
+vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries, no JVM, no runtime configuration. It provides:
+
+- **Streaming execution**: data flows one row group at a time, never fully in memory
+- **Zero-copy filtering**: selection vectors avoid row duplication
+- **Hash joins**: build right, stream left --- join a 50 GB fact table against a lookup without materializing both
+- **External sort**: 1 GB memory budget with automatic spill-to-disk
+- **Window functions**: `row_number()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`
+- **Type-safe coercion**: `int + double -> double` in expressions, joins, and `bind_rows()`
+- **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF --- all produce the same lazy query nodes
 
 ## Features
 
-### I/O & Storage
+| Category | Verbs |
+|:---------|:------|
+| **Transform** | `filter()`, `select()`, `mutate()`, `transmute()`, `rename()`, `relocate()` |
+| **Aggregate** | `group_by()`, `summarise()`, `count()`, `tally()`, `distinct()` |
+| **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()` |
+| **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()` |
+| **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()` |
+| **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
+| **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()` |
+| **Inspect** | `explain()`, `print()`, `pull()` |
 
-- **`write_vtr()`**: Serialize any data.frame to the `.vtr` columnar format
-  - Supported types: integer, double, logical, character, `bit64::integer64`
-  - Multi-row-group writes via `batch_size` for streaming reads
-  - NA support with per-column validity bitmaps
-
-- **`tbl()`**: Open a `.vtr` file as a lazy query
-  - No data is read until `collect()` is called
-  - Column pruning: only columns referenced by the query are loaded
-
-### Transformation Verbs
-
-- **`filter()`**: Row filtering with arbitrary boolean expressions
-  - Arithmetic, comparisons, `&`, `|`, `!`, `is.na()`
-  - Zero-copy via selection vectors (no row duplication)
-
-- **`mutate()` / `transmute()`**: Column expressions
-  - Arithmetic (`+`, `-`, `*`, `/`, `%%`), comparisons, boolean logic
-  - `across()` for multi-column operations
-  - Window functions in grouped context (see below)
-
-- **`select()` / `rename()` / `relocate()`**: Column selection and reordering
-  - Full `tidyselect` support (`starts_with()`, `where()`, etc.)
-
-### Aggregation
-
-- **`group_by()` + `summarise()`**: Hash-based grouped aggregation
-  - Aggregation functions: `n()`, `sum()`, `mean()`, `min()`, `max()`
-  - `na.rm` support on all aggregation functions
-  - `.groups` parameter for controlling residual grouping
-
-- **`count()` / `tally()`**: Shorthand counting with optional `wt` column
-- **`distinct()`**: Unique row selection via hash grouping
-- **`reframe()`**: Multi-row grouped summaries
-
-### Joins
-
-- **`left_join()` / `inner_join()` / `right_join()` / `full_join()`**: Hash joins
-  - Natural join (common columns), named keys (`c("a" = "b")`), or explicit `by`
-  - Suffix handling for overlapping non-key columns
-
-- **`semi_join()` / `anti_join()`**: Filtering joins
-- **`bind_rows()` / `bind_cols()`**: Concatenation across queries
-
-### Window Functions
-
-- **Ranking**: `row_number()`, `rank()`, `dense_rank()`
-- **Offset**: `lag()`, `lead()` with configurable offset and default
-- **Cumulative**: `cumsum()`, `cummean()`, `cummin()`, `cummax()`
-- Used inside grouped `mutate()` for per-group computation
-
-### Ordering & Slicing
-
-- **`arrange()`**: Multi-column sorting with `desc()` for descending order
-- **`slice_head()` / `slice_tail()`**: First or last n rows
-- **`slice_min()` / `slice_max()`**: Rows with extreme values in a column
-
-### Inspection
-
-- **`explain()`**: Print the full execution plan tree with node types and schemas
-- **`print()`**: Column names and types without reading data
-- **`pull()`**: Extract a single column as a vector
-
-### Zero External Dependencies
-
-The C11 engine compiles with R's standard toolchain. Runtime dependencies are limited to `rlang` and `tidyselect` for NSE handling. No system libraries, no JVM, no compilation flags beyond what `R CMD INSTALL` provides.
+Full tidyselect support in `select()`, `rename()`, `relocate()`, and `across()`: `starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`, `everything()`, `all_of()`, `any_of()`.
 
 ## Installation
-
-Development version:
 
 ```r
 # install.packages("pak")
 pak::pak("gcol33/vectra")
 ```
 
-## Usage Examples
+## Documentation
 
-### Basic Query (`filter` + `select`)
-
-```r
-library(vectra)
-
-# Write a data.frame to disk
-write_vtr(nycflights13::flights, "flights.vtr")
-
-# Lazy query: nothing runs until collect()
-tbl("flights.vtr") |>
-  filter(dep_delay > 60, carrier == "UA") |>
-  select(year, month, day, dep_delay, arr_delay) |>
-  collect()
-```
-
-### Grouped Aggregation (`group_by` + `summarise`)
-
-```r
-tbl("flights.vtr") |>
-  group_by(carrier) |>
-  summarise(
-    avg_delay = mean(dep_delay, na.rm = TRUE),
-    n_flights = n()
-  ) |>
-  arrange(desc(avg_delay)) |>
-  collect()
-```
-
-### Joins Across Files
-
-```r
-write_vtr(nycflights13::airlines, "airlines.vtr")
-
-tbl("flights.vtr") |>
-  left_join(tbl("airlines.vtr"), by = "carrier") |>
-  group_by(name) |>
-  summarise(avg_delay = mean(dep_delay, na.rm = TRUE)) |>
-  collect()
-```
-
-### Window Functions
-
-```r
-# Per-carrier cumulative delay and ranking
-tbl("flights.vtr") |>
-  filter(month == 1) |>
-  group_by(carrier) |>
-  mutate(rn = row_number(), cum_delay = cumsum(dep_delay)) |>
-  select(carrier, dep_delay, rn, cum_delay) |>
-  collect()
-```
-
-### Multi-Column Operations (`across`)
-
-```r
-tbl("flights.vtr") |>
-  group_by(carrier) |>
-  summarise(across(c(dep_delay, arr_delay), mean, na.rm = TRUE)) |>
-  collect()
-```
-
-### Streaming Large Files
-
-```r
-# Write in 100k-row chunks for bounded memory reads
-write_vtr(big_df, "big.vtr", batch_size = 100000)
-
-# Query still works the same way
-tbl("big.vtr") |>
-  filter(x > 0) |>
-  group_by(g) |>
-  summarise(total = sum(x)) |>
-  collect()
-```
-
-### Inspect the Execution Plan
-
-```r
-tbl("flights.vtr") |>
-  filter(month == 1) |>
-  select(carrier, dep_delay) |>
-  group_by(carrier) |>
-  summarise(n = n()) |>
-  explain()
-#> vectra execution plan
-#>
-#>   GroupAgg [carrier] -> [n]
-#>     Project [carrier, dep_delay]
-#>       Filter
-#>         Scan flights.vtr
-```
-
-## How It Works
-
-1. `write_vtr()` serializes a data.frame into a columnar `.vtr` file split into row groups
-2. `tbl()` opens the file and returns a lazy `vectra_node`
-3. Each verb (`filter`, `select`, `mutate`, ...) appends a plan node without reading data
-4. `collect()` pulls batches through the node tree one row group at a time
-5. The C engine evaluates expressions, applies filters via selection vectors (zero-copy), hashes groups, and joins using hash tables
+- `vignette("engine")` --- execution model, supported types, coercion rules, memory guarantees, and current limitations
 
 ## Support
 
 > "Software is like sex: it's better when it's free." -- Linus Torvalds
 
-I'm a PhD student who builds R packages in my free time because I believe good tools should be free and open. I started these projects for my own work and figured others might find them useful too.
-
-If this package saved you some time, buying me a coffee is a nice way to say thanks. It helps with my coffee addiction.
+If this package saved you some time, buying me a coffee is a nice way to say thanks.
 
 [![Buy Me A Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
 

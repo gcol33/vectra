@@ -4,7 +4,8 @@
 # Supported: lag(), lead(), row_number(), cumsum(), cummean(), cummin(), cummax()
 
 # Known window function names
-.win_fns <- c("lag", "lead", "row_number", "cumsum", "cummean", "cummin", "cummax")
+.win_fns <- c("lag", "lead", "row_number", "rank", "dense_rank",
+              "cumsum", "cummean", "cummin", "cummax")
 
 # Check if an expression is a window function call
 is_window_call <- function(expr) {
@@ -19,6 +20,12 @@ parse_window_spec <- function(expr, output_name) {
 
   if (fn == "row_number") {
     return(list(name = output_name, kind = "row_number", col = NULL,
+                offset = 1L, default = NULL))
+  }
+
+  if (fn %in% c("rank", "dense_rank")) {
+    col <- as.character(expr[[2]])
+    return(list(name = output_name, kind = fn, col = col,
                 offset = 1L, default = NULL))
   }
 

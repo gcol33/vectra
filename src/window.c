@@ -10,6 +10,37 @@
 #include <string.h>
 #include <math.h>
 
+/* Compare two values in a VecArray. Returns <0, 0, or >0.
+   NAs sort last (greater than any non-NA value). */
+static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
+    int a_valid = vec_array_is_valid(arr, a);
+    int b_valid = vec_array_is_valid(arr, b);
+    if (!a_valid && !b_valid) return 0;
+    if (!a_valid) return 1;   /* NA > non-NA */
+    if (!b_valid) return -1;
+    switch (arr->type) {
+    case VEC_INT64: {
+        int64_t va = arr->buf.i64[a], vb = arr->buf.i64[b];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_DOUBLE: {
+        double va = arr->buf.dbl[a], vb = arr->buf.dbl[b];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_STRING: {
+        int64_t sa = arr->buf.str.offsets[a], ea = arr->buf.str.offsets[a + 1];
+        int64_t sb = arr->buf.str.offsets[b], eb = arr->buf.str.offsets[b + 1];
+        int64_t la = ea - sa, lb = eb - sb;
+        int64_t mn = la < lb ? la : lb;
+        int cmp = memcmp(arr->buf.str.data + sa, arr->buf.str.data + sb, (size_t)mn);
+        if (cmp != 0) return cmp;
+        return (la < lb) ? -1 : (la > lb) ? 1 : 0;
+    }
+    default:
+        return 0;
+    }
+}
+
 /* Apply a window kernel over a contiguous segment [start, end) */
 static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                                  int64_t start, int64_t end, int64_t n_total,
@@ -63,6 +94,41 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         for (int64_t i = start; i < end; i++) {
             vec_array_set_valid(result, i);
             result->buf.dbl[i] = (double)(i - start + 1);
+        }
+        break;
+
+    case WIN_RANK:
+        /* min_rank: rank = 1 + count of values strictly less than current */
+        for (int64_t i = start; i < end; i++) {
+            int64_t r = 1;
+            for (int64_t j = start; j < end; j++) {
+                if (j != i && vec_compare_values(input, j, i) < 0) r++;
+            }
+            vec_array_set_valid(result, i);
+            result->buf.dbl[i] = (double)r;
+        }
+        break;
+
+    case WIN_DENSE_RANK:
+        /* dense_rank: rank = 1 + count of distinct values strictly less than current */
+        for (int64_t i = start; i < end; i++) {
+            int64_t r = 1;
+            for (int64_t j = start; j < end; j++) {
+                if (vec_compare_values(input, j, i) < 0) {
+                    /* Check if this value is distinct from all previous "less than" values */
+                    int is_dup = 0;
+                    for (int64_t k = start; k < j; k++) {
+                        if (vec_compare_values(input, k, i) < 0 &&
+                            vec_compare_values(input, k, j) == 0) {
+                            is_dup = 1;
+                            break;
+                        }
+                    }
+                    if (!is_dup) r++;
+                }
+            }
+            vec_array_set_valid(result, i);
+            result->buf.dbl[i] = (double)r;
         }
         break;
 
@@ -301,6 +367,39 @@ static VecBatch *window_next_batch(VecNode *self) {
                     for (int64_t j = 0; j < glen; j++) {
                         vec_array_set_valid(&out, rows[j]);
                         out.buf.dbl[rows[j]] = (double)(j + 1);
+                    }
+                    break;
+
+                case WIN_RANK:
+                    for (int64_t j = 0; j < glen; j++) {
+                        int64_t r = 1;
+                        for (int64_t k = 0; k < glen; k++) {
+                            if (k != j && vec_compare_values(&cols[in_col], rows[k], rows[j]) < 0)
+                                r++;
+                        }
+                        vec_array_set_valid(&out, rows[j]);
+                        out.buf.dbl[rows[j]] = (double)r;
+                    }
+                    break;
+
+                case WIN_DENSE_RANK:
+                    for (int64_t j = 0; j < glen; j++) {
+                        int64_t r = 1;
+                        for (int64_t k = 0; k < glen; k++) {
+                            if (vec_compare_values(&cols[in_col], rows[k], rows[j]) < 0) {
+                                int is_dup = 0;
+                                for (int64_t m = 0; m < k; m++) {
+                                    if (vec_compare_values(&cols[in_col], rows[m], rows[j]) < 0 &&
+                                        vec_compare_values(&cols[in_col], rows[m], rows[k]) == 0) {
+                                        is_dup = 1;
+                                        break;
+                                    }
+                                }
+                                if (!is_dup) r++;
+                            }
+                        }
+                        vec_array_set_valid(&out, rows[j]);
+                        out.buf.dbl[rows[j]] = (double)r;
                     }
                     break;
 

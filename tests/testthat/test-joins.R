@@ -217,17 +217,16 @@ test_that("string-key join survives many unique keys", {
 
 # --- key type mismatch ---
 
-test_that("join errors on key type mismatch (int64 vs double)", {
+test_that("join auto-coerces compatible key types (int64 vs double)", {
   f1 <- tempfile(fileext = ".vtr")
   f2 <- tempfile(fileext = ".vtr")
   on.exit(unlink(c(f1, f2)))
-  # integer keys on left, double keys on right
+  # integer keys on left, double keys on right -> should auto-coerce
   write_vtr(data.frame(id = c(1L, 2L, 3L), x = c(10, 20, 30)), f1)
   write_vtr(data.frame(id = c(1, 2, 4), y = c(100, 200, 400)), f2)
-  expect_error(
-    inner_join(tbl(f1), tbl(f2), by = "id") |> collect(),
-    "inner_join key type mismatch: x\\.id \\(int64\\) vs y\\.id \\(double\\)"
-  )
+  result <- inner_join(tbl(f1), tbl(f2), by = "id") |> collect()
+  expect_equal(nrow(result), 2)
+  expect_equal(sort(result$id), c(1, 2))
 })
 
 test_that("join errors on key type mismatch (string vs double)", {
@@ -243,17 +242,15 @@ test_that("join errors on key type mismatch (string vs double)", {
   )
 })
 
-test_that("composite key mismatch reports correct component", {
+test_that("composite key auto-coerces mixed numeric types", {
   f1 <- tempfile(fileext = ".vtr")
   f2 <- tempfile(fileext = ".vtr")
   on.exit(unlink(c(f1, f2)))
-  # First key (a) matches (both double), second key (b) mismatches
+  # First key (a) matches (both double), second key (b) int vs double
   write_vtr(data.frame(a = c(1, 2), b = c(10L, 20L), x = c(1, 2)), f1)
   write_vtr(data.frame(a = c(1, 2), b = c(10, 20), y = c(3, 4)), f2)
-  expect_error(
-    inner_join(tbl(f1), tbl(f2), by = c("a", "b")) |> collect(),
-    "inner_join key type mismatch: x\\.b \\(int64\\) vs y\\.b \\(double\\)"
-  )
+  result <- inner_join(tbl(f1), tbl(f2), by = c("a", "b")) |> collect()
+  expect_equal(nrow(result), 2)
 })
 
 test_that("join works when both sides have same numeric type", {

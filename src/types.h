@@ -88,6 +88,7 @@ typedef struct {
     int       n_cols;
     char    **col_names;
     VecType  *col_types;
+    char    **col_annotations;  /* optional per-column annotation (NULL entry = none) */
 } VecSchema;
 
 /* Pull-based plan node */

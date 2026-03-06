@@ -12,3 +12,5 @@
 ^codecov\.yml$
 .*\.tar\.gz$
 .*\.Rcheck$
+^inst/benchmarks/baseline\.rds$
+^RELEASE\.md$

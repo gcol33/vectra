@@ -8,6 +8,8 @@ typedef enum {
     WIN_LAG,
     WIN_LEAD,
     WIN_ROW_NUMBER,
+    WIN_RANK,
+    WIN_DENSE_RANK,
     WIN_CUMSUM,
     WIN_CUMMEAN,
     WIN_CUMMIN,

@@ -5,6 +5,8 @@
 #include "schema.h"
 #include "builder.h"
 #include "coerce.h"
+#include "project.h"
+#include "expr.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
@@ -185,6 +187,23 @@ static void join_build(JoinNode *jn) {
         jn->r_cols[c] = vec_builder_finish(&r_builders[c]);
     free(r_builders);
 
+    /* Coerce build-side key columns to match probe-side types */
+    const VecSchema *lschema = &jn->left->output_schema;
+    for (int k = 0; k < jn->n_keys; k++) {
+        VecType lt = lschema->col_types[jn->lkey_idx[k]];
+        VecType rt = jn->r_cols[jn->rkey_idx[k]].type;
+        if (lt != rt) {
+            VecType common = vec_common_type(lt, rt);
+            if (jn->r_cols[jn->rkey_idx[k]].type != common) {
+                VecArray *coerced = vec_coerce(
+                    &jn->r_cols[jn->rkey_idx[k]], common);
+                vec_array_free(&jn->r_cols[jn->rkey_idx[k]]);
+                jn->r_cols[jn->rkey_idx[k]] = *coerced;
+                free(coerced);
+            }
+        }
+    }
+
     /* Build hash table */
     jn->jht = jht_create(r_nrows > 0 ? r_nrows : 1);
     for (int64_t r = 0; r < r_nrows; r++) {
@@ -246,6 +265,33 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
     int out_ncols = jn->base.output_schema.n_cols;
     int64_t p_logical = vec_batch_logical_rows(pbatch);
 
+    /* Build coerced probe key columns for hashing/comparison.
+       The batch itself stays untouched (originals used for output). */
+    VecArray *coerced_probe_keys[16] = {0};
+    /* Temporary columns array for hashing: same as pbatch->columns but
+       with coerced key columns swapped in */
+    int need_coerce = 0;
+    for (int k = 0; k < jn->n_keys && k < 16; k++) {
+        VecType pt = pbatch->columns[jn->lkey_idx[k]].type;
+        VecType bt = jn->r_cols[jn->rkey_idx[k]].type;
+        if (pt != bt) {
+            coerced_probe_keys[k] = vec_coerce(
+                &pbatch->columns[jn->lkey_idx[k]], bt);
+            need_coerce = 1;
+        }
+    }
+    /* Build a separate columns array for hash/compare only */
+    VecArray *hash_cols = NULL;
+    if (need_coerce) {
+        hash_cols = (VecArray *)malloc((size_t)l_ncols * sizeof(VecArray));
+        memcpy(hash_cols, pbatch->columns, (size_t)l_ncols * sizeof(VecArray));
+        for (int k = 0; k < jn->n_keys && k < 16; k++) {
+            if (coerced_probe_keys[k])
+                hash_cols[jn->lkey_idx[k]] = *coerced_probe_keys[k];
+        }
+    }
+    VecArray *probe_cols = need_coerce ? hash_cols : pbatch->columns;
+
     /* Initialize output builders with reserve for expected output */
     VecArrayBuilder *out = (VecArrayBuilder *)calloc(
         (size_t)out_ncols, sizeof(VecArrayBuilder));
@@ -268,7 +314,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
 
     /* Fast path: 1-key with specialized hash to avoid per-row dispatch */
     if (jn->n_keys == 1) {
-        const VecArray *pkey = &pbatch->columns[jn->lkey_idx[0]];
+        const VecArray *pkey = &probe_cols[jn->lkey_idx[0]];
         switch (pkey->type) {
         case VEC_INT64:
             for (int64_t li = 0; li < p_logical; li++) {
@@ -299,7 +345,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         default:
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
-                phash[li] = hash_join_key(pbatch->columns, jn->lkey_idx,
+                phash[li] = hash_join_key(probe_cols, jn->lkey_idx,
                                            jn->n_keys, pi);
             }
             break;
@@ -308,7 +354,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         /* Generic composite key hash */
         for (int64_t li = 0; li < p_logical; li++) {
             int64_t pi = vec_batch_physical_row(pbatch, li);
-            phash[li] = hash_join_key(pbatch->columns, jn->lkey_idx,
+            phash[li] = hash_join_key(probe_cols, jn->lkey_idx,
                                        jn->n_keys, pi);
         }
     }
@@ -317,7 +363,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
     for (int64_t li = 0; li < p_logical; li++) {
         int64_t pr = vec_batch_physical_row(pbatch, li);
         int64_t br = jht_probe(&jn->jht, phash[li],
-                                pbatch->columns, jn->lkey_idx,
+                                probe_cols, jn->lkey_idx,
                                 jn->r_cols, jn->rkey_idx,
                                 jn->n_keys, pr);
 
@@ -344,7 +390,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
                     vec_builder_append_one(&out[l_ncols + j],
                         &jn->r_cols[jn->r_non_key_idx[j]], br);
                 br = jht_chain_next(&jn->jht, br,
-                    pbatch->columns, jn->lkey_idx,
+                    probe_cols, jn->lkey_idx,
                     jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
             }
             break;
@@ -403,6 +449,15 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         free(probe_matched);
     }
 
+    /* Free coerced probe key arrays */
+    for (int k = 0; k < jn->n_keys && k < 16; k++) {
+        if (coerced_probe_keys[k]) {
+            vec_array_free(coerced_probe_keys[k]);
+            free(coerced_probe_keys[k]);
+        }
+    }
+    free(hash_cols); /* NULL-safe */
+
     /* Build result batch */
     int64_t out_nrows = out[0].length;
     if (out_nrows == 0) {
@@ -428,6 +483,9 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
 /*  Finalize phase: emit unmatched build rows (full_join only)         */
 /* ------------------------------------------------------------------ */
 
+/* Maximum rows per finalize batch (keeps memory bounded) */
+#define FINALIZE_BATCH_SIZE 65536
+
 static VecBatch *join_finalize(JoinNode *jn) {
     const VecSchema *lschema = &jn->left->output_schema;
     int l_ncols = lschema->n_cols;
@@ -452,7 +510,9 @@ static VecBatch *join_finalize(JoinNode *jn) {
         }
     }
 
-    for (int64_t br = jn->finalize_cursor; br < r_nrows; br++) {
+    int64_t emitted = 0;
+    int64_t br = jn->finalize_cursor;
+    for (; br < r_nrows && emitted < FINALIZE_BATCH_SIZE; br++) {
         if (jn->build_matched[br / 8] & (1 << (br % 8))) continue;
         /* Key cols from build side, non-key left cols as NA */
         for (int c = 0; c < l_ncols; c++) {
@@ -466,8 +526,9 @@ static VecBatch *join_finalize(JoinNode *jn) {
         for (int j = 0; j < jn->r_non_key_count; j++)
             vec_builder_append_one(&out[l_ncols + j],
                 &jn->r_cols[jn->r_non_key_idx[j]], br);
+        emitted++;
     }
-    jn->finalize_cursor = r_nrows;
+    jn->finalize_cursor = br;
     free(l_col_rkey);
 
     int64_t out_nrows = out[0].length;
@@ -528,10 +589,10 @@ static VecBatch *join_next_batch(VecNode *self) {
         /* Empty output for this batch (e.g. anti_join all matched): loop */
     }
 
-    if (jn->state == JSTATE_FINALIZE) {
+    while (jn->state == JSTATE_FINALIZE) {
         VecBatch *result = join_finalize(jn);
+        if (result) return result;
         jn->state = JSTATE_DONE;
-        return result;
     }
 
     return NULL;
@@ -586,20 +647,25 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     const VecSchema *ls = &left->output_schema;
     const VecSchema *rs = &right->output_schema;
 
-    /* Verify key types match (no implicit coercion) */
+    /* Verify key types are compatible (allow numeric coercion) */
     static const char *kind_names[] = {
         "inner_join", "left_join", "full_join", "semi_join", "anti_join"
     };
     for (int k = 0; k < n_keys; k++) {
         VecType lt = ls->col_types[keys[k].left_col];
         VecType rt = rs->col_types[keys[k].right_col];
-        if (lt != rt)
-            vectra_error("%s key type mismatch: x.%s (%s) vs y.%s (%s)",
-                         kind_names[kind],
-                         ls->col_names[keys[k].left_col],
-                         vec_type_name(lt),
-                         rs->col_names[keys[k].right_col],
-                         vec_type_name(rt));
+        if (lt != rt) {
+            /* String vs non-string is an error */
+            if (lt == VEC_STRING || rt == VEC_STRING)
+                vectra_error("%s key type mismatch: x.%s (%s) vs y.%s (%s)",
+                             kind_names[kind],
+                             ls->col_names[keys[k].left_col],
+                             vec_type_name(lt),
+                             rs->col_names[keys[k].right_col],
+                             vec_type_name(rt));
+            /* Numeric types (bool/int64/double) are compatible —
+               coercion happens in join_build */
+        }
     }
 
     /* Precompute key index arrays */

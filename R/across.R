@@ -25,7 +25,7 @@ across <- function(.cols, .fns, ..., .names = NULL) {
 
 # Internal: expand across() calls in mutate/summarise dots
 # Returns a named list of expressions
-expand_across <- function(dots, schema_names, env) {
+expand_across <- function(dots, schema_names, env, proxy = NULL) {
   result_names <- character(0)
   result_exprs <- list()
 
@@ -35,7 +35,7 @@ expand_across <- function(dots, schema_names, env) {
 
     # Check if this is an across() call
     if (is.call(expr) && identical(expr[[1]], as.name("across"))) {
-      expanded <- do_expand_across(expr, schema_names, env)
+      expanded <- do_expand_across(expr, schema_names, env, proxy)
       result_names <- c(result_names, names(expanded))
       result_exprs <- c(result_exprs, expanded)
     } else {
@@ -73,7 +73,7 @@ resolve_fn_str <- function(fn) {
   deparse(fn)[1]
 }
 
-do_expand_across <- function(expr, schema_names, env) {
+do_expand_across <- function(expr, schema_names, env, proxy = NULL) {
   # Parse across(cols, fns, ..., .names = pattern)
   args <- as.list(expr)[-1]  # drop "across"
   arg_names <- names(args)
@@ -88,10 +88,13 @@ do_expand_across <- function(expr, schema_names, env) {
     if (!is.na(nm_idx)) names_pattern <- eval(args[[nm_idx]], env)
   }
 
-  # Resolve column selection
-  named_cols <- schema_names
-  names(named_cols) <- schema_names
-  sel <- tidyselect::eval_select(cols_expr, data = named_cols)
+  # Resolve column selection via typed proxy (enables where())
+  if (is.null(proxy)) {
+    named_cols <- schema_names
+    names(named_cols) <- schema_names
+    proxy <- named_cols
+  }
+  sel <- tidyselect::eval_select(cols_expr, data = proxy)
   selected_cols <- unname(schema_names[sel])
 
   # Evaluate fns

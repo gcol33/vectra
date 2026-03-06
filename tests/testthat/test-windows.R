@@ -172,3 +172,47 @@ test_that("window and regular mutate in same call", {
   expect_equal(result$cs, c(1, 3, 6))
   expect_equal(result$doubled, c(2, 4, 6))
 })
+
+# --- rank ---
+
+test_that("rank assigns min rank with gaps for ties", {
+  df <- data.frame(x = c(3.0, 1.0, 3.0, 2.0, 1.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(r = rank(x)) |> collect()
+  expect_equal(result$r, c(4, 1, 4, 3, 1))
+})
+
+test_that("rank works with groups", {
+  df <- data.frame(g = c("a", "a", "a", "b", "b"),
+                   x = c(3.0, 1.0, 3.0, 2.0, 1.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> group_by(g) |> mutate(r = rank(x)) |> collect()
+  expect_equal(result$r[result$g == "a"], c(2, 1, 2))
+  expect_equal(result$r[result$g == "b"], c(2, 1))
+})
+
+# --- dense_rank ---
+
+test_that("dense_rank assigns consecutive ranks without gaps", {
+  df <- data.frame(x = c(3.0, 1.0, 3.0, 2.0, 1.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(dr = dense_rank(x)) |> collect()
+  expect_equal(result$dr, c(3, 1, 3, 2, 1))
+})
+
+test_that("dense_rank works with groups", {
+  df <- data.frame(g = c("a", "a", "a", "b", "b"),
+                   x = c(3.0, 1.0, 3.0, 2.0, 1.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> group_by(g) |> mutate(dr = dense_rank(x)) |> collect()
+  expect_equal(result$dr[result$g == "a"], c(2, 1, 2))
+  expect_equal(result$dr[result$g == "b"], c(2, 1))
+})

@@ -1,0 +1,76 @@
+url: https://gcol33.github.io/vectra/
+
+template:
+  bootstrap: 5
+  light-switch: true
+  bslib:
+    preset: sandstone
+
+navbar:
+  structure:
+    left:  [intro, articles, reference, news]
+    right: [search, github]
+
+articles:
+  - title: Guides
+    navbar: ~
+    contents:
+      - engine
+
+reference:
+  - title: Data sources
+    desc: Open files for lazy query execution
+    contents:
+      - tbl
+      - tbl_csv
+      - tbl_sqlite
+      - tbl_tiff
+
+  - title: Data sinks
+    desc: Write query results or data.frames to disk
+    contents:
+      - write_vtr
+      - write_csv
+      - write_sqlite
+      - write_tiff
+
+  - title: Single-table verbs
+    desc: Transform, filter, and reshape
+    contents:
+      - filter
+      - select
+      - mutate
+      - transmute
+      - rename
+      - relocate
+      - arrange
+      - desc
+      - distinct
+      - slice_head
+      - slice_min
+      - pull
+      - head.vectra_node
+
+  - title: Grouping and aggregation
+    contents:
+      - group_by
+      - summarise
+      - ungroup
+      - count
+      - reframe
+      - across
+
+  - title: Joins
+    contents:
+      - left_join
+      - semi_join
+
+  - title: Combining tables
+    contents:
+      - bind_rows
+
+  - title: Diagnostics
+    contents:
+      - explain
+      - collect
+      - print.vectra_node

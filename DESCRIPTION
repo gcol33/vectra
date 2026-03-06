@@ -18,7 +18,10 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Suggests:
     bit64,
+    knitr,
+    rmarkdown,
     testthat (>= 3.0.0)
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 URL: https://github.com/gcol33/vectra
 BugReports: https://github.com/gcol33/vectra/issues

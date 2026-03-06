@@ -28,6 +28,15 @@
 #include <string.h>
 #include <stdint.h>
 
+/* Get R's temp directory via the public API (avoids R_TempDir non-API call) */
+static const char *get_r_tempdir(void) {
+    SEXP call = PROTECT(Rf_lang1(Rf_install("tempdir")));
+    SEXP result = PROTECT(Rf_eval(call, R_BaseEnv));
+    const char *path = CHAR(STRING_ELT(result, 0));
+    UNPROTECT(2);
+    return path;
+}
+
 /* --- External pointer helpers --- */
 
 static void node_finalizer(SEXP xptr) {
@@ -51,25 +60,73 @@ static VecNode *unwrap_node(SEXP xptr) {
     return node;
 }
 
-/* --- Detect R column type -> VecType --- */
+/* --- Detect R column type -> VecType + annotation --- */
+
+static int r_has_class(SEXP col, const char *cls_name) {
+    SEXP cls = Rf_getAttrib(col, R_ClassSymbol);
+    if (cls == R_NilValue || TYPEOF(cls) != STRSXP) return 0;
+    for (R_xlen_t i = 0; i < XLENGTH(cls); i++) {
+        if (strcmp(CHAR(STRING_ELT(cls, i)), cls_name) == 0) return 1;
+    }
+    return 0;
+}
 
 static VecType r_col_type(SEXP col) {
     if (Rf_isLogical(col)) return VEC_BOOL;
+    if (Rf_isFactor(col))  return VEC_STRING;
     if (Rf_isInteger(col)) return VEC_INT64;
     if (Rf_isReal(col)) {
-        /* Check for bit64::integer64 */
-        SEXP cls = Rf_getAttrib(col, R_ClassSymbol);
-        if (cls != R_NilValue && TYPEOF(cls) == STRSXP) {
-            for (R_xlen_t i = 0; i < XLENGTH(cls); i++) {
-                if (strcmp(CHAR(STRING_ELT(cls, i)), "integer64") == 0)
-                    return VEC_INT64;
-            }
-        }
+        if (r_has_class(col, "integer64")) return VEC_INT64;
+        /* Date and POSIXct are stored as double */
         return VEC_DOUBLE;
     }
     if (Rf_isString(col)) return VEC_STRING;
     vectra_error("unsupported column type: %s", Rf_type2char(TYPEOF(col)));
     return VEC_DOUBLE; /* unreachable */
+}
+
+/* Build an annotation string for a column (caller frees), or NULL if none. */
+static char *r_col_annotation(SEXP col) {
+    /* Factor: "factor|level1|level2|..." */
+    if (Rf_isFactor(col)) {
+        SEXP levels = Rf_getAttrib(col, R_LevelsSymbol);
+        if (levels == R_NilValue) return NULL;
+        /* Compute total length */
+        size_t len = 6; /* "factor" */
+        R_xlen_t nlev = XLENGTH(levels);
+        for (R_xlen_t i = 0; i < nlev; i++)
+            len += 1 + strlen(CHAR(STRING_ELT(levels, i))); /* |level */
+        char *ann = (char *)malloc(len + 1);
+        strcpy(ann, "factor");
+        size_t pos = 6;
+        for (R_xlen_t i = 0; i < nlev; i++) {
+            const char *lev = CHAR(STRING_ELT(levels, i));
+            ann[pos++] = '|';
+            size_t ll = strlen(lev);
+            memcpy(ann + pos, lev, ll);
+            pos += ll;
+        }
+        ann[pos] = '\0';
+        return ann;
+    }
+    /* Date: "Date" */
+    if (r_has_class(col, "Date")) {
+        char *ann = (char *)malloc(5);
+        strcpy(ann, "Date");
+        return ann;
+    }
+    /* POSIXct: "POSIXct|timezone" */
+    if (r_has_class(col, "POSIXct")) {
+        SEXP tz = Rf_getAttrib(col, Rf_install("tzone"));
+        const char *tzstr = "";
+        if (tz != R_NilValue && TYPEOF(tz) == STRSXP && XLENGTH(tz) > 0)
+            tzstr = CHAR(STRING_ELT(tz, 0));
+        size_t len = 7 + 1 + strlen(tzstr); /* POSIXct|tz */
+        char *ann = (char *)malloc(len + 1);
+        snprintf(ann, len + 1, "POSIXct|%s", tzstr);
+        return ann;
+    }
+    return NULL;
 }
 
 /* --- Convert R data.frame to VecBatch --- */
@@ -92,10 +149,39 @@ static VecBatch *df_to_batch(SEXP df) {
 
     for (int c = 0; c < n_cols; c++) {
         SEXP col = VECTOR_ELT(df, c);
+        int is_factor = Rf_isFactor(col);
         VecType type = r_col_type(col);
         VecArray arr = vec_array_alloc(type, n_rows);
         vec_array_set_all_valid(&arr);
 
+        if (is_factor) {
+            /* Factor: convert integer codes → level strings */
+            SEXP levels = Rf_getAttrib(col, R_LevelsSymbol);
+            int *ip = INTEGER(col);
+            /* First pass: compute total string length */
+            int64_t total_len = 0;
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (ip[i] == NA_INTEGER) continue;
+                total_len += (int64_t)strlen(CHAR(STRING_ELT(levels, ip[i] - 1)));
+            }
+            arr.buf.str.data = (char *)malloc((size_t)(total_len > 0 ? total_len : 1));
+            if (!arr.buf.str.data && total_len > 0)
+                vectra_error("alloc failed for factor string data");
+            arr.buf.str.data_len = total_len;
+            int64_t offset = 0;
+            for (int64_t i = 0; i < n_rows; i++) {
+                arr.buf.str.offsets[i] = offset;
+                if (ip[i] == NA_INTEGER) {
+                    vec_array_set_null(&arr, i);
+                } else {
+                    const char *lev = CHAR(STRING_ELT(levels, ip[i] - 1));
+                    int64_t slen = (int64_t)strlen(lev);
+                    memcpy(arr.buf.str.data + offset, lev, (size_t)slen);
+                    offset += slen;
+                }
+            }
+            arr.buf.str.offsets[n_rows] = offset;
+        } else {
         switch (type) {
         case VEC_INT64:
             if (Rf_isInteger(col)) {
@@ -177,6 +263,7 @@ static VecBatch *df_to_batch(SEXP df) {
             break;
         }
         }
+        } /* end !is_factor */
 
         batch->columns[c] = arr;
     }
@@ -195,10 +282,30 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
     SEXP first_col = VECTOR_ELT(df, 0);
     int64_t n_rows = (int64_t)XLENGTH(first_col);
 
+    /* Build annotations for all columns */
+    char **annotations = (char **)calloc((size_t)n_cols, sizeof(char *));
+    for (int i = 0; i < n_cols; i++)
+        annotations[i] = r_col_annotation(VECTOR_ELT(df, i));
+
     if (bs <= 0 || (int64_t)bs >= n_rows) {
         /* Single row group */
         VecBatch *batch = df_to_batch(df);
-        vtr1_write(fpath, batch);
+        /* Build schema with annotations */
+        VecSchema schema;
+        schema.n_cols = batch->n_cols;
+        schema.col_names = batch->col_names;
+        schema.col_types = (VecType *)malloc((size_t)batch->n_cols * sizeof(VecType));
+        schema.col_annotations = annotations;
+        for (int i = 0; i < batch->n_cols; i++)
+            schema.col_types[i] = batch->columns[i].type;
+
+        FILE *fp = fopen(fpath, "wb");
+        if (!fp) vectra_error("cannot open file for writing: %s", fpath);
+        vtr1_write_header(fp, &schema, 1);
+        vtr1_write_rowgroup(fp, batch);
+        fclose(fp);
+
+        free(schema.col_types);
         vec_batch_free(batch);
     } else {
         /* Multiple row groups */
@@ -218,6 +325,12 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
         VecSchema schema = vec_schema_create(n_cols, col_names, col_types);
         free(col_names);
         free(col_types);
+        /* Set annotations */
+        for (int i = 0; i < n_cols; i++) {
+            free(schema.col_annotations[i]);
+            schema.col_annotations[i] = annotations[i];
+            annotations[i] = NULL; /* ownership transferred */
+        }
 
         vtr1_write_header(fp, &schema, n_rg);
 
@@ -239,6 +352,34 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
                     strlen(schema.col_names[c]) + 1);
                 strcpy(batch->col_names[c], schema.col_names[c]);
 
+                if (Rf_isFactor(col)) {
+                    /* Factor: convert codes to level strings */
+                    SEXP levels = Rf_getAttrib(col, R_LevelsSymbol);
+                    int *ip = INTEGER(col);
+                    int64_t total_len = 0;
+                    for (int64_t i = 0; i < rg_rows; i++) {
+                        if (ip[start + i] != NA_INTEGER)
+                            total_len += (int64_t)strlen(
+                                CHAR(STRING_ELT(levels, ip[start + i] - 1)));
+                    }
+                    arr.buf.str.data = (char *)malloc(
+                        (size_t)(total_len > 0 ? total_len : 1));
+                    arr.buf.str.data_len = total_len;
+                    int64_t offset = 0;
+                    for (int64_t i = 0; i < rg_rows; i++) {
+                        arr.buf.str.offsets[i] = offset;
+                        if (ip[start + i] == NA_INTEGER) {
+                            vec_array_set_null(&arr, i);
+                        } else {
+                            const char *lev = CHAR(STRING_ELT(levels,
+                                ip[start + i] - 1));
+                            int64_t slen = (int64_t)strlen(lev);
+                            memcpy(arr.buf.str.data + offset, lev, (size_t)slen);
+                            offset += slen;
+                        }
+                    }
+                    arr.buf.str.offsets[rg_rows] = offset;
+                } else
                 switch (type) {
                 case VEC_INT64:
                     if (Rf_isInteger(col)) {
@@ -321,6 +462,11 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
         fclose(fp);
     }
 
+    /* Free any annotations not transferred to schema */
+    for (int i = 0; i < n_cols; i++)
+        free(annotations[i]);
+    free(annotations);
+
     return R_NilValue;
 }
 
@@ -339,26 +485,34 @@ SEXP C_node_schema(SEXP node_xptr) {
     VecNode *node = unwrap_node(node_xptr);
     const VecSchema *schema = &node->output_schema;
 
-    SEXP result = PROTECT(Rf_allocVector(VECSXP, 2));
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 3));
     SEXP col_names = PROTECT(Rf_allocVector(STRSXP, schema->n_cols));
     SEXP col_types = PROTECT(Rf_allocVector(STRSXP, schema->n_cols));
+    SEXP col_annotations = PROTECT(Rf_allocVector(STRSXP, schema->n_cols));
 
     const char *type_names[] = {"int64", "double", "bool", "string"};
     for (int i = 0; i < schema->n_cols; i++) {
         SET_STRING_ELT(col_names, i,
             Rf_mkCharCE(schema->col_names[i], CE_UTF8));
         SET_STRING_ELT(col_types, i, Rf_mkChar(type_names[schema->col_types[i]]));
+        if (schema->col_annotations && schema->col_annotations[i])
+            SET_STRING_ELT(col_annotations, i,
+                Rf_mkCharCE(schema->col_annotations[i], CE_UTF8));
+        else
+            SET_STRING_ELT(col_annotations, i, NA_STRING);
     }
 
     SET_VECTOR_ELT(result, 0, col_names);
     SET_VECTOR_ELT(result, 1, col_types);
+    SET_VECTOR_ELT(result, 2, col_annotations);
 
-    SEXP rnames = PROTECT(Rf_allocVector(STRSXP, 2));
+    SEXP rnames = PROTECT(Rf_allocVector(STRSXP, 3));
     SET_STRING_ELT(rnames, 0, Rf_mkChar("name"));
     SET_STRING_ELT(rnames, 1, Rf_mkChar("type"));
+    SET_STRING_ELT(rnames, 2, Rf_mkChar("annotation"));
     Rf_setAttrib(result, R_NamesSymbol, rnames);
 
-    UNPROTECT(4);
+    UNPROTECT(5);
     return result;
 }
 
@@ -778,7 +932,7 @@ SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names_sexp, SEXP agg_specs_sexp) 
     }
 
     GroupAggNode *ga = group_agg_node_create(child, n_keys, key_names,
-                                              n_aggs, specs);
+                                              n_aggs, specs, get_r_tempdir());
     return wrap_node((VecNode *)ga);
 }
 
@@ -801,7 +955,7 @@ SEXP C_sort_node(SEXP node_xptr, SEXP col_names_sexp, SEXP desc_sexp) {
         keys[k].descending = LOGICAL(desc_sexp)[k];
     }
 
-    SortNode *sn = sort_node_create(child, n_keys, keys);
+    SortNode *sn = sort_node_create(child, n_keys, keys, get_r_tempdir());
     return wrap_node((VecNode *)sn);
 }
 
@@ -889,6 +1043,8 @@ static WinKind parse_win_kind(const char *s) {
     if (strcmp(s, "lag") == 0) return WIN_LAG;
     if (strcmp(s, "lead") == 0) return WIN_LEAD;
     if (strcmp(s, "row_number") == 0) return WIN_ROW_NUMBER;
+    if (strcmp(s, "rank") == 0) return WIN_RANK;
+    if (strcmp(s, "dense_rank") == 0) return WIN_DENSE_RANK;
     if (strcmp(s, "cumsum") == 0) return WIN_CUMSUM;
     if (strcmp(s, "cummean") == 0) return WIN_CUMMEAN;
     if (strcmp(s, "cummin") == 0) return WIN_CUMMIN;
