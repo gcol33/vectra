@@ -47,11 +47,11 @@ jobs:
         run: |
           mkdir -p ~/.R
           cat > ~/.R/Makevars <<'EOF'
-CC = gcc -std=gnu2x
-CFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
-CXXFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
-LDFLAGS = -fsanitize=address,undefined
-EOF
+          CC = gcc -std=gnu2x
+          CFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
+          CXXFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
+          LDFLAGS = -fsanitize=address,undefined
+          EOF
           cat ~/.R/Makevars
         shell: bash
 
