@@ -49,3 +49,35 @@ tbl_csv <- function(path, batch_size = 65536L) {
   xptr <- .Call(C_csv_scan_node, path, as.double(batch_size))
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
+
+#' Create a lazy table reference from a SQLite database
+#'
+#' Opens a SQLite database and lazily scans a table. Column types are inferred
+#' from declared types in the CREATE TABLE statement. All filtering, grouping,
+#' and aggregation is handled by vectra's C engine — no SQL parsing needed.
+#' No data is read until [collect()] is called.
+#'
+#' @param path Path to a SQLite database file.
+#' @param table Name of the table to scan.
+#' @param batch_size Number of rows per batch (default 65536).
+#'
+#' @return A `vectra_node` object representing a lazy scan of the table.
+#'
+#' @examples
+#' \dontrun{
+#' node <- tbl_sqlite("data.sqlite", "measurements")
+#' node |> filter(year > 2020) |> collect()
+#' }
+#'
+#' @export
+tbl_sqlite <- function(path, table, batch_size = 65536L) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  if (!is.character(table) || length(table) != 1)
+    stop("table must be a single character string")
+
+  path <- normalizePath(path, mustWork = TRUE)
+  xptr <- .Call(C_sql_scan_node, path, table, as.double(batch_size))
+  structure(list(.node = xptr, .path = path, .table = table),
+            class = "vectra_node")
+}

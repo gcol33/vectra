@@ -1,6 +1,6 @@
 Package: vectra
 Title: Columnar Query Engine for Larger-Than-RAM Data
-Version: 0.1.0
+Version: 0.2.1
 Authors@R: person("Gilles", "Colling", email = "gilles.colling051@gmail.com",
     role = c("aut", "cre", "cph"),
     comment = c(ORCID = "0000-0003-3070-6066"))

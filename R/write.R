@@ -44,6 +44,57 @@ write_csv.data.frame <- function(x, path, ...) {
   invisible(NULL)
 }
 
+#' Write query results or a data.frame to a SQLite table
+#'
+#' For `vectra_node` inputs, data is streamed batch-by-batch to disk without
+#' materializing the full result in memory. For `data.frame` inputs, the data
+#' is written directly.
+#'
+#' @param x A `vectra_node` (lazy query) or a `data.frame`.
+#' @param path File path for the SQLite database.
+#' @param table Name of the table to create/write into.
+#' @param ... Reserved for future use.
+#'
+#' @return Invisible `NULL`.
+#'
+#' @examples
+#' db <- tempfile(fileext = ".sqlite")
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars[1:5, ], f)
+#' tbl(f) |> write_sqlite(db, "cars")
+#' unlink(c(f, db))
+#'
+#' @export
+write_sqlite <- function(x, path, table, ...) {
+  UseMethod("write_sqlite")
+}
+
+#' @export
+write_sqlite.vectra_node <- function(x, path, table, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  if (!is.character(table) || length(table) != 1)
+    stop("table must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  .Call(C_write_sqlite, x$.node, path, table)
+  invisible(NULL)
+}
+
+#' @export
+write_sqlite.data.frame <- function(x, path, table, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  if (!is.character(table) || length(table) != 1)
+    stop("table must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  tmp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(tmp))
+  write_vtr(x, tmp)
+  node <- tbl(tmp)
+  .Call(C_write_sqlite, node$.node, path, table)
+  invisible(NULL)
+}
+
 #' Write a data.frame to a .vtr file
 #'
 #' Serializes an R data.frame into the vectra1 on-disk format.
