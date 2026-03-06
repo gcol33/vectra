@@ -11,20 +11,44 @@ Write dplyr-style pipelines against multi-GB files on a laptop. Data streams thr
 
 ## Quick Start
 
+Point vectra at any file and query it with dplyr verbs. Nothing runs until `collect()`.
+
 ```r
 library(vectra)
 
+# CSV — lazy scan with type inference
+tbl_csv("measurements.csv") |>
+  filter(temperature > 30, year >= 2020) |>
+  group_by(station) |>
+  summarise(avg_temp = mean(temperature), n = n()) |>
+  collect()
+
+# GeoTIFF — climate rasters as tidy data
+tbl_tiff("worldclim_bio1.tif") |>
+  filter(band1 > 0) |>
+  mutate(temp_c = band1 / 10) |>
+  collect()
+
+# SQLite — zero-dependency, no DBI required
+tbl_sqlite("survey.db", "responses") |>
+  filter(year == 2025) |>
+  left_join(tbl_sqlite("survey.db", "sites"), by = "site_id") |>
+  collect()
+```
+
+For repeated queries, convert to vectra's native `.vtr` format for faster reads:
+
+```r
 write_vtr(big_df, "data.vtr", batch_size = 100000)
 
 tbl("data.vtr") |>
   filter(x > 0, region == "EU") |>
-  left_join(tbl("lookup.vtr"), by = "id") |>
   group_by(region) |>
   summarise(total = sum(value), n = n()) |>
   collect()
 ```
 
-Nothing runs until `collect()`. Use `explain()` to see the plan:
+Use `explain()` to inspect the optimized plan:
 
 ```r
 tbl("data.vtr") |>
@@ -33,12 +57,12 @@ tbl("data.vtr") |>
   explain()
 #> vectra execution plan
 #>
-#>   Project [id, x]
-#>     Filter [x > 0]
-#>       Scan data.vtr
+#> ProjectNode [streaming]
+#>   FilterNode [streaming]
+#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
 #>
 #> Output columns (2):
-#>   id <double>
+#>   id <int64>
 #>   x <double>
 ```
 
@@ -50,10 +74,11 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 
 - **Streaming execution**: data flows one row group at a time, never fully in memory
 - **Zero-copy filtering**: selection vectors avoid row duplication
+- **Query optimizer**: column pruning skips unneeded columns at scan; predicate pushdown uses per-rowgroup min/max statistics to skip entire row groups
 - **Hash joins**: build right, stream left --- join a 50 GB fact table against a lookup without materializing both
 - **External sort**: 1 GB memory budget with automatic spill-to-disk
-- **Window functions**: `row_number()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`
-- **Type-safe coercion**: `int + double -> double` in expressions, joins, and `bind_rows()`
+- **Window functions**: `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`
+- **String expressions**: `nchar()`, `substr()`, `grepl()` evaluated in the engine without round-tripping to R
 - **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF --- all produce the same lazy query nodes
 
 ## Features
@@ -65,6 +90,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()` |
 | **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()` |
 | **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()` |
+| **String** | `nchar()`, `substr()`, `grepl()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
 | **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()` |
 | **Inspect** | `explain()`, `print()`, `pull()` |

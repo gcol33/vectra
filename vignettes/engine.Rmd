@@ -102,7 +102,7 @@ know or care which source is upstream.
 |:-----|:--------|:------|
 | `filter(...)` | yes | Zero-copy via selection vector |
 | `select(...)` | yes | Full tidyselect: `starts_with()`, `where()`, `-col`, etc. |
-| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()` expressions |
+| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()` |
 | `transmute(...)` | yes | Like `mutate()` but drops unmentioned columns |
 | `rename(...)` | yes | Full tidyselect rename support |
 | `relocate(...)` | yes | Reorder columns with `.before` / `.after` |
@@ -350,18 +350,48 @@ Row groups (repeated):
     typed data array (int64/double/bool/string)
 ```
 
-### Version 2
+### Version history
 
-Version 2 adds per-column annotation strings after each column's name and type
-byte. This enables roundtripping of Date, POSIXct, and factor columns. Version
-1 files are read normally (no annotations). Writing annotations automatically
-selects version 2.
+- **Version 1**: Base format with typed columns and validity bitmaps.
+- **Version 2**: Adds per-column annotation strings for Date, POSIXct, and
+  factor roundtripping.
+- **Version 3** (current): Adds per-column per-rowgroup statistics (min/max)
+  enabling predicate pushdown. Writing always produces v3. All versions are
+  readable.
+
+## Query optimizer
+
+`explain()` runs the optimizer before printing so you see the actual execution
+plan. Two optimization passes run automatically:
+
+### Predicate pushdown
+
+When a `FilterNode` sits above a `ScanNode` reading a v3 `.vtr` file, the
+filter predicate is attached to the scan. The scan uses per-rowgroup min/max
+statistics to skip row groups that cannot contain matching rows. This is
+visible in `explain()` as `predicate pushdown` on the ScanNode.
+
+### Column pruning
+
+The optimizer walks the plan tree top-down and determines which columns each
+node actually needs from its child. At scan nodes, unneeded columns are
+excluded from disk reads. This is visible in `explain()` as
+`2/5 cols (pruned)`.
+
+### Hidden mutate insertion
+
+When `summarise()` contains nested expressions like `mean(x + y)`, the
+optimizer auto-inserts a `ProjectNode` (visible as `hidden mutate` in
+`explain()`) to compute the intermediate result before aggregation.
 
 ## explain() contract
 
-`explain()` prints the plan tree without executing it. The output shows:
+`explain()` prints the optimized plan tree without executing it. The output
+shows:
 
 - Node types in execution order (leaf to root)
+- Per-node annotations: streaming/materializing, column pruning, predicate
+  pushdown, v3 stats, hidden mutate
 - Grouping columns if present
 - Output schema (column names and types)
 
@@ -372,12 +402,12 @@ tbl("data.vtr") |>
   explain()
 #> vectra execution plan
 #>
-#> Scan [data.vtr]
-#>   Filter [x > 0]
-#>     Project [id, x]
+#> ProjectNode [streaming]
+#>   FilterNode [streaming]
+#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
 #>
 #> Output columns (2):
-#>   id <double>
+#>   id <int64>
 #>   x <double>
 ```
 
@@ -386,23 +416,16 @@ will happen internally. Node ordering and naming may change between versions.
 
 ## Current limitations
 
-- **No nested expressions in aggregation**: `summarise(m = mean(x + y))` does
-  not work. Use `mutate(xy = x + y) |> summarise(m = mean(xy))` instead.
-- **No string operations**: No `substr()`, `paste()`, `grepl()`, etc. in
-  expressions. Use `collect()` first, then manipulate in R.
 - **No cross-join**: All joins require at least one key column.
 - **slice_tail materializes**: There is no reverse-scan optimization.
 - **distinct with .keep_all**: Falls back to R when `.keep_all = TRUE` with a
   column subset.
-- **rank() and dense_rank() are O(n^2)**: Within each group partition, ranking
-  compares every pair of values. Fine for typical group sizes (thousands of
-  rows), but will be slow for very large ungrouped rankings. Use
-  `arrange() |> mutate(rn = row_number())` for large-scale ranking.
+- **Limited string operations**: `nchar()`, `substr()`, `grepl()` (fixed match
+  only) are supported. No regex, `paste()`, `toupper()`, etc. Use `collect()`
+  first for unsupported string operations.
 - **Single-threaded**: The engine uses one thread. Parallelism is not planned.
-- **No predicate pushdown**: Filters are not pushed into scan nodes.
-  Row-group-level pruning is not implemented.
-- **No column pruning**: All columns in a row group are read from disk, even if
-  only a subset is needed.
+- **Predicate pushdown is .vtr only**: CSV, SQLite, and TIFF scans do not
+  benefit from predicate pushdown or column pruning.
 
 ## Fallback behavior
 
