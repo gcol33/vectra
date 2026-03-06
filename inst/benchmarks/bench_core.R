@@ -249,6 +249,49 @@ r <- bench("mutate_arithmetic", quote(
 cat(sprintf("%-30s %.3fs  (%d rows)\n", r$name, r$elapsed, r$nrow))
 results <- c(results, list(r))
 
+# --- B17: nested aggregation expression ---
+r <- bench("nested_agg_expr", quote(
+  tbl(f) |> group_by(g) |>
+    summarise(s = sum(x + y), m = mean(x * y)) |> collect()
+))
+cat(sprintf("%-30s %.3fs  (%d groups)\n", r$name, r$elapsed, r$nrow))
+results <- c(results, list(r))
+
+# --- B18: string operations ---
+str_df <- data.frame(
+  s = paste0("item_", sample(letters, n, replace = TRUE),
+             sample(1000:9999, n, replace = TRUE)),
+  x = rnorm(n),
+  stringsAsFactors = FALSE
+)
+f_str <- tempfile(fileext = ".vtr")
+write_vtr(str_df, f_str)
+
+r <- bench("string_nchar_substr", quote(
+  tbl(f_str) |>
+    mutate(len = nchar(s), prefix = substr(s, 1, 6)) |>
+    select(len, prefix) |> collect()
+))
+cat(sprintf("%-30s %.3fs  (%d rows)\n", r$name, r$elapsed, r$nrow))
+results <- c(results, list(r))
+
+# --- B19: grepl filter ---
+r <- bench("string_grepl_filter", quote(
+  tbl(f_str) |> filter(grepl("item_a", s)) |> collect()
+))
+cat(sprintf("%-30s %.3fs  (%d rows)\n", r$name, r$elapsed, r$nrow))
+results <- c(results, list(r))
+
+# --- B20: rank + dense_rank ---
+r <- bench("rank_dense_rank", quote(
+  tbl(f) |> mutate(r = rank(x), dr = dense_rank(x)) |>
+    select(id, r, dr) |> collect()
+))
+cat(sprintf("%-30s %.3fs  (%d rows)\n", r$name, r$elapsed, r$nrow))
+results <- c(results, list(r))
+
+unlink(f_str)
+
 # --- Build results table ---
 cat("\n=== Summary ===\n")
 res_df <- data.frame(
