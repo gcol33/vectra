@@ -36,30 +36,32 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
-      - name: Configure sanitizer build flags
-        run: |
-          mkdir -p ~/.R
-          cat > ~/.R/Makevars <<'EOF'
-          CC = gcc -std=gnu2x
-          CFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
-          CXXFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
-          LDFLAGS = -fsanitize=address,undefined
-          EOF
-          cat ~/.R/Makevars
-        shell: bash
-
-      - name: Install package (debug + sanitized)
-        run: |
-          install.packages(".", repos = NULL, type = "source",
-                           INSTALL_opts = "--no-multiarch")
-        shell: Rscript {0}
-
       - name: Find libasan path
         id: asan
         run: |
           ASAN_LIB=$(gcc -print-file-name=libasan.so)
           echo "lib=$ASAN_LIB" >> "$GITHUB_OUTPUT"
         shell: bash
+
+      - name: Configure sanitizer build flags
+        run: |
+          mkdir -p ~/.R
+          cat > ~/.R/Makevars <<'EOF'
+CC = gcc -std=gnu2x
+CFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
+CXXFLAGS = -O1 -g -Wall -pedantic -fno-omit-frame-pointer -fsanitize=address,undefined -UNDEBUG
+LDFLAGS = -fsanitize=address,undefined
+EOF
+          cat ~/.R/Makevars
+        shell: bash
+
+      - name: Install package (debug + sanitized)
+        env:
+          LD_PRELOAD: ${{ steps.asan.outputs.lib }}
+        run: |
+          install.packages(".", repos = NULL, type = "source",
+                           INSTALL_opts = "--no-multiarch")
+        shell: Rscript {0}
 
       - name: Run tests under sanitizers
         env:

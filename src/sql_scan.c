@@ -96,6 +96,8 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
             int ctype = sqlfmt_reader_col_type(sn->reader, c);
             if (ctype == SQLFMT_NULL) {
                 col_nulls[c][n_rows] = 1;
+                if (sn->col_types[c] == VEC_STRING)
+                    col_str_ptrs[c][n_rows] = NULL;
                 continue;
             }
             switch (sn->col_types[c]) {
