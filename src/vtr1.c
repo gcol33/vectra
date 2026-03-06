@@ -40,32 +40,23 @@ void vtr1_write_header(FILE *fp, const VecSchema *schema, uint32_t n_rowgroups) 
     /* Magic */
     fwrite("VTR1", 1, 4, fp);
 
-    /* Check if any annotations exist -> version 2 */
-    int has_annotations = 0;
-    if (schema->col_annotations) {
-        for (int i = 0; i < schema->n_cols; i++) {
-            if (schema->col_annotations[i]) { has_annotations = 1; break; }
-        }
-    }
-
-    /* Version: 2 if annotations present, 1 otherwise */
-    write_u16(fp, has_annotations ? (uint16_t)2 : (uint16_t)1);
+    /* Always write version 3 (annotations + stats) */
+    (void)0; /* annotations checked below for compat, but v3 always written */
+    write_u16(fp, (uint16_t)3);
     /* n_cols */
     write_u16(fp, (uint16_t)schema->n_cols);
-    /* Column definitions */
+    /* Column definitions (v3 always includes annotations) */
     for (int i = 0; i < schema->n_cols; i++) {
         uint16_t name_len = (uint16_t)strlen(schema->col_names[i]);
         write_u16(fp, name_len);
         fwrite(schema->col_names[i], 1, name_len, fp);
         write_u8(fp, (uint8_t)schema->col_types[i]);
-        /* v2: annotation string (length-prefixed, 0 = none) */
-        if (has_annotations) {
-            const char *ann = (schema->col_annotations)
-                              ? schema->col_annotations[i] : NULL;
-            uint16_t ann_len = ann ? (uint16_t)strlen(ann) : 0;
-            write_u16(fp, ann_len);
-            if (ann_len > 0) fwrite(ann, 1, ann_len, fp);
-        }
+        /* annotation string (length-prefixed, 0 = none) */
+        const char *ann = (schema->col_annotations)
+                          ? schema->col_annotations[i] : NULL;
+        uint16_t ann_len = ann ? (uint16_t)strlen(ann) : 0;
+        write_u16(fp, ann_len);
+        if (ann_len > 0) fwrite(ann, 1, ann_len, fp);
     }
     /* n_rowgroups */
     write_u32(fp, n_rowgroups);
@@ -75,6 +66,54 @@ void vtr1_write_rowgroup(FILE *fp, const VecBatch *batch) {
     /* n_rows */
     write_u64(fp, (uint64_t)batch->n_rows);
 
+    /* v3: per-column statistics */
+    for (int c = 0; c < batch->n_cols; c++) {
+        const VecArray *col = &batch->columns[c];
+        if (col->type == VEC_STRING || batch->n_rows == 0) {
+            write_u8(fp, 0); /* no stats */
+            write_u64(fp, 0); /* min placeholder */
+            write_u64(fp, 0); /* max placeholder */
+        } else if (col->type == VEC_INT64) {
+            int64_t mn = INT64_MAX, mx = INT64_MIN;
+            int found = 0;
+            for (int64_t i = 0; i < batch->n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                if (!found || col->buf.i64[i] < mn) mn = col->buf.i64[i];
+                if (!found || col->buf.i64[i] > mx) mx = col->buf.i64[i];
+                found = 1;
+            }
+            write_u8(fp, found ? (uint8_t)1 : (uint8_t)0);
+            write_u64(fp, found ? (uint64_t)mn : 0);
+            write_u64(fp, found ? (uint64_t)mx : 0);
+        } else if (col->type == VEC_DOUBLE) {
+            double mn = 0, mx = 0;
+            int found = 0;
+            for (int64_t i = 0; i < batch->n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                if (!found || col->buf.dbl[i] < mn) mn = col->buf.dbl[i];
+                if (!found || col->buf.dbl[i] > mx) mx = col->buf.dbl[i];
+                found = 1;
+            }
+            write_u8(fp, found ? (uint8_t)1 : (uint8_t)0);
+            uint64_t mn_bits, mx_bits;
+            memcpy(&mn_bits, &mn, 8);
+            memcpy(&mx_bits, &mx, 8);
+            write_u64(fp, found ? mn_bits : 0);
+            write_u64(fp, found ? mx_bits : 0);
+        } else if (col->type == VEC_BOOL) {
+            uint8_t has_false = 0, has_true = 0;
+            for (int64_t i = 0; i < batch->n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                if (col->buf.bln[i]) has_true = 1; else has_false = 1;
+            }
+            write_u8(fp, 1);
+            /* Store min=has_false, max=has_true in the 8-byte slots */
+            write_u64(fp, (uint64_t)has_false);
+            write_u64(fp, (uint64_t)has_true);
+        }
+    }
+
+    /* Column data */
     for (int c = 0; c < batch->n_cols; c++) {
         const VecArray *col = &batch->columns[c];
         int64_t vbytes = vec_validity_bytes(batch->n_rows);
@@ -108,6 +147,7 @@ void vtr1_write(const char *path, const VecBatch *batch) {
     if (!fp) vectra_error("cannot open file for writing: %s", path);
 
     VecSchema schema;
+    memset(&schema, 0, sizeof(schema));
     schema.n_cols = batch->n_cols;
     schema.col_names = batch->col_names;
     schema.col_types = (VecType *)malloc((size_t)batch->n_cols * sizeof(VecType));
@@ -141,7 +181,7 @@ Vtr1File *vtr1_open(const char *path) {
 
     /* Version */
     file->header.version = read_u16(fp);
-    if (file->header.version != 1 && file->header.version != 2) {
+    if (file->header.version < 1 || file->header.version > 3) {
         uint16_t ver = file->header.version;
         fclose(fp); free(file);
         vectra_error("unsupported .vtr version: %u", ver);
@@ -197,13 +237,41 @@ Vtr1File *vtr1_open(const char *path) {
     if (!file->rowgroups && file->header.n_rowgroups > 0)
         vectra_error("alloc failed for rowgroup index");
 
+    int n_schema_cols = file->header.schema.n_cols;
+
     for (uint32_t rg = 0; rg < file->header.n_rowgroups; rg++) {
         file->rowgroups[rg].file_offset = ftell(fp);
+        file->rowgroups[rg].col_stats = NULL;
         uint64_t n_rows = read_u64(fp);
         file->rowgroups[rg].n_rows = (int64_t)n_rows;
 
+        /* v3: read per-column statistics */
+        if (file->header.version >= 3) {
+            Vtr1ColStat *stats = (Vtr1ColStat *)calloc(
+                (size_t)n_schema_cols, sizeof(Vtr1ColStat));
+            for (int c = 0; c < n_schema_cols; c++) {
+                stats[c].has_stats = read_u8(fp);
+                uint64_t val1 = read_u64(fp);
+                uint64_t val2 = read_u64(fp);
+                if (stats[c].has_stats) {
+                    VecType t = file->header.schema.col_types[c];
+                    if (t == VEC_INT64) {
+                        stats[c].i64.min = (int64_t)val1;
+                        stats[c].i64.max = (int64_t)val2;
+                    } else if (t == VEC_DOUBLE) {
+                        memcpy(&stats[c].dbl.min, &val1, 8);
+                        memcpy(&stats[c].dbl.max, &val2, 8);
+                    } else if (t == VEC_BOOL) {
+                        stats[c].bln.min = (uint8_t)val1;
+                        stats[c].bln.max = (uint8_t)val2;
+                    }
+                }
+            }
+            file->rowgroups[rg].col_stats = stats;
+        }
+
         /* Skip column data */
-        for (int c = 0; c < file->header.schema.n_cols; c++) {
+        for (int c = 0; c < n_schema_cols; c++) {
             VecType t = file->header.schema.col_types[c];
             int64_t vbytes = vec_validity_bytes((int64_t)n_rows);
             /* Skip validity */
@@ -251,8 +319,13 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
 
     VecBatch *batch = vec_batch_alloc(n_selected, n_rows);
 
-    /* Seek to row group start, skip n_rows field */
-    fseek(file->fp, (long)file->rowgroups[rg_idx].file_offset + 8, SEEK_SET);
+    /* Seek to row group start, skip n_rows field + v3 stats */
+    long data_offset = (long)file->rowgroups[rg_idx].file_offset + 8;
+    if (file->header.version >= 3) {
+        /* Each column has 1 byte has_stats + 8 byte min + 8 byte max = 17 bytes */
+        data_offset += (long)schema->n_cols * 17;
+    }
+    fseek(file->fp, data_offset, SEEK_SET);
 
     int out_col = 0;
     for (int c = 0; c < schema->n_cols; c++) {
@@ -322,6 +395,10 @@ void vtr1_close(Vtr1File *file) {
     if (!file) return;
     if (file->fp) fclose(file->fp);
     vec_schema_free(&file->header.schema);
-    free(file->rowgroups);
+    if (file->rowgroups) {
+        for (uint32_t rg = 0; rg < file->header.n_rowgroups; rg++)
+            free(file->rowgroups[rg].col_stats);
+        free(file->rowgroups);
+    }
     free(file);
 }

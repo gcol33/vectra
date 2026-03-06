@@ -1,6 +1,23 @@
 # vectra 0.2.2
 
-(development version)
+## Query optimizer
+
+* Column pruning: scan nodes only read columns needed by the query plan.
+* Predicate pushdown: filter predicates are attached to scan nodes and use
+  `.vtr` v3 per-rowgroup min/max statistics to skip entire row groups.
+
+## Engine
+
+* `.vtr` format version 3 with per-column per-rowgroup statistics (min/max).
+* O(n log n) `rank()` and `dense_rank()` (replaces O(n²) comparison-based).
+* Nested expressions in `summarise()`: `summarise(m = mean(x + y))` auto-inserts
+  a hidden mutate.
+
+## Expressions
+
+* `nchar()`: returns string length as integer.
+* `substr(x, start, stop)`: substring extraction (1-based, like R).
+* `grepl(pattern, x)`: fixed string matching (no regex).
 
 # vectra 0.2.1
 

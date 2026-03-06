@@ -16,7 +16,10 @@ typedef enum {
     EXPR_IS_NA,
     EXPR_IF_ELSE,
     EXPR_CAST,
-    EXPR_NEGATE      /* unary minus */
+    EXPR_NEGATE,     /* unary minus */
+    EXPR_NCHAR,      /* nchar(x) -> int64 */
+    EXPR_SUBSTR,     /* substr(x, start, stop) -> string */
+    EXPR_GREPL       /* grepl(pattern, x) -> bool (fixed match) */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;

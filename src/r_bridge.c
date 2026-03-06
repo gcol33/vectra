@@ -23,6 +23,7 @@
 #include "tiff_scan.h"
 #include "tiff_write.h"
 #include "expr.h"
+#include "optimize.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
@@ -574,8 +575,21 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
 
     if (strcmp(kind, "ScanNode") == 0) {
         ScanNode *sn = (ScanNode *)node;
-        int pruned = sn->base.output_schema.n_cols;
-        return snprintf(buf, (size_t)bufsize, "streaming, %d cols", pruned);
+        int file_cols = sn->file->header.schema.n_cols;
+        int read_cols = sn->base.output_schema.n_cols;
+        int pos = 0;
+        if (read_cols < file_cols)
+            pos += snprintf(buf + pos, (size_t)(bufsize - pos),
+                            "streaming, %d/%d cols (pruned)", read_cols, file_cols);
+        else
+            pos += snprintf(buf + pos, (size_t)(bufsize - pos),
+                            "streaming, %d cols", read_cols);
+        if (sn->predicate)
+            pos += snprintf(buf + pos, (size_t)(bufsize - pos),
+                            ", predicate pushdown");
+        if (sn->file->header.version >= 3)
+            pos += snprintf(buf + pos, (size_t)(bufsize - pos), ", v3 stats");
+        return pos;
     }
     if (strcmp(kind, "CsvScanNode") == 0) {
         CsvScanNode *cn = (CsvScanNode *)node;
@@ -594,8 +608,19 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
     }
     if (strcmp(kind, "FilterNode") == 0)
         return snprintf(buf, (size_t)bufsize, "streaming");
-    if (strcmp(kind, "ProjectNode") == 0)
+    if (strcmp(kind, "ProjectNode") == 0) {
+        ProjectNode *pn = (ProjectNode *)node;
+        int has_tmp = 0;
+        for (int i = 0; i < pn->n_entries; i++) {
+            if (strncmp(pn->entries[i].output_name, ".vectra_tmp_", 12) == 0) {
+                has_tmp = 1;
+                break;
+            }
+        }
+        if (has_tmp)
+            return snprintf(buf, (size_t)bufsize, "streaming, hidden mutate");
         return snprintf(buf, (size_t)bufsize, "streaming");
+    }
     if (strcmp(kind, "GroupAggNode") == 0) {
         GroupAggNode *ga = (GroupAggNode *)node;
         return snprintf(buf, (size_t)bufsize, "materializes, %d keys",
@@ -671,6 +696,9 @@ static void collect_plan_lines(VecNode *node, int depth,
 
 SEXP C_node_plan(SEXP node_xptr) {
     VecNode *node = unwrap_node(node_xptr);
+
+    /* Run optimizer so explain() shows the optimized plan */
+    vec_optimize(node);
 
     char *lines[64];
     int count = 0;
@@ -814,6 +842,30 @@ static VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         VecExpr *e = vec_expr_alloc(EXPR_NEGATE);
         e->operand = parse_expr(list_get(lst, "operand"), schema);
         e->result_type = e->operand->result_type;
+        return e;
+    }
+    if (strcmp(kind, "nchar") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_NCHAR);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_INT64;
+        return e;
+    }
+    if (strcmp(kind, "substr") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_SUBSTR);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->left = parse_expr(list_get(lst, "start"), schema);
+        e->right = parse_expr(list_get(lst, "stop"), schema);
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "grepl") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_GREPL);
+        const char *pat = list_get_string(lst, "pattern");
+        if (!pat) vectra_error("grepl missing 'pattern'");
+        e->lit_str = (char *)malloc(strlen(pat) + 1);
+        strcpy(e->lit_str, pat);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_BOOL;
         return e;
     }
 

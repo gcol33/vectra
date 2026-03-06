@@ -10,6 +10,18 @@
 #include <string.h>
 #include <math.h>
 
+/* Forward declaration */
+static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b);
+
+/* Comparator context for qsort (single-threaded engine) */
+static const VecArray *qsort_arr_ctx;
+
+static int cmp_indices_asc(const void *a, const void *b) {
+    int64_t ia = *(const int64_t *)a;
+    int64_t ib = *(const int64_t *)b;
+    return vec_compare_values(qsort_arr_ctx, ia, ib);
+}
+
 /* Compare two values in a VecArray. Returns <0, 0, or >0.
    NAs sort last (greater than any non-NA value). */
 static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
@@ -97,40 +109,38 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         }
         break;
 
-    case WIN_RANK:
-        /* min_rank: rank = 1 + count of values strictly less than current */
-        for (int64_t i = start; i < end; i++) {
-            int64_t r = 1;
-            for (int64_t j = start; j < end; j++) {
-                if (j != i && vec_compare_values(input, j, i) < 0) r++;
-            }
-            vec_array_set_valid(result, i);
-            result->buf.dbl[i] = (double)r;
+    case WIN_RANK: {
+        /* O(n log n) min_rank via sort-then-scan */
+        int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
+        for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
+        qsort_arr_ctx = input;
+        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        int64_t rank = 1;
+        for (int64_t i = 0; i < seg_len; i++) {
+            if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
+                rank = i + 1;
+            vec_array_set_valid(result, idx[i]);
+            result->buf.dbl[idx[i]] = (double)rank;
         }
+        free(idx);
         break;
-
-    case WIN_DENSE_RANK:
-        /* dense_rank: rank = 1 + count of distinct values strictly less than current */
-        for (int64_t i = start; i < end; i++) {
-            int64_t r = 1;
-            for (int64_t j = start; j < end; j++) {
-                if (vec_compare_values(input, j, i) < 0) {
-                    /* Check if this value is distinct from all previous "less than" values */
-                    int is_dup = 0;
-                    for (int64_t k = start; k < j; k++) {
-                        if (vec_compare_values(input, k, i) < 0 &&
-                            vec_compare_values(input, k, j) == 0) {
-                            is_dup = 1;
-                            break;
-                        }
-                    }
-                    if (!is_dup) r++;
-                }
-            }
-            vec_array_set_valid(result, i);
-            result->buf.dbl[i] = (double)r;
+    }
+    case WIN_DENSE_RANK: {
+        /* O(n log n) dense_rank via sort-then-scan */
+        int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
+        for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
+        qsort_arr_ctx = input;
+        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        int64_t rank = 1;
+        for (int64_t i = 0; i < seg_len; i++) {
+            if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
+                rank++;
+            vec_array_set_valid(result, idx[i]);
+            result->buf.dbl[idx[i]] = (double)rank;
         }
+        free(idx);
         break;
+    }
 
     case WIN_CUMSUM: {
         double acc = 0.0;
@@ -370,38 +380,39 @@ static VecBatch *window_next_batch(VecNode *self) {
                     }
                     break;
 
-                case WIN_RANK:
+                case WIN_RANK: {
+                    /* O(n log n) per group: sort group row indices by value */
+                    int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
+                    qsort_arr_ctx = &cols[in_col];
+                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    int64_t rank = 1;
                     for (int64_t j = 0; j < glen; j++) {
-                        int64_t r = 1;
-                        for (int64_t k = 0; k < glen; k++) {
-                            if (k != j && vec_compare_values(&cols[in_col], rows[k], rows[j]) < 0)
-                                r++;
-                        }
-                        vec_array_set_valid(&out, rows[j]);
-                        out.buf.dbl[rows[j]] = (double)r;
+                        if (j > 0 && vec_compare_values(&cols[in_col],
+                                sorted[j], sorted[j - 1]) != 0)
+                            rank = j + 1;
+                        vec_array_set_valid(&out, sorted[j]);
+                        out.buf.dbl[sorted[j]] = (double)rank;
                     }
+                    free(sorted);
                     break;
-
-                case WIN_DENSE_RANK:
+                }
+                case WIN_DENSE_RANK: {
+                    int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
+                    qsort_arr_ctx = &cols[in_col];
+                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    int64_t rank = 1;
                     for (int64_t j = 0; j < glen; j++) {
-                        int64_t r = 1;
-                        for (int64_t k = 0; k < glen; k++) {
-                            if (vec_compare_values(&cols[in_col], rows[k], rows[j]) < 0) {
-                                int is_dup = 0;
-                                for (int64_t m = 0; m < k; m++) {
-                                    if (vec_compare_values(&cols[in_col], rows[m], rows[j]) < 0 &&
-                                        vec_compare_values(&cols[in_col], rows[m], rows[k]) == 0) {
-                                        is_dup = 1;
-                                        break;
-                                    }
-                                }
-                                if (!is_dup) r++;
-                            }
-                        }
-                        vec_array_set_valid(&out, rows[j]);
-                        out.buf.dbl[rows[j]] = (double)r;
+                        if (j > 0 && vec_compare_values(&cols[in_col],
+                                sorted[j], sorted[j - 1]) != 0)
+                            rank++;
+                        vec_array_set_valid(&out, sorted[j]);
+                        out.buf.dbl[sorted[j]] = (double)rank;
                     }
+                    free(sorted);
                     break;
+                }
 
                 case WIN_LAG:
                     for (int64_t j = 0; j < glen; j++) {

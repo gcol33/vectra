@@ -150,6 +150,127 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
         vec_array_free(o); free(o);
         return res;
     }
+    case EXPR_NCHAR: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING)
+            vectra_error("nchar: argument must be string");
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_INT64, s->length);
+        for (int64_t i = 0; i < s->length; i++) {
+            if (!vec_array_is_valid(s, i)) {
+                vec_array_set_null(out, i);
+            } else {
+                vec_array_set_valid(out, i);
+                out->buf.i64[i] = s->buf.str.offsets[i + 1] -
+                                   s->buf.str.offsets[i];
+            }
+        }
+        vec_array_free(s); free(s);
+        return out;
+    }
+    case EXPR_SUBSTR: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        VecArray *start_a = vec_expr_eval(expr->left, batch);
+        VecArray *stop_a = vec_expr_eval(expr->right, batch);
+        if (s->type != VEC_STRING)
+            vectra_error("substr: first argument must be string");
+        int64_t n = s->length;
+
+        /* First pass: compute total output length */
+        int64_t total_len = 0;
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(s, i) ||
+                !vec_array_is_valid(start_a, i) ||
+                !vec_array_is_valid(stop_a, i))
+                continue;
+            int64_t slen = s->buf.str.offsets[i + 1] - s->buf.str.offsets[i];
+            int64_t st = (start_a->type == VEC_DOUBLE)
+                         ? (int64_t)start_a->buf.dbl[i]
+                         : start_a->buf.i64[i];
+            int64_t sp = (stop_a->type == VEC_DOUBLE)
+                         ? (int64_t)stop_a->buf.dbl[i]
+                         : stop_a->buf.i64[i];
+            st = st - 1; /* R is 1-based */
+            if (st < 0) st = 0;
+            if (sp > slen) sp = slen;
+            if (sp > st) total_len += sp - st;
+        }
+
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_STRING, n);
+        out->buf.str.data = (char *)malloc((size_t)(total_len > 0 ? total_len : 1));
+        out->buf.str.data_len = total_len;
+
+        int64_t offset = 0;
+        for (int64_t i = 0; i < n; i++) {
+            out->buf.str.offsets[i] = offset;
+            if (!vec_array_is_valid(s, i) ||
+                !vec_array_is_valid(start_a, i) ||
+                !vec_array_is_valid(stop_a, i)) {
+                vec_array_set_null(out, i);
+                continue;
+            }
+            vec_array_set_valid(out, i);
+            int64_t so = s->buf.str.offsets[i];
+            int64_t slen = s->buf.str.offsets[i + 1] - so;
+            int64_t st = (start_a->type == VEC_DOUBLE)
+                         ? (int64_t)start_a->buf.dbl[i]
+                         : start_a->buf.i64[i];
+            int64_t sp = (stop_a->type == VEC_DOUBLE)
+                         ? (int64_t)stop_a->buf.dbl[i]
+                         : stop_a->buf.i64[i];
+            st = st - 1;
+            if (st < 0) st = 0;
+            if (sp > slen) sp = slen;
+            int64_t sub_len = (sp > st) ? sp - st : 0;
+            if (sub_len > 0) {
+                memcpy(out->buf.str.data + offset,
+                       s->buf.str.data + so + st, (size_t)sub_len);
+                offset += sub_len;
+            }
+        }
+        out->buf.str.offsets[n] = offset;
+
+        vec_array_free(s); free(s);
+        vec_array_free(start_a); free(start_a);
+        vec_array_free(stop_a); free(stop_a);
+        return out;
+    }
+    case EXPR_GREPL: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING)
+            vectra_error("grepl: argument must be string");
+        const char *pattern = expr->lit_str;
+        int64_t pat_len = (int64_t)strlen(pattern);
+        int64_t n = s->length;
+
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_BOOL, n);
+
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(s, i)) {
+                vec_array_set_null(out, i);
+                continue;
+            }
+            vec_array_set_valid(out, i);
+            int64_t so = s->buf.str.offsets[i];
+            int64_t slen = s->buf.str.offsets[i + 1] - so;
+            int found = 0;
+            if (pat_len <= slen) {
+                for (int64_t j = 0; j <= slen - pat_len; j++) {
+                    if (memcmp(s->buf.str.data + so + j, pattern,
+                               (size_t)pat_len) == 0) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            out->buf.bln[i] = (uint8_t)found;
+        }
+
+        vec_array_free(s); free(s);
+        return out;
+    }
     case EXPR_IF_ELSE:
     case EXPR_CAST:
         vectra_error("if_else/cast not yet implemented");

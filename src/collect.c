@@ -1,4 +1,5 @@
 #include "collect.h"
+#include "optimize.h"
 #include "builder.h"
 #include "array.h"
 #include "batch.h"
@@ -167,6 +168,9 @@ static SEXP array_to_sexp(const VecArray *arr, int want_bit64) {
 }
 
 SEXP vec_collect(VecNode *root) {
+    /* Optimize plan tree before execution */
+    vec_optimize(root);
+
     const VecSchema *schema = &root->output_schema;
     int n_cols = schema->n_cols;
     int want_bit64 = use_bit64();

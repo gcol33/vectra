@@ -248,12 +248,42 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
   key_names <- .data$.groups
   if (is.null(key_names)) key_names <- character(0)
 
+  # Parse agg expressions, detecting nested expressions like mean(x + y)
   agg_specs <- vector("list", length(dots))
+  mutate_exprs <- list()  # nested exprs that need a hidden mutate
   for (i in seq_along(dots)) {
-    agg_specs[[i]] <- parse_agg_expr(dots[[i]], dot_names[i])
+    parsed <- parse_agg_expr(dots[[i]], dot_names[i])
+    if (!is.null(parsed$.nested_expr)) {
+      # The inner expression needs a hidden mutate column
+      tmp_name <- parsed$.nested_col
+      mutate_exprs[[tmp_name]] <- parsed$.nested_expr
+      parsed$.nested_expr <- NULL
+      parsed$.nested_col <- NULL
+    }
+    agg_specs[[i]] <- parsed
   }
 
-  new_xptr <- .Call(C_group_agg_node, .data$.node, key_names, agg_specs)
+  # Insert hidden mutate node if there are nested expressions
+  node <- .data
+  if (length(mutate_exprs) > 0) {
+    cur_schema <- .Call(C_node_schema, node$.node)
+    existing_names <- cur_schema$name
+
+    out_names <- existing_names
+    out_exprs <- vector("list", length(existing_names))
+
+    for (tmp_nm in names(mutate_exprs)) {
+      out_names <- c(out_names, tmp_nm)
+      out_exprs <- c(out_exprs, list(
+        serialize_expr(mutate_exprs[[tmp_nm]], parent.frame())))
+    }
+
+    new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
+    node <- structure(list(.node = new_xptr, .path = node$.path,
+                           .groups = node$.groups), class = "vectra_node")
+  }
+
+  new_xptr <- .Call(C_group_agg_node, node$.node, key_names, agg_specs)
 
   # Determine residual grouping
   if (is.null(.groups)) .groups <- "drop_last"
@@ -674,6 +704,7 @@ slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 }
 
 # Parse an aggregation expression like sum(x), mean(y, na.rm = TRUE), n()
+# Supports nested expressions: mean(x + y) auto-inserts a hidden mutate column.
 parse_agg_expr <- function(expr, output_name) {
   if (!is.call(expr))
     stop(sprintf("summarise expression '%s' must be a function call", output_name))
@@ -688,12 +719,8 @@ parse_agg_expr <- function(expr, output_name) {
     return(list(name = output_name, kind = "n", col = NULL, na_rm = FALSE))
   }
 
-  # Extract column name (first argument)
+  # Extract column argument
   col_arg <- expr[[2]]
-  if (!is.name(col_arg))
-    stop(sprintf("aggregation column must be a column name, got: %s",
-                 deparse(col_arg)))
-  col_name <- as.character(col_arg)
 
   # Check for na.rm argument
   na_rm <- FALSE
@@ -707,5 +734,15 @@ parse_agg_expr <- function(expr, output_name) {
     }
   }
 
-  list(name = output_name, kind = fn, col = col_name, na_rm = na_rm)
+  if (is.name(col_arg)) {
+    # Simple column reference
+    col_name <- as.character(col_arg)
+    return(list(name = output_name, kind = fn, col = col_name, na_rm = na_rm))
+  }
+
+  # Nested expression: e.g. mean(x + y) or sum(x * 2)
+  # Generate a temp column name and return the inner expression for mutate
+  tmp_name <- paste0(".vectra_tmp_", output_name)
+  list(name = output_name, kind = fn, col = tmp_name, na_rm = na_rm,
+       .nested_expr = col_arg, .nested_col = tmp_name)
 }

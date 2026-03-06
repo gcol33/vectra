@@ -74,6 +74,28 @@ serialize_expr <- function(expr, env = parent.frame()) {
     return(serialize_expr(expr[[2]], env))
   }
 
+  # String functions
+  if (fn == "nchar") {
+    return(list(kind = "nchar",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "substr" || fn == "substring") {
+    return(list(kind = "substr",
+                operand = serialize_expr(expr[[2]], env),
+                start = serialize_expr(expr[[3]], env),
+                stop = serialize_expr(expr[[4]], env)))
+  }
+  if (fn == "grepl") {
+    pattern <- expr[[2]]
+    x <- expr[[3]]
+    # grepl(pattern, x) — pattern must be a literal string
+    if (!is.character(pattern))
+      stop("grepl: pattern must be a string literal")
+    return(list(kind = "grepl",
+                pattern = as.character(pattern),
+                operand = serialize_expr(x, env)))
+  }
+
   stop(sprintf("unsupported function in expression: %s", fn))
 }
 

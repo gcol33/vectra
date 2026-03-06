@@ -11,10 +11,21 @@ typedef struct {
     uint32_t  n_rowgroups;
 } Vtr1Header;
 
+/* Per-column per-rowgroup statistics (v3+) */
+typedef struct {
+    uint8_t has_stats;    /* 0 for string cols or no data */
+    union {
+        struct { int64_t min, max; } i64;
+        struct { double min, max; } dbl;
+        struct { uint8_t min, max; } bln;
+    };
+} Vtr1ColStat;
+
 /* Row group metadata (for seeking) */
 typedef struct {
     int64_t file_offset;  /* byte offset where row group data starts */
     int64_t n_rows;
+    Vtr1ColStat *col_stats;  /* array of n_cols entries (NULL for v1/v2) */
 } Vtr1RowGroup;
 
 /* File handle for reading */
