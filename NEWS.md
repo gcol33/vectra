@@ -1,3 +1,7 @@
+# vectra 0.2.2
+
+(development version)
+
 # vectra 0.2.1
 
 ## Engine
