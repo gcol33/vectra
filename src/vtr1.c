@@ -13,18 +13,43 @@ static void write_u16(FILE *fp, uint16_t v) { fwrite(&v, 2, 1, fp); }
 static void write_u32(FILE *fp, uint32_t v) { fwrite(&v, 4, 1, fp); }
 static void write_u64(FILE *fp, uint64_t v) { fwrite(&v, 8, 1, fp); }
 
-static uint8_t  read_u8(FILE *fp)  { uint8_t  v; fread(&v, 1, 1, fp); return v; }
-static uint16_t read_u16(FILE *fp) { uint16_t v; fread(&v, 2, 1, fp); return v; }
-static uint32_t read_u32(FILE *fp) { uint32_t v; fread(&v, 4, 1, fp); return v; }
-static uint64_t read_u64(FILE *fp) { uint64_t v; fread(&v, 8, 1, fp); return v; }
+static uint8_t read_u8(FILE *fp) {
+    uint8_t v = 0;
+    if (fread(&v, 1, 1, fp) != 1) vectra_error("unexpected end of file");
+    return v;
+}
+static uint16_t read_u16(FILE *fp) {
+    uint16_t v = 0;
+    if (fread(&v, 2, 1, fp) != 1) vectra_error("unexpected end of file");
+    return v;
+}
+static uint32_t read_u32(FILE *fp) {
+    uint32_t v = 0;
+    if (fread(&v, 4, 1, fp) != 1) vectra_error("unexpected end of file");
+    return v;
+}
+static uint64_t read_u64(FILE *fp) {
+    uint64_t v = 0;
+    if (fread(&v, 8, 1, fp) != 1) vectra_error("unexpected end of file");
+    return v;
+}
 
 /* --- Write --- */
 
 void vtr1_write_header(FILE *fp, const VecSchema *schema, uint32_t n_rowgroups) {
     /* Magic */
     fwrite("VTR1", 1, 4, fp);
-    /* Version */
-    write_u16(fp, 1);
+
+    /* Check if any annotations exist -> version 2 */
+    int has_annotations = 0;
+    if (schema->col_annotations) {
+        for (int i = 0; i < schema->n_cols; i++) {
+            if (schema->col_annotations[i]) { has_annotations = 1; break; }
+        }
+    }
+
+    /* Version: 2 if annotations present, 1 otherwise */
+    write_u16(fp, has_annotations ? (uint16_t)2 : (uint16_t)1);
     /* n_cols */
     write_u16(fp, (uint16_t)schema->n_cols);
     /* Column definitions */
@@ -33,6 +58,14 @@ void vtr1_write_header(FILE *fp, const VecSchema *schema, uint32_t n_rowgroups) 
         write_u16(fp, name_len);
         fwrite(schema->col_names[i], 1, name_len, fp);
         write_u8(fp, (uint8_t)schema->col_types[i]);
+        /* v2: annotation string (length-prefixed, 0 = none) */
+        if (has_annotations) {
+            const char *ann = (schema->col_annotations)
+                              ? schema->col_annotations[i] : NULL;
+            uint16_t ann_len = ann ? (uint16_t)strlen(ann) : 0;
+            write_u16(fp, ann_len);
+            if (ann_len > 0) fwrite(ann, 1, ann_len, fp);
+        }
     }
     /* n_rowgroups */
     write_u32(fp, n_rowgroups);
@@ -108,7 +141,7 @@ Vtr1File *vtr1_open(const char *path) {
 
     /* Version */
     file->header.version = read_u16(fp);
-    if (file->header.version != 1) {
+    if (file->header.version != 1 && file->header.version != 2) {
         uint16_t ver = file->header.version;
         fclose(fp); free(file);
         vectra_error("unsupported .vtr version: %u", ver);
@@ -118,7 +151,8 @@ Vtr1File *vtr1_open(const char *path) {
     uint16_t n_cols = read_u16(fp);
     char **names = (char **)calloc(n_cols, sizeof(char *));
     VecType *types = (VecType *)calloc(n_cols, sizeof(VecType));
-    if ((!names || !types) && n_cols > 0) {
+    char **annotations = (char **)calloc(n_cols, sizeof(char *));
+    if ((!names || !types || !annotations) && n_cols > 0) {
         fclose(fp); free(file);
         vectra_error("alloc failed reading schema");
     }
@@ -127,15 +161,32 @@ Vtr1File *vtr1_open(const char *path) {
         uint16_t name_len = read_u16(fp);
         names[i] = (char *)malloc(name_len + 1);
         if (!names[i]) vectra_error("alloc failed");
-        fread(names[i], 1, name_len, fp);
+        if (fread(names[i], 1, name_len, fp) != name_len)
+            vectra_error("unexpected end of file reading column name");
         names[i][name_len] = '\0';
         types[i] = (VecType)read_u8(fp);
+        /* v2: read annotation */
+        if (file->header.version >= 2) {
+            uint16_t ann_len = read_u16(fp);
+            if (ann_len > 0) {
+                annotations[i] = (char *)malloc(ann_len + 1);
+                if (fread(annotations[i], 1, ann_len, fp) != ann_len)
+                    vectra_error("unexpected end of file reading annotation");
+                annotations[i][ann_len] = '\0';
+            }
+        }
     }
 
     file->header.schema = vec_schema_create(n_cols, names, types);
-    for (int i = 0; i < n_cols; i++) free(names[i]);
+    /* Copy annotations into schema */
+    for (int i = 0; i < n_cols; i++) {
+        file->header.schema.col_annotations[i] = annotations[i];
+        /* annotations[i] is now owned by schema, don't free */
+        free(names[i]);
+    }
     free(names);
     free(types);
+    free(annotations);
 
     /* n_rowgroups */
     file->header.n_rowgroups = read_u32(fp);
@@ -211,27 +262,33 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
         if (col_mask[c]) {
             /* Read this column */
             VecArray arr = vec_array_alloc(t, n_rows);
-            fread(arr.validity, 1, (size_t)vbytes, file->fp);
+            if (fread(arr.validity, 1, (size_t)vbytes, file->fp) != (size_t)vbytes)
+                vectra_error("unexpected end of file reading validity bitmap");
 
             switch (t) {
             case VEC_INT64:
-                fread(arr.buf.i64, sizeof(int64_t), (size_t)n_rows, file->fp);
+                if (fread(arr.buf.i64, sizeof(int64_t), (size_t)n_rows, file->fp) != (size_t)n_rows)
+                    vectra_error("unexpected end of file reading int64 data");
                 break;
             case VEC_DOUBLE:
-                fread(arr.buf.dbl, sizeof(double), (size_t)n_rows, file->fp);
+                if (fread(arr.buf.dbl, sizeof(double), (size_t)n_rows, file->fp) != (size_t)n_rows)
+                    vectra_error("unexpected end of file reading double data");
                 break;
             case VEC_BOOL:
-                fread(arr.buf.bln, 1, (size_t)n_rows, file->fp);
+                if (fread(arr.buf.bln, 1, (size_t)n_rows, file->fp) != (size_t)n_rows)
+                    vectra_error("unexpected end of file reading bool data");
                 break;
             case VEC_STRING: {
-                fread(arr.buf.str.offsets, sizeof(int64_t),
-                      (size_t)(n_rows + 1), file->fp);
+                if (fread(arr.buf.str.offsets, sizeof(int64_t),
+                      (size_t)(n_rows + 1), file->fp) != (size_t)(n_rows + 1))
+                    vectra_error("unexpected end of file reading string offsets");
                 uint64_t data_len = read_u64(file->fp);
                 arr.buf.str.data_len = (int64_t)data_len;
                 arr.buf.str.data = (char *)malloc((size_t)data_len);
                 if (!arr.buf.str.data && data_len > 0)
                     vectra_error("alloc failed for string data");
-                fread(arr.buf.str.data, 1, (size_t)data_len, file->fp);
+                if (fread(arr.buf.str.data, 1, (size_t)data_len, file->fp) != (size_t)data_len)
+                    vectra_error("unexpected end of file reading string data");
                 break;
             }
             }
