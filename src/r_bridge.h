@@ -22,5 +22,6 @@ SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
 SEXP C_window_node(SEXP node_xptr, SEXP key_names, SEXP win_specs);
 SEXP C_concat_node(SEXP node_xptrs);
 SEXP C_write_csv(SEXP node_xptr, SEXP path);
+SEXP C_csv_scan_node(SEXP path, SEXP batch_size);
 
 #endif /* VECTRA_R_BRIDGE_H */

@@ -16,6 +16,7 @@
 #include "window.h"
 #include "concat.h"
 #include "csv_write.h"
+#include "csv_scan.h"
 #include "expr.h"
 #include "error.h"
 #include <stdlib.h>
@@ -363,7 +364,7 @@ static void node_get_children(VecNode *node, VecNode **children, int *n_children
     *n_children = 0;
     const char *kind = node->kind ? node->kind : "Unknown";
 
-    if (strcmp(kind, "ScanNode") == 0) {
+    if (strcmp(kind, "ScanNode") == 0 || strcmp(kind, "CsvScanNode") == 0) {
         *n_children = 0;
     } else if (strcmp(kind, "FilterNode") == 0) {
         FilterNode *fn = (FilterNode *)node;
@@ -415,6 +416,11 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
         ScanNode *sn = (ScanNode *)node;
         int pruned = sn->base.output_schema.n_cols;
         return snprintf(buf, (size_t)bufsize, "streaming, %d cols", pruned);
+    }
+    if (strcmp(kind, "CsvScanNode") == 0) {
+        CsvScanNode *cn = (CsvScanNode *)node;
+        return snprintf(buf, (size_t)bufsize, "streaming csv, %d cols",
+                        cn->n_file_cols);
     }
     if (strcmp(kind, "FilterNode") == 0)
         return snprintf(buf, (size_t)bufsize, "streaming");
@@ -930,6 +936,13 @@ SEXP C_concat_node(SEXP node_xptrs) {
 }
 
 /* --- C_write_csv --- */
+
+SEXP C_csv_scan_node(SEXP path_sexp, SEXP batch_size_sexp) {
+    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
+    int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
+    CsvScanNode *sn = csv_scan_node_create(fpath, batch_size);
+    return wrap_node((VecNode *)sn);
+}
 
 SEXP C_write_csv(SEXP node_xptr, SEXP path_sexp) {
     VecNode *node = unwrap_node(node_xptr);

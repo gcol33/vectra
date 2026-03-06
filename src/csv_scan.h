@@ -2,6 +2,7 @@
 #define VECTRA_CSV_SCAN_H
 
 #include "types.h"
+#include <stdio.h>
 
 typedef struct {
     VecNode    base;

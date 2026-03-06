@@ -19,6 +19,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_window_node",    (DL_FUNC) &C_window_node,     3},
     {"C_concat_node",   (DL_FUNC) &C_concat_node,    1},
     {"C_write_csv",     (DL_FUNC) &C_write_csv,      2},
+    {"C_csv_scan_node", (DL_FUNC) &C_csv_scan_node,  2},
     {NULL, NULL, 0}
 };
 
