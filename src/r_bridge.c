@@ -22,6 +22,7 @@
 #include "sqlite_format.h"
 #include "tiff_scan.h"
 #include "tiff_write.h"
+#include "vtr_write.h"
 #include "expr.h"
 #include "optimize.h"
 #include "error.h"
@@ -1245,6 +1246,15 @@ SEXP C_write_tiff(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
     int use_deflate = Rf_asLogical(compress_sexp);
     tiff_write_node(node, path, use_deflate);
+    node->free_node(node);
+    return R_NilValue;
+}
+
+SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp) {
+    VecNode *node = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+    vtr_write_node(node, path);
     node->free_node(node);
     return R_NilValue;
 }

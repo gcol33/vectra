@@ -142,30 +142,54 @@ write_tiff.data.frame <- function(x, path, compress = FALSE, ...) {
   invisible(NULL)
 }
 
-#' Write a data.frame to a .vtr file
+#' Write data to a .vtr file
 #'
-#' Serializes an R data.frame into the vectra1 on-disk format.
+#' For `vectra_node` inputs (lazy queries from any format: CSV, SQLite, TIFF,
+#' or another .vtr), data is streamed batch-by-batch to disk without
+#' materializing the full result in memory. Each batch becomes one row group.
+#' The output file is written atomically (via temp file + rename) so readers
+#' never see a partial file.
 #'
-#' @param df A data.frame to write. Supported column types: integer, double,
-#'   logical, character, and bit64::integer64.
+#' For `data.frame` inputs, the data is written directly from memory.
+#'
+#' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path for the output .vtr file.
-#' @param batch_size Number of rows per row group. Defaults to all rows in a
-#'   single row group.
+#' @param ... Additional arguments passed to methods.
 #'
 #' @return Invisible `NULL`.
 #'
 #' @examples
+#' # From a data.frame
 #' f <- tempfile(fileext = ".vtr")
 #' write_vtr(mtcars, f)
-#' unlink(f)
+#'
+#' # Streaming format conversion (CSV -> VTR)
+#' csv <- tempfile(fileext = ".csv")
+#' write.csv(mtcars, csv, row.names = FALSE)
+#' f2 <- tempfile(fileext = ".vtr")
+#' tbl_csv(csv) |> write_vtr(f2)
+#'
+#' unlink(c(f, f2, csv))
 #'
 #' @export
-write_vtr <- function(df, path, batch_size = nrow(df)) {
-  if (!is.data.frame(df))
-    stop(sprintf("df must be a data.frame, got %s", class(df)[1]))
+write_vtr <- function(x, path, ...) {
+  UseMethod("write_vtr")
+}
+
+#' @export
+write_vtr.vectra_node <- function(x, path, ...) {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
   path <- normalizePath(path, mustWork = FALSE)
-  .Call(C_write_vtr, df, path, as.integer(batch_size))
+  .Call(C_write_vtr_node, x$.node, path)
+  invisible(NULL)
+}
+
+#' @export
+write_vtr.data.frame <- function(x, path, batch_size = nrow(x), ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+  .Call(C_write_vtr, x, path, as.integer(batch_size))
   invisible(NULL)
 }

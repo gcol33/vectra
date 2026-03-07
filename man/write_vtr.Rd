@@ -2,28 +2,41 @@
 % Please edit documentation in R/write.R
 \name{write_vtr}
 \alias{write_vtr}
-\title{Write a data.frame to a .vtr file}
+\title{Write data to a .vtr file}
 \usage{
-write_vtr(df, path, batch_size = nrow(df))
+write_vtr(x, path, ...)
 }
 \arguments{
-\item{df}{A data.frame to write. Supported column types: integer, double,
-logical, character, and bit64::integer64.}
+\item{x}{A \code{vectra_node} (lazy query) or a \code{data.frame}.}
 
 \item{path}{File path for the output .vtr file.}
 
-\item{batch_size}{Number of rows per row group. Defaults to all rows in a
-single row group.}
+\item{...}{Additional arguments passed to methods.}
 }
 \value{
 Invisible \code{NULL}.
 }
 \description{
-Serializes an R data.frame into the vectra1 on-disk format.
+For \code{vectra_node} inputs (lazy queries from any format: CSV, SQLite, TIFF,
+or another .vtr), data is streamed batch-by-batch to disk without
+materializing the full result in memory. Each batch becomes one row group.
+The output file is written atomically (via temp file + rename) so readers
+never see a partial file.
+}
+\details{
+For \code{data.frame} inputs, the data is written directly from memory.
 }
 \examples{
+# From a data.frame
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
-unlink(f)
+
+# Streaming format conversion (CSV -> VTR)
+csv <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv, row.names = FALSE)
+f2 <- tempfile(fileext = ".vtr")
+tbl_csv(csv) |> write_vtr(f2)
+
+unlink(c(f, f2, csv))
 
 }

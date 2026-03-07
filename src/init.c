@@ -25,6 +25,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_tiff_scan_node", (DL_FUNC) &C_tiff_scan_node, 2},
     {"C_tiff_scan_meta", (DL_FUNC) &C_tiff_scan_meta, 1},
     {"C_write_tiff",     (DL_FUNC) &C_write_tiff,     3},
+    {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 2},
     {NULL, NULL, 0}
 };
 
