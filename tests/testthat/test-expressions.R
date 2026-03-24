@@ -141,3 +141,116 @@ test_that("trimws removes whitespace", {
   result <- tbl(f) |> mutate(t = trimws(s)) |> collect()
   expect_equal(result$t, c("hello", "foo"))
 })
+
+# --- additional math functions ---
+
+test_that("log2 and log10 work", {
+  df <- data.frame(x = c(8.0, 100.0, 1.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(l2 = log2(x), l10 = log10(x)) |> collect()
+  expect_equal(result$l2, log2(c(8, 100, 1)))
+  expect_equal(result$l10, log10(c(8, 100, 1)))
+})
+
+test_that("sign works", {
+  df <- data.frame(x = c(-5.0, 0.0, 3.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(s = sign(x)) |> collect()
+  expect_equal(result$s, c(-1, 0, 1))
+})
+
+test_that("trunc works", {
+  df <- data.frame(x = c(1.7, -2.3, 0.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(t = trunc(x)) |> collect()
+  expect_equal(result$t, c(1, -2, 0))
+})
+
+# --- pmin / pmax ---
+
+test_that("pmin returns element-wise minimum", {
+  df <- data.frame(x = c(1.0, 5.0, 3.0), y = c(4.0, 2.0, 3.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(m = pmin(x, y)) |> collect()
+  expect_equal(result$m, c(1, 2, 3))
+})
+
+test_that("pmax returns element-wise maximum", {
+  df <- data.frame(x = c(1.0, 5.0, 3.0), y = c(4.0, 2.0, 3.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(m = pmax(x, y)) |> collect()
+  expect_equal(result$m, c(4, 5, 3))
+})
+
+# --- paste0 ---
+
+test_that("paste0 concatenates two string columns", {
+  df <- data.frame(a = c("hello", "foo"), b = c(" world", "bar"),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(c = paste0(a, b)) |> collect()
+  expect_equal(result$c, c("hello world", "foobar"))
+})
+
+test_that("paste0 with NA returns NA", {
+  df <- data.frame(a = c("hello", NA), b = c(" world", "bar"),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(c = paste0(a, b)) |> collect()
+  expect_equal(result$c[1], "hello world")
+  expect_true(is.na(result$c[2]))
+})
+
+# --- startsWith / endsWith ---
+
+test_that("startsWith works in filter", {
+  df <- data.frame(s = c("apple", "banana", "avocado"), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> filter(startsWith(s, "a")) |> collect()
+  expect_equal(result$s, c("apple", "avocado"))
+})
+
+test_that("endsWith works in filter", {
+  df <- data.frame(s = c("cat", "dog", "rat"), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> filter(endsWith(s, "at")) |> collect()
+  expect_equal(result$s, c("cat", "rat"))
+})
+
+# --- gsub / sub ---
+
+test_that("gsub replaces all occurrences", {
+  df <- data.frame(s = c("aXbXc", "XdX"), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(r = gsub("X", "_", s)) |> collect()
+  expect_equal(result$r, c("a_b_c", "_d_"))
+})
+
+test_that("sub replaces only first occurrence", {
+  df <- data.frame(s = c("aXbXc", "XdX"), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> mutate(r = sub("X", "_", s)) |> collect()
+  expect_equal(result$r, c("a_bXc", "_dX"))
+})

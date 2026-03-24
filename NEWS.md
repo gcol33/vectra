@@ -18,6 +18,11 @@
 * `nchar()`: returns string length as integer.
 * `substr(x, start, stop)`: substring extraction (1-based, like R).
 * `grepl(pattern, x)`: fixed string matching (no regex).
+* `paste0(a, b)`: two-argument string concatenation.
+* `gsub(pattern, replacement, x)` / `sub()`: fixed-string replacement.
+* `startsWith()` / `endsWith()`: string prefix/suffix matching.
+* `pmin()` / `pmax()`: element-wise minimum/maximum.
+* `log2()`, `log10()`, `sign()`, `trunc()`: additional math functions.
 
 ## Aggregation
 

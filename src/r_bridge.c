@@ -940,6 +940,51 @@ static VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         return e;
     }
 
+    if (strcmp(kind, "paste0") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_PASTE0);
+        e->left = parse_expr(list_get(lst, "left"), schema);
+        e->right = parse_expr(list_get(lst, "right"), schema);
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "startsWith") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_STARTSWITH);
+        const char *prefix = list_get_string(lst, "prefix");
+        e->lit_str = (char *)malloc(strlen(prefix) + 1);
+        strcpy(e->lit_str, prefix);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_BOOL;
+        return e;
+    }
+    if (strcmp(kind, "endsWith") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_ENDSWITH);
+        const char *suffix = list_get_string(lst, "suffix");
+        e->lit_str = (char *)malloc(strlen(suffix) + 1);
+        strcpy(e->lit_str, suffix);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_BOOL;
+        return e;
+    }
+    if (strcmp(kind, "gsub") == 0 || strcmp(kind, "sub") == 0) {
+        VecExpr *e = vec_expr_alloc(strcmp(kind, "gsub") == 0 ? EXPR_GSUB : EXPR_SUB);
+        const char *pat = list_get_string(lst, "pattern");
+        const char *rep = list_get_string(lst, "replacement");
+        e->gsub_pattern = (char *)malloc(strlen(pat) + 1);
+        strcpy(e->gsub_pattern, pat);
+        e->gsub_replacement = (char *)malloc(strlen(rep) + 1);
+        strcpy(e->gsub_replacement, rep);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "pmin") == 0 || strcmp(kind, "pmax") == 0) {
+        VecExpr *e = vec_expr_alloc(strcmp(kind, "pmin") == 0 ? EXPR_PMIN : EXPR_PMAX);
+        e->left = parse_expr(list_get(lst, "left"), schema);
+        e->right = parse_expr(list_get(lst, "right"), schema);
+        e->result_type = VEC_DOUBLE;
+        return e;
+    }
+
     vectra_error("unknown expression kind: %s", kind);
     return NULL;
 }

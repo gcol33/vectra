@@ -24,7 +24,14 @@ typedef enum {
     EXPR_TOLOWER,    /* tolower(x) -> string */
     EXPR_TOUPPER,    /* toupper(x) -> string */
     EXPR_TRIMWS,     /* trimws(x) -> string */
-    EXPR_IN          /* x %in% c(...) -> bool */
+    EXPR_IN,         /* x %in% c(...) -> bool */
+    EXPR_PASTE0,     /* paste0(a, b) -> string */
+    EXPR_STARTSWITH, /* startsWith(x, prefix) -> bool */
+    EXPR_ENDSWITH,   /* endsWith(x, suffix) -> bool */
+    EXPR_GSUB,       /* gsub(pattern, replacement, x) -> string (fixed) */
+    EXPR_SUB,        /* sub(pattern, replacement, x) -> string (fixed, first only) */
+    EXPR_PMIN,       /* pmin(x, y) -> numeric */
+    EXPR_PMAX        /* pmax(x, y) -> numeric */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -76,6 +83,11 @@ struct VecExpr {
     int64_t *set_i64;
     char   **set_str;
     /* uses operand */
+
+    /* EXPR_GSUB / EXPR_SUB */
+    char *gsub_pattern;
+    char *gsub_replacement;
+    /* uses operand for the input string */
 };
 
 /* Allocate a new expression node */

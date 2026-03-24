@@ -102,7 +102,7 @@ know or care which source is upstream.
 |:-----|:--------|:------|
 | `filter(...)` | yes | Zero-copy via selection vector |
 | `select(...)` | yes | Full tidyselect: `starts_with()`, `where()`, `-col`, etc. |
-| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()`, math (`abs`, `sqrt`, `log`, `exp`, `floor`, `ceiling`, `round`), `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), `tolower()`, `toupper()`, `trimws()` |
+| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()`, math (`abs`, `sqrt`, `log`, `exp`, `floor`, `ceiling`, `round`, `log2`, `log10`, `sign`, `trunc`), `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()`, `pmin()`, `pmax()` |
 | `transmute(...)` | yes | Like `mutate()` but drops unmentioned columns |
 | `rename(...)` | yes | Full tidyselect rename support |
 | `relocate(...)` | yes | Reorder columns with `.before` / `.after` |
@@ -425,9 +425,7 @@ will happen internally. Node ordering and naming may change between versions.
 - **slice_tail materializes**: There is no reverse-scan optimization.
 - **distinct with .keep_all**: Falls back to R when `.keep_all = TRUE` with a
   column subset.
-- **Limited string operations**: `nchar()`, `substr()`, `grepl()` (fixed match
-  only), `tolower()`, `toupper()`, `trimws()` are supported. No regex or
-  `paste()`. Use `collect()` first for unsupported string operations.
+- **Limited string operations**: `nchar()`, `substr()`, `grepl()` (fixed match only), `tolower()`, `toupper()`, `trimws()`, `paste0()` (2 args), `gsub()`/`sub()` (fixed patterns), `startsWith()`, `endsWith()` are supported. No regex or multi-argument `paste()`. Use `collect()` first for unsupported string operations.
 - **Single-threaded**: The engine uses one thread. Parallelism is not planned.
 - **Predicate pushdown is .vtr only**: CSV, SQLite, and TIFF scans do not
   benefit from predicate pushdown or column pruning.

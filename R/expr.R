@@ -144,6 +144,56 @@ serialize_expr <- function(expr, env = parent.frame()) {
                 operand = serialize_expr(expr[[2]], env)))
   }
 
+  # Additional math functions
+  if (fn %in% c("log2", "log10", "sign", "trunc")) {
+    fn_char <- switch(fn, log2 = "2", log10 = "t", sign = "g", trunc = "u")
+    return(list(kind = "math_unary", fn = fn_char,
+                operand = serialize_expr(expr[[2]], env)))
+  }
+
+  # paste0(a, b) — two-argument string concatenation
+  if (fn == "paste0") {
+    if (length(expr) != 3)
+      stop("paste0 in vectra supports exactly 2 arguments")
+    return(list(kind = "paste0",
+                left = serialize_expr(expr[[2]], env),
+                right = serialize_expr(expr[[3]], env)))
+  }
+
+  # startsWith / endsWith
+  if (fn == "startsWith") {
+    prefix <- expr[[3]]
+    if (!is.character(prefix)) stop("startsWith: prefix must be a string literal")
+    return(list(kind = "startsWith", prefix = as.character(prefix),
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "endsWith") {
+    suffix <- expr[[3]]
+    if (!is.character(suffix)) stop("endsWith: suffix must be a string literal")
+    return(list(kind = "endsWith", suffix = as.character(suffix),
+                operand = serialize_expr(expr[[2]], env)))
+  }
+
+  # gsub / sub (fixed string replacement)
+  if (fn == "gsub" || fn == "sub") {
+    pattern <- expr[[2]]
+    replacement <- expr[[3]]
+    x <- expr[[4]]
+    if (!is.character(pattern)) stop(paste0(fn, ": pattern must be a string literal"))
+    if (!is.character(replacement)) stop(paste0(fn, ": replacement must be a string literal"))
+    return(list(kind = fn,
+                pattern = as.character(pattern),
+                replacement = as.character(replacement),
+                operand = serialize_expr(x, env)))
+  }
+
+  # pmin / pmax
+  if (fn == "pmin" || fn == "pmax") {
+    return(list(kind = fn,
+                left = serialize_expr(expr[[2]], env),
+                right = serialize_expr(expr[[3]], env)))
+  }
+
   # %in% operator
   if (fn == "%in%") {
     set_val <- eval(expr[[3]], env)
