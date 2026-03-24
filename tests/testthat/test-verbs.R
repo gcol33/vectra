@@ -105,6 +105,76 @@ test_that("ungroup removes grouping", {
   expect_null(node2$.groups)
 })
 
+# --- group preservation ---
+
+test_that("filter preserves groups", {
+  df <- data.frame(g = c("a", "a", "b"), x = c(1.0, 2.0, 3.0),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  node <- tbl(f) |> group_by(g) |> filter(x > 1)
+  expect_equal(node$.groups, "g")
+})
+
+test_that("select preserves groups", {
+  df <- data.frame(g = c("a", "b"), x = 1:2, y = 3:4)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  node <- tbl(f) |> group_by(g) |> select(g, x)
+  expect_equal(node$.groups, "g")
+})
+
+test_that("select drops groups for removed group columns", {
+  df <- data.frame(g = c("a", "b"), x = 1:2, y = 3:4,
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  # Selecting without the group column drops the group
+  node <- tbl(f) |> group_by(g) |> select(x, y)
+  expect_null(node$.groups)
+})
+
+test_that("select with multi-group drops only removed groups", {
+  df <- data.frame(a = c("x", "x", "y"), b = c("p", "q", "p"),
+                   v = c(1.0, 2.0, 3.0), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  node <- tbl(f) |> group_by(a, b) |> select(a, v)
+  expect_equal(node$.groups, "a")
+})
+
+test_that("rename preserves and updates groups", {
+  df <- data.frame(g = c("a", "b"), x = 1:2)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  node <- tbl(f) |> group_by(g) |> rename(group = g)
+  expect_equal(node$.groups, "group")
+})
+
+test_that("relocate preserves groups", {
+  df <- data.frame(g = c("a", "b"), x = 1:2, y = 3:4)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  node <- tbl(f) |> group_by(g) |> relocate(y, .before = g)
+  expect_equal(node$.groups, "g")
+})
+
+test_that("arrange preserves groups", {
+  df <- data.frame(g = c("b", "a"), x = c(2.0, 1.0),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  node <- tbl(f) |> group_by(g) |> arrange(x)
+  expect_equal(node$.groups, "g")
+})
+
 # --- count ---
 
 test_that("count counts by group", {

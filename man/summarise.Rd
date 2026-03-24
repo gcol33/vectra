@@ -13,7 +13,8 @@ summarize(.data, ..., .groups = NULL)
 \item{.data}{A grouped \code{vectra_node} (from \code{\link[=group_by]{group_by()}}).}
 
 \item{...}{Named aggregation expressions using \code{n()}, \code{sum()}, \code{mean()},
-\code{min()}, \code{max()}.}
+\code{min()}, \code{max()}, \code{sd()}, \code{var()}, \code{first()}, \code{last()}, \code{any()}, \code{all()},
+\code{median()}, \code{n_distinct()}.}
 
 \item{.groups}{How to handle groups in the result. One of \code{"drop_last"}
 (default), \code{"drop"}, or \code{"keep"}.}
@@ -23,6 +24,19 @@ A \code{vectra_node} with one row per group.
 }
 \description{
 Summarise grouped data
+}
+\details{
+Aggregation is hash-based by default. When the engine detects it is
+advantageous, it switches to a sort-based path that can spill to disk,
+keeping memory bounded regardless of group count.
+
+All aggregation functions accept \code{na.rm = TRUE} to skip NA values.
+Without \code{na.rm}, any NA in a group poisons the result (returns NA).
+R-matching edge cases: \code{sum(na.rm = TRUE)} on all-NA returns 0,
+\code{mean(na.rm = TRUE)} on all-NA returns NaN, \code{min/max(na.rm = TRUE)} on
+all-NA returns Inf/-Inf with a warning.
+
+This is a materializing operation.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")

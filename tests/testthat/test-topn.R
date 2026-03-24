@@ -136,14 +136,24 @@ test_that("topn after mutate", {
   expect_equal(result$y, c(2, 4))
 })
 
-test_that("topn with duplicate values", {
+test_that("topn with duplicate values includes ties by default", {
   df <- data.frame(x = c(1.0, 2.0, 2.0, 3.0, 3.0, 3.0))
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))
   write_vtr(df, f)
+  # with_ties = TRUE (default): boundary is 3.0 (4th smallest), keep all <= 3
   result <- tbl(f) |> slice_min(order_by = x, n = 4) |> collect()
+  expect_equal(nrow(result), 6)
+  expect_equal(result$x, c(1, 2, 2, 3, 3, 3))
+})
+
+test_that("topn with duplicate values without ties returns exactly n", {
+  df <- data.frame(x = c(1.0, 2.0, 2.0, 3.0, 3.0, 3.0))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> slice_min(order_by = x, n = 4, with_ties = FALSE) |> collect()
   expect_equal(nrow(result), 4)
-  expect_equal(result$x, c(1, 2, 2, 3))
 })
 
 test_that("topn single row dataset", {

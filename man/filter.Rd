@@ -17,6 +17,18 @@ A new \code{vectra_node} with the filter applied.
 \description{
 Filter rows of a vectra query
 }
+\details{
+Filter uses zero-copy selection vectors: matching rows are indexed without
+copying data. Multiple conditions are combined with \code{&}. Supported
+expression types: arithmetic (\code{+}, \code{-}, \code{*}, \code{/}, \code{\%\%}), comparison
+(\code{==}, \code{!=}, \code{<}, \code{<=}, \code{>}, \code{>=}), boolean (\code{&}, \code{|}, \code{!}), \code{is.na()},
+and string functions (\code{nchar()}, \code{substr()}, \code{grepl()} with fixed patterns).
+
+NA comparisons return NA (SQL semantics). Use \code{is.na()} to filter NAs
+explicitly.
+
+This is a streaming operation (constant memory per batch).
+}
 \examples{
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)

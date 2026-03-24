@@ -871,6 +871,75 @@ static VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         return e;
     }
 
+    if (strcmp(kind, "math_unary") == 0) {
+        const char *fn = list_get_string(lst, "fn");
+        VecExpr *e = vec_expr_alloc(EXPR_MATH_UNARY);
+        e->math_fn = fn[0];
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_DOUBLE;
+        return e;
+    }
+    if (strcmp(kind, "if_else") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_IF_ELSE);
+        e->cond = parse_expr(list_get(lst, "cond"), schema);
+        e->then_expr = parse_expr(list_get(lst, "then_expr"), schema);
+        e->else_expr = parse_expr(list_get(lst, "else_expr"), schema);
+        e->result_type = e->then_expr->result_type;
+        return e;
+    }
+    if (strcmp(kind, "cast") == 0) {
+        const char *to = list_get_string(lst, "to");
+        VecExpr *e = vec_expr_alloc(EXPR_CAST);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        if (strcmp(to, "double") == 0) e->cast_to = VEC_DOUBLE;
+        else if (strcmp(to, "int64") == 0) e->cast_to = VEC_INT64;
+        else if (strcmp(to, "bool") == 0) e->cast_to = VEC_BOOL;
+        else if (strcmp(to, "string") == 0) e->cast_to = VEC_STRING;
+        else vectra_error("unknown cast target: %s", to);
+        e->result_type = e->cast_to;
+        return e;
+    }
+    if (strcmp(kind, "tolower") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_TOLOWER);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "toupper") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_TOUPPER);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "trimws") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_TRIMWS);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "in") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_IN);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        SEXP set_sexp = list_get(lst, "set");
+        e->n_set = Rf_length(set_sexp);
+        if (TYPEOF(set_sexp) == REALSXP) {
+            e->set_dbl = (double *)malloc((size_t)e->n_set * sizeof(double));
+            for (int64_t i = 0; i < e->n_set; i++) e->set_dbl[i] = REAL(set_sexp)[i];
+        } else if (TYPEOF(set_sexp) == INTSXP) {
+            e->set_i64 = (int64_t *)malloc((size_t)e->n_set * sizeof(int64_t));
+            for (int64_t i = 0; i < e->n_set; i++) e->set_i64[i] = (int64_t)INTEGER(set_sexp)[i];
+        } else if (TYPEOF(set_sexp) == STRSXP) {
+            e->set_str = (char **)malloc((size_t)e->n_set * sizeof(char *));
+            for (int64_t i = 0; i < e->n_set; i++) {
+                const char *s = CHAR(STRING_ELT(set_sexp, i));
+                e->set_str[i] = (char *)malloc(strlen(s) + 1);
+                strcpy(e->set_str[i], s);
+            }
+        }
+        e->result_type = VEC_BOOL;
+        return e;
+    }
+
     vectra_error("unknown expression kind: %s", kind);
     return NULL;
 }
@@ -949,6 +1018,12 @@ static AggKind parse_agg_kind(const char *s) {
     if (strcmp(s, "mean") == 0) return AGG_MEAN;
     if (strcmp(s, "min") == 0) return AGG_MIN;
     if (strcmp(s, "max") == 0) return AGG_MAX;
+    if (strcmp(s, "var") == 0) return AGG_VAR;
+    if (strcmp(s, "sd") == 0) return AGG_SD;
+    if (strcmp(s, "first") == 0) return AGG_FIRST;
+    if (strcmp(s, "last") == 0) return AGG_LAST;
+    if (strcmp(s, "any") == 0) return AGG_ANY;
+    if (strcmp(s, "all") == 0) return AGG_ALL;
     vectra_error("unknown aggregation function: %s", s);
     return AGG_COUNT; /* unreachable */
 }
@@ -1104,6 +1179,9 @@ static WinKind parse_win_kind(const char *s) {
     if (strcmp(s, "cummean") == 0) return WIN_CUMMEAN;
     if (strcmp(s, "cummin") == 0) return WIN_CUMMIN;
     if (strcmp(s, "cummax") == 0) return WIN_CUMMAX;
+    if (strcmp(s, "ntile") == 0) return WIN_NTILE;
+    if (strcmp(s, "percent_rank") == 0) return WIN_PERCENT_RANK;
+    if (strcmp(s, "cume_dist") == 0) return WIN_CUME_DIST;
     vectra_error("unknown window function: %s", s);
     return WIN_LAG; /* unreachable */
 }

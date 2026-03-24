@@ -13,7 +13,10 @@ typedef enum {
     WIN_CUMSUM,
     WIN_CUMMEAN,
     WIN_CUMMIN,
-    WIN_CUMMAX
+    WIN_CUMMAX,
+    WIN_NTILE,
+    WIN_PERCENT_RANK,
+    WIN_CUME_DIST
 } WinKind;
 
 typedef struct {

@@ -17,3 +17,10 @@ A new \code{vectra_node} with only the computed columns.
 \description{
 Like \code{\link[=mutate]{mutate()}} but drops all other columns.
 }
+\examples{
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> transmute(kpl = mpg * 0.425) |> collect() |> head()
+unlink(f)
+
+}

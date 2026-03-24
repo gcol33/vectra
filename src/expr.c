@@ -5,6 +5,8 @@
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <ctype.h>
 
 VecExpr *vec_expr_alloc(VecExprKind kind) {
     VecExpr *e = (VecExpr *)calloc(1, sizeof(VecExpr));
@@ -23,6 +25,12 @@ void vec_expr_free(VecExpr *expr) {
     vec_expr_free(expr->cond);
     vec_expr_free(expr->then_expr);
     vec_expr_free(expr->else_expr);
+    if (expr->set_dbl) free(expr->set_dbl);
+    if (expr->set_i64) free(expr->set_i64);
+    if (expr->set_str) {
+        for (int64_t i = 0; i < expr->n_set; i++) free(expr->set_str[i]);
+        free(expr->set_str);
+    }
     free(expr);
 }
 
@@ -271,10 +279,189 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
         vec_array_free(s); free(s);
         return out;
     }
-    case EXPR_IF_ELSE:
-    case EXPR_CAST:
-        vectra_error("if_else/cast not yet implemented");
-        return NULL;
+    case EXPR_MATH_UNARY: {
+        VecArray *o = vec_expr_eval(expr->operand, batch);
+        /* Coerce to double if int64 */
+        VecArray *d = (o->type == VEC_INT64) ? vec_coerce(o, VEC_DOUBLE) : copy_col(o);
+        if (o->type == VEC_INT64) { vec_array_free(o); free(o); o = d; } else { free(d); d = o; }
+        /* d is now VEC_DOUBLE */
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_DOUBLE, d->length);
+        for (int64_t i = 0; i < d->length; i++) {
+            if (!vec_array_is_valid(d, i)) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
+            double v = d->buf.dbl[i];
+            switch (expr->math_fn) {
+            case 'a': out->buf.dbl[i] = fabs(v); break;
+            case 's': out->buf.dbl[i] = sqrt(v); break;
+            case 'l': out->buf.dbl[i] = log(v); break;
+            case 'e': out->buf.dbl[i] = exp(v); break;
+            case 'f': out->buf.dbl[i] = floor(v); break;
+            case 'c': out->buf.dbl[i] = ceil(v); break;
+            case 'r': out->buf.dbl[i] = round(v); break;
+            default: vectra_error("unknown math function: %c", expr->math_fn);
+            }
+        }
+        vec_array_free(d); free(d);
+        return out;
+    }
+    case EXPR_IF_ELSE: {
+        VecArray *cond = vec_expr_eval(expr->cond, batch);
+        VecArray *then_v = vec_expr_eval(expr->then_expr, batch);
+        VecArray *else_v = vec_expr_eval(expr->else_expr, batch);
+        /* Coerce then/else to common type */
+        VecType common = (then_v->type == VEC_DOUBLE || else_v->type == VEC_DOUBLE) ? VEC_DOUBLE :
+                         (then_v->type == VEC_STRING || else_v->type == VEC_STRING) ? VEC_STRING : then_v->type;
+        if (then_v->type != common) { VecArray *t2 = vec_coerce(then_v, common); vec_array_free(then_v); free(then_v); then_v = t2; }
+        if (else_v->type != common) { VecArray *e2 = vec_coerce(else_v, common); vec_array_free(else_v); free(else_v); else_v = e2; }
+        int64_t n = cond->length;
+        VecArray *out;
+        if (common == VEC_STRING) {
+            /* String if_else: compute total length first */
+            int64_t total = 0;
+            for (int64_t i = 0; i < n; i++) {
+                if (!vec_array_is_valid(cond, i)) continue;
+                const VecArray *src = cond->buf.bln[i] ? then_v : else_v;
+                if (vec_array_is_valid(src, i))
+                    total += src->buf.str.offsets[i + 1] - src->buf.str.offsets[i];
+            }
+            out = (VecArray *)malloc(sizeof(VecArray));
+            *out = vec_array_alloc(VEC_STRING, n);
+            free(out->buf.str.data);
+            out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
+            out->buf.str.data_len = total;
+            int64_t off = 0;
+            for (int64_t i = 0; i < n; i++) {
+                out->buf.str.offsets[i] = off;
+                if (!vec_array_is_valid(cond, i)) { vec_array_set_null(out, i); continue; }
+                const VecArray *src = cond->buf.bln[i] ? then_v : else_v;
+                if (!vec_array_is_valid(src, i)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                int64_t s = src->buf.str.offsets[i], e = src->buf.str.offsets[i + 1];
+                int64_t slen = e - s;
+                if (slen > 0) memcpy(out->buf.str.data + off, src->buf.str.data + s, (size_t)slen);
+                off += slen;
+            }
+            out->buf.str.offsets[n] = off;
+        } else {
+            out = (VecArray *)malloc(sizeof(VecArray));
+            *out = vec_array_alloc(common, n);
+            for (int64_t i = 0; i < n; i++) {
+                if (!vec_array_is_valid(cond, i)) { vec_array_set_null(out, i); continue; }
+                const VecArray *src = cond->buf.bln[i] ? then_v : else_v;
+                if (!vec_array_is_valid(src, i)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                switch (common) {
+                case VEC_DOUBLE: out->buf.dbl[i] = src->buf.dbl[i]; break;
+                case VEC_INT64:  out->buf.i64[i] = src->buf.i64[i]; break;
+                case VEC_BOOL:   out->buf.bln[i] = src->buf.bln[i]; break;
+                default: break;
+                }
+            }
+        }
+        vec_array_free(cond); free(cond);
+        vec_array_free(then_v); free(then_v);
+        vec_array_free(else_v); free(else_v);
+        return out;
+    }
+    case EXPR_CAST: {
+        VecArray *o = vec_expr_eval(expr->operand, batch);
+        VecArray *res = vec_coerce(o, expr->cast_to);
+        vec_array_free(o); free(o);
+        return res;
+    }
+    case EXPR_TOLOWER: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING) vectra_error("tolower: argument must be string");
+        VecArray *out = copy_col(s);
+        for (int64_t i = 0; i < out->buf.str.data_len; i++)
+            out->buf.str.data[i] = (char)tolower((unsigned char)out->buf.str.data[i]);
+        vec_array_free(s); free(s);
+        return out;
+    }
+    case EXPR_TOUPPER: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING) vectra_error("toupper: argument must be string");
+        VecArray *out = copy_col(s);
+        for (int64_t i = 0; i < out->buf.str.data_len; i++)
+            out->buf.str.data[i] = (char)toupper((unsigned char)out->buf.str.data[i]);
+        vec_array_free(s); free(s);
+        return out;
+    }
+    case EXPR_TRIMWS: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING) vectra_error("trimws: argument must be string");
+        int64_t n = s->length;
+        /* First pass: compute trimmed lengths */
+        int64_t total = 0;
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(s, i)) continue;
+            int64_t so = s->buf.str.offsets[i], eo = s->buf.str.offsets[i + 1];
+            const char *p = s->buf.str.data + so;
+            int64_t len = eo - so;
+            int64_t start = 0, end = len;
+            while (start < end && (p[start] == ' ' || p[start] == '\t' || p[start] == '\n' || p[start] == '\r')) start++;
+            while (end > start && (p[end - 1] == ' ' || p[end - 1] == '\t' || p[end - 1] == '\n' || p[end - 1] == '\r')) end--;
+            total += end - start;
+        }
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_STRING, n);
+        free(out->buf.str.data);
+        out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
+        out->buf.str.data_len = total;
+        int64_t off = 0;
+        for (int64_t i = 0; i < n; i++) {
+            out->buf.str.offsets[i] = off;
+            if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
+            int64_t so = s->buf.str.offsets[i], eo = s->buf.str.offsets[i + 1];
+            const char *p = s->buf.str.data + so;
+            int64_t len = eo - so;
+            int64_t start = 0, end = len;
+            while (start < end && (p[start] == ' ' || p[start] == '\t' || p[start] == '\n' || p[start] == '\r')) start++;
+            while (end > start && (p[end - 1] == ' ' || p[end - 1] == '\t' || p[end - 1] == '\n' || p[end - 1] == '\r')) end--;
+            int64_t tlen = end - start;
+            if (tlen > 0) memcpy(out->buf.str.data + off, p + start, (size_t)tlen);
+            off += tlen;
+        }
+        out->buf.str.offsets[n] = off;
+        vec_array_free(s); free(s);
+        return out;
+    }
+    case EXPR_IN: {
+        VecArray *o = vec_expr_eval(expr->operand, batch);
+        int64_t n = o->length;
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_BOOL, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
+            int found = 0;
+            if (o->type == VEC_DOUBLE) {
+                double v = o->buf.dbl[i];
+                for (int64_t j = 0; j < expr->n_set; j++) {
+                    if (v == expr->set_dbl[j]) { found = 1; break; }
+                }
+            } else if (o->type == VEC_INT64) {
+                int64_t v = o->buf.i64[i];
+                for (int64_t j = 0; j < expr->n_set; j++) {
+                    if (v == expr->set_i64[j]) { found = 1; break; }
+                }
+            } else if (o->type == VEC_STRING) {
+                int64_t so = o->buf.str.offsets[i], eo = o->buf.str.offsets[i + 1];
+                int64_t slen = eo - so;
+                for (int64_t j = 0; j < expr->n_set; j++) {
+                    int64_t clen = (int64_t)strlen(expr->set_str[j]);
+                    if (slen == clen && memcmp(o->buf.str.data + so, expr->set_str[j], (size_t)slen) == 0) {
+                        found = 1; break;
+                    }
+                }
+            }
+            out->buf.bln[i] = (uint8_t)found;
+        }
+        vec_array_free(o); free(o);
+        return out;
+    }
     }
     vectra_error("unknown expr kind: %d", expr->kind);
     return NULL;

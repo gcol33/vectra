@@ -11,3 +11,5 @@ src/*.so
 src/*.dll
 CLAUDE.md
 inst/benchmarks/baseline.rds
+/doc/
+/Meta/

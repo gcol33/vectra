@@ -216,6 +216,64 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         }
         break;
     }
+
+    case WIN_NTILE: {
+        /* ntile(k): divide partition into k roughly equal buckets.
+           offset holds the number of tiles (k). */
+        int k = offset;
+        for (int64_t i = start; i < end; i++) {
+            int64_t row_idx = i - start;  /* 0-based within partition */
+            int64_t bucket = (row_idx * k / seg_len) + 1;
+            vec_array_set_valid(result, i);
+            result->buf.dbl[i] = (double)bucket;
+        }
+        break;
+    }
+
+    case WIN_PERCENT_RANK: {
+        /* percent_rank = (rank - 1) / (n - 1), where rank is min_rank.
+           If n == 1, result is 0. */
+        int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
+        for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
+        qsort_arr_ctx = input;
+        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        int64_t rank = 1;
+        for (int64_t i = 0; i < seg_len; i++) {
+            if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
+                rank = i + 1;
+            vec_array_set_valid(result, idx[i]);
+            if (seg_len <= 1)
+                result->buf.dbl[idx[i]] = 0.0;
+            else
+                result->buf.dbl[idx[i]] = (double)(rank - 1) / (double)(seg_len - 1);
+        }
+        free(idx);
+        break;
+    }
+
+    case WIN_CUME_DIST: {
+        /* cume_dist = fraction of rows with value <= current value.
+           = (number of rows with value <= x) / n */
+        int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
+        for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
+        qsort_arr_ctx = input;
+        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        /* After sorting, groups of ties get cume_dist = (last position in group + 1) / n */
+        int64_t i = 0;
+        while (i < seg_len) {
+            int64_t j = i + 1;
+            while (j < seg_len && vec_compare_values(input, idx[j], idx[i]) == 0)
+                j++;
+            double cd = (double)j / (double)seg_len;
+            for (int64_t k = i; k < j; k++) {
+                vec_array_set_valid(result, idx[k]);
+                result->buf.dbl[idx[k]] = cd;
+            }
+            i = j;
+        }
+        free(idx);
+        break;
+    }
     }
 
     (void)seg_len;
@@ -537,6 +595,58 @@ static VecBatch *window_next_batch(VecNode *self) {
                             out.buf.dbl[ri] = cur;
                         }
                     }
+                    break;
+                }
+
+                case WIN_NTILE: {
+                    int nt = ws->offset;  /* number of tiles */
+                    for (int64_t j = 0; j < glen; j++) {
+                        int64_t bucket = (j * nt / glen) + 1;
+                        vec_array_set_valid(&out, rows[j]);
+                        out.buf.dbl[rows[j]] = (double)bucket;
+                    }
+                    break;
+                }
+
+                case WIN_PERCENT_RANK: {
+                    int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
+                    qsort_arr_ctx = &cols[in_col];
+                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    int64_t rank = 1;
+                    for (int64_t j = 0; j < glen; j++) {
+                        if (j > 0 && vec_compare_values(&cols[in_col],
+                                sorted[j], sorted[j - 1]) != 0)
+                            rank = j + 1;
+                        vec_array_set_valid(&out, sorted[j]);
+                        if (glen <= 1)
+                            out.buf.dbl[sorted[j]] = 0.0;
+                        else
+                            out.buf.dbl[sorted[j]] = (double)(rank - 1) / (double)(glen - 1);
+                    }
+                    free(sorted);
+                    break;
+                }
+
+                case WIN_CUME_DIST: {
+                    int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
+                    qsort_arr_ctx = &cols[in_col];
+                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    int64_t si = 0;
+                    while (si < glen) {
+                        int64_t sj = si + 1;
+                        while (sj < glen && vec_compare_values(&cols[in_col],
+                                sorted[sj], sorted[si]) == 0)
+                            sj++;
+                        double cd = (double)sj / (double)glen;
+                        for (int64_t sk = si; sk < sj; sk++) {
+                            vec_array_set_valid(&out, sorted[sk]);
+                            out.buf.dbl[sorted[sk]] = cd;
+                        }
+                        si = sj;
+                    }
+                    free(sorted);
                     break;
                 }
                 }

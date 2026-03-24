@@ -26,6 +26,11 @@ A \code{vectra_node} with group columns and a count column.
 \description{
 Count observations by group
 }
+\details{
+Equivalent to \code{group_by(...) |> summarise(n = n())}. When \code{wt} is
+provided, uses \code{sum(wt)} instead of \code{n()}. When \code{sort = TRUE}, results
+are sorted in descending order of the count column.
+}
 \examples{
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)

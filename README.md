@@ -86,14 +86,15 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | Category | Verbs |
 |:---------|:------|
 | **Transform** | `filter()`, `select()`, `mutate()`, `transmute()`, `rename()`, `relocate()` |
-| **Aggregate** | `group_by()`, `summarise()`, `count()`, `tally()`, `distinct()` |
-| **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()` |
-| **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()` |
-| **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()` |
-| **String** | `nchar()`, `substr()`, `grepl()` (in `filter()`/`mutate()`) |
+| **Aggregate** | `group_by()`, `summarise()` (`n`, `sum`, `mean`, `min`, `max`, `sd`, `var`, `first`, `last`, `any`, `all`, `median`, `n_distinct`), `count()`, `tally()`, `distinct()` |
+| **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `cross_join()` |
+| **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()`, `slice()` |
+| **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`, `ntile()`, `percent_rank()`, `cume_dist()` |
+| **String** | `nchar()`, `substr()`, `grepl()`, `tolower()`, `toupper()`, `trimws()` (in `filter()`/`mutate()`) |
+| **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `if_else()`, `between()`, `%in%`, `as.numeric()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
 | **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()` |
-| **Inspect** | `explain()`, `print()`, `pull()` |
+| **Inspect** | `explain()`, `glimpse()`, `print()`, `pull()` |
 
 Full tidyselect support in `select()`, `rename()`, `relocate()`, and `across()`: `starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`, `everything()`, `all_of()`, `any_of()`.
 
@@ -106,6 +107,7 @@ pak::pak("gcol33/vectra")
 
 ## Documentation
 
+- `vignette("quickstart")` --- practical tutorial with runnable examples
 - `vignette("engine")` --- execution model, supported types, coercion rules, memory guarantees, and current limitations
 
 ## Support

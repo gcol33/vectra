@@ -5,6 +5,13 @@
 #'
 #' @return A new `vectra_node` with sorted rows.
 #'
+#' @details
+#' Uses an external merge sort with a 1 GB memory budget. When data exceeds
+#' this limit, sorted runs are spilled to temporary `.vtr` files and merged
+#' via a k-way min-heap. NAs sort last in ascending order.
+#'
+#' This is a materializing operation.
+#'
 #' @examples
 #' f <- tempfile(fileext = ".vtr")
 #' write_vtr(mtcars, f)
@@ -35,7 +42,8 @@ arrange.vectra_node <- function(.data, ...) {
   }
 
   new_xptr <- .Call(C_sort_node, .data$.node, col_names, desc_flags)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  structure(list(.node = new_xptr, .path = .data$.path,
+                 .groups = .data$.groups), class = "vectra_node")
 }
 
 #' Mark a column for descending sort order
@@ -45,6 +53,12 @@ arrange.vectra_node <- function(.data, ...) {
 #' @param x A column name.
 #'
 #' @return A marker used by [arrange()].
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> arrange(desc(mpg)) |> collect() |> head()
+#' unlink(f)
 #'
 #' @export
 desc <- function(x) {
@@ -57,6 +71,18 @@ desc <- function(x) {
 #' @param ... Filter expressions (combined with `&`).
 #'
 #' @return A new `vectra_node` with the filter applied.
+#'
+#' @details
+#' Filter uses zero-copy selection vectors: matching rows are indexed without
+#' copying data. Multiple conditions are combined with `&`. Supported
+#' expression types: arithmetic (`+`, `-`, `*`, `/`, `%%`), comparison
+#' (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`&`, `|`, `!`), `is.na()`,
+#' and string functions (`nchar()`, `substr()`, `grepl()` with fixed patterns).
+#'
+#' NA comparisons return NA (SQL semantics). Use `is.na()` to filter NAs
+#' explicitly.
+#'
+#' This is a streaming operation (constant memory per batch).
 #'
 #' @examples
 #' f <- tempfile(fileext = ".vtr")
@@ -75,7 +101,8 @@ filter.vectra_node <- function(.data, ...) {
   if (length(exprs) == 0) return(.data)
   pred <- combine_predicates(exprs, parent.frame())
   new_xptr <- .Call(C_filter_node, .data$.node, pred)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  structure(list(.node = new_xptr, .path = .data$.path,
+                 .groups = .data$.groups), class = "vectra_node")
 }
 
 #' Select columns from a vectra query
@@ -116,7 +143,14 @@ select.vectra_node <- function(.data, ...) {
   }
 
   new_xptr <- .Call(C_project_node, .data$.node, out_names, expr_lists)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  # Drop group columns that were removed by select
+  grps <- .data$.groups
+  if (!is.null(grps)) {
+    grps <- intersect(grps, out_names)
+    if (length(grps) == 0) grps <- NULL
+  }
+  structure(list(.node = new_xptr, .path = .data$.path,
+                 .groups = grps), class = "vectra_node")
 }
 
 #' Add or transform columns
@@ -125,6 +159,18 @@ select.vectra_node <- function(.data, ...) {
 #' @param ... Named expressions for new or transformed columns.
 #'
 #' @return A new `vectra_node` with mutated columns.
+#'
+#' @details
+#' Supported expression types: arithmetic (`+`, `-`, `*`, `/`, `%%`),
+#' comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()` (fixed
+#' match only). Window functions (`row_number()`, `rank()`, `dense_rank()`,
+#' `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`) are
+#' detected automatically and routed to a dedicated window node.
+#'
+#' When grouped, window functions respect partition boundaries.
+#'
+#' This is a streaming operation for regular expressions; window functions
+#' materialize all rows within each partition.
 #'
 #' @examples
 #' f <- tempfile(fileext = ".vtr")
@@ -199,6 +245,12 @@ mutate.vectra_node <- function(.data, ...) {
 #'
 #' @return A `vectra_node` with grouping information stored.
 #'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> group_by(cyl) |> summarise(avg = mean(mpg)) |> collect()
+#' unlink(f)
+#'
 #' @export
 group_by <- function(.data, ...) {
   UseMethod("group_by")
@@ -217,11 +269,25 @@ group_by.vectra_node <- function(.data, ...) {
 #'
 #' @param .data A grouped `vectra_node` (from [group_by()]).
 #' @param ... Named aggregation expressions using `n()`, `sum()`, `mean()`,
-#'   `min()`, `max()`.
+#'   `min()`, `max()`, `sd()`, `var()`, `first()`, `last()`, `any()`, `all()`,
+#'   `median()`, `n_distinct()`.
 #' @param .groups How to handle groups in the result. One of `"drop_last"`
 #'   (default), `"drop"`, or `"keep"`.
 #'
 #' @return A `vectra_node` with one row per group.
+#'
+#' @details
+#' Aggregation is hash-based by default. When the engine detects it is
+#' advantageous, it switches to a sort-based path that can spill to disk,
+#' keeping memory bounded regardless of group count.
+#'
+#' All aggregation functions accept `na.rm = TRUE` to skip NA values.
+#' Without `na.rm`, any NA in a group poisons the result (returns NA).
+#' R-matching edge cases: `sum(na.rm = TRUE)` on all-NA returns 0,
+#' `mean(na.rm = TRUE)` on all-NA returns NaN, `min/max(na.rm = TRUE)` on
+#' all-NA returns Inf/-Inf with a warning.
+#'
+#' This is a materializing operation.
 #'
 #' @examples
 #' f <- tempfile(fileext = ".vtr")
@@ -283,6 +349,52 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
                            .groups = node$.groups), class = "vectra_node")
   }
 
+  # Check for R-fallback aggregations (median, n_distinct)
+  has_fallback <- any(vapply(agg_specs, function(s) isTRUE(s$.r_fallback), logical(1)))
+  if (has_fallback) {
+    df <- collect(node)
+    .eval_agg <- function(spec, chunk) {
+      col <- if (!is.null(spec$col)) chunk[[spec$col]] else NULL
+      switch(spec$kind,
+        n = nrow(chunk),
+        sum = sum(col, na.rm = spec$na_rm),
+        mean = mean(col, na.rm = spec$na_rm),
+        min = min(col, na.rm = spec$na_rm),
+        max = max(col, na.rm = spec$na_rm),
+        sd = sd(col, na.rm = spec$na_rm),
+        var = var(col, na.rm = spec$na_rm),
+        first = col[!is.na(col)][1],
+        last = rev(col[!is.na(col)])[1],
+        any = any(as.logical(col), na.rm = spec$na_rm),
+        all = all(as.logical(col), na.rm = spec$na_rm),
+        median = median(col, na.rm = spec$na_rm),
+        n_distinct = length(unique(col[!is.na(col)])))
+    }
+    if (is.null(key_names) || length(key_names) == 0) {
+      results <- list()
+      for (i in seq_along(agg_specs)) {
+        results[[agg_specs[[i]]$name]] <- .eval_agg(agg_specs[[i]], df)
+      }
+      return(as.data.frame(results, stringsAsFactors = FALSE))
+    } else {
+      split_idx <- interaction(df[key_names], drop = TRUE)
+      pieces <- split(df, split_idx, drop = TRUE)
+      result_list <- lapply(pieces, function(chunk) {
+        row <- chunk[1, key_names, drop = FALSE]
+        for (i in seq_along(agg_specs)) {
+          row[[agg_specs[[i]]$name]] <- .eval_agg(agg_specs[[i]], chunk)
+        }
+        row
+      })
+      result <- do.call(rbind, result_list)
+      rownames(result) <- NULL
+      return(result)
+    }
+  }
+
+  # Remove .r_fallback flags before passing to C
+  agg_specs <- lapply(agg_specs, function(s) { s$.r_fallback <- NULL; s })
+
   new_xptr <- .Call(C_group_agg_node, node$.node, key_names, agg_specs)
 
   # Determine residual grouping
@@ -339,7 +451,15 @@ rename.vectra_node <- function(.data, ...) {
     expr_lists[[idx]] <- list(kind = "col_ref", name = old_names[i])
   }
   new_xptr <- .Call(C_project_node, .data$.node, out_names, expr_lists)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  # Update group names if any were renamed
+  grps <- .data$.groups
+  if (!is.null(grps)) {
+    for (i in seq_along(old_names)) {
+      grps[grps == old_names[i]] <- new_names[i]
+    }
+  }
+  structure(list(.node = new_xptr, .path = .data$.path,
+                 .groups = grps), class = "vectra_node")
 }
 
 #' Relocate columns
@@ -350,6 +470,12 @@ rename.vectra_node <- function(.data, ...) {
 #' @param .after Column name to place after (unquoted).
 #'
 #' @return A new `vectra_node` with reordered columns.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> relocate(hp, wt, .before = cyl) |> collect() |> head()
+#' unlink(f)
 #'
 #' @export
 relocate <- function(.data, ..., .before = NULL, .after = NULL) {
@@ -398,7 +524,8 @@ relocate.vectra_node <- function(.data, ..., .before = NULL, .after = NULL) {
 
   expr_lists <- vector("list", length(out_names))
   new_xptr <- .Call(C_project_node, .data$.node, out_names, expr_lists)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  structure(list(.node = new_xptr, .path = .data$.path,
+                 .groups = .data$.groups), class = "vectra_node")
 }
 
 #' Keep only columns from mutate expressions
@@ -410,6 +537,12 @@ relocate.vectra_node <- function(.data, ..., .before = NULL, .after = NULL) {
 #'
 #' @return A new `vectra_node` with only the computed columns.
 #'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> transmute(kpl = mpg * 0.425) |> collect() |> head()
+#' unlink(f)
+#'
 #' @export
 transmute <- function(.data, ...) {
   UseMethod("transmute")
@@ -418,6 +551,10 @@ transmute <- function(.data, ...) {
 #' @export
 transmute.vectra_node <- function(.data, ...) {
   dots <- eval(substitute(alist(...)))
+  # Expand across() calls
+  schema <- .Call(C_node_schema, .data$.node)
+  proxy <- schema_proxy(schema)
+  dots <- expand_across(dots, schema$name, parent.frame(), proxy)
   dot_names <- names(dots)
   if (is.null(dot_names) || any(dot_names == ""))
     stop("all transmute expressions must be named")
@@ -440,6 +577,12 @@ transmute.vectra_node <- function(.data, ...) {
 #' @param .keep_all If `TRUE`, keep all columns (not just those in `...`).
 #'
 #' @return A `vectra_node` with unique rows.
+#'
+#' @details
+#' Uses hash-based grouping with zero aggregations. When `.keep_all = TRUE`
+#' with a column subset, falls back to R's `duplicated()` with a message.
+#'
+#' This is a materializing operation.
 #'
 #' @examples
 #' f <- tempfile(fileext = ".vtr")
@@ -466,8 +609,8 @@ distinct.vectra_node <- function(.data, ..., .keep_all = FALSE) {
   }
 
   if (.keep_all && length(col_exprs) > 0) {
-    # TODO: keep_all with subset of columns needs first-row-per-group
-    # For now, fall back to collect + base R
+    # .keep_all with subset of columns: fall back to collect + base R
+    message("distinct(.keep_all = TRUE) with column subset: falling back to R")
     df <- collect(.data)
     return(df[!duplicated(df[, key_names, drop = FALSE]), , drop = FALSE])
   }
@@ -484,6 +627,12 @@ distinct.vectra_node <- function(.data, ..., .keep_all = FALSE) {
 #' @param ... Ignored.
 #'
 #' @return An ungrouped `vectra_node`.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> group_by(cyl) |> ungroup()
+#' unlink(f)
 #'
 #' @export
 ungroup <- function(x, ...) {
@@ -504,6 +653,11 @@ ungroup.vectra_node <- function(x, ...) {
 #' @param name Name of the count column (default `"n"`).
 #'
 #' @return A `vectra_node` with group columns and a count column.
+#'
+#' @details
+#' Equivalent to `group_by(...) |> summarise(n = n())`. When `wt` is
+#' provided, uses `sum(wt)` instead of `n()`. When `sort = TRUE`, results
+#' are sorted in descending order of the count column.
 #'
 #' @examples
 #' f <- tempfile(fileext = ".vtr")
@@ -538,6 +692,10 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
   }
 
   new_xptr <- .Call(C_group_agg_node, node$.node, grp_names, agg_specs)
+  if (sort) {
+    sort_xptr <- .Call(C_sort_node, new_xptr, cnt_name, TRUE)
+    return(structure(list(.node = sort_xptr, .path = node$.path), class = "vectra_node"))
+  }
   structure(list(.node = new_xptr, .path = node$.path), class = "vectra_node")
 }
 
@@ -561,6 +719,10 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
   }
 
   new_xptr <- .Call(C_group_agg_node, x$.node, key_names, agg_specs)
+  if (sort) {
+    sort_xptr <- .Call(C_sort_node, new_xptr, cnt_name, TRUE)
+    return(structure(list(.node = sort_xptr, .path = x$.path), class = "vectra_node"))
+  }
   structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
 }
 
@@ -645,9 +807,21 @@ head.vectra_node <- function(x, n = 6L, ...) {
 #' @param .data A `vectra_node` object.
 #' @param n Number of rows to select.
 #' @param order_by Column to order by (for `slice_min`/`slice_max`).
-#' @param with_ties If `TRUE`, include ties. Currently ignored.
+#' @param with_ties If `TRUE` (default), includes all rows that tie with the
+#'   nth value. If `FALSE`, returns exactly `n` rows.
 #'
-#' @return A `vectra_node` or data.frame.
+#' @return A `vectra_node` for `slice_head()` and `slice_min/max(...,
+#'   with_ties = FALSE)`. A data.frame for `slice_tail()` and
+#'   `slice_min/max(..., with_ties = TRUE)` (the default), since these must
+#'   materialize all rows.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> slice_head(n = 3) |> collect()
+#' tbl(f) |> slice_min(order_by = mpg, n = 3) |> collect()
+#' tbl(f) |> slice_max(order_by = mpg, n = 3) |> collect()
+#' unlink(f)
 #'
 #' @export
 slice_head <- function(.data, n = 1L) {
@@ -684,9 +858,31 @@ slice_min <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 #' @export
 slice_min.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   order_col <- as.character(substitute(order_by))
-  new_xptr <- .Call(C_topn_node, .data$.node, order_col, FALSE,
-                    as.double(n))
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  if (!with_ties) {
+    new_xptr <- .Call(C_topn_node, .data$.node, order_col, FALSE,
+                      as.double(n))
+    return(structure(list(.node = new_xptr, .path = .data$.path),
+                     class = "vectra_node"))
+  }
+  # with_ties = TRUE: collect all data, sort, find the nth value, keep all
+  # rows that tie with it. Must collect first because C nodes are single-use.
+  df <- collect(.data)
+  if (nrow(df) == 0) return(df)
+  vals <- df[[order_col]]
+  ord <- order(vals, na.last = TRUE)
+  # Take at most n non-NA values; if fewer than n non-NA, include NAs up to n
+  n_nonNA <- sum(!is.na(vals))
+  take <- min(n, nrow(df))
+  selected <- ord[seq_len(take)]
+  result <- df[selected, , drop = FALSE]
+  # Check for ties: if there are more rows beyond n with same boundary value
+  if (take <= n_nonNA && take < nrow(df)) {
+    boundary <- vals[ord[take]]
+    extra <- which(!is.na(vals) & vals == boundary)
+    all_keep <- union(selected, extra)
+    result <- df[sort(all_keep), , drop = FALSE]
+  }
+  result[order(result[[order_col]], na.last = TRUE), , drop = FALSE]
 }
 
 #' @rdname slice_head
@@ -698,9 +894,59 @@ slice_max <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 #' @export
 slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   order_col <- as.character(substitute(order_by))
-  new_xptr <- .Call(C_topn_node, .data$.node, order_col, TRUE,
-                    as.double(n))
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  if (!with_ties) {
+    new_xptr <- .Call(C_topn_node, .data$.node, order_col, TRUE,
+                      as.double(n))
+    return(structure(list(.node = new_xptr, .path = .data$.path),
+                     class = "vectra_node"))
+  }
+  df <- collect(.data)
+  if (nrow(df) == 0) return(df)
+  vals <- df[[order_col]]
+  ord <- order(vals, decreasing = TRUE, na.last = TRUE)
+  n_nonNA <- sum(!is.na(vals))
+  take <- min(n, nrow(df))
+  selected <- ord[seq_len(take)]
+  result <- df[selected, , drop = FALSE]
+  if (take <= n_nonNA && take < nrow(df)) {
+    boundary <- vals[ord[take]]
+    extra <- which(!is.na(vals) & vals == boundary)
+    all_keep <- union(selected, extra)
+    result <- df[sort(all_keep), , drop = FALSE]
+  }
+  result[order(result[[order_col]], decreasing = TRUE, na.last = TRUE), , drop = FALSE]
+}
+
+#' Select rows by position
+#'
+#' @param .data A `vectra_node` object.
+#' @param ... Integer row indices (positive or negative).
+#'
+#' @return A data.frame with the selected rows.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars, f)
+#' tbl(f) |> slice(1, 3, 5)
+#' unlink(f)
+#'
+#' @export
+slice <- function(.data, ...) {
+  UseMethod("slice")
+}
+
+#' @export
+slice.vectra_node <- function(.data, ...) {
+  indices <- c(...)
+  df <- collect(.data)
+  if (all(indices > 0)) {
+    indices <- indices[indices <= nrow(df)]
+    df[indices, , drop = FALSE]
+  } else if (all(indices < 0)) {
+    df[indices, , drop = FALSE]
+  } else {
+    stop("slice indices must be all positive or all negative")
+  }
 }
 
 # Parse an aggregation expression like sum(x), mean(y, na.rm = TRUE), n()
@@ -710,7 +956,8 @@ parse_agg_expr <- function(expr, output_name) {
     stop(sprintf("summarise expression '%s' must be a function call", output_name))
 
   fn <- as.character(expr[[1]])
-  valid_aggs <- c("n", "sum", "mean", "min", "max")
+  valid_aggs <- c("n", "sum", "mean", "min", "max", "sd", "var", "first", "last",
+                   "any", "all", "median", "n_distinct")
   if (!fn %in% valid_aggs)
     stop(sprintf("unknown aggregation function: %s. Use one of: %s",
                  fn, paste(valid_aggs, collapse = ", ")))
@@ -732,6 +979,23 @@ parse_agg_expr <- function(expr, output_name) {
         na_rm <- isTRUE(eval(expr[[idx]]))
       }
     }
+  }
+
+  # median and n_distinct are R-level fallbacks (need all values per group)
+  if (fn == "median") {
+    col_name <- if (is.name(col_arg)) as.character(col_arg) else NULL
+    if (is.null(col_name))
+      stop("median() requires a simple column reference, not an expression")
+    return(list(name = output_name, kind = "median", col = col_name,
+                na_rm = na_rm, .r_fallback = TRUE))
+  }
+
+  if (fn == "n_distinct") {
+    col_name <- if (is.name(col_arg)) as.character(col_arg) else NULL
+    if (is.null(col_name))
+      stop("n_distinct() requires a simple column reference, not an expression")
+    return(list(name = output_name, kind = "n_distinct", col = col_name,
+                na_rm = FALSE, .r_fallback = TRUE))
   }
 
   if (is.name(col_arg)) {

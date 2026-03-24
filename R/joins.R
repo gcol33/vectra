@@ -49,6 +49,15 @@ parse_join_keys <- function(x, y, by) {
 #'
 #' @return A `vectra_node` with the joined result.
 #'
+#' @details
+#' All joins use a build-right, probe-left hash join. The entire right-side
+#' table is materialized into a hash table; left-side batches stream through.
+#' Memory cost is proportional to the right-side table size.
+#'
+#' NA keys never match (SQL NULL semantics). Key types are auto-coerced
+#' following the `bool < int64 < double` hierarchy. Joining string against
+#' numeric keys is an error.
+#'
 #' @examples
 #' f1 <- tempfile(fileext = ".vtr")
 #' f2 <- tempfile(fileext = ".vtr")
@@ -207,4 +216,58 @@ anti_join.vectra_node <- function(x, y, by = NULL, ...) {
   new_xptr <- .Call(C_join_node, x$.node, y$.node,
                     "anti", keys$left, keys$right, ".x", ".y")
   structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+}
+
+#' Cross join two vectra tables
+#'
+#' Returns every combination of rows from `x` and `y` (Cartesian product).
+#' Both tables are collected before joining.
+#'
+#' @param x A `vectra_node` object or data.frame.
+#' @param y A `vectra_node` object or data.frame.
+#' @param suffix Suffixes for disambiguating column names (default `c(".x", ".y")`).
+#' @param ... Ignored.
+#'
+#' @return A data.frame with `nrow(x) * nrow(y)` rows.
+#'
+#' @examples
+#' f1 <- tempfile(fileext = ".vtr")
+#' f2 <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(a = 1:2), f1)
+#' write_vtr(data.frame(b = c("x", "y", "z"), stringsAsFactors = FALSE), f2)
+#' cross_join(tbl(f1), tbl(f2))
+#' unlink(c(f1, f2))
+#'
+#' @export
+cross_join <- function(x, y, suffix = c(".x", ".y"), ...) {
+  UseMethod("cross_join")
+}
+
+#' @export
+cross_join.vectra_node <- function(x, y, suffix = c(".x", ".y"), ...) {
+  df_x <- if (inherits(x, "vectra_node")) collect(x) else x
+  df_y <- if (inherits(y, "vectra_node")) collect(y) else y
+
+  nx <- nrow(df_x)
+  ny <- nrow(df_y)
+
+  # Expand: repeat each x row ny times, tile y nx times
+  idx_x <- rep(seq_len(nx), each = ny)
+  idx_y <- rep(seq_len(ny), times = nx)
+
+  result_x <- df_x[idx_x, , drop = FALSE]
+  result_y <- df_y[idx_y, , drop = FALSE]
+
+  # Handle name collisions
+  common <- intersect(names(result_x), names(result_y))
+  if (length(common) > 0) {
+    for (nm in common) {
+      names(result_x)[names(result_x) == nm] <- paste0(nm, suffix[1])
+      names(result_y)[names(result_y) == nm] <- paste0(nm, suffix[2])
+    }
+  }
+
+  result <- cbind(result_x, result_y)
+  rownames(result) <- NULL
+  result
 }

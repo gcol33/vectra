@@ -85,6 +85,57 @@ void agg_accum_ensure(AggAccum *acc, int64_t n_groups) {
             if (!acc->min_i64 || !acc->max_i64) vectra_error("agg alloc failed");
         }
         break;
+    case AGG_VAR:
+    case AGG_SD:
+        acc->count = (int64_t *)realloc(acc->count, (size_t)new_cap * sizeof(int64_t));
+        if (!acc->count) vectra_error("agg alloc failed");
+        memset(acc->count + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(int64_t));
+        acc->sum_dbl = (double *)realloc(acc->sum_dbl, (size_t)new_cap * sizeof(double));
+        if (!acc->sum_dbl) vectra_error("agg alloc failed");
+        for (int64_t i = old_cap; i < new_cap; i++) acc->sum_dbl[i] = 0.0;
+        acc->m2 = (double *)realloc(acc->m2, (size_t)new_cap * sizeof(double));
+        if (!acc->m2) vectra_error("agg alloc failed");
+        for (int64_t i = old_cap; i < new_cap; i++) acc->m2[i] = 0.0;
+        grow_has_na(acc, old_cap, new_cap);
+        break;
+    case AGG_FIRST:
+        acc->has_first = (int *)realloc(acc->has_first, (size_t)new_cap * sizeof(int));
+        if (!acc->has_first) vectra_error("agg alloc failed");
+        memset(acc->has_first + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(int));
+        grow_has_na(acc, old_cap, new_cap);
+        if (acc->input_type == VEC_INT64) {
+            acc->first_i64 = (int64_t *)realloc(acc->first_i64, (size_t)new_cap * sizeof(int64_t));
+            if (!acc->first_i64) vectra_error("agg alloc failed");
+        } else {
+            acc->first_dbl = (double *)realloc(acc->first_dbl, (size_t)new_cap * sizeof(double));
+            if (!acc->first_dbl) vectra_error("agg alloc failed");
+        }
+        break;
+    case AGG_LAST:
+        acc->has_value = (int *)realloc(acc->has_value, (size_t)new_cap * sizeof(int));
+        if (!acc->has_value) vectra_error("agg alloc failed");
+        memset(acc->has_value + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(int));
+        grow_has_na(acc, old_cap, new_cap);
+        if (acc->input_type == VEC_INT64) {
+            acc->last_i64 = (int64_t *)realloc(acc->last_i64, (size_t)new_cap * sizeof(int64_t));
+            if (!acc->last_i64) vectra_error("agg alloc failed");
+        } else {
+            acc->last_dbl = (double *)realloc(acc->last_dbl, (size_t)new_cap * sizeof(double));
+            if (!acc->last_dbl) vectra_error("agg alloc failed");
+        }
+        break;
+    case AGG_ANY:
+        acc->has_value = (int *)realloc(acc->has_value, (size_t)new_cap * sizeof(int));
+        if (!acc->has_value) vectra_error("agg alloc failed");
+        memset(acc->has_value + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(int));
+        grow_has_na(acc, old_cap, new_cap);
+        break;
+    case AGG_ALL:
+        acc->has_value = (int *)realloc(acc->has_value, (size_t)new_cap * sizeof(int));
+        if (!acc->has_value) vectra_error("agg alloc failed");
+        for (int64_t i = old_cap; i < new_cap; i++) acc->has_value[i] = 1;
+        grow_has_na(acc, old_cap, new_cap);
+        break;
     }
     acc->capacity = new_cap;
     acc->n_groups = n_groups;
@@ -152,6 +203,82 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
                 acc->max_i64[group_id] = v;
                 acc->has_value[group_id] = 1;
             }
+        }
+        break;
+    case AGG_VAR:
+    case AGG_SD:
+        if (!is_valid) {
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
+        acc->count[group_id]++;
+        {
+            double val;
+            if (acc->input_type == VEC_DOUBLE)
+                val = col->buf.dbl[row];
+            else if (acc->input_type == VEC_INT64)
+                val = (double)col->buf.i64[row];
+            else
+                val = (double)col->buf.bln[row];
+            /* Welford's online algorithm */
+            double delta = val - acc->sum_dbl[group_id];  /* sum_dbl holds mean */
+            acc->sum_dbl[group_id] += delta / (double)acc->count[group_id];
+            double delta2 = val - acc->sum_dbl[group_id];
+            acc->m2[group_id] += delta * delta2;
+        }
+        break;
+    case AGG_FIRST:
+        if (!is_valid) {
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
+        if (!acc->has_first[group_id]) {
+            acc->has_first[group_id] = 1;
+            if (acc->input_type == VEC_DOUBLE)
+                acc->first_dbl[group_id] = col->buf.dbl[row];
+            else if (acc->input_type == VEC_INT64)
+                acc->first_i64[group_id] = col->buf.i64[row];
+            else if (acc->input_type == VEC_BOOL)
+                acc->first_dbl[group_id] = (double)col->buf.bln[row];
+        }
+        break;
+    case AGG_LAST:
+        if (!is_valid) {
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
+        acc->has_value[group_id] = 1;
+        if (acc->input_type == VEC_DOUBLE)
+            acc->last_dbl[group_id] = col->buf.dbl[row];
+        else if (acc->input_type == VEC_INT64)
+            acc->last_i64[group_id] = col->buf.i64[row];
+        else if (acc->input_type == VEC_BOOL)
+            acc->last_dbl[group_id] = (double)col->buf.bln[row];
+        break;
+    case AGG_ANY:
+        if (!is_valid) {
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
+        if (acc->input_type == VEC_BOOL) {
+            if (col->buf.bln[row]) acc->has_value[group_id] = 1;
+        } else if (acc->input_type == VEC_DOUBLE) {
+            if (col->buf.dbl[row] != 0.0) acc->has_value[group_id] = 1;
+        } else if (acc->input_type == VEC_INT64) {
+            if (col->buf.i64[row] != 0) acc->has_value[group_id] = 1;
+        }
+        break;
+    case AGG_ALL:
+        if (!is_valid) {
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
+        if (acc->input_type == VEC_BOOL) {
+            if (!col->buf.bln[row]) acc->has_value[group_id] = 0;
+        } else if (acc->input_type == VEC_DOUBLE) {
+            if (col->buf.dbl[row] == 0.0) acc->has_value[group_id] = 0;
+        } else if (acc->input_type == VEC_INT64) {
+            if (col->buf.i64[row] == 0) acc->has_value[group_id] = 0;
         }
         break;
     }
@@ -247,6 +374,77 @@ VecArray agg_accum_finish(AggAccum *acc) {
         }
         return arr;
     }
+    case AGG_VAR: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (acc->has_na && acc->has_na[i]) {
+                vec_array_set_null(&arr, i);
+            } else if (acc->count[i] < 2) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i);
+                arr.buf.dbl[i] = acc->m2[i] / (double)(acc->count[i] - 1);
+            }
+        }
+        return arr;
+    }
+    case AGG_SD: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (acc->has_na && acc->has_na[i]) {
+                vec_array_set_null(&arr, i);
+            } else if (acc->count[i] < 2) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i);
+                arr.buf.dbl[i] = sqrt(acc->m2[i] / (double)(acc->count[i] - 1));
+            }
+        }
+        return arr;
+    }
+    case AGG_FIRST: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if ((acc->has_na && acc->has_na[i]) || !acc->has_first[i]) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i);
+                if (acc->input_type == VEC_INT64)
+                    arr.buf.dbl[i] = (double)acc->first_i64[i];
+                else
+                    arr.buf.dbl[i] = acc->first_dbl[i];
+            }
+        }
+        return arr;
+    }
+    case AGG_LAST: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if ((acc->has_na && acc->has_na[i]) || !acc->has_value[i]) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i);
+                if (acc->input_type == VEC_INT64)
+                    arr.buf.dbl[i] = (double)acc->last_i64[i];
+                else
+                    arr.buf.dbl[i] = acc->last_dbl[i];
+            }
+        }
+        return arr;
+    }
+    case AGG_ANY:
+    case AGG_ALL: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (acc->has_na && acc->has_na[i]) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i);
+                arr.buf.dbl[i] = (double)acc->has_value[i];
+            }
+        }
+        return arr;
+    }
     }
 
     VecArray empty;
@@ -265,5 +463,11 @@ void agg_accum_free(AggAccum *acc) {
     free(acc->max_i64);
     free(acc->has_value);
     free(acc->has_na);
+    free(acc->m2);
+    free(acc->first_dbl);
+    free(acc->first_i64);
+    free(acc->last_dbl);
+    free(acc->last_i64);
+    free(acc->has_first);
     memset(acc, 0, sizeof(*acc));
 }

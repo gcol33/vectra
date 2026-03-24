@@ -22,11 +22,23 @@ slice_max(.data, order_by, n = 1L, with_ties = TRUE)
 
 \item{order_by}{Column to order by (for \code{slice_min}/\code{slice_max}).}
 
-\item{with_ties}{If \code{TRUE}, include ties. Currently ignored.}
+\item{with_ties}{If \code{TRUE} (default), includes all rows that tie with the
+nth value. If \code{FALSE}, returns exactly \code{n} rows.}
 }
 \value{
-A \code{vectra_node} or data.frame.
+A \code{vectra_node} for \code{slice_head()} and \code{slice_min/max(..., with_ties = FALSE)}. A data.frame for \code{slice_tail()} and
+\code{slice_min/max(..., with_ties = TRUE)} (the default), since these must
+materialize all rows.
 }
 \description{
 Select first or last rows
+}
+\examples{
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> slice_head(n = 3) |> collect()
+tbl(f) |> slice_min(order_by = mpg, n = 3) |> collect()
+tbl(f) |> slice_max(order_by = mpg, n = 3) |> collect()
+unlink(f)
+
 }

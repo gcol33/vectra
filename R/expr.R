@@ -96,6 +96,72 @@ serialize_expr <- function(expr, env = parent.frame()) {
                 operand = serialize_expr(x, env)))
   }
 
+  # Math functions
+  if (fn %in% c("abs", "sqrt", "log", "exp", "floor", "ceiling", "round")) {
+    fn_char <- switch(fn, abs = "a", sqrt = "s", log = "l", exp = "e",
+                      floor = "f", ceiling = "c", round = "r")
+    return(list(kind = "math_unary", fn = fn_char,
+                operand = serialize_expr(expr[[2]], env)))
+  }
+
+  # if_else(cond, true, false)
+  if (fn == "if_else" || fn == "ifelse") {
+    return(list(kind = "if_else",
+                cond = serialize_expr(expr[[2]], env),
+                then_expr = serialize_expr(expr[[3]], env),
+                else_expr = serialize_expr(expr[[4]], env)))
+  }
+
+  # Type casting
+  if (fn %in% c("as.numeric", "as.double")) {
+    return(list(kind = "cast", to = "double",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "as.integer") {
+    return(list(kind = "cast", to = "int64",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "as.character") {
+    return(list(kind = "cast", to = "string",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "as.logical") {
+    return(list(kind = "cast", to = "bool",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+
+  # String functions
+  if (fn == "tolower") {
+    return(list(kind = "tolower",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "toupper") {
+    return(list(kind = "toupper",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+  if (fn == "trimws") {
+    return(list(kind = "trimws",
+                operand = serialize_expr(expr[[2]], env)))
+  }
+
+  # %in% operator
+  if (fn == "%in%") {
+    set_val <- eval(expr[[3]], env)
+    return(list(kind = "in",
+                operand = serialize_expr(expr[[2]], env),
+                set = set_val))
+  }
+
+  # between(x, left, right) -> x >= left & x <= right
+  if (fn == "between") {
+    x <- serialize_expr(expr[[2]], env)
+    left <- serialize_expr(expr[[3]], env)
+    right <- serialize_expr(expr[[4]], env)
+    return(list(kind = "bool", op = "&",
+                left = list(kind = "cmp", op = ">=", left = x, right = left),
+                right = list(kind = "cmp", op = "<=", left = x, right = right)))
+  }
+
   stop(sprintf("unsupported function in expression: %s", fn))
 }
 

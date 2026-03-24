@@ -18,3 +18,10 @@ A data.frame (not a lazy node).
 Like \code{\link[=summarise]{summarise()}} but allows expressions that return more than one row
 per group. Currently implemented via \code{collect()} fallback.
 }
+\examples{
+f <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(g = c("a", "a", "b"), x = c(1, 2, 3)), f)
+tbl(f) |> group_by(g) |> reframe(range_x = range(x))
+unlink(f)
+
+}

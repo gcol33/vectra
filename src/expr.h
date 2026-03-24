@@ -19,7 +19,12 @@ typedef enum {
     EXPR_NEGATE,     /* unary minus */
     EXPR_NCHAR,      /* nchar(x) -> int64 */
     EXPR_SUBSTR,     /* substr(x, start, stop) -> string */
-    EXPR_GREPL       /* grepl(pattern, x) -> bool (fixed match) */
+    EXPR_GREPL,      /* grepl(pattern, x) -> bool (fixed match) */
+    EXPR_MATH_UNARY, /* abs, sqrt, log, exp, floor, ceiling, round */
+    EXPR_TOLOWER,    /* tolower(x) -> string */
+    EXPR_TOUPPER,    /* toupper(x) -> string */
+    EXPR_TRIMWS,     /* trimws(x) -> string */
+    EXPR_IN          /* x %in% c(...) -> bool */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -59,6 +64,17 @@ struct VecExpr {
     /* uses operand */
 
     /* EXPR_NEGATE */
+    /* uses operand */
+
+    /* EXPR_MATH_UNARY */
+    char math_fn;  /* 'a'=abs, 's'=sqrt, 'l'=log, 'e'=exp, 'f'=floor, 'c'=ceiling, 'r'=round */
+    /* uses operand */
+
+    /* EXPR_IN */
+    int64_t  n_set;
+    double  *set_dbl;
+    int64_t *set_i64;
+    char   **set_str;
     /* uses operand */
 };
 

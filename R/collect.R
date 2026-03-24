@@ -24,3 +24,8 @@ collect <- function(x, ...) {
 collect.vectra_node <- function(x, ...) {
   .Call(C_collect, x$.node)
 }
+
+#' @export
+collect.data.frame <- function(x, ...) {
+  x
+}

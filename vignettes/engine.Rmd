@@ -102,7 +102,7 @@ know or care which source is upstream.
 |:-----|:--------|:------|
 | `filter(...)` | yes | Zero-copy via selection vector |
 | `select(...)` | yes | Full tidyselect: `starts_with()`, `where()`, `-col`, etc. |
-| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()` |
+| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()`, math (`abs`, `sqrt`, `log`, `exp`, `floor`, `ceiling`, `round`), `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), `tolower()`, `toupper()`, `trimws()` |
 | `transmute(...)` | yes | Like `mutate()` but drops unmentioned columns |
 | `rename(...)` | yes | Full tidyselect rename support |
 | `relocate(...)` | yes | Reorder columns with `.before` / `.after` |
@@ -117,7 +117,7 @@ know or care which source is upstream.
 | `count(...)` | **materializes** | Sugar for `group_by() |> summarise(n = n())` |
 | `tally(...)` | **materializes** | Like `count()` on existing groups |
 
-Supported aggregation functions: `n()`, `sum()`, `mean()`, `min()`, `max()`.
+Supported aggregation functions: `n()`, `sum()`, `mean()`, `min()`, `max()`, `sd()`, `var()`, `first()`, `last()`, `any()`, `all()`, `median()`, `n_distinct()`.
 All accept `na.rm = TRUE`.
 
 ### Ordering verbs
@@ -127,9 +127,10 @@ All accept `na.rm = TRUE`.
 | `arrange(...)` | **materializes** | External merge sort with 1 GB spill budget |
 | `slice_head(n)` | yes | Limit node, stops after n rows |
 | `slice_tail(n)` | **materializes** | Must see all rows to take last n |
-| `slice_min(order_by, n)` | partial | Heap-based top-N, buffers n rows |
-| `slice_max(order_by, n)` | partial | Heap-based top-N, buffers n rows |
+| `slice_min(order_by, n)` | partial | Heap-based top-N; `with_ties = TRUE` (default) includes ties |
+| `slice_max(order_by, n)` | partial | Heap-based top-N; `with_ties = TRUE` (default) includes ties |
 | `head(n)` | yes | Alias for `slice_head() |> collect()` |
+| `slice(...)` | **materializes** | Select or exclude rows by position (positive or negative indices) |
 | `distinct(...)` | **materializes** | Uses hash-based grouping |
 
 ### Join verbs
@@ -142,6 +143,7 @@ All accept `na.rm = TRUE`.
 | `full_join(x, y)` | **build materializes right** | Hash join + finalize pass |
 | `semi_join(x, y)` | **build materializes right** | Hash join; returns left rows only |
 | `anti_join(x, y)` | **build materializes right** | Hash join; returns non-matching left rows |
+| `cross_join(x, y)` | **materializes** | Cartesian product; no key columns required |
 
 All joins support: `by = "col"`, `by = c("a" = "b")`, `by = NULL` (natural
 join), and `suffix = c(".x", ".y")`.
@@ -161,6 +163,9 @@ Available inside `mutate()`:
 | `cummean(col)` | Cumulative mean |
 | `cummin(col)` | Cumulative minimum |
 | `cummax(col)` | Cumulative maximum |
+| `ntile(n)` | Divide rows into n roughly equal buckets |
+| `percent_rank(col)` | Relative rank scaled to [0, 1] |
+| `cume_dist(col)` | Cumulative distribution (proportion of values <= current) |
 
 Window functions respect `group_by()` partitions. They **materialize** all data
 within each partition.
@@ -174,6 +179,7 @@ within each partition.
 | `bind_cols(...)` | **materializes** | Collects all inputs, then `cbind()` |
 | `across(...)` | n/a | Column expansion helper for `mutate()`/`summarise()` |
 | `explain()` | n/a | Prints the plan tree |
+| `glimpse()` | **materializes** (preview only) | Shows column types and first few values |
 
 ### tidyselect support
 
@@ -416,25 +422,43 @@ will happen internally. Node ordering and naming may change between versions.
 
 ## Current limitations
 
-- **No cross-join**: All joins require at least one key column.
 - **slice_tail materializes**: There is no reverse-scan optimization.
 - **distinct with .keep_all**: Falls back to R when `.keep_all = TRUE` with a
   column subset.
 - **Limited string operations**: `nchar()`, `substr()`, `grepl()` (fixed match
-  only) are supported. No regex, `paste()`, `toupper()`, etc. Use `collect()`
-  first for unsupported string operations.
+  only), `tolower()`, `toupper()`, `trimws()` are supported. No regex or
+  `paste()`. Use `collect()` first for unsupported string operations.
 - **Single-threaded**: The engine uses one thread. Parallelism is not planned.
 - **Predicate pushdown is .vtr only**: CSV, SQLite, and TIFF scans do not
   benefit from predicate pushdown or column pruning.
 
 ## Fallback behavior
 
-vectra has exactly two fallback paths to base R:
+vectra has these fallback paths to base R:
 
 1. **bind_rows with mismatched column names**: If column names differ across
    inputs, all tables are collected and combined via `rbind()` in R.
 2. **distinct with .keep_all and column subset**: Falls back to `duplicated()`
-   in R.
+   in R (emits a message).
+3. **slice_tail**: Must see all rows to take the last n; returns a data.frame.
+4. **slice_min/slice_max with `with_ties = TRUE`** (the default): Collects all
+   data to identify ties at the boundary; returns a data.frame.
+5. **reframe**: Always collects and evaluates in R; returns a data.frame.
 
 All other operations execute entirely in C. There is no silent fallback to dplyr
 or any other package.
+
+## Grouping preservation
+
+All verbs preserve `group_by()` metadata: `filter()`, `select()`, `mutate()`,
+`rename()`, `relocate()`, `arrange()`, and `transmute()` pass grouping through.
+`rename()` additionally updates group column names to match the rename.
+`summarise()` drops grouping according to its `.groups` argument.
+
+## Package conflicts
+
+vectra defines its own S3 generics for dplyr-like verbs (`filter`, `select`,
+`mutate`, etc.) and utility functions (`glimpse`, `collect`). If dplyr is also
+loaded, whichever package was attached last will mask the other's generics.
+vectra's methods will still dispatch correctly on `vectra_node` objects
+regardless of masking order.

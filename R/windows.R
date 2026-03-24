@@ -5,7 +5,8 @@
 
 # Known window function names
 .win_fns <- c("lag", "lead", "row_number", "rank", "dense_rank",
-              "cumsum", "cummean", "cummin", "cummax")
+              "cumsum", "cummean", "cummin", "cummax",
+              "ntile", "percent_rank", "cume_dist")
 
 # Check if an expression is a window function call
 is_window_call <- function(expr) {
@@ -55,6 +56,25 @@ parse_window_spec <- function(expr, output_name) {
 
     return(list(name = output_name, kind = fn, col = col,
                 offset = offset, default = default_val))
+  }
+
+  if (fn == "ntile") {
+    # ntile(n) - divide into n buckets
+    n_tiles <- as.integer(eval(expr[[2]]))
+    return(list(name = output_name, kind = "ntile", col = NULL,
+                offset = n_tiles, default = NULL))
+  }
+
+  if (fn == "percent_rank") {
+    col <- as.character(expr[[2]])
+    return(list(name = output_name, kind = "percent_rank", col = col,
+                offset = 1L, default = NULL))
+  }
+
+  if (fn == "cume_dist") {
+    col <- as.character(expr[[2]])
+    return(list(name = output_name, kind = "cume_dist", col = col,
+                offset = 1L, default = NULL))
   }
 
   # cumsum, cummean, cummin, cummax: single column argument

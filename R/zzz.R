@@ -1,5 +1,6 @@
 #' @useDynLib vectra, .registration = TRUE
 #' @importFrom rlang expr enquo is_formula as_function
+#' @importFrom stats sd var median
 NULL
 
 # Build a 0-row data.frame proxy from schema, enabling where() etc.

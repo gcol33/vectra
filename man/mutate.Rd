@@ -17,6 +17,18 @@ A new \code{vectra_node} with mutated columns.
 \description{
 Add or transform columns
 }
+\details{
+Supported expression types: arithmetic (\code{+}, \code{-}, \code{*}, \code{/}, \code{\%\%}),
+comparison, boolean, \code{is.na()}, \code{nchar()}, \code{substr()}, \code{grepl()} (fixed
+match only). Window functions (\code{row_number()}, \code{rank()}, \code{dense_rank()},
+\code{lag()}, \code{lead()}, \code{cumsum()}, \code{cummean()}, \code{cummin()}, \code{cummax()}) are
+detected automatically and routed to a dedicated window node.
+
+When grouped, window functions respect partition boundaries.
+
+This is a streaming operation for regular expressions; window functions
+materialize all rows within each partition.
+}
 \examples{
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)

@@ -19,6 +19,37 @@
 * `substr(x, start, stop)`: substring extraction (1-based, like R).
 * `grepl(pattern, x)`: fixed string matching (no regex).
 
+## Aggregation
+
+* `sd()` and `var()`: sample standard deviation and variance via Welford's
+  online algorithm. Returns NA for groups with fewer than 2 values (R semantics).
+* `first()` and `last()`: first and last non-NA value per group. Both support
+  `na.rm = TRUE`.
+
+## Verbs
+
+* `slice_min()` and `slice_max()` gain a working `with_ties` parameter
+  (default `TRUE`). Ties at the boundary are now included by default; use
+  `with_ties = FALSE` for exactly `n` rows.
+* `count()` and `tally()` gain a working `sort` parameter. `sort = TRUE`
+  returns results in descending order of the count column.
+* `transmute()` and `reframe()` now support `across()`.
+* `distinct(.keep_all = TRUE)` with a column subset now emits a message when
+  falling back to R.
+
+## Utilities
+
+* `glimpse()`: preview column names, types, and first few values without
+  collecting the full result.
+* `collect()` now works on data.frames (no-op), so `slice_min(...) |> collect()`
+  works regardless of the `with_ties` path.
+
+## Documentation
+
+* New quickstart vignette: `vignette("quickstart")`.
+* `@details` sections added to `filter()`, `mutate()`, `summarise()`,
+  `arrange()`, `distinct()`, `count()`, and join functions.
+
 # vectra 0.2.1
 
 ## Engine

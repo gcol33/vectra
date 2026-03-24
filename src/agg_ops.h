@@ -10,7 +10,13 @@ typedef enum {
     AGG_SUM,
     AGG_MEAN,
     AGG_MIN,
-    AGG_MAX
+    AGG_MAX,
+    AGG_VAR,
+    AGG_SD,
+    AGG_FIRST,
+    AGG_LAST,
+    AGG_ANY,
+    AGG_ALL
 } AggKind;
 
 /* Accumulator for one aggregation per group */
@@ -29,8 +35,14 @@ typedef struct {
     double   *max_dbl;
     int64_t  *min_i64;
     int64_t  *max_i64;
-    int      *has_value;   /* 1 if any non-NA value seen (for min/max) */
+    int      *has_value;   /* 1 if any non-NA value seen (for min/max/last) */
     int      *has_na;      /* 1 if any NA seen in group (for na poisoning) */
+    double   *m2;          /* Welford's M2 for var/sd */
+    double   *first_dbl;   /* first non-NA value for first() */
+    int64_t  *first_i64;
+    double   *last_dbl;    /* last non-NA value for last() */
+    int64_t  *last_i64;
+    int      *has_first;   /* 1 if first value captured */
 } AggAccum;
 
 /* Initialize accumulator */

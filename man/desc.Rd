@@ -15,3 +15,10 @@ A marker used by \code{\link[=arrange]{arrange()}}.
 \description{
 Used inside \code{\link[=arrange]{arrange()}} to sort a column in descending order.
 }
+\examples{
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> arrange(desc(mpg)) |> collect() |> head()
+unlink(f)
+
+}

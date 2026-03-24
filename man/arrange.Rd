@@ -17,6 +17,13 @@ A new \code{vectra_node} with sorted rows.
 \description{
 Sort rows by column values
 }
+\details{
+Uses an external merge sort with a 1 GB memory budget. When data exceeds
+this limit, sorted runs are spilled to temporary \code{.vtr} files and merged
+via a k-way min-heap. NAs sort last in ascending order.
+
+This is a materializing operation.
+}
 \examples{
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)

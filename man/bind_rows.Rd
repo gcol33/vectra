@@ -31,3 +31,13 @@ filled with NA.
 
 \code{bind_cols} requires the same number of rows in each input.
 }
+\examples{
+f1 <- tempfile(fileext = ".vtr")
+f2 <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(x = 1:3, y = 4:6), f1)
+write_vtr(data.frame(x = 7:9, y = 10:12), f2)
+bind_rows(tbl(f1), tbl(f2)) |> collect()
+bind_cols(tbl(f1), tbl(f2))
+unlink(c(f1, f2))
+
+}

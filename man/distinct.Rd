@@ -19,6 +19,12 @@ A \code{vectra_node} with unique rows.
 \description{
 Keep distinct/unique rows
 }
+\details{
+Uses hash-based grouping with zero aggregations. When \code{.keep_all = TRUE}
+with a column subset, falls back to R's \code{duplicated()} with a message.
+
+This is a materializing operation.
+}
 \examples{
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)

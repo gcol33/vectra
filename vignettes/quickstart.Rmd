@@ -1,0 +1,339 @@
+---
+title: "Getting Started with vectra"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with vectra}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+vectra is a columnar query engine for R that handles larger-than-RAM datasets
+with familiar dplyr-style verbs. All operations are lazy -- nothing runs until
+you call `collect()`.
+
+## Installation
+
+Install the released version from CRAN:
+
+```r
+install.packages("vectra")
+```
+
+Or the development version from GitHub:
+
+```r
+# install.packages("devtools")
+devtools::install_github("gcol33/vectra")
+```
+
+## Writing and reading data
+
+vectra uses its own binary columnar format (`.vtr`) for fast, memory-efficient
+storage. Write any data.frame with `write_vtr()` and open it lazily with `tbl()`:
+
+```{r write-read}
+library(vectra)
+
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+
+# tbl() returns a lazy reference -- no data is loaded yet
+node <- tbl(f)
+node
+```
+
+Call `collect()` to materialize the result as a data.frame:
+
+```{r collect}
+tbl(f) |> collect() |> head()
+```
+
+## Filtering and selecting
+
+Use `filter()` to keep rows matching a condition, and `select()` to pick columns.
+Tidyselect helpers like `starts_with()` and `everything()` work inside `select()`.
+
+```{r filter-select}
+tbl(f) |>
+  filter(cyl == 6, mpg > 19) |>
+  select(mpg, cyl, hp, wt) |>
+  collect()
+```
+
+Multiple conditions in `filter()` are combined with AND. Use `|` for OR:
+
+```{r filter-or}
+tbl(f) |>
+  filter(cyl == 4 | cyl == 8) |>
+  select(mpg, cyl) |>
+  collect() |>
+  head()
+```
+
+Use `%in%` for set membership and `if_else()` inside `mutate()` for conditional
+values:
+
+```{r filter-in}
+tbl(f) |>
+  filter(cyl %in% c(4, 8)) |>
+  mutate(size = if_else(cyl > 6, "large", "small")) |>
+  select(mpg, cyl, size) |>
+  collect() |>
+  head()
+```
+
+## Transforming columns
+
+`mutate()` adds or replaces columns. Arithmetic, comparison, and boolean
+operators all work:
+
+```{r mutate}
+tbl(f) |>
+  mutate(kpl = mpg * 0.425144, hp_per_wt = hp / wt) |>
+  select(mpg, kpl, hp, wt, hp_per_wt) |>
+  collect() |>
+  head()
+```
+
+`transmute()` works like `mutate()` but keeps only the new columns:
+
+```{r transmute}
+tbl(f) |>
+  transmute(efficiency = mpg / wt, power_ratio = hp / disp) |>
+  collect() |>
+  head()
+```
+
+For string operations, write a small dataset with character columns:
+
+```{r string-ops}
+people <- data.frame(
+  name = c("Alice", "Bob", "Charlie", "Diana"),
+  city = c("Amsterdam", "Berlin", "Chicago", "Dublin"),
+  stringsAsFactors = FALSE
+)
+fs <- tempfile(fileext = ".vtr")
+write_vtr(people, fs)
+
+tbl(fs) |>
+  mutate(
+    name_len = nchar(name),
+    short_city = substr(city, 1, 3),
+    has_a = grepl("a", city)
+  ) |>
+  collect()
+```
+
+## Aggregation
+
+Group data with `group_by()` and compute summaries with `summarise()`.
+Supported aggregation functions: `n()`, `sum()`, `mean()`, `min()`, `max()`, `sd()`, `var()`, `first()`, `last()`, `any()`, `all()`, `median()`, `n_distinct()`.
+
+```{r summarise}
+tbl(f) |>
+  group_by(cyl) |>
+  summarise(
+    count = n(),
+    avg_mpg = mean(mpg),
+    total_hp = sum(hp),
+    best_mpg = max(mpg)
+  ) |>
+  collect()
+```
+
+For quick counts, use `count()` or `tally()`:
+
+```{r count}
+tbl(f) |>
+  count(cyl, sort = TRUE) |>
+  collect()
+```
+
+```{r tally}
+tbl(f) |>
+  group_by(gear) |>
+  tally() |>
+  collect()
+```
+
+Use `sd()`, `var()`, `first()`, and `last()` for more detailed summaries:
+
+```{r agg-advanced}
+tbl(f) |>
+  group_by(cyl) |>
+  summarise(
+    mpg_sd = sd(mpg),
+    mpg_var = var(mpg),
+    first_hp = first(hp),
+    last_hp = last(hp)
+  ) |>
+  collect()
+```
+
+## Sorting and slicing
+
+`arrange()` sorts rows. Wrap column names in `desc()` for descending order:
+
+```{r arrange}
+tbl(f) |>
+  select(mpg, cyl, hp) |>
+  arrange(cyl, desc(mpg)) |>
+  collect() |>
+  head(8)
+```
+
+`slice_head()` returns the first n rows. `slice_min()` and `slice_max()` use
+an optimized top-N algorithm to avoid a full sort:
+
+```{r slice}
+# First 5 rows
+tbl(f) |>
+  slice_head(n = 5) |>
+  collect()
+```
+
+```{r slice-min}
+# 3 cars with lowest mpg
+tbl(f) |>
+  select(mpg, cyl, hp) |>
+  slice_min(order_by = mpg, n = 3) |>
+  collect()
+```
+
+By default, `slice_min()` and `slice_max()` include ties. Use `with_ties = FALSE`
+for exactly `n` rows:
+
+```{r slice-ties}
+tbl(f) |>
+  select(mpg, cyl) |>
+  slice_min(order_by = cyl, n = 3, with_ties = FALSE) |>
+  collect()
+```
+
+## Joins
+
+Join two vectra tables with `left_join()`, `inner_join()`, `right_join()`,
+`full_join()`, `semi_join()`, or `anti_join()`.
+
+```{r joins}
+# Create a lookup table
+cyl_info <- data.frame(
+  cyl = c(4, 6, 8),
+  engine_type = c("inline", "v-type", "v-type"),
+  stringsAsFactors = FALSE
+)
+f_cyl <- tempfile(fileext = ".vtr")
+write_vtr(cyl_info, f_cyl)
+
+tbl(f) |>
+  select(mpg, cyl, hp) |>
+  left_join(tbl(f_cyl), by = "cyl") |>
+  collect() |>
+  head()
+```
+
+For joins on differently named columns, use a named vector:
+
+```{r join-named}
+ratings <- data.frame(
+  cylinders = c(4, 6, 8),
+  rating = c("A", "B", "C"),
+  stringsAsFactors = FALSE
+)
+f_rat <- tempfile(fileext = ".vtr")
+write_vtr(ratings, f_rat)
+
+tbl(f) |>
+  select(mpg, cyl) |>
+  inner_join(tbl(f_rat), by = c("cyl" = "cylinders")) |>
+  collect() |>
+  head()
+```
+
+## Window functions
+
+Window functions operate row-by-row within `mutate()`. vectra supports
+`row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`,
+`cummean()`, `cummin()`, and `cummax()`.
+
+```{r window}
+tbl(f) |>
+  select(mpg, cyl, hp) |>
+  slice_head(n = 8) |>
+  mutate(
+    rn = row_number(),
+    prev_mpg = lag(mpg),
+    next_mpg = lead(mpg),
+    running_total = cumsum(hp)
+  ) |>
+  collect()
+```
+
+`rank()` and `dense_rank()` take a column argument:
+
+```{r rank}
+tbl(f) |>
+  select(mpg, cyl) |>
+  slice_head(n = 8) |>
+  mutate(mpg_rank = rank(mpg)) |>
+  collect()
+```
+
+## Format conversion
+
+vectra can read and write CSV files, making it easy to convert between formats.
+The entire pipeline streams batch-by-batch without loading all data into memory:
+
+```{r csv-pipeline}
+# CSV -> VTR
+csv_in <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv_in, row.names = FALSE)
+
+vtr_file <- tempfile(fileext = ".vtr")
+tbl_csv(csv_in) |> write_vtr(vtr_file)
+
+# VTR -> CSV (with a filter applied)
+csv_out <- tempfile(fileext = ".csv")
+tbl(vtr_file) |>
+  filter(cyl == 6) |>
+  write_csv(csv_out)
+
+# Verify the round-trip
+read.csv(csv_out) |> head()
+```
+
+## Inspecting the plan
+
+Every vectra pipeline builds a lazy execution plan. Use `explain()` to print
+the plan tree before collecting, which is helpful for debugging:
+
+```{r explain}
+tbl(f) |>
+  filter(cyl > 4) |>
+  select(mpg, cyl, hp) |>
+  arrange(desc(mpg)) |>
+  explain()
+```
+
+## Previewing data
+
+Use `glimpse()` to see column types and a preview without collecting everything:
+
+```{r glimpse}
+tbl(f) |> glimpse()
+```
+
+## Cleanup
+
+```{r cleanup}
+unlink(c(f, fs, f_cyl, f_rat, csv_in, csv_out, vtr_file))
+```

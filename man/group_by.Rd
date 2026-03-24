@@ -17,3 +17,10 @@ A \code{vectra_node} with grouping information stored.
 \description{
 Group a vectra query by columns
 }
+\examples{
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> group_by(cyl) |> summarise(avg = mean(mpg)) |> collect()
+unlink(f)
+
+}

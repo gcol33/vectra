@@ -17,3 +17,10 @@ An ungrouped \code{vectra_node}.
 \description{
 Remove grouping from a vectra query
 }
+\examples{
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> group_by(cyl) |> ungroup()
+unlink(f)
+
+}

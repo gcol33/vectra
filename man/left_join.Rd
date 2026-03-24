@@ -40,6 +40,15 @@ A \code{vectra_node} with the joined result.
 \description{
 Join two vectra tables
 }
+\details{
+All joins use a build-right, probe-left hash join. The entire right-side
+table is materialized into a hash table; left-side batches stream through.
+Memory cost is proportional to the right-side table size.
+
+NA keys never match (SQL NULL semantics). Key types are auto-coerced
+following the \verb{bool < int64 < double} hierarchy. Joining string against
+numeric keys is an error.
+}
 \examples{
 f1 <- tempfile(fileext = ".vtr")
 f2 <- tempfile(fileext = ".vtr")
