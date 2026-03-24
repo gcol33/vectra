@@ -31,7 +31,9 @@ typedef enum {
     EXPR_GSUB,       /* gsub(pattern, replacement, x) -> string (fixed) */
     EXPR_SUB,        /* sub(pattern, replacement, x) -> string (fixed, first only) */
     EXPR_PMIN,       /* pmin(x, y) -> numeric */
-    EXPR_PMAX        /* pmax(x, y) -> numeric */
+    EXPR_PMAX,       /* pmax(x, y) -> numeric */
+    EXPR_DATE_PART,  /* year/month/day/hour/minute/second extraction */
+    EXPR_AS_DATE     /* as.Date(string) -> double (days since epoch) */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -83,6 +85,9 @@ struct VecExpr {
     int64_t *set_i64;
     char   **set_str;
     /* uses operand */
+
+    /* EXPR_DATE_PART */
+    char date_part;  /* 'Y'=year, 'M'=month, 'D'=day, 'h'=hour, 'm'=minute, 's'=second */
 
     /* EXPR_GSUB / EXPR_SUB */
     char *gsub_pattern;

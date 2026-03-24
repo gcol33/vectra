@@ -15,6 +15,11 @@
 
 ## Expressions
 
+* `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`: date/time
+  component extraction for Date and POSIXct columns.
+* `as.Date()` and `as.POSIXct()` literals in filter expressions (e.g.
+  `filter(date > as.Date("2020-01-01"))`).
+* `as.Date(string_col)`: convert ISO-format date strings to Date values.
 * `nchar()`: returns string length as integer.
 * `substr(x, start, stop)`: substring extraction (1-based, like R).
 * `grepl(pattern, x)`: fixed string matching (no regex).

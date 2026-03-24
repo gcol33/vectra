@@ -90,6 +90,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `cross_join()` |
 | **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()`, `slice()` |
 | **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`, `ntile()`, `percent_rank()`, `cume_dist()` |
+| **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `as.Date()` (in `filter()`/`mutate()`) |
 | **String** | `nchar()`, `substr()`, `grepl()`, `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()` (in `filter()`/`mutate()`) |
 | **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |

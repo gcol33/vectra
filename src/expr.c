@@ -7,6 +7,7 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
+#include <time.h>
 
 VecExpr *vec_expr_alloc(VecExprKind kind) {
     VecExpr *e = (VecExpr *)calloc(1, sizeof(VecExpr));
@@ -637,6 +638,96 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
         }
         vec_array_free(l); free(l);
         vec_array_free(r); free(r);
+        return out;
+    }
+    case EXPR_DATE_PART: {
+        VecArray *o = vec_expr_eval(expr->operand, batch);
+        /* Coerce to double if needed */
+        if (o->type == VEC_INT64) {
+            VecArray *t = vec_coerce(o, VEC_DOUBLE);
+            vec_array_free(o); free(o); o = t;
+        }
+        int64_t n = o->length;
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
+            double val = o->buf.dbl[i];
+            time_t ts;
+            struct tm tm_val;
+            /* Detect Date (days since epoch) vs POSIXct (seconds since epoch).
+               Date values are typically in range 0-25000 (1970-2038).
+               POSIXct values are > 1e9 (seconds). */
+            if (fabs(val) < 200000.0) {
+                /* Date: days since 1970-01-01 */
+                ts = (time_t)(val * 86400.0);
+            } else {
+                /* POSIXct: seconds since 1970-01-01 */
+                ts = (time_t)val;
+            }
+#ifdef _WIN32
+            gmtime_s(&tm_val, &ts);
+#else
+            gmtime_r(&ts, &tm_val);
+#endif
+            switch (expr->date_part) {
+            case 'Y': out->buf.dbl[i] = (double)(tm_val.tm_year + 1900); break;
+            case 'M': out->buf.dbl[i] = (double)(tm_val.tm_mon + 1); break;
+            case 'D': out->buf.dbl[i] = (double)tm_val.tm_mday; break;
+            case 'h': out->buf.dbl[i] = (double)tm_val.tm_hour; break;
+            case 'm': out->buf.dbl[i] = (double)tm_val.tm_min; break;
+            case 's': out->buf.dbl[i] = (double)tm_val.tm_sec; break;
+            default: vectra_error("unknown date part: %c", expr->date_part);
+            }
+        }
+        vec_array_free(o); free(o);
+        return out;
+    }
+    case EXPR_AS_DATE: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING) vectra_error("as.Date: argument must be string");
+        int64_t n = s->length;
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
+            int64_t so = s->buf.str.offsets[i];
+            int64_t slen = s->buf.str.offsets[i + 1] - so;
+            /* Parse YYYY-MM-DD format */
+            if (slen < 10) { vec_array_set_null(out, i); continue; }
+            const char *p = s->buf.str.data + so;
+            int year = 0, mon = 0, mday = 0;
+            int j;
+            for (j = 0; j < 4; j++) year = year * 10 + (p[j] - '0');
+            mon = (p[5] - '0') * 10 + (p[6] - '0');
+            mday = (p[8] - '0') * 10 + (p[9] - '0');
+            if (mon < 1 || mon > 12 || mday < 1 || mday > 31) {
+                vec_array_set_null(out, i);
+                continue;
+            }
+            {
+                struct tm tm_val;
+                time_t ts;
+                memset(&tm_val, 0, sizeof(tm_val));
+                tm_val.tm_year = year - 1900;
+                tm_val.tm_mon = mon - 1;
+                tm_val.tm_mday = mday;
+                tm_val.tm_isdst = 0;
+#ifdef _WIN32
+                ts = _mkgmtime(&tm_val);
+#else
+                ts = timegm(&tm_val);
+#endif
+                if (ts == (time_t)-1) {
+                    vec_array_set_null(out, i);
+                } else {
+                    vec_array_set_valid(out, i);
+                    out->buf.dbl[i] = (double)(ts / 86400);
+                }
+            }
+        }
+        vec_array_free(s); free(s);
         return out;
     }
     }

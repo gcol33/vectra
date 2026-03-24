@@ -288,6 +288,34 @@ tbl(f) |>
   collect()
 ```
 
+## Working with dates
+
+Date columns roundtrip through vectra. Extract components with `year()`,
+`month()`, and `day()`:
+
+```{r dates}
+dates_df <- data.frame(
+  event_date = as.Date(c("2020-03-15", "2020-07-01", "2021-01-15", "2021-06-30")),
+  value = c(10, 20, 30, 40)
+)
+fd <- tempfile(fileext = ".vtr")
+write_vtr(dates_df, fd)
+
+tbl(fd) |>
+  mutate(yr = year(event_date), mo = month(event_date)) |>
+  group_by(yr) |>
+  summarise(total = sum(value)) |>
+  collect()
+```
+
+Filter by date using `as.Date()`:
+
+```{r date-filter}
+tbl(fd) |>
+  filter(event_date >= as.Date("2021-01-01")) |>
+  collect()
+```
+
 ## Format conversion
 
 vectra can read and write CSV files, making it easy to convert between formats.
@@ -335,5 +363,5 @@ tbl(f) |> glimpse()
 ## Cleanup
 
 ```{r cleanup}
-unlink(c(f, fs, f_cyl, f_rat, csv_in, csv_out, vtr_file))
+unlink(c(f, fs, f_cyl, f_rat, fd, csv_in, csv_out, vtr_file))
 ```

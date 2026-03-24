@@ -194,6 +194,47 @@ serialize_expr <- function(expr, env = parent.frame()) {
                 right = serialize_expr(expr[[3]], env)))
   }
 
+  # Date component extraction
+  if (fn %in% c("year", "month", "day", "hour", "minute", "second")) {
+    part_char <- switch(fn, year = "Y", month = "M", day = "D",
+                        hour = "h", minute = "m", second = "s")
+    return(list(kind = "date_part", part = part_char,
+                operand = serialize_expr(expr[[2]], env)))
+  }
+
+  # as.Date() from string
+  if (fn == "as.Date") {
+    arg <- expr[[2]]
+    # If it's a literal string, evaluate it as an R Date and convert to days since epoch
+    if (is.character(arg)) {
+      d <- as.Date(arg)
+      return(list(kind = "lit_double", value = as.double(d)))
+    }
+    return(list(kind = "as_date",
+                operand = serialize_expr(arg, env)))
+  }
+
+  # as.POSIXct() - evaluate literal to seconds since epoch
+  if (fn == "as.POSIXct") {
+    arg <- expr[[2]]
+    if (is.character(arg)) {
+      # Get timezone if provided
+      tz <- "UTC"
+      if (length(expr) >= 3) {
+        arg_names <- names(expr)
+        if (!is.null(arg_names)) {
+          tz_idx <- match("tz", arg_names)
+          if (!is.na(tz_idx)) tz <- as.character(eval(expr[[tz_idx]], env))
+        }
+      }
+      d <- as.POSIXct(arg, tz = tz)
+      return(list(kind = "lit_double", value = as.double(d)))
+    }
+    # For column conversion, treat as cast to double (already double internally)
+    return(list(kind = "cast", to = "double",
+                operand = serialize_expr(arg, env)))
+  }
+
   # %in% operator
   if (fn == "%in%") {
     set_val <- eval(expr[[3]], env)

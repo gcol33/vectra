@@ -102,7 +102,7 @@ know or care which source is upstream.
 |:-----|:--------|:------|
 | `filter(...)` | yes | Zero-copy via selection vector |
 | `select(...)` | yes | Full tidyselect: `starts_with()`, `where()`, `-col`, etc. |
-| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()`, math (`abs`, `sqrt`, `log`, `exp`, `floor`, `ceiling`, `round`, `log2`, `log10`, `sign`, `trunc`), `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()`, `pmin()`, `pmax()` |
+| `mutate(...)` | yes | Arithmetic, comparison, boolean, `is.na()`, `nchar()`, `substr()`, `grepl()`, math (`abs`, `sqrt`, `log`, `exp`, `floor`, `ceiling`, `round`, `log2`, `log10`, `sign`, `trunc`), `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()`, `pmin()`, `pmax()`, `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `as.Date()` |
 | `transmute(...)` | yes | Like `mutate()` but drops unmentioned columns |
 | `rename(...)` | yes | Full tidyselect rename support |
 | `relocate(...)` | yes | Reorder columns with `.before` / `.after` |
@@ -223,6 +223,11 @@ metadata through the write/read cycle:
 
 Annotations are metadata. The underlying C engine operates on the base types
 only. Type restoration happens at `collect()` time.
+
+Date and POSIXct columns support component extraction via `year()`, `month()`,
+`day()`, `hour()`, `minute()`, `second()` in `mutate()` and `filter()`
+expressions. Use `as.Date("2020-01-01")` as a literal in filter comparisons.
+Date arithmetic (adding/subtracting days) works via standard `+` and `-`.
 
 ## Coercion rules
 

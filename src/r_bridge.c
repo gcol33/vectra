@@ -985,6 +985,22 @@ static VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         return e;
     }
 
+    if (strcmp(kind, "date_part") == 0) {
+        const char *part = list_get_string(lst, "part");
+        if (!part) vectra_error("date_part missing 'part'");
+        VecExpr *e = vec_expr_alloc(EXPR_DATE_PART);
+        e->date_part = part[0];
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_DOUBLE;
+        return e;
+    }
+    if (strcmp(kind, "as_date") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_AS_DATE);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->result_type = VEC_DOUBLE;
+        return e;
+    }
+
     vectra_error("unknown expression kind: %s", kind);
     return NULL;
 }
