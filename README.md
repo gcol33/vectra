@@ -108,8 +108,9 @@ pak::pak("gcol33/vectra")
 
 ## Documentation
 
-- `vignette("quickstart")` --- practical tutorial with runnable examples
-- `vignette("engine")` --- execution model, supported types, coercion rules, memory guarantees, and current limitations
+- [Getting Started](https://gcol33.github.io/vectra/articles/quickstart.html) - Practical tutorial with runnable examples
+- [Engine Reference](https://gcol33.github.io/vectra/articles/engine.html) - Execution model, types, coercion, memory guarantees, and limitations
+- [Function Reference](https://gcol33.github.io/vectra/reference/)
 
 ## Support
 
