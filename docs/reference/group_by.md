@@ -21,3 +21,12 @@ group_by(.data, ...)
 ## Value
 
 A `vectra_node` with grouping information stored.
+
+## Examples
+
+``` r
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> group_by(cyl) |> summarise(avg = mean(mpg)) |> collect()
+unlink(f)
+```

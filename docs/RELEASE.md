@@ -19,7 +19,7 @@ Full benchmark run completed and baseline saved
 
 README reviewed top to bottom — no stale claims
 
-[`vignette("engine")`](https://gcol33.github.io/vectra/articles/engine.md)
+[`vignette("engine")`](https://gillescolling.com/vectra/articles/engine.md)
 renders cleanly
 
 All exported functions have `@examples`

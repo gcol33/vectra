@@ -2,7 +2,7 @@
 
 Opens a vectra1 file and returns a lazy query node. No data is read
 until
-[`collect()`](https://gcol33.github.io/vectra/reference/collect.md) is
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) is
 called.
 
 ## Usage
@@ -28,18 +28,5 @@ f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 node <- tbl(f)
 print(node)
-#> vectra query node
-#> Columns (11):
-#>   mpg <double>
-#>   cyl <double>
-#>   disp <double>
-#>   hp <double>
-#>   drat <double>
-#>   wt <double>
-#>   qsec <double>
-#>   vs <double>
-#>   am <double>
-#>   gear <double>
-#>   carb <double>
 unlink(f)
 ```

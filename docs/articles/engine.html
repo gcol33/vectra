@@ -10,9 +10,24 @@
 <link href="../deps/bootstrap-5.3.1/bootstrap.min.css" rel="stylesheet">
 <script src="../deps/bootstrap-5.3.1/bootstrap.bundle.min.js"></script><link href="../deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="../deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
-<script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="../pkgdown.js"></script><meta property="og:title" content="vectra Engine Reference">
+<script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="../pkgdown.js"></script><link href="../extra.css" rel="stylesheet">
+<meta property="og:title" content="vectra Engine Reference">
 </head>
 <body>
+<p>
+
+
+
+
+
+
+
+
+  pkgdown/mathjax-config.html
+
+  
+
+  </p>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -20,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.2.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.3.3</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -32,7 +47,8 @@
 <li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
+<li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
@@ -60,7 +76,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-03-06</h4>
+            <h4 data-toc-skip class="date">2026-04-02</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/engine.Rmd" class="external-link"><code>vignettes/engine.Rmd</code></a></small>
       <div class="d-none name"><code>engine.Rmd</code></div>
@@ -237,7 +253,19 @@ query engine does not know or care which source is upstream.</p>
 <td align="left"><code>mutate(...)</code></td>
 <td align="left">yes</td>
 <td align="left">Arithmetic, comparison, boolean, <code><a href="https://rdrr.io/r/base/NA.html" class="external-link">is.na()</a></code>,
-<code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>, <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code>
+<code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>, <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code>, math
+(<code>abs</code>, <code>sqrt</code>, <code>log</code>,
+<code>exp</code>, <code>floor</code>, <code>ceiling</code>,
+<code>round</code>, <code>log2</code>, <code>log10</code>,
+<code>sign</code>, <code>trunc</code>), <code>if_else()</code>,
+<code>between()</code>, <code>%in%</code>, type casting
+(<code>as.numeric</code>), <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower()</a></code>,
+<code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper()</a></code>, <code><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws()</a></code>, <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0()</a></code>,
+<code><a href="https://rdrr.io/r/base/grep.html" class="external-link">gsub()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">sub()</a></code>, <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">startsWith()</a></code>,
+<code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">endsWith()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax()</a></code>,
+<code>year()</code>, <code>month()</code>, <code>day()</code>,
+<code>hour()</code>, <code>minute()</code>, <code>second()</code>,
+<code><a href="https://rdrr.io/r/base/as.Date.html" class="external-link">as.Date()</a></code>
 </td>
 </tr>
 <tr class="even">
@@ -307,7 +335,10 @@ columns</td>
 </table>
 <p>Supported aggregation functions: <code>n()</code>,
 <code><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum()</a></code>, <code><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">min()</a></code>,
-<code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">max()</a></code>. All accept <code>na.rm = TRUE</code>.</p>
+<code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">max()</a></code>, <code><a href="https://rdrr.io/r/stats/sd.html" class="external-link">sd()</a></code>, <code><a href="https://rdrr.io/r/stats/cor.html" class="external-link">var()</a></code>,
+<code>first()</code>, <code>last()</code>, <code><a href="https://rdrr.io/r/base/any.html" class="external-link">any()</a></code>,
+<code><a href="https://rdrr.io/r/base/all.html" class="external-link">all()</a></code>, <code><a href="https://rdrr.io/r/stats/median.html" class="external-link">median()</a></code>, <code>n_distinct()</code>.
+All accept <code>na.rm = TRUE</code>.</p>
 </div>
 <div class="section level3">
 <h3 id="ordering-verbs">Ordering verbs<a class="anchor" aria-label="anchor" href="#ordering-verbs"></a>
@@ -342,12 +373,14 @@ columns</td>
 <tr class="even">
 <td align="left"><code>slice_min(order_by, n)</code></td>
 <td align="left">partial</td>
-<td align="left">Heap-based top-N, buffers n rows</td>
+<td align="left">Heap-based top-N; <code>with_ties = TRUE</code>
+(default) includes ties</td>
 </tr>
 <tr class="odd">
 <td align="left"><code>slice_max(order_by, n)</code></td>
 <td align="left">partial</td>
-<td align="left">Heap-based top-N, buffers n rows</td>
+<td align="left">Heap-based top-N; <code>with_ties = TRUE</code>
+(default) includes ties</td>
 </tr>
 <tr class="even">
 <td align="left"><code>head(n)</code></td>
@@ -357,6 +390,12 @@ columns</td>
 </td>
 </tr>
 <tr class="odd">
+<td align="left"><code>slice(...)</code></td>
+<td align="left"><strong>materializes</strong></td>
+<td align="left">Select or exclude rows by position (positive or
+negative indices)</td>
+</tr>
+<tr class="even">
 <td align="left"><code>distinct(...)</code></td>
 <td align="left"><strong>materializes</strong></td>
 <td align="left">Uses hash-based grouping</td>
@@ -409,6 +448,11 @@ columns</td>
 <td align="left"><strong>build materializes right</strong></td>
 <td align="left">Hash join; returns non-matching left rows</td>
 </tr>
+<tr class="odd">
+<td align="left"><code>cross_join(x, y)</code></td>
+<td align="left"><strong>materializes</strong></td>
+<td align="left">Cartesian product; no key columns required</td>
+</tr>
 </tbody>
 </table>
 <p>All joins support: <code>by = "col"</code>,
@@ -420,6 +464,10 @@ and <code>suffix = c(".x", ".y")</code>.</p>
 </h3>
 <p>Available inside <code><a href="../reference/mutate.html">mutate()</a></code>:</p>
 <table class="table">
+<colgroup>
+<col width="43%">
+<col width="56%">
+</colgroup>
 <thead><tr class="header">
 <th align="left">Function</th>
 <th align="left">Description</th>
@@ -461,6 +509,19 @@ and <code>suffix = c(".x", ".y")</code>.</p>
 <tr class="odd">
 <td align="left"><code>cummax(col)</code></td>
 <td align="left">Cumulative maximum</td>
+</tr>
+<tr class="even">
+<td align="left"><code>ntile(n)</code></td>
+<td align="left">Divide rows into n roughly equal buckets</td>
+</tr>
+<tr class="odd">
+<td align="left"><code>percent_rank(col)</code></td>
+<td align="left">Relative rank scaled to [0, 1]</td>
+</tr>
+<tr class="even">
+<td align="left"><code>cume_dist(col)</code></td>
+<td align="left">Cumulative distribution (proportion of values &lt;=
+current)</td>
 </tr>
 </tbody>
 </table>
@@ -510,6 +571,12 @@ and <code>suffix = c(".x", ".y")</code>.</p>
 <td align="left">n/a</td>
 <td align="left">Prints the plan tree</td>
 </tr>
+<tr class="even">
+<td align="left"><code><a href="../reference/glimpse.html">glimpse()</a></code></td>
+<td align="left">
+<strong>materializes</strong> (preview only)</td>
+<td align="left">Shows column types and first few values</td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -520,21 +587,13 @@ and <code>suffix = c(".x", ".y")</code>.</p>
 <code><a href="../reference/relocate.html">relocate()</a></code>, <code><a href="../reference/distinct.html">distinct()</a></code>, and
 <code>across(.cols)</code> support the full tidyselect vocabulary:</p>
 <ul>
-<li>
-<code>starts_with()</code>, <code>ends_with()</code>,
-<code>contains()</code>, <code>matches()</code>
-</li>
-<li>
-<code>everything()</code>, <code>last_col()</code>
-</li>
-<li>
-<code>all_of()</code>, <code>any_of()</code>
-</li>
-<li>
-<code>where()</code> predicates
-(e.g. <code>where(is.numeric)</code>)</li>
-<li>
-<code>-column</code> negation</li>
+<li><p><code>starts_with()</code>, <code>ends_with()</code>,
+<code>contains()</code>, <code>matches()</code></p></li>
+<li><p><code>everything()</code>, <code>last_col()</code></p></li>
+<li><p><code>all_of()</code>, <code>any_of()</code></p></li>
+<li><p><code>where()</code> predicates
+(e.g. <code>where(is.numeric)</code>)</p></li>
+<li><p><code>-column</code> negation</p></li>
 </ul>
 <p><code>where()</code> works because vectra builds a 0-row typed proxy
 data.frame from the schema, giving tidyselect enough type information to
@@ -629,6 +688,13 @@ that preserve R type metadata through the write/read cycle:</p>
 <p>Annotations are metadata. The underlying C engine operates on the
 base types only. Type restoration happens at <code><a href="../reference/collect.html">collect()</a></code>
 time.</p>
+<p>Date and POSIXct columns support component extraction via
+<code>year()</code>, <code>month()</code>, <code>day()</code>,
+<code>hour()</code>, <code>minute()</code>, <code>second()</code> in
+<code><a href="../reference/mutate.html">mutate()</a></code> and <code><a href="../reference/filter.html">filter()</a></code> expressions. Use
+<code>as.Date("2020-01-01")</code> as a literal in filter comparisons.
+Date arithmetic (adding/subtracting days) works via standard
+<code>+</code> and <code>-</code>.</p>
 </div>
 </div>
 <div class="section level2">
@@ -681,28 +747,19 @@ every type supports NA values. The bitmap is bit-packed (1 bit per row,
 <h3 id="propagation">Propagation<a class="anchor" aria-label="anchor" href="#propagation"></a>
 </h3>
 <ul>
-<li>
-<strong>Arithmetic</strong>: <code>NA + x = NA</code>,
-<code>NA * x = NA</code>
-</li>
-<li>
-<strong>Comparison</strong>: <code>NA &gt; x = NA</code>,
-<code>x == NA = NA</code>
-</li>
-<li>
-<strong>Boolean</strong>: <code>NA &amp; FALSE = FALSE</code>,
+<li><p><strong>Arithmetic</strong>: <code>NA + x = NA</code>,
+<code>NA * x = NA</code></p></li>
+<li><p><strong>Comparison</strong>: <code>NA &gt; x = NA</code>,
+<code>x == NA = NA</code></p></li>
+<li><p><strong>Boolean</strong>: <code>NA &amp; FALSE = FALSE</code>,
 <code>NA &amp; TRUE = NA</code>, <code>NA | TRUE = TRUE</code>,
-<code>NA | FALSE = NA</code>
-</li>
-<li>
-<strong>Aggregation</strong>: NAs are included by default; use
-<code>na.rm = TRUE</code> to exclude</li>
-<li>
-<strong>Joins</strong>: NA keys never match (same as SQL NULL
-semantics)</li>
-<li>
-<strong>Window functions</strong>: <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code> and friends
-propagate NA forward</li>
+<code>NA | FALSE = NA</code></p></li>
+<li><p><strong>Aggregation</strong>: NAs are included by default; use
+<code>na.rm = TRUE</code> to exclude</p></li>
+<li><p><strong>Joins</strong>: NA keys never match (same as SQL NULL
+semantics)</p></li>
+<li><p><strong>Window functions</strong>: <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code> and
+friends propagate NA forward</p></li>
 </ul>
 </div>
 <div class="section level3">
@@ -717,23 +774,19 @@ the validity bitmap.</p>
 <h2 id="ordering-guarantees">Ordering guarantees<a class="anchor" aria-label="anchor" href="#ordering-guarantees"></a>
 </h2>
 <ul>
-<li>
-<code><a href="../reference/filter.html">filter()</a></code>, <code><a href="../reference/select.html">select()</a></code>, <code><a href="../reference/mutate.html">mutate()</a></code>,
-<code><a href="../reference/rename.html">rename()</a></code>, <code><a href="../reference/relocate.html">relocate()</a></code>: preserve input
-order</li>
-<li>
-<code><a href="../reference/arrange.html">arrange()</a></code>: produces a total order (stable sort)</li>
-<li>
-<code>group_by() |&gt; summarise()</code>: output order is
+<li><p><code><a href="../reference/filter.html">filter()</a></code>, <code><a href="../reference/select.html">select()</a></code>,
+<code><a href="../reference/mutate.html">mutate()</a></code>, <code><a href="../reference/rename.html">rename()</a></code>, <code><a href="../reference/relocate.html">relocate()</a></code>:
+preserve input order</p></li>
+<li><p><code><a href="../reference/arrange.html">arrange()</a></code>: produces a total order (stable
+sort)</p></li>
+<li><p><code>group_by() |&gt; summarise()</code>: output order is
 <strong>not guaranteed</strong> (hash-based path) or sorted by key
-(sort-based path); do not depend on either</li>
-<li>
-<code><a href="../reference/distinct.html">distinct()</a></code>: output order is not guaranteed</li>
-<li>Joins: probe-side order is preserved within each batch; build-side
-order is not guaranteed</li>
-<li>
-<code><a href="../reference/bind_rows.html">bind_rows()</a></code>: child order is preserved (first child’s
-rows, then second’s, etc.)</li>
+(sort-based path); do not depend on either</p></li>
+<li><p><code><a href="../reference/distinct.html">distinct()</a></code>: output order is not guaranteed</p></li>
+<li><p>Joins: probe-side order is preserved within each batch;
+build-side order is not guaranteed</p></li>
+<li><p><code><a href="../reference/bind_rows.html">bind_rows()</a></code>: child order is preserved (first child’s
+rows, then second’s, etc.)</p></li>
 </ul>
 </div>
 <div class="section level2">
@@ -743,11 +796,12 @@ rows, then second’s, etc.)</li>
 <h3 id="streaming-nodes-constant-memory-per-batch">Streaming nodes (constant memory per batch)<a class="anchor" aria-label="anchor" href="#streaming-nodes-constant-memory-per-batch"></a>
 </h3>
 <ul>
-<li>Scan (<code>.vtr</code>, CSV, SQLite, TIFF)</li>
-<li>Filter</li>
-<li>Project (select / mutate / rename / relocate / transmute)</li>
-<li>Limit (slice_head, head)</li>
-<li>Concat (bind_rows)</li>
+<li><p>Scan (<code>.vtr</code>, CSV, SQLite, TIFF)</p></li>
+<li><p>Filter</p></li>
+<li><p>Project (select / mutate / rename / relocate /
+transmute)</p></li>
+<li><p>Limit (slice_head, head)</p></li>
+<li><p>Concat (bind_rows)</p></li>
 </ul>
 </div>
 <div class="section level3">
@@ -849,16 +903,13 @@ Row groups (repeated):
 <h3 id="version-history">Version history<a class="anchor" aria-label="anchor" href="#version-history"></a>
 </h3>
 <ul>
-<li>
-<strong>Version 1</strong>: Base format with typed columns and
-validity bitmaps.</li>
-<li>
-<strong>Version 2</strong>: Adds per-column annotation strings for
-Date, POSIXct, and factor roundtripping.</li>
-<li>
-<strong>Version 3</strong> (current): Adds per-column per-rowgroup
-statistics (min/max) enabling predicate pushdown. Writing always
-produces v3. All versions are readable.</li>
+<li><p><strong>Version 1</strong>: Base format with typed columns and
+validity bitmaps.</p></li>
+<li><p><strong>Version 2</strong>: Adds per-column annotation strings
+for Date, POSIXct, and factor roundtripping.</p></li>
+<li><p><strong>Version 3</strong> (current): Adds per-column
+per-rowgroup statistics (min/max) enabling predicate pushdown. Writing
+always produces v3. All versions are readable.</p></li>
 </ul>
 </div>
 </div>
@@ -902,11 +953,11 @@ aggregation.</p>
 <p><code><a href="../reference/explain.html">explain()</a></code> prints the optimized plan tree without
 executing it. The output shows:</p>
 <ul>
-<li>Node types in execution order (leaf to root)</li>
-<li>Per-node annotations: streaming/materializing, column pruning,
-predicate pushdown, v3 stats, hidden mutate</li>
-<li>Grouping columns if present</li>
-<li>Output schema (column names and types)</li>
+<li><p>Node types in execution order (leaf to root)</p></li>
+<li><p>Per-node annotations: streaming/materializing, column pruning,
+predicate pushdown, v3 stats, hidden mutate</p></li>
+<li><p>Grouping columns if present</p></li>
+<li><p>Output schema (column names and types)</p></li>
 </ul>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -930,44 +981,65 @@ between versions.</p>
 <h2 id="current-limitations">Current limitations<a class="anchor" aria-label="anchor" href="#current-limitations"></a>
 </h2>
 <ul>
-<li>
-<strong>No cross-join</strong>: All joins require at least one key
-column.</li>
-<li>
-<strong>slice_tail materializes</strong>: There is no reverse-scan
-optimization.</li>
-<li>
-<strong>distinct with .keep_all</strong>: Falls back to R when
-<code>.keep_all = TRUE</code> with a column subset.</li>
-<li>
-<strong>Limited string operations</strong>: <code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>,
-<code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code> (fixed match only) are
-supported. No regex, <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste()</a></code>, <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper()</a></code>, etc.
-Use <code><a href="../reference/collect.html">collect()</a></code> first for unsupported string operations.</li>
-<li>
-<strong>Single-threaded</strong>: The engine uses one thread.
-Parallelism is not planned.</li>
-<li>
-<strong>Predicate pushdown is .vtr only</strong>: CSV, SQLite, and
-TIFF scans do not benefit from predicate pushdown or column
-pruning.</li>
+<li><p><strong>slice_tail materializes</strong>: There is no
+reverse-scan optimization.</p></li>
+<li><p><strong>distinct with .keep_all</strong>: Falls back to R when
+<code>.keep_all = TRUE</code> with a column subset.</p></li>
+<li><p><strong>Limited string operations</strong>: <code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>,
+<code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code> (fixed match only),
+<code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower()</a></code>, <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper()</a></code>, <code><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws()</a></code>,
+<code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0()</a></code> (2 args), <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">gsub()</a></code>/<code><a href="https://rdrr.io/r/base/grep.html" class="external-link">sub()</a></code>
+(fixed patterns), <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">startsWith()</a></code>, <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">endsWith()</a></code> are
+supported. No regex or multi-argument <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste()</a></code>. Use
+<code><a href="../reference/collect.html">collect()</a></code> first for unsupported string operations.</p></li>
+<li><p><strong>Single-threaded</strong>: The engine uses one thread.
+Parallelism is not planned.</p></li>
+<li><p><strong>Predicate pushdown is .vtr only</strong>: CSV, SQLite,
+and TIFF scans do not benefit from predicate pushdown or column
+pruning.</p></li>
 </ul>
 </div>
 <div class="section level2">
 <h2 id="fallback-behavior">Fallback behavior<a class="anchor" aria-label="anchor" href="#fallback-behavior"></a>
 </h2>
-<p>vectra has exactly two fallback paths to base R:</p>
+<p>vectra has these fallback paths to base R:</p>
 <ol style="list-style-type: decimal">
-<li>
-<strong>bind_rows with mismatched column names</strong>: If column
-names differ across inputs, all tables are collected and combined via
-<code><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind()</a></code> in R.</li>
-<li>
-<strong>distinct with .keep_all and column subset</strong>: Falls
-back to <code><a href="https://rdrr.io/r/base/duplicated.html" class="external-link">duplicated()</a></code> in R.</li>
+<li><p><strong>bind_rows with mismatched column names</strong>: If
+column names differ across inputs, all tables are collected and combined
+via <code><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind()</a></code> in R.</p></li>
+<li><p><strong>distinct with .keep_all and column subset</strong>: Falls
+back to <code><a href="https://rdrr.io/r/base/duplicated.html" class="external-link">duplicated()</a></code> in R (emits a message).</p></li>
+<li><p><strong>slice_tail</strong>: Must see all rows to take the last
+n; returns a data.frame.</p></li>
+<li><p><strong>slice_min/slice_max with
+<code>with_ties = TRUE</code></strong> (the default): Collects all data
+to identify ties at the boundary; returns a data.frame.</p></li>
+<li><p><strong>reframe</strong>: Always collects and evaluates in R;
+returns a data.frame.</p></li>
 </ol>
 <p>All other operations execute entirely in C. There is no silent
 fallback to dplyr or any other package.</p>
+</div>
+<div class="section level2">
+<h2 id="grouping-preservation">Grouping preservation<a class="anchor" aria-label="anchor" href="#grouping-preservation"></a>
+</h2>
+<p>All verbs preserve <code><a href="../reference/group_by.html">group_by()</a></code> metadata:
+<code><a href="../reference/filter.html">filter()</a></code>, <code><a href="../reference/select.html">select()</a></code>, <code><a href="../reference/mutate.html">mutate()</a></code>,
+<code><a href="../reference/rename.html">rename()</a></code>, <code><a href="../reference/relocate.html">relocate()</a></code>, <code><a href="../reference/arrange.html">arrange()</a></code>,
+and <code><a href="../reference/transmute.html">transmute()</a></code> pass grouping through.
+<code><a href="../reference/rename.html">rename()</a></code> additionally updates group column names to match
+the rename. <code><a href="../reference/summarise.html">summarise()</a></code> drops grouping according to its
+<code>.groups</code> argument.</p>
+</div>
+<div class="section level2">
+<h2 id="package-conflicts">Package conflicts<a class="anchor" aria-label="anchor" href="#package-conflicts"></a>
+</h2>
+<p>vectra defines its own S3 generics for dplyr-like verbs
+(<code>filter</code>, <code>select</code>, <code>mutate</code>, etc.)
+and utility functions (<code>glimpse</code>, <code>collect</code>). If
+dplyr is also loaded, whichever package was attached last will mask the
+other’s generics. vectra’s methods will still dispatch correctly on
+<code>vectra_node</code> objects regardless of masking order.</p>
 </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside>
@@ -990,5 +1062,6 @@ fallback to dplyr or any other package.</p>
 
 
 
-  </body>
+  
+</body>
 </html>

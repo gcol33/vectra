@@ -2,5 +2,7 @@
 
 ### Guides
 
+- [Getting Started with
+  vectra](https://gillescolling.com/vectra/articles/quickstart.md):
 - [vectra Engine
-  Reference](https://gcol33.github.io/vectra/articles/engine.md):
+  Reference](https://gillescolling.com/vectra/articles/engine.md):

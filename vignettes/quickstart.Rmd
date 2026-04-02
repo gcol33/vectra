@@ -316,6 +316,111 @@ tbl(fd) |>
   collect()
 ```
 
+## String similarity
+
+vectra implements fuzzy string matching directly in the C engine.
+`levenshtein()` counts the minimum edit distance between two strings;
+`jaro_winkler()` returns a similarity score from 0 to 1 (higher = more
+similar). Both work in `filter()` and `mutate()`:
+
+```{r string-similarity}
+species <- data.frame(
+  name = c("Quercus robur", "Quercus rubra", "Fagus sylvatica",
+           "Acer platanoides", "Quercus petraea"),
+  stringsAsFactors = FALSE
+)
+fs2 <- tempfile(fileext = ".vtr")
+write_vtr(species, fs2)
+
+# Find names within edit distance 3 of "Quercus robur"
+tbl(fs2) |>
+  mutate(dist = levenshtein(name, "Quercus robur"),
+         sim  = jaro_winkler(name, "Quercus robur")) |>
+  filter(dist <= 5) |>
+  arrange(dist) |>
+  collect()
+```
+
+`dl_dist()` counts transpositions as a single operation (Damerau-Levenshtein),
+useful for catching common typos:
+
+```{r dl-dist}
+tbl(fs2) |>
+  mutate(d = dl_dist(name, "Qurecus robur")) |>  # transposed 'r' and 'e'
+  collect()
+```
+
+## Tree traversal: resolve() and propagate()
+
+`resolve(fk, pk, value)` is a scalar self-join — it looks up `value` where
+`pk == fk` within the same batch, denormalising a parent-child table without
+an explicit join:
+
+```{r resolve}
+taxa <- data.frame(
+  id        = c(1L, 2L, 3L, 4L),
+  name      = c("Fagaceae", "Quercus", "Q. robur", "Q. petraea"),
+  parent_id = c(NA, 1L, 2L, 2L),
+  stringsAsFactors = FALSE
+)
+ft <- tempfile(fileext = ".vtr")
+write_vtr(taxa, ft)
+
+tbl(ft) |>
+  mutate(parent_name = resolve(parent_id, id, name)) |>
+  collect()
+```
+
+`propagate(parent_id, id, seed)` walks the tree and fills every node with
+the nearest non-NA ancestor value of `seed`:
+
+```{r propagate}
+tbl(ft) |>
+  mutate(family = propagate(
+    parent_id, id,
+    if_else(is.na(parent_id), name, NA_character_)
+  )) |>
+  collect()
+```
+
+## Incremental file operations
+
+`append_vtr()` adds new rows as a row group without rewriting existing data:
+
+```{r append}
+fa <- tempfile(fileext = ".vtr")
+write_vtr(mtcars[1:16, ], fa)
+append_vtr(mtcars[17:32, ], fa)
+tbl(fa) |> collect() |> nrow()   # 32
+```
+
+`delete_vtr()` marks rows as deleted via a tombstone side file — the `.vtr`
+file is never modified:
+
+```{r delete}
+delete_vtr(fa, c(0, 1, 2))   # delete first 3 rows (0-based)
+tbl(fa) |> collect() |> nrow()   # 29
+unlink(c(fa, paste0(fa, ".del")))
+```
+
+`diff_vtr()` computes a key-based logical diff between two snapshots:
+
+```{r diff}
+fd1 <- tempfile(fileext = ".vtr")
+fd2 <- tempfile(fileext = ".vtr")
+old <- data.frame(id = 1:5, val = letters[1:5], stringsAsFactors = FALSE)
+new <- data.frame(id = c(3L, 4L, 5L, 6L, 7L),
+                  val = c("C", "d", "e", "f", "g"),
+                  stringsAsFactors = FALSE)
+write_vtr(old, fd1)
+write_vtr(new, fd2)
+
+d <- diff_vtr(fd1, fd2, "id")
+d$deleted          # key values removed
+collect(d$added)   # new rows
+unlink(c(fd1, fd2))
+```
+
 ## Format conversion
 
 vectra can read and write CSV files, making it easy to convert between formats.
@@ -363,5 +468,5 @@ tbl(f) |> glimpse()
 ## Cleanup
 
 ```{r cleanup}
-unlink(c(f, fs, f_cyl, f_rat, fd, csv_in, csv_out, vtr_file))
+unlink(c(f, fs, fs2, f_cyl, f_rat, fd, ft, csv_in, csv_out, vtr_file))
 ```

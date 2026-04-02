@@ -28,6 +28,5 @@ A vector.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> pull(mpg) |> head()
-#> [1] 21.0 21.0 22.8 21.4 18.7 18.1
 unlink(f)
 ```

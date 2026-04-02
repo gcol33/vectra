@@ -1,8 +1,8 @@
 # Apply a function across multiple columns
 
 Used inside
-[`mutate()`](https://gcol33.github.io/vectra/reference/mutate.md) or
-[`summarise()`](https://gcol33.github.io/vectra/reference/summarise.md)
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) or
+[`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
 to apply a function to multiple columns selected with tidyselect.
 Returns a named list of expressions.
 

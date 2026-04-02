@@ -36,15 +36,17 @@ tally(x, wt = NULL, sort = FALSE, name = NULL)
 
 A `vectra_node` with group columns and a count column.
 
+## Details
+
+Equivalent to `group_by(...) |> summarise(n = n())`. When `wt` is
+provided, uses `sum(wt)` instead of `n()`. When `sort = TRUE`, results
+are sorted in descending order of the count column.
+
 ## Examples
 
 ``` r
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> count(cyl) |> collect()
-#>   cyl  n
-#> 1   4 11
-#> 2   6  7
-#> 3   8 14
 unlink(f)
 ```

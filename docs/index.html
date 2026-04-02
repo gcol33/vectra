@@ -5,16 +5,31 @@
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>Columnar Query Engine for Larger-Than-RAM Data • vectra</title>
+<title>Columnar Query Engine for Larger-than-RAM Data • vectra</title>
 <script src="lightswitch.js"></script><script src="deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <link href="deps/bootstrap-5.3.1/bootstrap.min.css" rel="stylesheet">
 <script src="deps/bootstrap-5.3.1/bootstrap.bundle.min.js"></script><link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
-<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Columnar Query Engine for Larger-Than-RAM Data">
-<meta name="description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter, select, mutate, group_by, summarise) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr).">
-<meta property="og:description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter, select, mutate, group_by, summarise) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr).">
+<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><link href="extra.css" rel="stylesheet">
+<meta property="og:title" content="Columnar Query Engine for Larger-than-RAM Data">
+<meta name="description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter, select, mutate, group_by, summarise, joins, window functions) and common aggregations (n, sum, mean, min, max, standard deviation, first, last) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr).">
+<meta property="og:description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter, select, mutate, group_by, summarise, joins, window functions) and common aggregations (n, sum, mean, min, max, standard deviation, first, last) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr).">
 </head>
 <body>
+<p>
+
+
+
+
+
+
+
+
+  pkgdown/mathjax-config.html
+
+  
+
+  </p>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -22,7 +37,7 @@
 
     <a class="navbar-brand me-2" href="index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.2.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.3.3</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -34,7 +49,8 @@
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="articles/engine.html">vectra Engine Reference</a></li>
+<li><a class="dropdown-item" href="articles/quickstart.html">Getting Started with vectra</a></li>
+    <li><a class="dropdown-item" href="articles/engine.html">vectra Engine Reference</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="reference/index.html">Reference</a></li>
@@ -55,7 +71,7 @@
   <main id="main" class="col-md-9"><div class="section level1">
 <div class="page-header"><h1 id="vectra">vectra<a class="anchor" aria-label="anchor" href="#vectra"></a>
 </h1></div>
-<p><a href="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg" alt="R-CMD-check"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg" alt="ASAN/UBSAN"></a> <a href="https://app.codecov.io/gh/gcol33/vectra" class="external-link"><img src="https://codecov.io/gh/gcol33/vectra/graph/badge.svg" alt="Codecov test coverage"></a> <a href="https://opensource.org/licenses/MIT" class="external-link"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a></p>
+<p><a href="https://CRAN.R-project.org/package=vectra" class="external-link"><img src="https://www.r-pkg.org/badges/version/vectra" alt="CRAN status"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg" alt="R-CMD-check"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg" alt="ASAN/UBSAN"></a> <a href="https://app.codecov.io/gh/gcol33/vectra" class="external-link"><img src="https://codecov.io/gh/gcol33/vectra/graph/badge.svg" alt="Codecov test coverage"></a> <a href="https://opensource.org/licenses/MIT" class="external-link"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a></p>
 <p>vectra is an R-native columnar query engine for datasets larger than RAM.</p>
 <p>Write dplyr-style pipelines against multi-GB files on a laptop. Data streams through a C11 pull-based engine one row group at a time, so peak memory stays bounded regardless of file size.</p>
 <div class="section level2">
@@ -63,7 +79,7 @@
 </h2>
 <p>Point vectra at any file and query it with dplyr verbs. Nothing runs until <code><a href="reference/collect.html">collect()</a></code>.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/gcol33/vectra" class="external-link">vectra</a></span><span class="op">)</span></span>
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># CSV — lazy scan with type inference</span></span>
 <span><span class="fu"><a href="reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="st">"measurements.csv"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -92,8 +108,24 @@
 <span>  <span class="fu"><a href="reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">region</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/summarise.html">summarise</a></span><span class="op">(</span>total <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum</a></span><span class="op">(</span><span class="va">value</span><span class="op">)</span>, n <span class="op">=</span> <span class="fu">n</span><span class="op">(</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
-<p>Use <code><a href="reference/explain.html">explain()</a></code> to inspect the optimized plan:</p>
+<p>Append new data without rewriting the file, or do a key-based diff between two snapshots:</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Append new rows as a new row group — existing data untouched</span></span>
+<span><span class="fu"><a href="reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">new_rows_df</span>, <span class="st">"data.vtr"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Logical diff: what was added or deleted between two snapshots?</span></span>
+<span><span class="va">d</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/diff_vtr.html">diff_vtr</a></span><span class="op">(</span><span class="st">"snapshot_old.vtr"</span>, <span class="st">"snapshot_new.vtr"</span>, key_col <span class="op">=</span> <span class="st">"id"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="va">d</span><span class="op">$</span><span class="va">added</span><span class="op">)</span>   <span class="co"># rows present in new but not old</span></span>
+<span><span class="va">d</span><span class="op">$</span><span class="va">deleted</span>          <span class="co"># key values present in old but not new</span></span></code></pre></div>
+<p>Fuzzy string matching runs inside the C engine, no round-trip to R:</p>
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"taxa.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="fu">levenshtein</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span> <span class="op">&lt;=</span> <span class="fl">2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/mutate.html">mutate</a></span><span class="op">(</span>similarity <span class="op">=</span> <span class="fu">jaro_winkler</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/arrange.html">arrange</a></span><span class="op">(</span><span class="fu"><a href="reference/desc.html">desc</a></span><span class="op">(</span><span class="va">similarity</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
+<p>Use <code><a href="reference/explain.html">explain()</a></code> to inspect the optimized plan:</p>
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">x</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">x</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -111,8 +143,8 @@
 <div class="section level2">
 <h2 id="why-vectra">Why vectra<a class="anchor" aria-label="anchor" href="#why-vectra"></a>
 </h2>
-<p>Querying large datasets in R usually means Arrow, DuckDB, or Spark. These work, but the dependency chains are heavy and installation is fragile.</p>
-<p>vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries, no JVM, no runtime configuration. It provides:</p>
+<p>Querying large datasets in R usually means Arrow (requires compiled binaries matching your platform), DuckDB (links a 30 MB bundled library), or Spark (requires a JVM and cluster configuration).</p>
+<p>vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries beyond zlib, no JVM, no runtime configuration. It provides:</p>
 <ul>
 <li>
 <strong>Streaming execution</strong>: data flows one row group at a time, never fully in memory</li>
@@ -155,31 +187,46 @@
 <tr>
 <td align="left"><strong>Aggregate</strong></td>
 <td align="left">
-<code><a href="reference/group_by.html">group_by()</a></code>, <code><a href="reference/summarise.html">summarise()</a></code>, <code><a href="reference/count.html">count()</a></code>, <code><a href="reference/count.html">tally()</a></code>, <code><a href="reference/distinct.html">distinct()</a></code>
+<code><a href="reference/group_by.html">group_by()</a></code>, <code><a href="reference/summarise.html">summarise()</a></code> (<code>n</code>, <code>sum</code>, <code>mean</code>, <code>min</code>, <code>max</code>, <code>sd</code>, <code>var</code>, <code>first</code>, <code>last</code>, <code>any</code>, <code>all</code>, <code>median</code>, <code>n_distinct</code>), <code><a href="reference/count.html">count()</a></code>, <code><a href="reference/count.html">tally()</a></code>, <code><a href="reference/distinct.html">distinct()</a></code>
 </td>
 </tr>
 <tr>
 <td align="left"><strong>Join</strong></td>
 <td align="left">
-<code><a href="reference/left_join.html">left_join()</a></code>, <code><a href="reference/left_join.html">inner_join()</a></code>, <code><a href="reference/left_join.html">right_join()</a></code>, <code><a href="reference/left_join.html">full_join()</a></code>, <code><a href="reference/left_join.html">semi_join()</a></code>, <code><a href="reference/left_join.html">anti_join()</a></code>
+<code><a href="reference/left_join.html">left_join()</a></code>, <code><a href="reference/left_join.html">inner_join()</a></code>, <code><a href="reference/left_join.html">right_join()</a></code>, <code><a href="reference/left_join.html">full_join()</a></code>, <code><a href="reference/left_join.html">semi_join()</a></code>, <code><a href="reference/left_join.html">anti_join()</a></code>, <code><a href="reference/cross_join.html">cross_join()</a></code>
 </td>
 </tr>
 <tr>
 <td align="left"><strong>Order</strong></td>
 <td align="left">
-<code><a href="reference/arrange.html">arrange()</a></code>, <code><a href="reference/slice_head.html">slice_head()</a></code>, <code><a href="reference/slice_head.html">slice_tail()</a></code>, <code><a href="reference/slice_head.html">slice_min()</a></code>, <code><a href="reference/slice_head.html">slice_max()</a></code>
+<code><a href="reference/arrange.html">arrange()</a></code>, <code><a href="reference/slice_head.html">slice_head()</a></code>, <code><a href="reference/slice_head.html">slice_tail()</a></code>, <code><a href="reference/slice_head.html">slice_min()</a></code>, <code><a href="reference/slice_head.html">slice_max()</a></code>, <code><a href="reference/slice.html">slice()</a></code>
 </td>
 </tr>
 <tr>
 <td align="left"><strong>Window</strong></td>
 <td align="left">
-<code>row_number()</code>, <code><a href="https://rdrr.io/r/base/rank.html" class="external-link">rank()</a></code>, <code>dense_rank()</code>, <code><a href="https://rdrr.io/r/stats/lag.html" class="external-link">lag()</a></code>, <code>lead()</code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code>, <code>cummean()</code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummin()</a></code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummax()</a></code>
+<code>row_number()</code>, <code><a href="https://rdrr.io/r/base/rank.html" class="external-link">rank()</a></code>, <code>dense_rank()</code>, <code><a href="https://rdrr.io/r/stats/lag.html" class="external-link">lag()</a></code>, <code>lead()</code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code>, <code>cummean()</code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummin()</a></code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummax()</a></code>, <code>ntile()</code>, <code>percent_rank()</code>, <code>cume_dist()</code>
 </td>
+</tr>
+<tr>
+<td align="left"><strong>Date/Time</strong></td>
+<td align="left">
+<code>year()</code>, <code>month()</code>, <code>day()</code>, <code>hour()</code>, <code>minute()</code>, <code>second()</code>, <code><a href="https://rdrr.io/r/base/as.Date.html" class="external-link">as.Date()</a></code> (in <code><a href="reference/filter.html">filter()</a></code>/<code><a href="reference/mutate.html">mutate()</a></code>)</td>
 </tr>
 <tr>
 <td align="left"><strong>String</strong></td>
 <td align="left">
-<code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>, <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code> (in <code><a href="reference/filter.html">filter()</a></code>/<code><a href="reference/mutate.html">mutate()</a></code>)</td>
+<code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>, <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code>, <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower()</a></code>, <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper()</a></code>, <code><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws()</a></code>, <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">gsub()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">sub()</a></code>, <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">startsWith()</a></code>, <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">endsWith()</a></code> (in <code><a href="reference/filter.html">filter()</a></code>/<code><a href="reference/mutate.html">mutate()</a></code>)</td>
+</tr>
+<tr>
+<td align="left"><strong>String similarity</strong></td>
+<td align="left">
+<code>levenshtein()</code>, <code>levenshtein_norm()</code>, <code>dl_dist()</code>, <code>dl_dist_norm()</code>, <code>jaro_winkler()</code> — fuzzy matching in <code><a href="reference/filter.html">filter()</a></code>/<code><a href="reference/mutate.html">mutate()</a></code>, with optional <code>max_dist</code> early termination</td>
+</tr>
+<tr>
+<td align="left"><strong>Expression</strong></td>
+<td align="left">
+<code><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">abs()</a></code>, <code><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">sqrt()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">exp()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">floor()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">ceiling()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">round()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log2()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log10()</a></code>, <code><a href="https://rdrr.io/r/base/sign.html" class="external-link">sign()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">trunc()</a></code>, <code>if_else()</code>, <code>between()</code>, <code>%in%</code>, <code><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax()</a></code>, <code>resolve()</code>, <code>propagate()</code> (in <code><a href="reference/filter.html">filter()</a></code>/<code><a href="reference/mutate.html">mutate()</a></code>)</td>
 </tr>
 <tr>
 <td align="left"><strong>Combine</strong></td>
@@ -190,13 +237,13 @@
 <tr>
 <td align="left"><strong>I/O</strong></td>
 <td align="left">
-<code><a href="reference/tbl.html">tbl()</a></code>, <code><a href="reference/tbl_csv.html">tbl_csv()</a></code>, <code><a href="reference/tbl_sqlite.html">tbl_sqlite()</a></code>, <code><a href="reference/tbl_tiff.html">tbl_tiff()</a></code>, <code><a href="reference/write_vtr.html">write_vtr()</a></code>, <code><a href="reference/write_csv.html">write_csv()</a></code>, <code><a href="reference/write_sqlite.html">write_sqlite()</a></code>, <code><a href="reference/write_tiff.html">write_tiff()</a></code>
+<code><a href="reference/tbl.html">tbl()</a></code>, <code><a href="reference/tbl_csv.html">tbl_csv()</a></code>, <code><a href="reference/tbl_sqlite.html">tbl_sqlite()</a></code>, <code><a href="reference/tbl_tiff.html">tbl_tiff()</a></code>, <code><a href="reference/write_vtr.html">write_vtr()</a></code>, <code><a href="reference/write_csv.html">write_csv()</a></code>, <code><a href="reference/write_sqlite.html">write_sqlite()</a></code>, <code><a href="reference/write_tiff.html">write_tiff()</a></code>, <code><a href="reference/append_vtr.html">append_vtr()</a></code>, <code><a href="reference/delete_vtr.html">delete_vtr()</a></code>, <code><a href="reference/diff_vtr.html">diff_vtr()</a></code>
 </td>
 </tr>
 <tr>
 <td align="left"><strong>Inspect</strong></td>
 <td align="left">
-<code><a href="reference/explain.html">explain()</a></code>, <code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code>, <code><a href="reference/pull.html">pull()</a></code>
+<code><a href="reference/explain.html">explain()</a></code>, <code><a href="reference/glimpse.html">glimpse()</a></code>, <code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code>, <code><a href="reference/pull.html">pull()</a></code>
 </td>
 </tr>
 </tbody>
@@ -206,8 +253,11 @@
 <div class="section level2">
 <h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
 </h2>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># install.packages("pak")</span></span>
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># CRAN</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Development version</span></span>
 <span><span class="fu">pak</span><span class="fu">::</span><span class="fu">pak</span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
@@ -215,7 +265,10 @@
 </h2>
 <ul>
 <li>
-<code><a href="articles/engine.html">vignette("engine")</a></code> — execution model, supported types, coercion rules, memory guarantees, and current limitations</li>
+<a href="https://gillescolling.com/vectra/articles/quickstart.html">Getting Started</a> - Practical tutorial with runnable examples</li>
+<li>
+<a href="https://gillescolling.com/vectra/articles/engine.html">Engine Reference</a> - Execution model, types, coercion, memory guarantees, and limitations</li>
+<li><a href="https://gillescolling.com/vectra/reference/">Function Reference</a></li>
 </ul>
 </div>
 <div class="section level2">
@@ -235,12 +288,12 @@
 <div class="section level2">
 <h2 id="citation">Citation<a class="anchor" aria-label="anchor" href="#citation"></a>
 </h2>
-<div class="sourceCode" id="cb5"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="co">@software{vectra,</span></span>
-<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="co">  author = {Colling, Gilles},</span></span>
-<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">  title = {vectra: Columnar Query Engine for Larger-Than-RAM Data},</span></span>
-<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">  year = {2026},</span></span>
-<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">  url = {https://github.com/gcol33/vectra}</span></span>
-<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="co">@software{vectra,</span></span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a><span class="co">  author = {Colling, Gilles},</span></span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a><span class="co">  title = {vectra: Columnar Query Engine for Larger-Than-RAM Data},</span></span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a><span class="co">  year = {2026},</span></span>
+<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a><span class="co">  url = {https://github.com/gcol33/vectra}</span></span>
+<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a><span class="co">}</span></span></code></pre></div>
 </div>
 </div>
   </main><aside class="col-md-3"><div class="links">
@@ -295,5 +348,6 @@
 
 
 
-  </body>
+  
+</body>
 </html>

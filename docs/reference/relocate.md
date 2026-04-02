@@ -29,3 +29,12 @@ relocate(.data, ..., .before = NULL, .after = NULL)
 ## Value
 
 A new `vectra_node` with reordered columns.
+
+## Examples
+
+``` r
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> relocate(hp, wt, .before = cyl) |> collect() |> head()
+unlink(f)
+```

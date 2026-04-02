@@ -1,0 +1,252 @@
+/* Plot styling - match code block borders */
+/* Bootstrap 5 Sandstone uses --bs-border-radius: .375rem for pre/code */
+img.r-plt,
+.figure img,
+figure img,
+img.figure-img,
+svg.inline-svg {
+  max-width: 100%;
+  width: 100%;
+  height: auto;
+  border: 1px solid #DFD7CA;
+  border-radius: .375rem;
+  overflow: hidden;
+  display: block;
+  margin-bottom: 1rem;
+}
+
+/* Figure containers - full width like code blocks */
+.figure,
+figure {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Mobile: code block text wrapping (LaTeX-style) */
+/* Wrap at spaces, break long tokens only when necessary, no horizontal scroll */
+@media (max-width: 575.98px) {
+  pre.sourceCode,
+  .sourceCode pre {
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+    overflow-x: hidden !important;
+    hyphens: auto !important;
+    -webkit-hyphens: auto !important;
+  }
+  pre.sourceCode code,
+  .sourceCode pre code {
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+    hyphens: auto !important;
+    -webkit-hyphens: auto !important;
+  }
+}
+
+/* Mobile: match code block full-width behavior */
+/* Code blocks use negative margins to expand on mobile - plots should too */
+/* Use :has() to target the parent <p> that contains an SVG/img */
+@media (max-width: 575.98px) {
+  /* Target the p element wrapping standalone SVGs/imgs to expand full width */
+  p:has(> svg.inline-svg),
+  p:has(> img.r-plt) {
+    margin-left: calc(var(--bs-gutter-x, 1.5rem) * -.5) !important;
+    margin-right: calc(var(--bs-gutter-x, 1.5rem) * -.5) !important;
+    width: calc(100% + var(--bs-gutter-x, 1.5rem)) !important;
+    max-width: none !important;
+  }
+  /* SVGs/imgs inside the expanded p */
+  p > svg.inline-svg,
+  p > img.r-plt {
+    border-radius: 0 !important;
+    border: 1px solid #DFD7CA !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+  /* Dark mode mobile border - must use full border shorthand to override */
+  [data-bs-theme="dark"] p > svg.inline-svg,
+  [data-bs-theme="dark"] p > img.r-plt {
+    border: 1px solid #495057 !important;
+  }
+  /* Figure elements */
+  .section .figure,
+  .section figure,
+  div > div > .figure,
+  div > div > figure {
+    margin-left: calc(var(--bs-gutter-x, 1.5rem) * -.5) !important;
+    margin-right: calc(var(--bs-gutter-x, 1.5rem) * -.5) !important;
+    width: calc(100% + var(--bs-gutter-x, 1.5rem)) !important;
+    max-width: none !important;
+    border-radius: 0;
+  }
+  .section .figure img,
+  .section figure img,
+  div > div > .figure img,
+  div > div > figure img {
+    border-radius: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+
+/* Dark mode border */
+[data-bs-theme="dark"] img.r-plt,
+[data-bs-theme="dark"] .figure img,
+[data-bs-theme="dark"] figure img,
+[data-bs-theme="dark"] img.figure-img,
+[data-bs-theme="dark"] svg.inline-svg {
+  border-color: #495057;
+}
+
+/* Dark mode colors for inline SVG elements (base R svg format) */
+/* Use !important to override embedded SVG <style> blocks */
+[data-bs-theme="dark"] .theme-bg {
+  fill: #343739 !important;
+}
+
+[data-bs-theme="dark"] .theme-text {
+  fill: #DFD7CA !important;
+}
+
+/* Hide clipPath rects - they should not be visible */
+svg.inline-svg clipPath rect,
+svg.inline-svg defs rect {
+  stroke: none !important;
+  fill: none !important;
+}
+
+/* Dark mode colors for svglite format */
+/* Override the embedded styles in inline SVGs */
+/* No stroke on svg-bg - the outer CSS border handles rounding */
+[data-bs-theme="dark"] svg.inline-svg .svg-bg {
+  fill: #343739 !important;
+  stroke: none !important;
+}
+
+/* Light mode - ensure svg-bg has no stroke */
+svg.inline-svg .svg-bg {
+  stroke: none !important;
+}
+
+/* Only override default-colored strokes (axis ticks, frames) - preserve data colors */
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3e3f3a"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3e3f3a"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3e3f3a"],
+[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3e3f3a"],
+[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3e3f3a"] {
+  stroke: #DFD7CA !important;
+}
+/* Elements inheriting default stroke from CSS (no inline stroke) */
+[data-bs-theme="dark"] svg.inline-svg .svglite line:not([style*="stroke:"]),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline:not([style*="stroke:"]),
+[data-bs-theme="dark"] svg.inline-svg .svglite polygon:not([style*="stroke:"]),
+[data-bs-theme="dark"] svg.inline-svg .svglite path:not([style*="stroke:"]),
+[data-bs-theme="dark"] svg.inline-svg .svglite circle:not([style*="stroke:"]) {
+  stroke: #DFD7CA !important;
+}
+
+/* Dark mode text color - but NOT for text on custom legend backgrounds */
+[data-bs-theme="dark"] svg.inline-svg .svglite text:not(.preserve-color) {
+  fill: #DFD7CA !important;
+}
+
+/* Text on custom legend backgrounds keeps dark color for contrast */
+svg.inline-svg .svglite text.preserve-color {
+  fill: #3E3F3A !important;
+}
+
+/* Rect strokes (histogram bars, etc.) - match text color */
+/* Use > g > rect to exclude clipPath rects; exclude stroke: none (empty legend keys) */
+/* Exclude unfilled rects (plot frames) - they should have no stroke */
+[data-bs-theme="dark"] svg.inline-svg .svglite > g > rect[style*="fill:"]:not([style*="stroke: none"]) {
+  stroke: #DFD7CA !important;
+}
+
+/* Plot frame rects - remove stroke, CSS border handles the frame */
+/* Target unfilled rects (no inline fill style) excluding legend backgrounds */
+/* Rects can be direct children of .svglite or children of g elements */
+svg.inline-svg .svglite > rect:not([style*="fill:"]),
+svg.inline-svg .svglite > g > rect:not([style*="fill:"]):not(.legend-bg) {
+  stroke: none !important;
+}
+
+/* Plot background rects - remove stroke when it matches the fill */
+/* These rects have inline stroke matching their fill (invisible in light mode) */
+/* but in dark mode the fill changes while the stroke stays light = visible outline */
+/* Only target rects with inline light stroke, not legend boxes (which have no inline stroke) */
+svg.inline-svg .svglite rect.legend-bg[style*="stroke: #F5F6F8"],
+svg.inline-svg .svglite rect.legend-bg[style*="stroke: #f5f6f8"] {
+  stroke: none !important;
+}
+
+/* Legend box backgrounds - override inline fill */
+/* Exclude svg-bg which is the main plot background */
+[data-bs-theme="dark"] svg.inline-svg .svglite rect[style*="fill: #F5F6F8"]:not(.svg-bg),
+[data-bs-theme="dark"] svg.inline-svg .svglite rect.legend-bg {
+  fill: #343739 !important;
+}
+
+/* Grid lines */
+/* White grid lines need to become dark in light mode, stay light in dark mode */
+/* Light mode: dark grid on light bg */
+svg.inline-svg .svglite polyline[style*="stroke: #FFFFFF"],
+svg.inline-svg .svglite polyline[style*="stroke: #ffffff"] {
+  stroke: #3E3F3A !important;
+}
+/* Dark mode: light grid on dark bg */
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #FFFFFF"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #ffffff"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3e3f3a"] {
+  stroke: #DFD7CA !important;
+}
+
+/* ggplot2 theme_minimal() gridlines - light grey, adapt to dark mode */
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #EBEBEB"],
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #ebebeb"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #EBEBEB"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #ebebeb"] {
+  stroke: #495057 !important;
+}
+
+/* Base R and other grey gridline variants */
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: #EBEBEB"],
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: #ebebeb"],
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: grey"],
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: gray"] {
+  stroke: #495057 !important;
+}
+
+/* SVG copy button - container positioning */
+.svg-container {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+/* SVG copy button styling - matches code block copy button exactly */
+.btn-copy-svg {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  visibility: hidden;
+}
+
+/* Show button on hover - matches .hasCopyButton:hover button.btn-copy-ex */
+.svg-container:hover .btn-copy-svg,
+.svg-container:focus-within .btn-copy-svg,
+.btn-copy-svg:focus {
+  visibility: visible;
+}
+
+/* Mobile: adjust position for full-width SVGs */
+@media (max-width: 575.98px) {
+  .svg-container {
+    position: relative;
+  }
+}
+

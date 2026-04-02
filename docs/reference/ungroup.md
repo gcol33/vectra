@@ -21,3 +21,12 @@ ungroup(x, ...)
 ## Value
 
 An ungrouped `vectra_node`.
+
+## Examples
+
+``` r
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> group_by(cyl) |> ungroup()
+unlink(f)
+```

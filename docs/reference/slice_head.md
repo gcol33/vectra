@@ -30,8 +30,23 @@ slice_max(.data, order_by, n = 1L, with_ties = TRUE)
 
 - with_ties:
 
-  If `TRUE`, include ties. Currently ignored.
+  If `TRUE` (default), includes all rows that tie with the nth value. If
+  `FALSE`, returns exactly `n` rows.
 
 ## Value
 
-A `vectra_node` or data.frame.
+A `vectra_node` for `slice_head()` and
+`slice_min/max(..., with_ties = FALSE)`. A data.frame for `slice_tail()`
+and `slice_min/max(..., with_ties = TRUE)` (the default), since these
+must materialize all rows.
+
+## Examples
+
+``` r
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+tbl(f) |> slice_head(n = 3) |> collect()
+tbl(f) |> slice_min(order_by = mpg, n = 3) |> collect()
+tbl(f) |> slice_max(order_by = mpg, n = 3) |> collect()
+unlink(f)
+```

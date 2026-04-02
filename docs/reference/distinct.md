@@ -26,15 +26,19 @@ distinct(.data, ..., .keep_all = FALSE)
 
 A `vectra_node` with unique rows.
 
+## Details
+
+Uses hash-based grouping with zero aggregations. When `.keep_all = TRUE`
+with a column subset, falls back to R's
+[`duplicated()`](https://rdrr.io/r/base/duplicated.html) with a message.
+
+This is a materializing operation.
+
 ## Examples
 
 ``` r
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> distinct(cyl) |> collect()
-#>   cyl
-#> 1   4
-#> 2   6
-#> 3   8
 unlink(f)
 ```
