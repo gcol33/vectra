@@ -1,3 +1,9 @@
+# vectra 0.3.2
+
+* Fix misaligned `int64_t` memory access in `vtr_codec.c` (UBSAN).
+  Dictionary encoding wrote and read 8-byte offsets through an unaligned
+  pointer; delta decoding had the same issue. All fixed with `memcpy`.
+
 # vectra 0.3.1
 
 * CRAN submission fixes: title case, quoted technical terms in DESCRIPTION,
