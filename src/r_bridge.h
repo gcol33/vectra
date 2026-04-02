@@ -29,5 +29,7 @@ SEXP C_tiff_scan_node(SEXP path, SEXP batch_size);
 SEXP C_tiff_scan_meta(SEXP node_xptr);
 SEXP C_write_tiff(SEXP node_xptr, SEXP path, SEXP compress);
 SEXP C_write_vtr_node(SEXP node_xptr, SEXP path);
+SEXP C_append_vtr(SEXP node_xptr, SEXP path);
+SEXP C_delete_vtr(SEXP path, SEXP row_indices);
 
 #endif /* VECTRA_R_BRIDGE_H */

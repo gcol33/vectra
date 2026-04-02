@@ -2,6 +2,7 @@
 #include "batch.h"
 #include "schema.h"
 #include "expr.h"
+#include "array.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
@@ -104,16 +105,49 @@ static int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
     return 1; /* unknown op, don't prune */
 }
 
+/* Apply tombstone filter: build a selection vector that excludes deleted rows.
+   Returns the batch unmodified if there are no deletions in this row group. */
+static VecBatch *tombstone_filter_batch(VecBatch *batch,
+                                        const TombstoneSet *ts,
+                                        int64_t rg_row_base) {
+    if (!ts || ts->n == 0) return batch;
+
+    int64_t n = batch->n_rows;
+    int32_t *sel = (int32_t *)malloc((size_t)n * sizeof(int32_t));
+    if (!sel) vectra_error("tombstone_filter_batch: alloc failed");
+
+    int32_t sel_n = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (!tombstone_is_deleted(ts, rg_row_base + i))
+            sel[sel_n++] = (int32_t)i;
+    }
+
+    if (sel_n == (int32_t)n) {
+        /* No rows deleted in this batch — discard sel and return as-is */
+        free(sel);
+        return batch;
+    }
+
+    batch->sel   = sel;
+    batch->sel_n = sel_n;
+    return batch;
+}
+
 static VecBatch *scan_next_batch(VecNode *self) {
     ScanNode *sn = (ScanNode *)self;
 
     while (sn->next_rg < sn->file->header.n_rowgroups) {
+        /* Track the physical row base for tombstone checking */
+        int64_t rg_base = sn->rg_row_base;
+        int64_t rg_n_rows = sn->file->rowgroups[sn->next_rg].n_rows;
+
         /* Predicate pushdown: skip row groups that can't match */
         if (sn->predicate && sn->file->header.version >= 3) {
             Vtr1ColStat *stats = sn->file->rowgroups[sn->next_rg].col_stats;
             if (stats && !predicate_might_match(sn->predicate, stats,
                                                  &sn->file->header.schema)) {
                 sn->next_rg++;
+                sn->rg_row_base += rg_n_rows;
                 continue;
             }
         }
@@ -121,6 +155,18 @@ static VecBatch *scan_next_batch(VecNode *self) {
         VecBatch *batch = vtr1_read_rowgroup(sn->file, sn->next_rg,
                                               sn->col_mask);
         sn->next_rg++;
+        sn->rg_row_base += rg_n_rows;
+
+        /* Apply tombstone filter if needed */
+        batch = tombstone_filter_batch(batch, sn->tombstone, rg_base);
+
+        /* If all rows in this batch were deleted, skip to next row group
+           instead of returning an empty batch */
+        if (batch->sel && batch->sel_n == 0) {
+            vec_batch_free(batch);
+            continue;
+        }
+
         return batch;
     }
     return NULL;
@@ -130,6 +176,7 @@ static void scan_free(VecNode *self) {
     ScanNode *sn = (ScanNode *)self;
     if (sn->predicate && !sn->pred_borrowed)
         vec_expr_free(sn->predicate);
+    tombstone_free(sn->tombstone);
     vtr1_close(sn->file);
     free(sn->col_mask);
     vec_schema_free(&sn->base.output_schema);
@@ -142,6 +189,16 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
 
     sn->file = vtr1_open(path);
     sn->next_rg = 0;
+    sn->rg_row_base = 0;
+
+    /* Check for tombstone file: "<path>.del" */
+    size_t plen = strlen(path);
+    char *del_path = (char *)malloc(plen + 5);
+    if (!del_path) vectra_error("alloc failed for del_path");
+    memcpy(del_path, path, plen);
+    memcpy(del_path + plen, ".del", 5);
+    sn->tombstone = tombstone_load(del_path);
+    free(del_path);
 
     const VecSchema *file_schema = &sn->file->header.schema;
     int n_cols = file_schema->n_cols;

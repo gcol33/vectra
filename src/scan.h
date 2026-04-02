@@ -3,16 +3,19 @@
 
 #include "types.h"
 #include "vtr1.h"
+#include "vtr_delete.h"
 
 typedef struct VecExpr VecExpr;  /* forward decl */
 
 typedef struct {
-    VecNode    base;
-    Vtr1File  *file;
-    int       *col_mask;     /* which columns to read */
-    uint32_t   next_rg;      /* next row group to read */
-    VecExpr   *predicate;    /* pushed-down filter predicate (NULL = none) */
-    int        pred_borrowed; /* 1 = don't free predicate (owned by filter node) */
+    VecNode        base;
+    Vtr1File      *file;
+    int           *col_mask;       /* which columns to read */
+    uint32_t       next_rg;        /* next row group to read */
+    VecExpr       *predicate;      /* pushed-down filter predicate (NULL = none) */
+    int            pred_borrowed;  /* 1 = don't free predicate (owned by filter node) */
+    TombstoneSet  *tombstone;      /* deleted rows (NULL = no deletions) */
+    int64_t        rg_row_base;    /* physical row index of first row in current rg */
 } ScanNode;
 
 /* Create a scan node over a .vtr file.

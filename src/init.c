@@ -2,6 +2,8 @@
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 #include "r_bridge.h"
+#include "vtr_append.h"
+#include "vtr_delete.h"
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    3},
@@ -26,6 +28,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_tiff_scan_meta", (DL_FUNC) &C_tiff_scan_meta, 1},
     {"C_write_tiff",     (DL_FUNC) &C_write_tiff,     3},
     {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 2},
+    {"C_append_vtr",     (DL_FUNC) &C_append_vtr,     2},
+    {"C_delete_vtr",     (DL_FUNC) &C_delete_vtr,      2},
     {NULL, NULL, 0}
 };
 

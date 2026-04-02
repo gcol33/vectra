@@ -193,3 +193,56 @@ write_vtr.data.frame <- function(x, path, batch_size = nrow(x), ...) {
   .Call(C_write_vtr, x, path, as.integer(batch_size))
   invisible(NULL)
 }
+
+#' Append rows to an existing .vtr file
+#'
+#' Appends one or more new row groups to the end of an existing `.vtr` file
+#' without touching or recompressing existing row groups. The schema of `x`
+#' must exactly match the schema of the target file (same column names and
+#' types, in the same order).
+#'
+#' The operation is not fully atomic: if the process is interrupted after
+#' new row groups are written but before the header is patched, the file
+#' will be in a corrupted state. Use `write_vtr()` for safety-critical
+#' write-once workloads.
+#'
+#' @param x A `vectra_node` (lazy query) or a `data.frame`.
+#' @param path File path of an existing `.vtr` file to append to.
+#' @param ... Additional arguments passed to methods.
+#'
+#' @return Invisible `NULL`.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(mtcars[1:10, ], f)
+#' append_vtr(mtcars[11:20, ], f)
+#' result <- tbl(f) |> collect()
+#' stopifnot(nrow(result) == 20L)
+#' unlink(f)
+#'
+#' @export
+append_vtr <- function(x, path, ...) {
+  UseMethod("append_vtr")
+}
+
+#' @export
+append_vtr.vectra_node <- function(x, path, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  .Call(C_append_vtr, x$.node, path)
+  invisible(NULL)
+}
+
+#' @export
+append_vtr.data.frame <- function(x, path, ...) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  tmp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(tmp))
+  write_vtr(x, tmp)
+  node <- tbl(tmp)
+  .Call(C_append_vtr, node$.node, path)
+  invisible(NULL)
+}
