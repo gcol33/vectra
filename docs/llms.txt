@@ -1,0 +1,282 @@
+# vectra
+
+[![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
+[![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml)
+[![Codecov test
+coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
+[![License:
+MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+vectra is an R-native columnar query engine for datasets larger than
+RAM.
+
+Write dplyr-style pipelines against multi-GB files on a laptop. Data
+streams through a C11 pull-based engine one row group at a time, so peak
+memory stays bounded regardless of file size.
+
+## Quick Start
+
+Point vectra at any file and query it with dplyr verbs. Nothing runs
+until
+[`collect()`](https://gcol33.github.io/vectra/reference/collect.md).
+
+``` r
+
+library(vectra)
+
+# CSV — lazy scan with type inference
+tbl_csv("measurements.csv") |>
+  filter(temperature > 30, year >= 2020) |>
+  group_by(station) |>
+  summarise(avg_temp = mean(temperature), n = n()) |>
+  collect()
+
+# GeoTIFF — climate rasters as tidy data
+tbl_tiff("worldclim_bio1.tif") |>
+  filter(band1 > 0) |>
+  mutate(temp_c = band1 / 10) |>
+  collect()
+
+# SQLite — zero-dependency, no DBI required
+tbl_sqlite("survey.db", "responses") |>
+  filter(year == 2025) |>
+  left_join(tbl_sqlite("survey.db", "sites"), by = "site_id") |>
+  collect()
+```
+
+For repeated queries, convert to vectra’s native `.vtr` format for
+faster reads:
+
+``` r
+
+write_vtr(big_df, "data.vtr", batch_size = 100000)
+
+tbl("data.vtr") |>
+  filter(x > 0, region == "EU") |>
+  group_by(region) |>
+  summarise(total = sum(value), n = n()) |>
+  collect()
+```
+
+Use [`explain()`](https://gcol33.github.io/vectra/reference/explain.md)
+to inspect the optimized plan:
+
+``` r
+
+tbl("data.vtr") |>
+  filter(x > 0) |>
+  select(id, x) |>
+  explain()
+#> vectra execution plan
+#>
+#> ProjectNode [streaming]
+#>   FilterNode [streaming]
+#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
+#>
+#> Output columns (2):
+#>   id <int64>
+#>   x <double>
+```
+
+## Why vectra
+
+Querying large datasets in R usually means Arrow, DuckDB, or Spark.
+These work, but the dependency chains are heavy and installation is
+fragile.
+
+vectra is a self-contained C11 engine compiled as a standard R
+extension. No external libraries, no JVM, no runtime configuration. It
+provides:
+
+- **Streaming execution**: data flows one row group at a time, never
+  fully in memory
+- **Zero-copy filtering**: selection vectors avoid row duplication
+- **Query optimizer**: column pruning skips unneeded columns at scan;
+  predicate pushdown uses per-rowgroup min/max statistics to skip entire
+  row groups
+- **Hash joins**: build right, stream left — join a 50 GB fact table
+  against a lookup without materializing both
+- **External sort**: 1 GB memory budget with automatic spill-to-disk
+- **Window functions**: `row_number()`,
+  [`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`,
+  [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`,
+  [`cumsum()`](https://rdrr.io/r/base/cumsum.html), `cummean()`,
+  [`cummin()`](https://rdrr.io/r/base/cumsum.html),
+  [`cummax()`](https://rdrr.io/r/base/cumsum.html)
+- **String expressions**:
+  [`nchar()`](https://rdrr.io/r/base/nchar.html),
+  [`substr()`](https://rdrr.io/r/base/substr.html),
+  [`grepl()`](https://rdrr.io/r/base/grep.html) evaluated in the engine
+  without round-tripping to R
+- **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF — all produce
+  the same lazy query nodes
+
+## Features
+
+| Category | Verbs |
+|:---|:---|
+| **Transform** | [`filter()`](https://gcol33.github.io/vectra/reference/filter.md), [`select()`](https://gcol33.github.io/vectra/reference/select.md), [`mutate()`](https://gcol33.github.io/vectra/reference/mutate.md), [`transmute()`](https://gcol33.github.io/vectra/reference/transmute.md), [`rename()`](https://gcol33.github.io/vectra/reference/rename.md), [`relocate()`](https://gcol33.github.io/vectra/reference/relocate.md) |
+| **Aggregate** | [`group_by()`](https://gcol33.github.io/vectra/reference/group_by.md), [`summarise()`](https://gcol33.github.io/vectra/reference/summarise.md), [`count()`](https://gcol33.github.io/vectra/reference/count.md), [`tally()`](https://gcol33.github.io/vectra/reference/count.md), [`distinct()`](https://gcol33.github.io/vectra/reference/distinct.md) |
+| **Join** | [`left_join()`](https://gcol33.github.io/vectra/reference/left_join.md), [`inner_join()`](https://gcol33.github.io/vectra/reference/left_join.md), [`right_join()`](https://gcol33.github.io/vectra/reference/left_join.md), [`full_join()`](https://gcol33.github.io/vectra/reference/left_join.md), [`semi_join()`](https://gcol33.github.io/vectra/reference/left_join.md), [`anti_join()`](https://gcol33.github.io/vectra/reference/left_join.md) |
+| **Order** | [`arrange()`](https://gcol33.github.io/vectra/reference/arrange.md), [`slice_head()`](https://gcol33.github.io/vectra/reference/slice_head.md), [`slice_tail()`](https://gcol33.github.io/vectra/reference/slice_head.md), [`slice_min()`](https://gcol33.github.io/vectra/reference/slice_head.md), [`slice_max()`](https://gcol33.github.io/vectra/reference/slice_head.md) |
+| **Window** | `row_number()`, [`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`, [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`, [`cumsum()`](https://rdrr.io/r/base/cumsum.html), `cummean()`, [`cummin()`](https://rdrr.io/r/base/cumsum.html), [`cummax()`](https://rdrr.io/r/base/cumsum.html) |
+| **String** | [`nchar()`](https://rdrr.io/r/base/nchar.html), [`substr()`](https://rdrr.io/r/base/substr.html), [`grepl()`](https://rdrr.io/r/base/grep.html) (in [`filter()`](https://gcol33.github.io/vectra/reference/filter.md)/[`mutate()`](https://gcol33.github.io/vectra/reference/mutate.md)) |
+| **Combine** | [`bind_rows()`](https://gcol33.github.io/vectra/reference/bind_rows.md), [`bind_cols()`](https://gcol33.github.io/vectra/reference/bind_rows.md), [`across()`](https://gcol33.github.io/vectra/reference/across.md) |
+| **I/O** | [`tbl()`](https://gcol33.github.io/vectra/reference/tbl.md), [`tbl_csv()`](https://gcol33.github.io/vectra/reference/tbl_csv.md), [`tbl_sqlite()`](https://gcol33.github.io/vectra/reference/tbl_sqlite.md), [`tbl_tiff()`](https://gcol33.github.io/vectra/reference/tbl_tiff.md), [`write_vtr()`](https://gcol33.github.io/vectra/reference/write_vtr.md), [`write_csv()`](https://gcol33.github.io/vectra/reference/write_csv.md), [`write_sqlite()`](https://gcol33.github.io/vectra/reference/write_sqlite.md), [`write_tiff()`](https://gcol33.github.io/vectra/reference/write_tiff.md) |
+| **Inspect** | [`explain()`](https://gcol33.github.io/vectra/reference/explain.md), [`print()`](https://rdrr.io/r/base/print.html), [`pull()`](https://gcol33.github.io/vectra/reference/pull.md) |
+
+Full tidyselect support in
+[`select()`](https://gcol33.github.io/vectra/reference/select.md),
+[`rename()`](https://gcol33.github.io/vectra/reference/rename.md),
+[`relocate()`](https://gcol33.github.io/vectra/reference/relocate.md),
+and [`across()`](https://gcol33.github.io/vectra/reference/across.md):
+`starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`,
+`everything()`, `all_of()`, `any_of()`.
+
+## Installation
+
+``` r
+
+# install.packages("pak")
+pak::pak("gcol33/vectra")
+```
+
+## Documentation
+
+- [`vignette("engine")`](https://gcol33.github.io/vectra/articles/engine.md)
+  — execution model, supported types, coercion rules, memory guarantees,
+  and current limitations
+
+## Support
+
+> “Software is like sex: it’s better when it’s free.” – Linus Torvalds
+
+If this package saved you some time, buying me a coffee is a nice way to
+say thanks.
+
+[![Buy Me A
+Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
+
+## License
+
+MIT (see the LICENSE.md file)
+
+## Citation
+
+``` bibtex
+@software{vectra,
+  author = {Colling, Gilles},
+  title = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
+  year = {2026},
+  url = {https://github.com/gcol33/vectra}
+}
+```
+
+# Package index
+
+## Data sources
+
+Open files for lazy query execution
+
+- [`tbl()`](https://gcol33.github.io/vectra/reference/tbl.md) : Create a
+  lazy table reference from a .vtr file
+- [`tbl_csv()`](https://gcol33.github.io/vectra/reference/tbl_csv.md) :
+  Create a lazy table reference from a CSV file
+- [`tbl_sqlite()`](https://gcol33.github.io/vectra/reference/tbl_sqlite.md)
+  : Create a lazy table reference from a SQLite database
+- [`tbl_tiff()`](https://gcol33.github.io/vectra/reference/tbl_tiff.md)
+  : Create a lazy table reference from a GeoTIFF raster
+
+## Data sinks
+
+Write query results or data.frames to disk
+
+- [`write_vtr()`](https://gcol33.github.io/vectra/reference/write_vtr.md)
+  : Write a data.frame to a .vtr file
+- [`write_csv()`](https://gcol33.github.io/vectra/reference/write_csv.md)
+  : Write query results or a data.frame to a CSV file
+- [`write_sqlite()`](https://gcol33.github.io/vectra/reference/write_sqlite.md)
+  : Write query results or a data.frame to a SQLite table
+- [`write_tiff()`](https://gcol33.github.io/vectra/reference/write_tiff.md)
+  : Write query results to a GeoTIFF file
+
+## Single-table verbs
+
+Transform, filter, and reshape
+
+- [`filter()`](https://gcol33.github.io/vectra/reference/filter.md) :
+  Filter rows of a vectra query
+- [`select()`](https://gcol33.github.io/vectra/reference/select.md) :
+  Select columns from a vectra query
+- [`mutate()`](https://gcol33.github.io/vectra/reference/mutate.md) :
+  Add or transform columns
+- [`transmute()`](https://gcol33.github.io/vectra/reference/transmute.md)
+  : Keep only columns from mutate expressions
+- [`rename()`](https://gcol33.github.io/vectra/reference/rename.md) :
+  Rename columns
+- [`relocate()`](https://gcol33.github.io/vectra/reference/relocate.md)
+  : Relocate columns
+- [`arrange()`](https://gcol33.github.io/vectra/reference/arrange.md) :
+  Sort rows by column values
+- [`desc()`](https://gcol33.github.io/vectra/reference/desc.md) : Mark a
+  column for descending sort order
+- [`distinct()`](https://gcol33.github.io/vectra/reference/distinct.md)
+  : Keep distinct/unique rows
+- [`slice_head()`](https://gcol33.github.io/vectra/reference/slice_head.md)
+  [`slice_tail()`](https://gcol33.github.io/vectra/reference/slice_head.md)
+  [`slice_min()`](https://gcol33.github.io/vectra/reference/slice_head.md)
+  [`slice_max()`](https://gcol33.github.io/vectra/reference/slice_head.md)
+  : Select first or last rows
+- [`pull()`](https://gcol33.github.io/vectra/reference/pull.md) :
+  Extract a single column as a vector
+- [`head(`*`<vectra_node>`*`)`](https://gcol33.github.io/vectra/reference/head.vectra_node.md)
+  : Limit results to first n rows
+
+## Grouping and aggregation
+
+- [`group_by()`](https://gcol33.github.io/vectra/reference/group_by.md)
+  : Group a vectra query by columns
+- [`summarise()`](https://gcol33.github.io/vectra/reference/summarise.md)
+  [`summarize()`](https://gcol33.github.io/vectra/reference/summarise.md)
+  : Summarise grouped data
+- [`ungroup()`](https://gcol33.github.io/vectra/reference/ungroup.md) :
+  Remove grouping from a vectra query
+- [`count()`](https://gcol33.github.io/vectra/reference/count.md)
+  [`tally()`](https://gcol33.github.io/vectra/reference/count.md) :
+  Count observations by group
+- [`reframe()`](https://gcol33.github.io/vectra/reference/reframe.md) :
+  Summarise with variable-length output per group
+- [`across()`](https://gcol33.github.io/vectra/reference/across.md) :
+  Apply a function across multiple columns
+
+## Joins
+
+- [`left_join()`](https://gcol33.github.io/vectra/reference/left_join.md)
+  [`inner_join()`](https://gcol33.github.io/vectra/reference/left_join.md)
+  [`right_join()`](https://gcol33.github.io/vectra/reference/left_join.md)
+  [`full_join()`](https://gcol33.github.io/vectra/reference/left_join.md)
+  [`semi_join()`](https://gcol33.github.io/vectra/reference/left_join.md)
+  [`anti_join()`](https://gcol33.github.io/vectra/reference/left_join.md)
+  : Join two vectra tables
+
+## Combining tables
+
+- [`bind_rows()`](https://gcol33.github.io/vectra/reference/bind_rows.md)
+  [`bind_cols()`](https://gcol33.github.io/vectra/reference/bind_rows.md)
+  : Bind rows or columns from multiple vectra tables
+
+## Diagnostics
+
+- [`explain()`](https://gcol33.github.io/vectra/reference/explain.md) :
+  Print the execution plan for a vectra query
+- [`collect()`](https://gcol33.github.io/vectra/reference/collect.md) :
+  Execute a lazy query and return a data.frame
+- [`print(`*`<vectra_node>`*`)`](https://gcol33.github.io/vectra/reference/print.vectra_node.md)
+  : Print a vectra query node
+
+# Articles
+
+### Guides
+
+- [vectra Engine
+  Reference](https://gcol33.github.io/vectra/articles/engine.md):

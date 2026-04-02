@@ -33,7 +33,14 @@ typedef enum {
     EXPR_PMIN,       /* pmin(x, y) -> numeric */
     EXPR_PMAX,       /* pmax(x, y) -> numeric */
     EXPR_DATE_PART,  /* year/month/day/hour/minute/second extraction */
-    EXPR_AS_DATE     /* as.Date(string) -> double (days since epoch) */
+    EXPR_AS_DATE,    /* as.Date(string) -> double (days since epoch) */
+    EXPR_LEVENSHTEIN,      /* levenshtein(x, pattern) -> int64 edit distance */
+    EXPR_LEVENSHTEIN_NORM, /* levenshtein_norm(x, pattern) -> double 0.0-1.0 */
+    EXPR_DL_DIST,          /* dl_dist(x, pattern) -> int64 Damerau-Levenshtein distance */
+    EXPR_DL_DIST_NORM,     /* dl_dist_norm(x, pattern) -> double 0.0-1.0 */
+    EXPR_JARO_WINKLER,     /* jaro_winkler(x, pattern) -> double 0.0-1.0 similarity */
+    EXPR_RESOLVE,          /* resolve(fk, pk, val) -> FK lookup within same table */
+    EXPR_PROPAGATE         /* propagate(parent_fk, pk, seed) -> iterative tree fill */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -93,6 +100,9 @@ struct VecExpr {
     char *gsub_pattern;
     char *gsub_replacement;
     /* uses operand for the input string */
+
+    /* EXPR_LEVENSHTEIN / EXPR_LEVENSHTEIN_NORM */
+    int64_t max_dist;  /* -1 = no bound; >= 0 = early termination threshold */
 };
 
 /* Allocate a new expression node */
@@ -104,6 +114,17 @@ void vec_expr_free(VecExpr *expr);
 /* Evaluate an expression against a batch, return a new VecArray.
    Caller must free the result. */
 VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch);
+
+/* Sub-dispatcher for string operations (nchar, substr, grepl, tolower,
+   toupper, trimws, %in%, paste0, startsWith, endsWith, gsub/sub,
+   levenshtein, dl_dist, jaro_winkler). */
+VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
+                                const VecBatch *batch);
+
+/* Sub-dispatcher for datetime/extended operations (pmin, pmax, date_part,
+   as.Date, if_else, resolve, propagate). */
+VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
+                                  const VecBatch *batch);
 
 /* Walk an expression tree and mark all referenced column names.
    needed[i] is set to 1 if column col_names[i] is referenced. */

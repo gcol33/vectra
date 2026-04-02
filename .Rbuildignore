@@ -16,3 +16,11 @@
 ^RELEASE\.md$
 ^doc$
 ^Meta$
+^todo\.md$
+^extension\.md$
+^\.run\.R$
+^\.run_test\.R$
+^\.run_build\.R$
+^\.check\.R$
+^\.doc\.R$
+^\.build\.R$

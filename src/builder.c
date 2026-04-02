@@ -232,7 +232,7 @@ VecArray vec_builder_finish(VecArrayBuilder *b) {
     case VEC_BOOL:   arr.buf.bln = b->buf.bln; break;
     case VEC_STRING:
         arr.buf.str.offsets = b->str_offsets;
-        arr.buf.str.data = b->str_data;
+        arr.buf.str.data = b->str_data ? b->str_data : (char *)malloc(1);
         arr.buf.str.data_len = b->str_data_len;
         break;
     }

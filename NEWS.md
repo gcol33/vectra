@@ -1,3 +1,48 @@
+# vectra 0.3.0
+
+## File operations
+
+* `append_vtr(df, path)`: append a data.frame as a new row group to an
+  existing `.vtr` file. Existing row groups are never rewritten.
+* `delete_vtr(path, row_ids)`: logically delete rows by 0-based physical
+  index. Writes a tombstone side file (`<path>.del`); the `.vtr` file is
+  never modified. Deletions are cumulative and excluded automatically on the
+  next `tbl()` call.
+* `diff_vtr(old_path, new_path, key_col)`: key-based logical diff between
+  two `.vtr` files. Returns a list with `added` (a lazy `vectra_node`) and
+  `deleted` (a vector of key values). Implemented as a single-pass C streaming
+  engine with O(n_unique_keys) memory.
+
+## Expressions
+
+* `tolower()`, `toupper()`, `trimws()`: case conversion and whitespace
+  trimming for string columns in `filter()` and `mutate()`.
+* `levenshtein(x, y)` / `levenshtein_norm(x, y)`: Levenshtein edit distance
+  and normalised variant (0–1). Supports column-vs-column and column-vs-literal
+  comparisons. Optional `max_dist` argument for early termination.
+* `dl_dist(x, y)` / `dl_dist_norm(x, y)`: Damerau-Levenshtein distance
+  (counts transpositions as cost 1) and normalised variant.
+* `jaro_winkler(x, y)`: Jaro-Winkler similarity (0–1, higher = more similar).
+  All string-similarity functions propagate `NA` and work in `filter()` and
+  `mutate()`.
+* `resolve(fk, pk, value)`: scalar self-join — looks up `value` where
+  `pk == fk` within the same batch. Useful for denormalising parent-child
+  tables without a join.
+* `propagate(parent_id, id, seed)`: tree-traversal aggregation — propagates
+  non-NA `seed` values down a parent-child hierarchy until all reachable nodes
+  are filled. Converges in O(depth) passes.
+
+## Format
+
+* `.vtr` format version 4 with a two-layer codec (no external dependencies):
+  - Encoding: `PLAIN` (default), `DICTIONARY` (string columns with < 50%
+    unique values), `DELTA` (monotonically increasing `int64` columns).
+  - Compression: custom LZ77 byte compressor (`LZ_VTR`, ~120 lines of C).
+    Applied after encoding; skipped for buffers < 64 bytes or when
+    compression does not reduce size.
+  Files written with v4 are typically 30–60% smaller than v3. `tbl()` reads
+  v1–v4 files; `write_vtr()` always writes v4.
+
 # vectra 0.2.2
 
 ## Query optimizer

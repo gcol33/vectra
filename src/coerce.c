@@ -37,11 +37,12 @@ VecArray *vec_coerce(const VecArray *arr, VecType target) {
             memcpy(out->buf.str.offsets, arr->buf.str.offsets,
                    (size_t)(arr->length + 1) * sizeof(int64_t));
             out->buf.str.data_len = arr->buf.str.data_len;
-            free(out->buf.str.data); /* free the NULL from alloc */
+            free(out->buf.str.data); /* free the 1-byte from alloc */
             out->buf.str.data = (char *)malloc((size_t)(arr->buf.str.data_len > 0 ? arr->buf.str.data_len : 1));
-            if (!out->buf.str.data && arr->buf.str.data_len > 0)
+            if (!out->buf.str.data)
                 vectra_error("alloc failed for string copy");
-            memcpy(out->buf.str.data, arr->buf.str.data, (size_t)arr->buf.str.data_len);
+            if (arr->buf.str.data_len > 0)
+                memcpy(out->buf.str.data, arr->buf.str.data, (size_t)arr->buf.str.data_len);
             break;
         }
         return out;
@@ -61,6 +62,48 @@ VecArray *vec_coerce(const VecArray *arr, VecType target) {
     } else if (arr->type == VEC_INT64 && target == VEC_DOUBLE) {
         for (int64_t i = 0; i < arr->length; i++)
             out->buf.dbl[i] = (double)arr->buf.i64[i];
+    } else if (target == VEC_STRING) {
+        /* Coerce numeric/bool to string: only valid values get converted,
+           NAs stay as NAs. For ifelse(cond, string_col, NA) where NA branch
+           needs to become VEC_STRING. */
+        char numbuf[64];
+        /* Re-allocate as string type */
+        vec_array_free(out);
+        free(out);
+        out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_STRING, arr->length);
+        memcpy(out->validity, arr->validity, (size_t)vec_validity_bytes(arr->length));
+        /* For each valid value, convert to string representation */
+        int64_t total_len = 0;
+        for (int64_t i = 0; i < arr->length; i++) {
+            if (!vec_array_is_valid(arr, i)) continue;
+            int len = 0;
+            switch (arr->type) {
+            case VEC_BOOL:   len = snprintf(numbuf, sizeof(numbuf), "%s", arr->buf.bln[i] ? "TRUE" : "FALSE"); break;
+            case VEC_INT64:  len = snprintf(numbuf, sizeof(numbuf), "%lld", (long long)arr->buf.i64[i]); break;
+            case VEC_DOUBLE: len = snprintf(numbuf, sizeof(numbuf), "%g", arr->buf.dbl[i]); break;
+            default: break;
+            }
+            total_len += len;
+        }
+        free(out->buf.str.data);
+        out->buf.str.data = (char *)malloc((size_t)(total_len > 0 ? total_len : 1));
+        out->buf.str.data_len = total_len;
+        int64_t off = 0;
+        for (int64_t i = 0; i < arr->length; i++) {
+            out->buf.str.offsets[i] = off;
+            if (!vec_array_is_valid(arr, i)) continue;
+            int len = 0;
+            switch (arr->type) {
+            case VEC_BOOL:   len = snprintf(numbuf, sizeof(numbuf), "%s", arr->buf.bln[i] ? "TRUE" : "FALSE"); break;
+            case VEC_INT64:  len = snprintf(numbuf, sizeof(numbuf), "%lld", (long long)arr->buf.i64[i]); break;
+            case VEC_DOUBLE: len = snprintf(numbuf, sizeof(numbuf), "%g", arr->buf.dbl[i]); break;
+            default: break;
+            }
+            memcpy(out->buf.str.data + off, numbuf, (size_t)len);
+            off += len;
+        }
+        out->buf.str.offsets[arr->length] = off;
     } else {
         vec_array_free(out);
         free(out);

@@ -100,9 +100,7 @@ static int join_keys_equal(const VecArray *probe_cols, const int *probe_key_idx,
             int64_t be = ba->buf.str.offsets[build_row + 1];
             int64_t plen = pe - ps, blen = be - bs;
             if (plen != blen) return 0;
-            assert(pa->buf.str.data != NULL && "join: probe string data is NULL");
-            assert(ba->buf.str.data != NULL && "join: build string data is NULL");
-            if (memcmp(pa->buf.str.data + ps, ba->buf.str.data + bs,
+            if (plen > 0 && memcmp(pa->buf.str.data + ps, ba->buf.str.data + bs,
                        (size_t)plen) != 0)
                 return 0;
             break;

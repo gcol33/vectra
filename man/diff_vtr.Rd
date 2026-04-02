@@ -15,24 +15,28 @@ diff_vtr(old_path, new_path, key_col)
 both files with the same type).}
 }
 \value{
-A named list with elements \code{added} (a \code{data.frame}) and \code{deleted}
+A named list with elements \code{added} (a \code{vectra_node}) and \code{deleted}
 (a vector of key values).
 }
 \description{
-Reads both files into memory via \code{\link[=collect]{collect()}} and computes a set-level
-diff keyed on \code{key_col}. Returns a list with two elements:
+Streams both files and computes a set-level diff keyed on \code{key_col}.
+Returns a list with two elements:
 }
 \details{
 \itemize{
-\item \code{added}: a \code{data.frame} of rows present in \code{new_path} but not \code{old_path}
-(matched on \code{key_col}).
-\item \code{deleted}: a vector of key values present in \code{old_path} but not \code{new_path}.
+\item \code{added}: a \code{vectra_node} (lazy \code{\link[=tbl]{tbl()}}) of rows present in \code{new_path}
+but not \code{old_path} (matched on \code{key_col}).  Call \code{\link[=collect]{collect()}} to
+materialise.  The underlying temp file is deleted when the node is
+garbage-collected \strong{or} when the calling R session ends via
+\code{on.exit()}.
+\item \code{deleted}: a vector of key values present in \code{old_path} but not
+\code{new_path}.
 }
 
-This is a \strong{logical diff} (key-based set difference), not a binary file diff.
-Rows with the same key that have changed values are not reported as
-modified — use \code{added} and \code{deleted} together to detect updates (a key that
-appears in both means a row was replaced).
+This is a \strong{logical diff} (key-based set difference), not a binary file
+diff.  Rows with the same key that have changed values are not reported
+as modified — use \code{added} and \code{deleted} together to detect updates (a key
+that appears in both means a row was replaced).
 }
 \examples{
 f1 <- tempfile(fileext = ".vtr")
@@ -47,7 +51,7 @@ write_vtr(df2, f2)
 d <- diff_vtr(f1, f2, "id")
 # Rows 1 and 2 deleted; rows 6 and 7 added
 stopifnot(all(d$deleted \%in\% c(1, 2)))
-stopifnot(all(d$added$id \%in\% c(6, 7)))
+stopifnot(all(collect(d$added)$id \%in\% c(6, 7)))
 
 unlink(c(f1, f2))
 

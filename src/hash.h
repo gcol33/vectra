@@ -13,6 +13,9 @@ static inline uint64_t vec_hash_combine(uint64_t h1, uint64_t h2) {
     return ((h1 << 5) | (h1 >> 59)) ^ h2;
 }
 
+/* Compare single values in two arrays at given rows */
+int vec_val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t rb);
+
 /* Compare two rows across key columns */
 int vec_keys_equal(const VecArray *keys_a, int n_keys, int64_t row_a,
                    const VecArray *keys_b, int64_t row_b);

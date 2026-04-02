@@ -35,8 +35,10 @@ static VecBatch *project_select_gather(ProjectNode *pn, VecBatch *input) {
             out->columns[i] = vec_array_gather(&input->columns[found],
                                                 input->sel, input->sel_n);
         } else {
-            out->columns[i] = *vec_coerce(&input->columns[found],
-                                           input->columns[found].type);
+            VecArray *copy = vec_coerce(&input->columns[found],
+                                         input->columns[found].type);
+            out->columns[i] = *copy;
+            free(copy);
         }
     }
 

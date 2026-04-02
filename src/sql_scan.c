@@ -151,6 +151,7 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
             for (int64_t r = 0; r < n_rows; r++)
                 if (!col_nulls[c][r]) total_len += col_str_lens[c][r];
 
+            free(arr.buf.str.data);  /* free 1-byte from vec_array_alloc */
             arr.buf.str.data = (char *)malloc(
                 (size_t)(total_len > 0 ? total_len : 1));
             arr.buf.str.data_len = total_len;

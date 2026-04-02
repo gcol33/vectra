@@ -425,6 +425,7 @@ static VecBatch *csv_read_batch(CsvScanNode *sn) {
                 if (!is_na_field(rows_data[r][c]))
                     total_len += (int64_t)strlen(rows_data[r][c]);
             }
+            free(arr.buf.str.data);  /* free 1-byte from vec_array_alloc */
             arr.buf.str.data = (char *)malloc(
                 (size_t)(total_len > 0 ? total_len : 1));
             if (!arr.buf.str.data)

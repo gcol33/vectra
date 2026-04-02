@@ -44,7 +44,8 @@ static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
         int64_t sb = arr->buf.str.offsets[b], eb = arr->buf.str.offsets[b + 1];
         int64_t la = ea - sa, lb = eb - sb;
         int64_t mn = la < lb ? la : lb;
-        int cmp = memcmp(arr->buf.str.data + sa, arr->buf.str.data + sb, (size_t)mn);
+        int cmp = (mn > 0) ? memcmp(arr->buf.str.data + sa,
+                                     arr->buf.str.data + sb, (size_t)mn) : 0;
         if (cmp != 0) return cmp;
         return (la < lb) ? -1 : (la > lb) ? 1 : 0;
     }

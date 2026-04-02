@@ -31,7 +31,7 @@ VecArray vec_array_alloc(VecType type, int64_t length) {
     case VEC_STRING:
         arr.buf.str.offsets = (int64_t *)calloc((size_t)(length + 1), sizeof(int64_t));
         if (!arr.buf.str.offsets && length > 0) vectra_error("alloc failed for string offsets");
-        arr.buf.str.data = NULL;
+        arr.buf.str.data = (char *)malloc(1);  /* never NULL — avoids UB on ptr arithmetic */
         arr.buf.str.data_len = 0;
         break;
     }

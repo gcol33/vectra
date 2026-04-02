@@ -60,8 +60,8 @@ static int compare_value(const VecArray *a, int64_t ra,
         int64_t sb = b->buf.str.offsets[rb], eb = b->buf.str.offsets[rb + 1];
         int64_t la = ea - sa, lb = eb - sb;
         int64_t minlen = la < lb ? la : lb;
-        cmp = memcmp(a->buf.str.data + sa, b->buf.str.data + sb,
-                     (size_t)minlen);
+        cmp = (minlen > 0) ? memcmp(a->buf.str.data + sa, b->buf.str.data + sb,
+                                     (size_t)minlen) : 0;
         if (cmp == 0) cmp = (la < lb) ? -1 : (la > lb) ? 1 : 0;
         break;
     }

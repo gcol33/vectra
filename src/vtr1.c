@@ -1,4 +1,5 @@
 #include "vtr1.h"
+#include "vtr_codec.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -40,9 +41,8 @@ void vtr1_write_header(FILE *fp, const VecSchema *schema, uint32_t n_rowgroups) 
     /* Magic */
     fwrite("VTR1", 1, 4, fp);
 
-    /* Always write version 3 (annotations + stats) */
-    (void)0; /* annotations checked below for compat, but v3 always written */
-    write_u16(fp, (uint16_t)3);
+    /* Always write version 4 (annotations + stats + columnar encoding) */
+    write_u16(fp, (uint16_t)4);
     /* n_cols */
     write_u16(fp, (uint16_t)schema->n_cols);
     /* Column definitions (v3 always includes annotations) */
@@ -113,32 +113,28 @@ void vtr1_write_rowgroup(FILE *fp, const VecBatch *batch) {
         }
     }
 
-    /* Column data */
+    /* Column data (v4: encoded + compressed) */
     for (int c = 0; c < batch->n_cols; c++) {
         const VecArray *col = &batch->columns[c];
         int64_t vbytes = vec_validity_bytes(batch->n_rows);
 
-        /* Validity bitmap */
+        /* Validity bitmap — always written plain */
         fwrite(col->validity, 1, (size_t)vbytes, fp);
 
-        /* Data */
-        switch (col->type) {
-        case VEC_INT64:
-            fwrite(col->buf.i64, sizeof(int64_t), (size_t)batch->n_rows, fp);
-            break;
-        case VEC_DOUBLE:
-            fwrite(col->buf.dbl, sizeof(double), (size_t)batch->n_rows, fp);
-            break;
-        case VEC_BOOL:
-            fwrite(col->buf.bln, 1, (size_t)batch->n_rows, fp);
-            break;
-        case VEC_STRING:
-            fwrite(col->buf.str.offsets, sizeof(int64_t),
-                   (size_t)(batch->n_rows + 1), fp);
-            write_u64(fp, (uint64_t)col->buf.str.data_len);
-            fwrite(col->buf.str.data, 1, (size_t)col->buf.str.data_len, fp);
-            break;
-        }
+        /* Encode + compress the column data */
+        VtrEncodedCol enc = vtr_encode_column(col, batch->n_rows);
+
+        /* Column chunk header: encoding(1) + compression(1) + data_size(4) + uncompressed_size(4) */
+        write_u8(fp, enc.encoding);
+        write_u8(fp, enc.compression);
+        write_u32(fp, enc.data_size);
+        write_u32(fp, enc.uncompressed_size);
+
+        /* Encoded data */
+        if (enc.data_size > 0)
+            fwrite(enc.data, 1, (size_t)enc.data_size, fp);
+
+        free(enc.data);
     }
 }
 
@@ -181,7 +177,7 @@ Vtr1File *vtr1_open(const char *path) {
 
     /* Version */
     file->header.version = read_u16(fp);
-    if (file->header.version < 1 || file->header.version > 3) {
+    if (file->header.version < 1 || file->header.version > 4) {
         uint16_t ver = file->header.version;
         fclose(fp); free(file);
         vectra_error("unsupported .vtr version: %u", ver);
@@ -272,30 +268,38 @@ Vtr1File *vtr1_open(const char *path) {
 
         /* Skip column data */
         for (int c = 0; c < n_schema_cols; c++) {
-            VecType t = file->header.schema.col_types[c];
             int64_t vbytes = vec_validity_bytes((int64_t)n_rows);
-            /* Skip validity */
+            /* Skip validity bitmap */
             fseek(fp, (long)vbytes, SEEK_CUR);
 
-            /* Skip data */
-            switch (t) {
-            case VEC_INT64:
-                fseek(fp, (long)(n_rows * 8), SEEK_CUR);
-                break;
-            case VEC_DOUBLE:
-                fseek(fp, (long)(n_rows * 8), SEEK_CUR);
-                break;
-            case VEC_BOOL:
-                fseek(fp, (long)n_rows, SEEK_CUR);
-                break;
-            case VEC_STRING: {
-                /* Skip offsets */
-                fseek(fp, (long)((n_rows + 1) * 8), SEEK_CUR);
-                /* Read data_len, skip data */
-                uint64_t data_len = read_u64(fp);
-                fseek(fp, (long)data_len, SEEK_CUR);
-                break;
-            }
+            if (file->header.version >= 4) {
+                /* v4: read chunk header to get encoded data size, then skip */
+                /* encoding(1) + compression(1) + data_size(4) + uncompressed_size(4) */
+                read_u8(fp);  /* encoding */
+                read_u8(fp);  /* compression */
+                uint32_t data_size = read_u32(fp);
+                read_u32(fp); /* uncompressed_size */
+                fseek(fp, (long)data_size, SEEK_CUR);
+            } else {
+                /* v1-v3: raw data, size depends on type */
+                VecType t = file->header.schema.col_types[c];
+                switch (t) {
+                case VEC_INT64:
+                    fseek(fp, (long)(n_rows * 8), SEEK_CUR);
+                    break;
+                case VEC_DOUBLE:
+                    fseek(fp, (long)(n_rows * 8), SEEK_CUR);
+                    break;
+                case VEC_BOOL:
+                    fseek(fp, (long)n_rows, SEEK_CUR);
+                    break;
+                case VEC_STRING: {
+                    fseek(fp, (long)((n_rows + 1) * 8), SEEK_CUR);
+                    uint64_t data_len = read_u64(fp);
+                    fseek(fp, (long)data_len, SEEK_CUR);
+                    break;
+                }
+                }
             }
         }
     }
@@ -327,46 +331,84 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
     }
     fseek(file->fp, data_offset, SEEK_SET);
 
+    int is_v4 = (file->header.version >= 4);
+
     int out_col = 0;
     for (int c = 0; c < schema->n_cols; c++) {
         VecType t = schema->col_types[c];
         int64_t vbytes = vec_validity_bytes(n_rows);
 
         if (col_mask[c]) {
-            /* Read this column */
-            VecArray arr = vec_array_alloc(t, n_rows);
-            if (fread(arr.validity, 1, (size_t)vbytes, file->fp) != (size_t)vbytes)
-                vectra_error("unexpected end of file reading validity bitmap");
+            if (is_v4) {
+                /* v4: read validity, then decode encoded chunk */
+                VecArray arr;
+                memset(&arr, 0, sizeof(arr));
+                arr.type = t;
+                arr.length = n_rows;
+                arr.owns_data = 1;
+                arr.validity = (uint8_t *)calloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+                if (!arr.validity) vectra_error("alloc failed");
+                if (vbytes > 0 && fread(arr.validity, 1, (size_t)vbytes, file->fp) != (size_t)vbytes)
+                    vectra_error("unexpected end of file reading validity bitmap");
 
-            switch (t) {
-            case VEC_INT64:
-                if (fread(arr.buf.i64, sizeof(int64_t), (size_t)n_rows, file->fp) != (size_t)n_rows)
-                    vectra_error("unexpected end of file reading int64 data");
-                break;
-            case VEC_DOUBLE:
-                if (fread(arr.buf.dbl, sizeof(double), (size_t)n_rows, file->fp) != (size_t)n_rows)
-                    vectra_error("unexpected end of file reading double data");
-                break;
-            case VEC_BOOL:
-                if (fread(arr.buf.bln, 1, (size_t)n_rows, file->fp) != (size_t)n_rows)
-                    vectra_error("unexpected end of file reading bool data");
-                break;
-            case VEC_STRING: {
-                if (fread(arr.buf.str.offsets, sizeof(int64_t),
-                      (size_t)(n_rows + 1), file->fp) != (size_t)(n_rows + 1))
-                    vectra_error("unexpected end of file reading string offsets");
-                uint64_t data_len = read_u64(file->fp);
-                arr.buf.str.data_len = (int64_t)data_len;
-                arr.buf.str.data = (char *)malloc((size_t)data_len);
-                if (!arr.buf.str.data && data_len > 0)
-                    vectra_error("alloc failed for string data");
-                if (fread(arr.buf.str.data, 1, (size_t)data_len, file->fp) != (size_t)data_len)
-                    vectra_error("unexpected end of file reading string data");
-                break;
-            }
+                /* Read chunk header */
+                uint8_t encoding = read_u8(file->fp);
+                uint8_t compression = read_u8(file->fp);
+                uint32_t data_size = read_u32(file->fp);
+                uint32_t uncompressed_size = read_u32(file->fp);
+
+                /* Read encoded data */
+                uint8_t *enc_data = NULL;
+                if (data_size > 0) {
+                    enc_data = (uint8_t *)malloc((size_t)data_size);
+                    if (!enc_data) vectra_error("alloc failed");
+                    if (fread(enc_data, 1, (size_t)data_size, file->fp) != (size_t)data_size)
+                        vectra_error("unexpected end of file reading encoded column data");
+                }
+
+                /* Decode into arr */
+                vtr_decode_column(&arr, n_rows, encoding, compression,
+                                  enc_data, data_size, uncompressed_size);
+                free(enc_data);
+
+                batch->columns[out_col] = arr;
+            } else {
+                /* v1-v3: read raw column data */
+                VecArray arr = vec_array_alloc(t, n_rows);
+                if (fread(arr.validity, 1, (size_t)vbytes, file->fp) != (size_t)vbytes)
+                    vectra_error("unexpected end of file reading validity bitmap");
+
+                switch (t) {
+                case VEC_INT64:
+                    if (fread(arr.buf.i64, sizeof(int64_t), (size_t)n_rows, file->fp) != (size_t)n_rows)
+                        vectra_error("unexpected end of file reading int64 data");
+                    break;
+                case VEC_DOUBLE:
+                    if (fread(arr.buf.dbl, sizeof(double), (size_t)n_rows, file->fp) != (size_t)n_rows)
+                        vectra_error("unexpected end of file reading double data");
+                    break;
+                case VEC_BOOL:
+                    if (fread(arr.buf.bln, 1, (size_t)n_rows, file->fp) != (size_t)n_rows)
+                        vectra_error("unexpected end of file reading bool data");
+                    break;
+                case VEC_STRING: {
+                    if (fread(arr.buf.str.offsets, sizeof(int64_t),
+                          (size_t)(n_rows + 1), file->fp) != (size_t)(n_rows + 1))
+                        vectra_error("unexpected end of file reading string offsets");
+                    uint64_t data_len = read_u64(file->fp);
+                    arr.buf.str.data_len = (int64_t)data_len;
+                    free(arr.buf.str.data);
+                    arr.buf.str.data = (char *)malloc((size_t)(data_len > 0 ? data_len : 1));
+                    if (!arr.buf.str.data)
+                        vectra_error("alloc failed for string data");
+                    if (data_len > 0 && fread(arr.buf.str.data, 1, (size_t)data_len, file->fp) != (size_t)data_len)
+                        vectra_error("unexpected end of file reading string data");
+                    break;
+                }
+                }
+                batch->columns[out_col] = arr;
             }
 
-            batch->columns[out_col] = arr;
             batch->col_names[out_col] = (char *)malloc(
                 strlen(schema->col_names[c]) + 1);
             strcpy(batch->col_names[out_col], schema->col_names[c]);
@@ -374,16 +416,24 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
         } else {
             /* Skip this column */
             fseek(file->fp, (long)vbytes, SEEK_CUR);
-            switch (t) {
-            case VEC_INT64:  fseek(file->fp, (long)(n_rows * 8), SEEK_CUR); break;
-            case VEC_DOUBLE: fseek(file->fp, (long)(n_rows * 8), SEEK_CUR); break;
-            case VEC_BOOL:   fseek(file->fp, (long)n_rows, SEEK_CUR); break;
-            case VEC_STRING: {
-                fseek(file->fp, (long)((n_rows + 1) * 8), SEEK_CUR);
-                uint64_t data_len = read_u64(file->fp);
-                fseek(file->fp, (long)data_len, SEEK_CUR);
-                break;
-            }
+            if (is_v4) {
+                read_u8(file->fp);  /* encoding */
+                read_u8(file->fp);  /* compression */
+                uint32_t data_size = read_u32(file->fp);
+                read_u32(file->fp); /* uncompressed_size */
+                fseek(file->fp, (long)data_size, SEEK_CUR);
+            } else {
+                switch (t) {
+                case VEC_INT64:  fseek(file->fp, (long)(n_rows * 8), SEEK_CUR); break;
+                case VEC_DOUBLE: fseek(file->fp, (long)(n_rows * 8), SEEK_CUR); break;
+                case VEC_BOOL:   fseek(file->fp, (long)n_rows, SEEK_CUR); break;
+                case VEC_STRING: {
+                    fseek(file->fp, (long)((n_rows + 1) * 8), SEEK_CUR);
+                    uint64_t data_len = read_u64(file->fp);
+                    fseek(file->fp, (long)data_len, SEEK_CUR);
+                    break;
+                }
+                }
             }
         }
     }

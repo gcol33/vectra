@@ -108,8 +108,9 @@ static void arena_append_row(KeyArena *ka, const VecArray *keys, int64_t row) {
                     ka->str_data_cap[k] = nc;
                 }
                 a->buf.str.offsets[pos] = ka->str_data_len[k];
-                memcpy(ka->str_data[k] + ka->str_data_len[k],
-                       keys[k].buf.str.data + s, (size_t)slen);
+                if (slen > 0)
+                    memcpy(ka->str_data[k] + ka->str_data_len[k],
+                           keys[k].buf.str.data + s, (size_t)slen);
                 ka->str_data_len[k] += slen;
                 a->buf.str.offsets[pos + 1] = ka->str_data_len[k];
                 a->buf.str.data = ka->str_data[k];
@@ -247,7 +248,8 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
             int64_t dlen = arena.str_data_len[k];
             free(arr.buf.str.data);
             arr.buf.str.data = (char *)malloc((size_t)(dlen > 0 ? dlen : 1));
-            memcpy(arr.buf.str.data, arena.str_data[k], (size_t)dlen);
+            if (dlen > 0)
+                memcpy(arr.buf.str.data, arena.str_data[k], (size_t)dlen);
             arr.buf.str.data_len = dlen;
             result->columns[k] = arr;
         } else {
@@ -347,7 +349,7 @@ static int snap_matches(const KeySnap *s, const VecBatch *batch,
             int64_t clen = ce - cs;
             int64_t slen = s->str_offs[k + 1] - s->str_offs[k];
             if (clen != slen) return 0;
-            if (clen > 0 &&
+            if (clen > 0 && s->str_data &&
                 memcmp(col->buf.str.data + cs,
                        s->str_data + s->str_offs[k], (size_t)clen) != 0)
                 return 0;
@@ -397,7 +399,8 @@ static void snap_update(KeySnap *s, const VecBatch *batch,
             int64_t cs = col->buf.str.offsets[row];
             int64_t ce = col->buf.str.offsets[row + 1];
             int64_t len = ce - cs;
-            memcpy(s->str_data + off, col->buf.str.data + cs, (size_t)len);
+            if (len > 0)
+                memcpy(s->str_data + off, col->buf.str.data + cs, (size_t)len);
             off += len;
         }
     }

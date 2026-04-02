@@ -35,9 +35,11 @@ uint64_t vec_hash_value(const VecArray *arr, int64_t row) {
     case VEC_STRING: {
         int64_t s = arr->buf.str.offsets[row];
         int64_t e = arr->buf.str.offsets[row + 1];
-        assert(arr->buf.str.data != NULL && "hash: string data pointer is NULL");
-        const uint8_t *p = (const uint8_t *)(arr->buf.str.data + s);
-        for (int64_t k = 0; k < (e - s); k++) { h ^= p[k]; h *= FNV_PRIME; }
+        int64_t len = e - s;
+        if (len > 0) {
+            const uint8_t *p = (const uint8_t *)(arr->buf.str.data + s);
+            for (int64_t k = 0; k < len; k++) { h ^= p[k]; h *= FNV_PRIME; }
+        }
         break;
     }
     }
@@ -45,7 +47,7 @@ uint64_t vec_hash_value(const VecArray *arr, int64_t row) {
 }
 
 /* Compare single values */
-static int val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t rb) {
+int vec_val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t rb) {
     int va = vec_array_is_valid(a, ra);
     int vb = vec_array_is_valid(b, rb);
     if (!va && !vb) return 1; /* both NA */
@@ -60,12 +62,15 @@ static int val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t r
         int64_t bs = b->buf.str.offsets[rb], be = b->buf.str.offsets[rb + 1];
         int64_t alen = ae - as, blen = be - bs;
         if (alen != blen) return 0;
-        assert(a->buf.str.data != NULL && "val_equal: lhs string data is NULL");
-        assert(b->buf.str.data != NULL && "val_equal: rhs string data is NULL");
+        if (alen == 0) return 1;  /* both empty strings are equal */
         return memcmp(a->buf.str.data + as, b->buf.str.data + bs, (size_t)alen) == 0;
     }
     }
     return 0;
+}
+
+static int val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t rb) {
+    return vec_val_equal(a, ra, b, rb);
 }
 
 int vec_keys_equal(const VecArray *keys_a, int n_keys, int64_t row_a,

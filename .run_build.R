@@ -1,0 +1,6 @@
+setwd("C:/Users/Gilles Colling/Documents/dev/vectra")
+cat("--- document ---\n")
+devtools::document()
+cat("--- load_all ---\n")
+devtools::load_all()
+cat("OK\n")

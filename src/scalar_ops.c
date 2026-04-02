@@ -91,8 +91,9 @@ VecArray *vec_cmp(const VecArray *left, const VecArray *right, char op, char op2
             int64_t re = right->buf.str.offsets[i + 1];
             int64_t llen = le - ls, rlen = re - rs;
             int64_t minlen = llen < rlen ? llen : rlen;
-            int cmp = memcmp(left->buf.str.data + ls, right->buf.str.data + rs,
-                             (size_t)minlen);
+            int cmp = (minlen > 0) ? memcmp(left->buf.str.data + ls,
+                                             right->buf.str.data + rs,
+                                             (size_t)minlen) : 0;
             if (cmp == 0) cmp = (llen > rlen) - (llen < rlen);
 
             int result = 0;
