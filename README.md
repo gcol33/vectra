@@ -135,9 +135,9 @@ pak::pak("gcol33/vectra")
 
 ## Documentation
 
-- [Getting Started](https://gcol33.github.io/vectra/articles/quickstart.html) - Practical tutorial with runnable examples
-- [Engine Reference](https://gcol33.github.io/vectra/articles/engine.html) - Execution model, types, coercion, memory guarantees, and limitations
-- [Function Reference](https://gcol33.github.io/vectra/reference/)
+- [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html) - Practical tutorial with runnable examples
+- [Engine Reference](https://gillescolling.com/vectra/articles/engine.html) - Execution model, types, coercion, memory guarantees, and limitations
+- [Function Reference](https://gillescolling.com/vectra/reference/)
 
 ## Support
 
