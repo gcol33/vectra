@@ -121,7 +121,8 @@ void vec_builder_append_one(VecArrayBuilder *b, const VecArray *arr, int64_t row
             int64_t slen = e - s;
             ensure_str_data(b, slen);
             b->str_offsets[b->length] = b->str_data_len;
-            memcpy(b->str_data + b->str_data_len, arr->buf.str.data + s, (size_t)slen);
+            if (slen > 0)
+                memcpy(b->str_data + b->str_data_len, arr->buf.str.data + s, (size_t)slen);
             b->str_data_len += slen;
             b->str_offsets[b->length + 1] = b->str_data_len;
             break;
@@ -200,8 +201,9 @@ void vec_builder_append_repeat(VecArrayBuilder *b, const VecArray *arr,
             ensure_str_data(b, slen * count);
             for (int64_t i = 0; i < count; i++) {
                 b->str_offsets[b->length + i] = b->str_data_len;
-                memcpy(b->str_data + b->str_data_len,
-                       arr->buf.str.data + s, (size_t)slen);
+                if (slen > 0)
+                    memcpy(b->str_data + b->str_data_len,
+                           arr->buf.str.data + s, (size_t)slen);
                 b->str_data_len += slen;
             }
             b->str_offsets[b->length + count] = b->str_data_len;
