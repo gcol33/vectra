@@ -1,5 +1,6 @@
 # vectra
 
+[![CRAN status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra)
 [![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
 [![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml)
 [![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
@@ -48,6 +49,28 @@ tbl("data.vtr") |>
   collect()
 ```
 
+Append new data without rewriting the file, or do a key-based diff between two snapshots:
+
+```r
+# Append new rows as a new row group — existing data untouched
+append_vtr(new_rows_df, "data.vtr")
+
+# Logical diff: what was added or deleted between two snapshots?
+d <- diff_vtr("snapshot_old.vtr", "snapshot_new.vtr", key_col = "id")
+collect(d$added)   # rows present in new but not old
+d$deleted          # key values present in old but not new
+```
+
+Fuzzy string matching runs inside the C engine, no round-trip to R:
+
+```r
+tbl("taxa.vtr") |>
+  filter(levenshtein(species, "Quercus robur") <= 2) |>
+  mutate(similarity = jaro_winkler(species, "Quercus robur")) |>
+  arrange(desc(similarity)) |>
+  collect()
+```
+
 Use `explain()` to inspect the optimized plan:
 
 ```r
@@ -92,9 +115,10 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`, `ntile()`, `percent_rank()`, `cume_dist()` |
 | **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `as.Date()` (in `filter()`/`mutate()`) |
 | **String** | `nchar()`, `substr()`, `grepl()`, `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()` (in `filter()`/`mutate()`) |
-| **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()` (in `filter()`/`mutate()`) |
+| **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()` — fuzzy matching in `filter()`/`mutate()`, with optional `max_dist` early termination |
+| **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()`, `resolve()`, `propagate()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
-| **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()` |
+| **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()`, `append_vtr()`, `delete_vtr()`, `diff_vtr()` |
 | **Inspect** | `explain()`, `glimpse()`, `print()`, `pull()` |
 
 Full tidyselect support in `select()`, `rename()`, `relocate()`, and `across()`: `starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`, `everything()`, `all_of()`, `any_of()`.
@@ -102,7 +126,10 @@ Full tidyselect support in `select()`, `rename()`, `relocate()`, and `across()`:
 ## Installation
 
 ```r
-# install.packages("pak")
+# CRAN
+install.packages("vectra")
+
+# Development version
 pak::pak("gcol33/vectra")
 ```
 

@@ -34,6 +34,13 @@ reference:
       - write_sqlite
       - write_tiff
 
+  - title: File operations
+    desc: Incremental updates to .vtr files
+    contents:
+      - append_vtr
+      - delete_vtr
+      - diff_vtr
+
   - title: Single-table verbs
     desc: Transform, filter, and reshape
     contents:
@@ -47,7 +54,10 @@ reference:
       - desc
       - distinct
       - slice_head
+      - slice_tail
       - slice_min
+      - slice_max
+      - slice
       - pull
       - head.vectra_node
 
@@ -63,14 +73,21 @@ reference:
   - title: Joins
     contents:
       - left_join
+      - inner_join
+      - right_join
+      - full_join
       - semi_join
+      - anti_join
+      - cross_join
 
   - title: Combining tables
     contents:
       - bind_rows
+      - bind_cols
 
   - title: Diagnostics
     contents:
       - explain
       - collect
+      - glimpse
       - print.vectra_node
