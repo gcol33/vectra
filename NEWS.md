@@ -1,3 +1,8 @@
+# vectra 0.3.1
+
+* CRAN submission fixes: title case, quoted technical terms in DESCRIPTION,
+  corrected documentation URLs.
+
 # vectra 0.3.0
 
 ## File operations
