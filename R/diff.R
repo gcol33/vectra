@@ -49,19 +49,21 @@ diff_vtr <- function(old_path, new_path, key_col) {
   old_path <- normalizePath(old_path, mustWork = TRUE)
   new_path <- normalizePath(new_path, mustWork = TRUE)
 
-  old_df <- tbl(old_path) |> collect()
-  new_df <- tbl(new_path) |> collect()
+  # Delegate key-set diff to C (streaming, O(n_unique_keys) memory)
+  raw <- .Call(C_diff_vtr, old_path, new_path, key_col)
+  added_keys   <- raw$added_keys
+  deleted_keys <- raw$deleted_keys
 
-  if (!key_col %in% names(old_df))
-    stop(sprintf("key_col '%s' not found in old_path", key_col))
-  if (!key_col %in% names(new_df))
-    stop(sprintf("key_col '%s' not found in new_path", key_col))
+  # Reconstruct added as a full data.frame by collecting matching rows from B
+  if (length(added_keys) == 0L) {
+    # Return an empty data.frame with the correct schema
+    added <- tbl(new_path) |> collect()
+    added <- added[integer(0L), , drop = FALSE]
+  } else {
+    new_df    <- tbl(new_path) |> collect()
+    new_keys  <- new_df[[key_col]]
+    added     <- new_df[new_keys %in% added_keys, , drop = FALSE]
+  }
 
-  old_keys <- old_df[[key_col]]
-  new_keys <- new_df[[key_col]]
-
-  deleted <- old_keys[!old_keys %in% new_keys]
-  added   <- new_df[!new_keys %in% old_keys, , drop = FALSE]
-
-  list(added = added, deleted = deleted)
+  list(added = added, deleted = deleted_keys)
 }
