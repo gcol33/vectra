@@ -208,81 +208,20 @@ static SEXP array_col_to_sexp(const VecArray *arr) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Growing int64 result buffer for added-key indices or values       */
+/*  Compute byte offset of n_rowgroups field in header                */
+/*  (mirrors compute_rg_count_offset in vtr_append.c)                 */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    int64_t *data;
-    int64_t  len;
-    int64_t  cap;
-} I64Vec;
-
-static void i64vec_init(I64Vec *v) {
-    v->data = NULL;
-    v->len  = 0;
-    v->cap  = 0;
-}
-
-static void i64vec_push(I64Vec *v, int64_t val) {
-    if (v->len == v->cap) {
-        int64_t nc = (v->cap == 0) ? 64 : v->cap * 2;
-        v->data = (int64_t *)realloc(v->data, (size_t)nc * sizeof(int64_t));
-        if (!v->data) vectra_error("i64vec_push: alloc failed");
-        v->cap = nc;
+static long diff_rg_count_offset(const VecSchema *schema) {
+    long off = 4 + 2 + 2; /* magic + version + n_cols */
+    for (int i = 0; i < schema->n_cols; i++) {
+        uint16_t name_len = (uint16_t)strlen(schema->col_names[i]);
+        off += 2 + name_len + 1; /* name_len(2) + name + type(1) */
+        const char *ann = schema->col_annotations ? schema->col_annotations[i] : NULL;
+        uint16_t ann_len = ann ? (uint16_t)strlen(ann) : 0;
+        off += 2 + ann_len; /* ann_len(2) + ann */
     }
-    v->data[v->len++] = val;
-}
-
-static void i64vec_free(I64Vec *v) {
-    free(v->data);
-    v->data = NULL;
-    v->len = v->cap = 0;
-}
-
-/* Same but for string keys accumulated during B scan */
-typedef struct {
-    char    *data;
-    int64_t  data_len;
-    int64_t  data_cap;
-    int64_t *offsets;     /* len+1 entries */
-    int64_t  len;
-    int64_t  cap;         /* capacity for offsets/lengths arrays */
-} StrVec;
-
-static void strvec_init(StrVec *v) {
-    memset(v, 0, sizeof(*v));
-}
-
-static void strvec_push(StrVec *v, const char *s, int64_t slen) {
-    /* grow offsets/len array */
-    if (v->len >= v->cap) {
-        int64_t nc = (v->cap == 0) ? 64 : v->cap * 2;
-        v->offsets = (int64_t *)realloc(v->offsets,
-                                        (size_t)(nc + 1) * sizeof(int64_t));
-        if (!v->offsets) vectra_error("strvec_push: alloc failed (offsets)");
-        if (v->len == 0) v->offsets[0] = 0;
-        v->cap = nc;
-    }
-    /* grow data buffer */
-    int64_t needed = v->data_len + slen;
-    if (needed > v->data_cap) {
-        int64_t nc = (v->data_cap == 0) ? 256 : v->data_cap;
-        while (nc < needed) nc *= 2;
-        v->data = (char *)realloc(v->data, (size_t)nc);
-        if (!v->data) vectra_error("strvec_push: alloc failed (data)");
-        v->data_cap = nc;
-    }
-    if (slen > 0)
-        memcpy(v->data + v->data_len, s, (size_t)slen);
-    v->data_len += slen;
-    v->offsets[v->len + 1] = v->data_len;
-    v->len++;
-}
-
-static void strvec_free(StrVec *v) {
-    free(v->data);
-    free(v->offsets);
-    memset(v, 0, sizeof(*v));
+    return off;
 }
 
 /* ------------------------------------------------------------------ */
@@ -311,11 +250,16 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
         vectra_error("key_col '%s' not found in new_path", key_col);
     }
     VecType key_type_b = fb->header.schema.col_types[key_idx_b];
+
+    /* Capture B's full schema for the temp file header */
+    VecSchema b_schema = vec_schema_copy(&fb->header.schema);
     vtr1_close(fb);
 
-    if (key_type != key_type_b)
+    if (key_type != key_type_b) {
+        vec_schema_free(&b_schema);
         vectra_error("key_col '%s' has different types in old_path and new_path",
                      key_col);
+    }
 
     /* ---- Pass 1: stream A, build hash set of all keys ---- */
     DiffKeyArena arena;
@@ -354,173 +298,200 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
     /* ---- Allocate seen_in_b flags for each key in A ---- */
     uint8_t *seen_in_b = (uint8_t *)calloc((size_t)(n_a_keys > 0 ? n_a_keys : 1),
                                             sizeof(uint8_t));
-    if (!seen_in_b) vectra_error("C_diff_vtr: alloc failed for seen_in_b");
+    if (!seen_in_b) {
+        vec_schema_free(&b_schema);
+        vectra_error("C_diff_vtr: alloc failed for seen_in_b");
+    }
 
-    /* ---- Pass 2: stream B, classify each key ---- */
-    /* Collect added keys (type-specific growing buffers) */
-    I64Vec added_i64;
-    StrVec added_str;
-    i64vec_init(&added_i64);
-    strvec_init(&added_str);
+    /* ---- Open temp .vtr file to stream added rows ---- */
+    /* Build a temp path: <R tempdir>/vectra_diff_XXXXXX.vtr */
+    {
+        /* Compute a temp path using R's tempdir */
+        SEXP td_call   = PROTECT(Rf_lang1(Rf_install("tempdir")));
+        SEXP td_result = PROTECT(Rf_eval(td_call, R_BaseEnv));
+        const char *tmpdir = CHAR(STRING_ELT(td_result, 0));
 
-    int col_idx_b[1] = { key_idx_b };
-    ScanNode *scan_b = scan_node_create(path_b, col_idx_b, 1);
-    VecNode  *node_b = (VecNode *)scan_b;
+        static const char suffix[] = "/vectra_diff_added.vtr";
+        /* Use a counter to make unique names within a session */
+        static unsigned int diff_counter = 0;
+        diff_counter++;
 
-    while ((batch = node_b->next_batch(node_b)) != NULL) {
-        int64_t n_logical = vec_batch_logical_rows(batch);
-        const VecArray *key_arr = &batch->columns[0];
+        /* Build path: <tmpdir>/vectra_diff_added_<counter>.vtr */
+        size_t tmpdir_len = strlen(tmpdir);
+        static const char prefix[] = "/vectra_diff_added_";
+        char counter_str[32];
+        int counter_len = snprintf(counter_str, sizeof(counter_str),
+                                   "%u", diff_counter);
+        static const char ext[] = ".vtr";
+        size_t tmp_path_len = tmpdir_len
+                            + strlen(prefix)
+                            + (size_t)counter_len
+                            + strlen(ext);
+        char *tmp_path = (char *)malloc(tmp_path_len + 1);
+        if (!tmp_path) {
+            UNPROTECT(2);
+            vec_schema_free(&b_schema);
+            free(seen_in_b);
+            vectra_error("C_diff_vtr: alloc failed for tmp_path");
+        }
+        memcpy(tmp_path, tmpdir, tmpdir_len);
+        memcpy(tmp_path + tmpdir_len, prefix, strlen(prefix));
+        memcpy(tmp_path + tmpdir_len + strlen(prefix),
+               counter_str, (size_t)counter_len);
+        memcpy(tmp_path + tmpdir_len + strlen(prefix) + (size_t)counter_len,
+               ext, strlen(ext) + 1); /* +1 for '\0' */
 
-        for (int64_t li = 0; li < n_logical; li++) {
-            int64_t pi = vec_batch_physical_row(batch, li);
-            uint64_t h = vec_hash_value(key_arr, pi);
-            int was_new = 0;
-            int64_t gid = vec_ht_find_or_insert(&ht, h,
-                                                 key_arr, 1, pi,
-                                                 &arena.arena, arena.length,
-                                                 &was_new);
-            if (was_new) {
-                /* Key in B but not A: added */
-                switch (key_type) {
-                case VEC_INT64:
-                    i64vec_push(&added_i64,
-                                vec_array_is_valid(key_arr, pi)
-                                    ? key_arr->buf.i64[pi]
-                                    : INT64_MIN);
-                    break;
-                case VEC_DOUBLE:
-                    /* store as bit pattern via int64 reinterpret */
-                    {
-                        double dv = vec_array_is_valid(key_arr, pi)
-                                    ? key_arr->buf.dbl[pi]
-                                    : 0.0 / 0.0; /* NaN for NA */
-                        int64_t iv;
-                        memcpy(&iv, &dv, sizeof(int64_t));
-                        i64vec_push(&added_i64, iv);
+        UNPROTECT(2);
+
+        /* Suppress unused-variable warning for 'suffix' */
+        (void)suffix;
+
+        FILE *tmp_fp = fopen(tmp_path, "wb");
+        if (!tmp_fp) {
+            free(tmp_path);
+            vec_schema_free(&b_schema);
+            free(seen_in_b);
+            vectra_error("C_diff_vtr: cannot open temp file for added rows");
+        }
+
+        /* Write header placeholder (n_rowgroups = 0) */
+        vtr1_write_header(tmp_fp, &b_schema, 0);
+        long rg_count_pos = diff_rg_count_offset(&b_schema);
+
+        /* ---- Pass 2: stream ALL columns of B, write added rows ---- */
+        ScanNode *scan_b = scan_node_create(path_b, NULL, 0);
+        VecNode  *node_b = (VecNode *)scan_b;
+
+        uint32_t n_rg_written = 0;
+
+        while ((batch = node_b->next_batch(node_b)) != NULL) {
+            int64_t n_logical = vec_batch_logical_rows(batch);
+            /* Key column is at key_idx_b in the full-scan batch */
+            const VecArray *key_arr = &batch->columns[key_idx_b];
+
+            /* Allocate a per-batch selection buffer for added rows.
+               vec_batch_compact -> vec_batch_free will free batch->sel,
+               so we hand ownership to the batch after setting it. */
+            int32_t *added_sel = (int32_t *)malloc(
+                (size_t)(n_logical > 0 ? n_logical : 1) * sizeof(int32_t));
+            if (!added_sel) {
+                vec_batch_free(batch);
+                node_b->free_node(node_b);
+                fclose(tmp_fp);
+                free(tmp_path);
+                vec_schema_free(&b_schema);
+                free(seen_in_b);
+                vectra_error("C_diff_vtr: alloc failed for added_sel");
+            }
+            int32_t n_added_this_batch = 0;
+
+            for (int64_t li = 0; li < n_logical; li++) {
+                int64_t pi = vec_batch_physical_row(batch, li);
+                uint64_t h = vec_hash_value(key_arr, pi);
+                int was_new = 0;
+                int64_t gid = vec_ht_find_or_insert(&ht, h,
+                                                     key_arr, 1, pi,
+                                                     &arena.arena, arena.length,
+                                                     &was_new);
+                if (was_new) {
+                    /* Key in B but not A: record physical row for this batch */
+                    added_sel[n_added_this_batch++] = (int32_t)pi;
+                    /* Extend arena and seen_in_b for completeness */
+                    dka_append(&arena, key_arr, pi);
+                    int64_t new_total = arena.length;
+                    seen_in_b = (uint8_t *)realloc(seen_in_b, (size_t)new_total);
+                    if (!seen_in_b) {
+                        vec_batch_free(batch);
+                        node_b->free_node(node_b);
+                        free(added_sel);
+                        fclose(tmp_fp);
+                        free(tmp_path);
+                        vec_schema_free(&b_schema);
+                        vectra_error("C_diff_vtr: realloc failed for seen_in_b");
                     }
-                    break;
-                case VEC_BOOL:
-                    i64vec_push(&added_i64,
-                                vec_array_is_valid(key_arr, pi)
-                                    ? (int64_t)key_arr->buf.bln[pi]
-                                    : -1);
-                    break;
-                case VEC_STRING: {
-                    if (!vec_array_is_valid(key_arr, pi)) {
-                        strvec_push(&added_str, NULL, 0);
-                    } else {
-                        int64_t s    = key_arr->buf.str.offsets[pi];
-                        int64_t e    = key_arr->buf.str.offsets[pi + 1];
-                        strvec_push(&added_str,
-                                    key_arr->buf.str.data + s, e - s);
-                    }
-                    break;
+                    seen_in_b[new_total - 1] = 0;
+                } else {
+                    /* Key found in A: mark as seen */
+                    seen_in_b[gid] = 1;
                 }
-                }
-                /* extend arena and seen_in_b for completeness (new group_id
-                   was assigned by find_or_insert; we don't need to mark it) */
-                dka_append(&arena, key_arr, pi);
-                /* ensure seen_in_b covers the new group */
-                int64_t new_total = arena.length;
-                seen_in_b = (uint8_t *)realloc(seen_in_b, (size_t)new_total);
-                if (!seen_in_b) vectra_error("C_diff_vtr: realloc failed");
-                seen_in_b[new_total - 1] = 0; /* new B-only key, not needed */
+            }
+
+            /* If this batch has any added rows, write them as a row group.
+               Install the selection vector into the batch; vec_batch_compact
+               will compact it into a new flat batch and free the original
+               (including batch->sel = added_sel). */
+            if (n_added_this_batch > 0) {
+                batch->sel   = added_sel;
+                batch->sel_n = n_added_this_batch;
+                VecBatch *compact = vec_batch_compact(batch);
+                /* batch is now freed by compact — do not use */
+                vtr1_write_rowgroup(tmp_fp, compact);
+                vec_batch_free(compact);
+                n_rg_written++;
             } else {
-                /* Key found in A: mark as seen */
-                seen_in_b[gid] = 1;
+                free(added_sel);
+                vec_batch_free(batch);
             }
         }
-        vec_batch_free(batch);
-    }
-    node_b->free_node(node_b);
+        node_b->free_node(node_b);
 
-    vec_ht_free(&ht);
+        /* Patch n_rowgroups in the temp file header */
+        if (fseek(tmp_fp, rg_count_pos, SEEK_SET) != 0) {
+            fclose(tmp_fp);
+            free(tmp_path);
+            vec_schema_free(&b_schema);
+            free(seen_in_b);
+            vectra_error("C_diff_vtr: fseek failed patching rowgroup count");
+        }
+        fwrite(&n_rg_written, sizeof(uint32_t), 1, tmp_fp);
+        fclose(tmp_fp);
 
-    /* ---- Build deleted_keys from A keys not seen in B ---- */
-    /* Collect deleted indices first, then gather from arena */
-    int64_t n_deleted = 0;
-    for (int64_t i = 0; i < n_a_keys; i++)
-        if (!seen_in_b[i]) n_deleted++;
+        vec_ht_free(&ht);
+        vec_schema_free(&b_schema);
 
-    /* Build a selection vector for arena gather */
-    int32_t *del_sel = NULL;
-    if (n_deleted > 0) {
-        del_sel = (int32_t *)malloc((size_t)n_deleted * sizeof(int32_t));
-        if (!del_sel) vectra_error("C_diff_vtr: alloc failed for del_sel");
-        int64_t j = 0;
+        /* ---- Build deleted_keys from A keys not seen in B ---- */
+        int64_t n_deleted = 0;
         for (int64_t i = 0; i < n_a_keys; i++)
-            if (!seen_in_b[i]) del_sel[j++] = (int32_t)i;
-    }
-    free(seen_in_b);
+            if (!seen_in_b[i]) n_deleted++;
 
-    /* Gather deleted keys from arena */
-    VecArray del_arr = vec_array_gather(&arena.arena, del_sel, (int32_t)n_deleted);
-    free(del_sel);
-    dka_free(&arena);
-
-    SEXP deleted_sexp = PROTECT(array_col_to_sexp(&del_arr));
-    vec_array_free(&del_arr);
-
-    /* ---- Build added_keys SEXP ---- */
-    SEXP added_sexp;
-    switch (key_type) {
-    case VEC_INT64: {
-        added_sexp = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)added_i64.len));
-        double *p = REAL(added_sexp);
-        for (int64_t i = 0; i < added_i64.len; i++)
-            p[i] = (added_i64.data[i] == INT64_MIN)
-                   ? NA_REAL
-                   : (double)added_i64.data[i];
-        i64vec_free(&added_i64);
-        break;
-    }
-    case VEC_DOUBLE: {
-        added_sexp = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)added_i64.len));
-        double *p = REAL(added_sexp);
-        for (int64_t i = 0; i < added_i64.len; i++) {
-            double dv;
-            memcpy(&dv, &added_i64.data[i], sizeof(double));
-            p[i] = dv;
+        int32_t *del_sel = NULL;
+        if (n_deleted > 0) {
+            del_sel = (int32_t *)malloc((size_t)n_deleted * sizeof(int32_t));
+            if (!del_sel) {
+                free(seen_in_b);
+                free(tmp_path);
+                dka_free(&arena);
+                vectra_error("C_diff_vtr: alloc failed for del_sel");
+            }
+            int64_t j = 0;
+            for (int64_t i = 0; i < n_a_keys; i++)
+                if (!seen_in_b[i]) del_sel[j++] = (int32_t)i;
         }
-        i64vec_free(&added_i64);
-        break;
-    }
-    case VEC_BOOL: {
-        added_sexp = PROTECT(Rf_allocVector(LGLSXP, (R_xlen_t)added_i64.len));
-        int *p = LOGICAL(added_sexp);
-        for (int64_t i = 0; i < added_i64.len; i++)
-            p[i] = (added_i64.data[i] < 0) ? NA_LOGICAL : (int)added_i64.data[i];
-        i64vec_free(&added_i64);
-        break;
-    }
-    case VEC_STRING: {
-        int64_t n_added = added_str.len;
-        added_sexp = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n_added));
-        for (int64_t i = 0; i < n_added; i++) {
-            int64_t s    = added_str.offsets[i];
-            int64_t e    = added_str.offsets[i + 1];
-            int64_t slen = e - s;
-            SET_STRING_ELT(added_sexp, (R_xlen_t)i,
-                Rf_mkCharLenCE(added_str.data + s, (int)slen, CE_UTF8));
-        }
-        strvec_free(&added_str);
-        break;
-    }
-    default:
-        added_sexp = PROTECT(Rf_allocVector(REALSXP, 0));
-        i64vec_free(&added_i64);
-        break;
-    }
+        free(seen_in_b);
 
-    /* ---- Assemble result list ---- */
-    SEXP result    = PROTECT(Rf_allocVector(VECSXP, 2));
-    SEXP res_names = PROTECT(Rf_allocVector(STRSXP, 2));
-    SET_VECTOR_ELT(result, 0, added_sexp);
-    SET_VECTOR_ELT(result, 1, deleted_sexp);
-    SET_STRING_ELT(res_names, 0, Rf_mkChar("added_keys"));
-    SET_STRING_ELT(res_names, 1, Rf_mkChar("deleted_keys"));
-    Rf_setAttrib(result, R_NamesSymbol, res_names);
+        /* Gather deleted keys from arena */
+        VecArray del_arr = vec_array_gather(&arena.arena, del_sel, (int32_t)n_deleted);
+        free(del_sel);
+        dka_free(&arena);
 
-    UNPROTECT(4);  /* result, res_names, added_sexp, deleted_sexp */
-    return result;
+        SEXP deleted_sexp  = PROTECT(array_col_to_sexp(&del_arr));
+        vec_array_free(&del_arr);
+
+        /* Return the temp path as a string */
+        SEXP added_path_sexp = PROTECT(Rf_allocVector(STRSXP, 1));
+        SET_STRING_ELT(added_path_sexp, 0, Rf_mkCharCE(tmp_path, CE_UTF8));
+        free(tmp_path);
+
+        /* ---- Assemble result list ---- */
+        SEXP result    = PROTECT(Rf_allocVector(VECSXP, 2));
+        SEXP res_names = PROTECT(Rf_allocVector(STRSXP, 2));
+        SET_VECTOR_ELT(result, 0, added_path_sexp);
+        SET_VECTOR_ELT(result, 1, deleted_sexp);
+        SET_STRING_ELT(res_names, 0, Rf_mkChar("added_path"));
+        SET_STRING_ELT(res_names, 1, Rf_mkChar("deleted_keys"));
+        Rf_setAttrib(result, R_NamesSymbol, res_names);
+
+        UNPROTECT(4);  /* result, res_names, added_path_sexp, deleted_sexp */
+        return result;
+    }
 }

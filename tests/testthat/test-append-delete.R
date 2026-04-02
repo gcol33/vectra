@@ -184,13 +184,16 @@ test_that("diff_vtr detects added and deleted rows", {
   d <- diff_vtr(f1, f2, "id")
 
   expect_true(is.list(d))
-  expect_true(is.data.frame(d$added))
+  expect_true(inherits(d$added, "vectra_node"))
   expect_true(is.vector(d$deleted))
 
   # IDs 1 and 2 were deleted
   expect_equal(sort(d$deleted), c(1, 2))
   # IDs 6 and 7 were added
-  expect_equal(sort(d$added$id), c(6, 7))
+  added_df <- collect(d$added)
+  expect_equal(sort(added_df$id), c(6, 7))
+  # All columns from B are present
+  expect_true(all(c("id", "val") %in% names(added_df)))
 })
 
 test_that("diff_vtr returns empty added/deleted when files are identical", {
@@ -203,7 +206,7 @@ test_that("diff_vtr returns empty added/deleted when files are identical", {
   write_vtr(df, f2)
 
   d <- diff_vtr(f1, f2, "id")
-  expect_equal(nrow(d$added), 0L)
+  expect_equal(nrow(collect(d$added)), 0L)
   expect_equal(length(d$deleted), 0L)
 })
 
@@ -227,7 +230,7 @@ test_that("diff_vtr handles all rows added (old is subset)", {
   write_vtr(data.frame(id = 1:6), f2)
 
   d <- diff_vtr(f1, f2, "id")
-  expect_equal(nrow(d$added), 3L)
+  expect_equal(nrow(collect(d$added)), 3L)
   expect_equal(length(d$deleted), 0L)
 })
 
@@ -241,5 +244,5 @@ test_that("diff_vtr handles all rows deleted (new is empty subset)", {
 
   d <- diff_vtr(f1, f2, "id")
   expect_equal(length(d$deleted), 5L)
-  expect_equal(nrow(d$added), 0L)
+  expect_equal(nrow(collect(d$added)), 0L)
 })
