@@ -91,9 +91,9 @@ tbl("data.vtr") |>
 
 ## Why vectra
 
-Querying large datasets in R usually means Arrow, DuckDB, or Spark. These work, but the dependency chains are heavy and installation is fragile.
+Querying large datasets in R usually means Arrow (requires compiled binaries matching your platform), DuckDB (links a 30 MB bundled library), or Spark (requires a JVM and cluster configuration).
 
-vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries, no JVM, no runtime configuration. It provides:
+vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries beyond zlib, no JVM, no runtime configuration. It provides:
 
 - **Streaming execution**: data flows one row group at a time, never fully in memory
 - **Zero-copy filtering**: selection vectors avoid row duplication

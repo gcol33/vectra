@@ -472,13 +472,12 @@ static uint8_t *try_dict_encode(const VecArray *col, int64_t n_rows,
     uint8_t *p = buf;
     memcpy(p, &n_unique, 4); p += 4;
 
-    int64_t *dict_offsets = (int64_t *)p;
     int64_t running = 0;
     for (uint32_t d = 0; d < n_unique; d++) {
-        dict_offsets[d] = running;
+        memcpy(p + d * 8, &running, 8);
         running += dict_lens[d];
     }
-    dict_offsets[n_unique] = running;
+    memcpy(p + n_unique * 8, &running, 8);
     p += (n_unique + 1) * 8;
 
     for (uint32_t d = 0; d < n_unique; d++) {
@@ -503,8 +502,10 @@ static void dict_decode(VecArray *col, int64_t n_rows,
     uint32_t dict_count;
     memcpy(&dict_count, p, 4); p += 4;
 
-    /* dict offsets */
-    const int64_t *dict_offsets = (const int64_t *)p;
+    /* dict offsets — copy into aligned buffer before use */
+    int64_t *dict_offsets = (int64_t *)malloc((dict_count + 1) * 8);
+    if (!dict_offsets) vectra_error("alloc failed in dict_decode");
+    memcpy(dict_offsets, p, (dict_count + 1) * 8);
     p += (dict_count + 1) * 8;
 
     /* dict data */
@@ -543,6 +544,7 @@ static void dict_decode(VecArray *col, int64_t n_rows,
     col->buf.str.offsets[n_rows] = pos;
 
     free(indices);
+    free(dict_offsets);
 }
 
 /* ================================================================
@@ -593,10 +595,13 @@ static void delta_decode(VecArray *col, int64_t n_rows,
     col->buf.i64 = (int64_t *)malloc((size_t)(n_rows * 8));
     if (!col->buf.i64) vectra_error("alloc failed");
 
-    const int64_t *in = (const int64_t *)data;
-    col->buf.i64[0] = in[0];
-    for (int64_t i = 1; i < n_rows; i++)
-        col->buf.i64[i] = col->buf.i64[i - 1] + in[i];
+    int64_t val;
+    memcpy(&val, data, 8);
+    col->buf.i64[0] = val;
+    for (int64_t i = 1; i < n_rows; i++) {
+        memcpy(&val, data + i * 8, 8);
+        col->buf.i64[i] = col->buf.i64[i - 1] + val;
+    }
 }
 
 /* ================================================================
