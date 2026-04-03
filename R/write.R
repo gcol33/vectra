@@ -1,3 +1,31 @@
+# -- internal helpers ---------------------------------------------------------
+
+#' Convert a data.frame to a temporary vectra_node
+#'
+#' Writes `df` to a temporary `.vtr` file, opens it as a lazy node, and
+#' registers cleanup of the temp file on the *caller's* frame so the file
+#' lives until the caller returns.
+#'
+#' @param df A `data.frame`.
+#' @param envir Environment in which to register the `on.exit` cleanup
+#'   (typically `parent.frame()`).
+#' @return A `vectra_node`.
+#' @noRd
+df_to_node <- function(df, envir = parent.frame()) {
+
+  tmp <- tempfile(fileext = ".vtr")
+  do.call(on.exit, list(substitute(unlink(tmp)), add = TRUE), envir = envir)
+  write_vtr(df, tmp)
+  tbl(tmp)
+}
+
+check_scalar_string <- function(x, name = deparse(substitute(x))) {
+  if (!is.character(x) || length(x) != 1)
+    stop(sprintf("%s must be a single character string", name))
+}
+
+# -- write_csv ----------------------------------------------------------------
+
 #' Write query results or a data.frame to a CSV file
 #'
 #' For `vectra_node` inputs, data is streamed batch-by-batch to disk without
@@ -24,8 +52,7 @@ write_csv <- function(x, path, ...) {
 
 #' @export
 write_csv.vectra_node <- function(x, path, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
+  check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
   .Call(C_write_csv, x$.node, path)
   invisible(NULL)
@@ -33,15 +60,7 @@ write_csv.vectra_node <- function(x, path, ...) {
 
 #' @export
 write_csv.data.frame <- function(x, path, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
-  path <- normalizePath(path, mustWork = FALSE)
-  tmp <- tempfile(fileext = ".vtr")
-  on.exit(unlink(tmp))
-  write_vtr(x, tmp)
-  node <- tbl(tmp)
-  .Call(C_write_csv, node$.node, path)
-  invisible(NULL)
+  write_csv.vectra_node(df_to_node(x), path, ...)
 }
 
 #' Write query results or a data.frame to a SQLite table
@@ -71,10 +90,8 @@ write_sqlite <- function(x, path, table, ...) {
 
 #' @export
 write_sqlite.vectra_node <- function(x, path, table, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
-  if (!is.character(table) || length(table) != 1)
-    stop("table must be a single character string")
+  check_scalar_string(path)
+  check_scalar_string(table)
   path <- normalizePath(path, mustWork = FALSE)
   .Call(C_write_sqlite, x$.node, path, table)
   invisible(NULL)
@@ -82,17 +99,7 @@ write_sqlite.vectra_node <- function(x, path, table, ...) {
 
 #' @export
 write_sqlite.data.frame <- function(x, path, table, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
-  if (!is.character(table) || length(table) != 1)
-    stop("table must be a single character string")
-  path <- normalizePath(path, mustWork = FALSE)
-  tmp <- tempfile(fileext = ".vtr")
-  on.exit(unlink(tmp))
-  write_vtr(x, tmp)
-  node <- tbl(tmp)
-  .Call(C_write_sqlite, node$.node, path, table)
-  invisible(NULL)
+  write_sqlite.vectra_node(df_to_node(x), path, table, ...)
 }
 
 #' Write query results to a GeoTIFF file
@@ -122,8 +129,7 @@ write_tiff <- function(x, path, compress = FALSE, ...) {
 
 #' @export
 write_tiff.vectra_node <- function(x, path, compress = FALSE, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
+  check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
   .Call(C_write_tiff, x$.node, path, as.logical(compress))
   invisible(NULL)
@@ -131,15 +137,7 @@ write_tiff.vectra_node <- function(x, path, compress = FALSE, ...) {
 
 #' @export
 write_tiff.data.frame <- function(x, path, compress = FALSE, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
-  path <- normalizePath(path, mustWork = FALSE)
-  tmp <- tempfile(fileext = ".vtr")
-  on.exit(unlink(tmp))
-  write_vtr(x, tmp)
-  node <- tbl(tmp)
-  .Call(C_write_tiff, node$.node, path, as.logical(compress))
-  invisible(NULL)
+  write_tiff.vectra_node(df_to_node(x), path, compress, ...)
 }
 
 #' Write data to a .vtr file
@@ -177,18 +175,17 @@ write_vtr <- function(x, path, ...) {
 }
 
 #' @export
-write_vtr.vectra_node <- function(x, path, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
+write_vtr.vectra_node <- function(x, path, batch_size = NULL, ...) {
+  check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
-  .Call(C_write_vtr_node, x$.node, path)
+  bs <- if (!is.null(batch_size)) as.double(batch_size) else NULL
+  .Call(C_write_vtr_node, x$.node, path, bs)
   invisible(NULL)
 }
 
 #' @export
 write_vtr.data.frame <- function(x, path, batch_size = nrow(x), ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
+  check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
   .Call(C_write_vtr, x, path, as.integer(batch_size))
   invisible(NULL)
@@ -227,8 +224,7 @@ append_vtr <- function(x, path, ...) {
 
 #' @export
 append_vtr.vectra_node <- function(x, path, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
+  check_scalar_string(path)
   path <- normalizePath(path, mustWork = TRUE)
   .Call(C_append_vtr, x$.node, path)
   invisible(NULL)
@@ -236,13 +232,5 @@ append_vtr.vectra_node <- function(x, path, ...) {
 
 #' @export
 append_vtr.data.frame <- function(x, path, ...) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
-  path <- normalizePath(path, mustWork = TRUE)
-  tmp <- tempfile(fileext = ".vtr")
-  on.exit(unlink(tmp))
-  write_vtr(x, tmp)
-  node <- tbl(tmp)
-  .Call(C_append_vtr, node$.node, path)
-  invisible(NULL)
+  append_vtr.vectra_node(df_to_node(x), path, ...)
 }

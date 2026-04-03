@@ -71,12 +71,29 @@ left_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
   UseMethod("left_join")
 }
 
-#' @export
-left_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+# Internal: shared implementation for standard joins (left, inner, full)
+join_impl <- function(x, y, by, suffix, type) {
   keys <- parse_join_keys(x, y, by)
   new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    "left", keys$left, keys$right, suffix[1], suffix[2])
+                    type, keys$left, keys$right, suffix[1], suffix[2])
   structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
+}
+
+# Internal: shared implementation for filtering joins (semi, anti)
+filter_join_impl <- function(x, y, by, type) {
+  keys <- parse_join_keys(x, y, by)
+  new_xptr <- .Call(C_join_node, x$.node, y$.node,
+                    type, keys$left, keys$right, ".x", ".y")
+  structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+}
+
+#' @export
+left_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  if (!is.character(suffix) || length(suffix) != 2)
+    stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
+  join_impl(x, y, by, suffix, "left")
 }
 
 #' @rdname left_join
@@ -87,10 +104,11 @@ inner_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 
 #' @export
 inner_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
-  keys <- parse_join_keys(x, y, by)
-  new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    "inner", keys$left, keys$right, suffix[1], suffix[2])
-  structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  if (!is.character(suffix) || length(suffix) != 2)
+    stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
+  join_impl(x, y, by, suffix, "inner")
 }
 
 #' @rdname left_join
@@ -101,6 +119,10 @@ right_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 
 #' @export
 right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  if (!is.character(suffix) || length(suffix) != 2)
+    stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
   # right_join(x, y) = left_join(y, x) with swapped keys and reordered columns
   keys <- parse_join_keys(x, y, by)
 
@@ -184,10 +206,11 @@ full_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 
 #' @export
 full_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
-  keys <- parse_join_keys(x, y, by)
-  new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    "full", keys$left, keys$right, suffix[1], suffix[2])
-  structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  if (!is.character(suffix) || length(suffix) != 2)
+    stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
+  join_impl(x, y, by, suffix, "full")
 }
 
 #' @rdname left_join
@@ -198,10 +221,9 @@ semi_join <- function(x, y, by = NULL, ...) {
 
 #' @export
 semi_join.vectra_node <- function(x, y, by = NULL, ...) {
-  keys <- parse_join_keys(x, y, by)
-  new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    "semi", keys$left, keys$right, ".x", ".y")
-  structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  filter_join_impl(x, y, by, "semi")
 }
 
 #' @rdname left_join
@@ -212,10 +234,9 @@ anti_join <- function(x, y, by = NULL, ...) {
 
 #' @export
 anti_join.vectra_node <- function(x, y, by = NULL, ...) {
-  keys <- parse_join_keys(x, y, by)
-  new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    "anti", keys$left, keys$right, ".x", ".y")
-  structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  filter_join_impl(x, y, by, "anti")
 }
 
 #' Cross join two vectra tables
@@ -245,6 +266,10 @@ cross_join <- function(x, y, suffix = c(".x", ".y"), ...) {
 
 #' @export
 cross_join.vectra_node <- function(x, y, suffix = c(".x", ".y"), ...) {
+  if (!inherits(y, "vectra_node") && !is.data.frame(y))
+    stop(sprintf("y must be a vectra_node or data.frame, got %s", class(y)[1]))
+  if (!is.character(suffix) || length(suffix) != 2)
+    stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
   df_x <- if (inherits(x, "vectra_node")) collect(x) else x
   df_y <- if (inherits(y, "vectra_node")) collect(y) else y
 
@@ -270,4 +295,71 @@ cross_join.vectra_node <- function(x, y, suffix = c(".x", ".y"), ...) {
   result <- cbind(result_x, result_y)
   rownames(result) <- NULL
   result
+}
+
+
+#' Fuzzy join two vectra tables by string distance
+#'
+#' Joins two tables using approximate string matching on key columns.
+#' Optionally blocks by a second column (e.g., genus) for performance —
+#' only rows sharing the same blocking key are compared.
+#'
+#' @param x A `vectra_node` object (probe / query side).
+#' @param y A `vectra_node` object (build / reference side).
+#' @param by A named character vector of length 1: `c("probe_col" = "build_col")`.
+#'   The columns to compute string distance on.
+#' @param method Character. Distance algorithm: `"dl"` (Damerau-Levenshtein,
+#'   default), `"levenshtein"`, or `"jw"` (Jaro-Winkler).
+#' @param max_dist Numeric. Maximum normalized distance (0-1) to keep a match.
+#'   Default `0.2`.
+#' @param block_by Optional named character vector of length 1:
+#'   `c("probe_col" = "build_col")`. Rows must match exactly on these columns
+#'   before distance is computed. Dramatically reduces comparisons.
+#' @param n_threads Integer. Number of OpenMP threads for parallel distance
+#'   computation over partitions. Default `4L`.
+#' @param suffix Character. Suffix appended to build-side column names that
+#'   collide with probe-side names. Default `".y"`.
+#'
+#' @return A `vectra_node` with all probe columns, all build columns (suffixed
+#'   on collision), and a `fuzzy_dist` column (double).
+#'
+#' @export
+fuzzy_join <- function(x, y, by, method = "dl", max_dist = 0.2,
+                       block_by = NULL, n_threads = 4L,
+                       suffix = ".y") {
+  UseMethod("fuzzy_join")
+}
+
+#' @export
+fuzzy_join.vectra_node <- function(x, y, by, method = "dl", max_dist = 0.2,
+                                   block_by = NULL, n_threads = 4L,
+                                   suffix = ".y") {
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  if (!is.character(by) || length(by) != 1)
+    stop(sprintf("by must be a named character vector of length 1, got length %d", length(by)))
+  if (!is.numeric(max_dist) || length(max_dist) != 1 || max_dist < 0 || max_dist > 1)
+    stop(sprintf("max_dist must be a number between 0 and 1, got %s", deparse(max_dist)))
+  if (!is.numeric(n_threads) || length(n_threads) != 1 || n_threads < 1)
+    stop(sprintf("n_threads must be a positive integer, got %s", deparse(n_threads)))
+  method_int <- match(method, c("dl", "levenshtein", "jw")) - 1L
+  if (is.na(method_int)) stop("method must be 'dl', 'levenshtein', or 'jw'")
+
+  by_probe <- names(by)
+  by_build <- unname(by)
+  if (is.null(by_probe) || by_probe == "") by_probe <- by_build
+
+  block_probe <- if (!is.null(block_by)) names(block_by) else NULL
+  block_build <- if (!is.null(block_by)) unname(block_by) else NULL
+  if (!is.null(block_probe) && block_probe == "") block_probe <- block_build
+
+  new_xptr <- .Call(C_fuzzy_join_node,
+                    x$.node, y$.node,
+                    by_probe, by_build,
+                    block_probe, block_build,
+                    as.integer(method_int),
+                    as.double(max_dist),
+                    as.integer(n_threads),
+                    suffix)
+  structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
 }

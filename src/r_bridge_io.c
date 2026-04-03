@@ -13,27 +13,76 @@
 #include <string.h>
 #include <stdint.h>
 
-/* --- C_csv_scan_node --- */
+/* ---- shared helpers ---- */
 
-SEXP C_csv_scan_node(SEXP path_sexp, SEXP batch_size_sexp) {
+/* Scan helper: path + batch_size -> format-specific constructor -> wrapped node.
+ * Covers the csv and tiff scan nodes which share identical structure. */
+typedef VecNode *(*ScanCreateFn)(const char *path, int64_t batch_size);
+
+static SEXP scan_node_create(SEXP path_sexp, SEXP batch_size_sexp,
+                             ScanCreateFn create_fn) {
     const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
     int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
-    CsvScanNode *sn = csv_scan_node_create(fpath, batch_size);
-    return wrap_node((VecNode *)sn);
+    VecNode *sn = create_fn(fpath, batch_size);
+    return wrap_node(sn);
 }
 
-/* --- C_write_csv --- */
+/* Write helper: unwrap node, extract path, call format-specific writer, free node.
+ * The writer receives (node, path, ctx) where ctx carries any extra parameters. */
+typedef void (*WriteNodeFn)(VecNode *node, const char *path, void *ctx);
 
-SEXP C_write_csv(SEXP node_xptr, SEXP path_sexp) {
+static SEXP write_node_dispatch(SEXP node_xptr, SEXP path_sexp,
+                                WriteNodeFn write_fn, void *ctx) {
     VecNode *node = unwrap_node(node_xptr);
     R_ClearExternalPtr(node_xptr);
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
-    csv_write_node(node, path);
+    write_fn(node, path, ctx);
     node->free_node(node);
     return R_NilValue;
 }
 
-/* --- C_sql_scan_node --- */
+/* Format-specific writer adapters (bridge void* ctx to real signatures) */
+
+static void csv_writer(VecNode *node, const char *path, void *ctx) {
+    (void)ctx;
+    csv_write_node(node, path);
+}
+
+static void sql_writer(VecNode *node, const char *path, void *ctx) {
+    const char *table = (const char *)ctx;
+    sql_write_node(node, path, table);
+}
+
+static void tiff_writer(VecNode *node, const char *path, void *ctx) {
+    int use_deflate = *(int *)ctx;
+    tiff_write_node(node, path, use_deflate);
+}
+
+typedef struct {
+    int64_t batch_size;
+} VtrWriteCtx;
+
+static void vtr_writer(VecNode *node, const char *path, void *ctx) {
+    VtrWriteCtx *wctx = (VtrWriteCtx *)ctx;
+    if (wctx->batch_size > 0)
+        vtr_write_node_batched(node, path, wctx->batch_size);
+    else
+        vtr_write_node(node, path);
+}
+
+/* ---- scan entry points ---- */
+
+static VecNode *csv_scan_adapter(const char *path, int64_t bs) {
+    return (VecNode *)csv_scan_node_create(path, bs);
+}
+
+static VecNode *tiff_scan_adapter(const char *path, int64_t bs) {
+    return (VecNode *)tiff_scan_node_create(path, bs);
+}
+
+SEXP C_csv_scan_node(SEXP path_sexp, SEXP batch_size_sexp) {
+    return scan_node_create(path_sexp, batch_size_sexp, csv_scan_adapter);
+}
 
 SEXP C_sql_scan_node(SEXP path_sexp, SEXP table_sexp, SEXP batch_size_sexp) {
     const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
@@ -43,25 +92,31 @@ SEXP C_sql_scan_node(SEXP path_sexp, SEXP table_sexp, SEXP batch_size_sexp) {
     return wrap_node((VecNode *)sn);
 }
 
-/* --- C_write_sqlite --- */
-
-SEXP C_write_sqlite(SEXP node_xptr, SEXP path_sexp, SEXP table_sexp) {
-    VecNode *node = unwrap_node(node_xptr);
-    R_ClearExternalPtr(node_xptr);
-    const char *path = CHAR(STRING_ELT(path_sexp, 0));
-    const char *table = CHAR(STRING_ELT(table_sexp, 0));
-    sql_write_node(node, path, table);
-    node->free_node(node);
-    return R_NilValue;
+SEXP C_tiff_scan_node(SEXP path_sexp, SEXP batch_size_sexp) {
+    return scan_node_create(path_sexp, batch_size_sexp, tiff_scan_adapter);
 }
 
-/* --- C_tiff_scan_node --- */
+/* ---- write entry points ---- */
 
-SEXP C_tiff_scan_node(SEXP path_sexp, SEXP batch_size_sexp) {
-    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
-    int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
-    TiffScanNode *sn = tiff_scan_node_create(fpath, batch_size);
-    return wrap_node((VecNode *)sn);
+SEXP C_write_csv(SEXP node_xptr, SEXP path_sexp) {
+    return write_node_dispatch(node_xptr, path_sexp, csv_writer, NULL);
+}
+
+SEXP C_write_sqlite(SEXP node_xptr, SEXP path_sexp, SEXP table_sexp) {
+    const char *table = CHAR(STRING_ELT(table_sexp, 0));
+    return write_node_dispatch(node_xptr, path_sexp, sql_writer, (void *)table);
+}
+
+SEXP C_write_tiff(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
+    int use_deflate = Rf_asLogical(compress_sexp);
+    return write_node_dispatch(node_xptr, path_sexp, tiff_writer, &use_deflate);
+}
+
+SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp, SEXP batch_size_sexp) {
+    VtrWriteCtx ctx = {
+        .batch_size = (batch_size_sexp == R_NilValue) ? 0 : (int64_t)Rf_asReal(batch_size_sexp)
+    };
+    return write_node_dispatch(node_xptr, path_sexp, vtr_writer, &ctx);
 }
 
 /* --- C_tiff_scan_meta --- */
@@ -101,25 +156,3 @@ SEXP C_tiff_scan_meta(SEXP node_xptr) {
     return result;
 }
 
-/* --- C_write_tiff --- */
-
-SEXP C_write_tiff(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
-    VecNode *node = unwrap_node(node_xptr);
-    R_ClearExternalPtr(node_xptr);
-    const char *path = CHAR(STRING_ELT(path_sexp, 0));
-    int use_deflate = Rf_asLogical(compress_sexp);
-    tiff_write_node(node, path, use_deflate);
-    node->free_node(node);
-    return R_NilValue;
-}
-
-/* --- C_write_vtr_node (streaming write) --- */
-
-SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp) {
-    VecNode *node = unwrap_node(node_xptr);
-    R_ClearExternalPtr(node_xptr);
-    const char *path = CHAR(STRING_ELT(path_sexp, 0));
-    vtr_write_node(node, path);
-    node->free_node(node);
-    return R_NilValue;
-}

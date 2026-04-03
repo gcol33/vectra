@@ -409,8 +409,9 @@ static VecBatch *csv_read_batch(CsvScanNode *sn) {
     VecBatch *batch = vec_batch_alloc(n_cols, n_rows);
     for (int c = 0; c < n_cols; c++) {
         const char *nm = sn->base.output_schema.col_names[c];
-        batch->col_names[c] = (char *)malloc(strlen(nm) + 1);
-        strcpy(batch->col_names[c], nm);
+        size_t nm_len = strlen(nm);
+        batch->col_names[c] = (char *)malloc(nm_len + 1);
+        memcpy(batch->col_names[c], nm, nm_len + 1);
     }
 
     /* Allocate columns */

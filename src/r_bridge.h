@@ -28,8 +28,17 @@ SEXP C_write_sqlite(SEXP node_xptr, SEXP path, SEXP table_name);
 SEXP C_tiff_scan_node(SEXP path, SEXP batch_size);
 SEXP C_tiff_scan_meta(SEXP node_xptr);
 SEXP C_write_tiff(SEXP node_xptr, SEXP path, SEXP compress);
-SEXP C_write_vtr_node(SEXP node_xptr, SEXP path);
+SEXP C_write_vtr_node(SEXP node_xptr, SEXP path, SEXP batch_size);
 SEXP C_append_vtr(SEXP node_xptr, SEXP path);
 SEXP C_delete_vtr(SEXP path, SEXP row_indices);
+SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
+                       SEXP by_probe, SEXP by_build,
+                       SEXP block_probe, SEXP block_build,
+                       SEXP method, SEXP max_dist,
+                       SEXP n_threads, SEXP suffix_y);
+
+/* Hash index */
+SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci);
+SEXP C_has_index(SEXP path, SEXP col_name);
 
 #endif /* VECTRA_R_BRIDGE_H */

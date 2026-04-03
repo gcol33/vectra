@@ -1,4 +1,5 @@
 #include "collect.h"
+#include "vec_omp.h"
 #include "optimize.h"
 #include "builder.h"
 #include "array.h"
@@ -17,6 +18,15 @@ static int use_bit64(void) {
         if (strcmp(s, "bit64") == 0) return 1;
     }
     return 0;
+}
+
+/* Find the 1-based factor level code for a string value, or NA_INTEGER. */
+static int find_factor_code(const char *val, SEXP levels, int n_levels) {
+    for (int j = 0; j < n_levels; j++) {
+        if (strcmp(val, CHAR(STRING_ELT(levels, j))) == 0)
+            return j + 1;
+    }
+    return NA_INTEGER;
 }
 
 /* Convert VecArray to R SEXP, then apply annotation (Date/POSIXct/factor).
@@ -58,18 +68,11 @@ static SEXP apply_annotation(SEXP col, const char *ann) {
         SEXP icol = PROTECT(Rf_allocVector(INTSXP, n));
         int *ip = INTEGER(icol);
         for (R_xlen_t i = 0; i < n; i++) {
-            if (STRING_ELT(col, i) == NA_STRING) {
+            if (STRING_ELT(col, i) == NA_STRING)
                 ip[i] = NA_INTEGER;
-            } else {
-                const char *val = CHAR(STRING_ELT(col, i));
-                ip[i] = NA_INTEGER;
-                for (int j = 0; j < n_levels; j++) {
-                    if (strcmp(val, CHAR(STRING_ELT(levels, j))) == 0) {
-                        ip[i] = j + 1;
-                        break;
-                    }
-                }
-            }
+            else
+                ip[i] = find_factor_code(CHAR(STRING_ELT(col, i)),
+                                         levels, n_levels);
         }
         Rf_setAttrib(icol, R_LevelsSymbol, levels);
         Rf_setAttrib(icol, R_ClassSymbol, Rf_mkString("factor"));
@@ -188,6 +191,7 @@ SEXP vec_collect(VecNode *root) {
     while ((batch = root->next_batch(root)) != NULL) {
         if (!batch->sel) {
             /* Fast path: no selection vector, bulk append */
+            #pragma omp parallel for if(n_cols > 8) schedule(static)
             for (int i = 0; i < n_cols; i++)
                 vec_builder_append_array(&builders[i], &batch->columns[i]);
         } else {

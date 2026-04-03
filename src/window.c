@@ -1,4 +1,5 @@
 #include "window.h"
+#include "vec_omp.h"
 #include "hash.h"
 #include "array.h"
 #include "batch.h"
@@ -13,7 +14,41 @@
 /* Forward declaration */
 static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b);
 
-/* Comparator context for qsort (single-threaded engine) */
+/* Thread-safe merge sort for window index arrays.
+   Sorts indices[0..n-1] using arr for comparison.
+   tmp must be at least n elements. */
+static void win_merge_sort(int64_t *indices, int64_t *tmp, int64_t n,
+                           const VecArray *arr) {
+    if (n <= 1) return;
+    /* Insertion sort for small arrays */
+    if (n <= 32) {
+        for (int64_t i = 1; i < n; i++) {
+            int64_t key = indices[i];
+            int64_t j = i - 1;
+            while (j >= 0 && vec_compare_values(arr, indices[j], key) > 0) {
+                indices[j + 1] = indices[j];
+                j--;
+            }
+            indices[j + 1] = key;
+        }
+        return;
+    }
+    int64_t mid = n / 2;
+    win_merge_sort(indices, tmp, mid, arr);
+    win_merge_sort(indices + mid, tmp + mid, n - mid, arr);
+    int64_t i = 0, j = mid, k = 0;
+    while (i < mid && j < n) {
+        if (vec_compare_values(arr, indices[i], indices[j]) <= 0)
+            tmp[k++] = indices[i++];
+        else
+            tmp[k++] = indices[j++];
+    }
+    while (i < mid) tmp[k++] = indices[i++];
+    while (j < n)   tmp[k++] = indices[j++];
+    memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
+}
+
+/* Legacy qsort comparator for ungrouped path (single-threaded) */
 static const VecArray *qsort_arr_ctx;
 
 static int cmp_indices_asc(const void *a, const void *b) {
@@ -54,6 +89,111 @@ static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
     }
 }
 
+/* Evaluate grouped lag or lead over rows[0..glen-1].
+   direction: -1 for lag, +1 for lead. */
+static void win_grp_shift(const VecArray *in_arr, const int64_t *rows,
+                           int64_t glen, int direction, int offset,
+                           double default_val, int has_default,
+                           double *out_buf, uint8_t *null_flags) {
+    for (int64_t j = 0; j < glen; j++) {
+        int64_t src_j = j + direction * offset;
+        if (src_j < 0 || src_j >= glen) {
+            if (has_default)
+                out_buf[rows[j]] = default_val;
+            else
+                null_flags[rows[j]] = 1;
+        } else {
+            int64_t src_row = rows[src_j];
+            if (!vec_array_is_valid(in_arr, src_row)) {
+                null_flags[rows[j]] = 1;
+            } else {
+                out_buf[rows[j]] = (in_arr->type == VEC_DOUBLE) ?
+                    in_arr->buf.dbl[src_row] :
+                    (double)in_arr->buf.i64[src_row];
+            }
+        }
+    }
+}
+
+/* Evaluate grouped cume_dist over rows[0..glen-1].
+   Uses thread-safe merge sort (no global state). */
+static void win_grp_cume_dist(const VecArray *in_arr, const int64_t *rows,
+                               int64_t glen, double *out_buf) {
+    int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+    int64_t *stmp   = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+    for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
+    win_merge_sort(sorted, stmp, glen, in_arr);
+    int64_t si = 0;
+    while (si < glen) {
+        int64_t sj = si + 1;
+        while (sj < glen && vec_compare_values(in_arr,
+                sorted[sj], sorted[si]) == 0)
+            sj++;
+        double cd = (double)sj / (double)glen;
+        for (int64_t sk = si; sk < sj; sk++)
+            out_buf[sorted[sk]] = cd;
+        si = sj;
+    }
+    free(stmp);
+    free(sorted);
+}
+
+/* Evaluate lag/lead for a contiguous segment.
+   direction: -1 for lag (look back), +1 for lead (look forward). */
+static void win_eval_shift(const VecArray *input, int64_t start, int64_t end,
+                           int direction, int offset, double default_val,
+                           int has_default, VecArray *result) {
+    /* Build validity bitmap (sequential — bitmap bytes are shared) */
+    for (int64_t i = start; i < end; i++) {
+        int64_t src_row = i + direction * offset;
+        if (src_row < start || src_row >= end) {
+            if (has_default)
+                vec_array_set_valid(result, i);
+            else
+                vec_array_set_null(result, i);
+        } else if (!vec_array_is_valid(input, src_row)) {
+            vec_array_set_null(result, i);
+        } else {
+            vec_array_set_valid(result, i);
+        }
+    }
+    /* Parallel data copy */
+    #pragma omp parallel for if((end - start) > VEC_OMP_THRESHOLD) schedule(static)
+    for (int64_t i = start; i < end; i++) {
+        int64_t src_row = i + direction * offset;
+        if (src_row < start || src_row >= end) {
+            if (has_default)
+                result->buf.dbl[i] = default_val;
+        } else if (vec_array_is_valid(result, i)) {
+            result->buf.dbl[i] = (input->type == VEC_DOUBLE) ?
+                input->buf.dbl[src_row] : (double)input->buf.i64[src_row];
+        }
+    }
+}
+
+/* Evaluate cume_dist for a contiguous segment using qsort. */
+static void win_eval_cume_dist(const VecArray *input, int64_t start,
+                               int64_t seg_len, VecArray *result) {
+    int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
+    for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
+    qsort_arr_ctx = input;
+    qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+    /* Groups of ties get cume_dist = (last position in group + 1) / n */
+    int64_t i = 0;
+    while (i < seg_len) {
+        int64_t j = i + 1;
+        while (j < seg_len && vec_compare_values(input, idx[j], idx[i]) == 0)
+            j++;
+        double cd = (double)j / (double)seg_len;
+        for (int64_t k = i; k < j; k++) {
+            vec_array_set_valid(result, idx[k]);
+            result->buf.dbl[idx[k]] = cd;
+        }
+        i = j;
+    }
+    free(idx);
+}
+
 /* Apply a window kernel over a contiguous segment [start, end) */
 static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                                  int64_t start, int64_t end, int64_t n_total,
@@ -64,43 +204,13 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
 
     switch (kind) {
     case WIN_LAG:
-        for (int64_t i = start; i < end; i++) {
-            int64_t src = i - offset;
-            if (src < start || src >= end) {
-                if (has_default) {
-                    vec_array_set_valid(result, i);
-                    result->buf.dbl[i] = default_val;
-                } else {
-                    vec_array_set_null(result, i);
-                }
-            } else if (!vec_array_is_valid(input, src)) {
-                vec_array_set_null(result, i);
-            } else {
-                vec_array_set_valid(result, i);
-                result->buf.dbl[i] = (input->type == VEC_DOUBLE) ?
-                    input->buf.dbl[src] : (double)input->buf.i64[src];
-            }
-        }
+        win_eval_shift(input, start, end, -1, offset, default_val,
+                       has_default, result);
         break;
 
     case WIN_LEAD:
-        for (int64_t i = start; i < end; i++) {
-            int64_t src = i + offset;
-            if (src < start || src >= end) {
-                if (has_default) {
-                    vec_array_set_valid(result, i);
-                    result->buf.dbl[i] = default_val;
-                } else {
-                    vec_array_set_null(result, i);
-                }
-            } else if (!vec_array_is_valid(input, src)) {
-                vec_array_set_null(result, i);
-            } else {
-                vec_array_set_valid(result, i);
-                result->buf.dbl[i] = (input->type == VEC_DOUBLE) ?
-                    input->buf.dbl[src] : (double)input->buf.i64[src];
-            }
-        }
+        win_eval_shift(input, start, end, +1, offset, default_val,
+                       has_default, result);
         break;
 
     case WIN_ROW_NUMBER:
@@ -252,29 +362,9 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         break;
     }
 
-    case WIN_CUME_DIST: {
-        /* cume_dist = fraction of rows with value <= current value.
-           = (number of rows with value <= x) / n */
-        int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
-        for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
-        qsort_arr_ctx = input;
-        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
-        /* After sorting, groups of ties get cume_dist = (last position in group + 1) / n */
-        int64_t i = 0;
-        while (i < seg_len) {
-            int64_t j = i + 1;
-            while (j < seg_len && vec_compare_values(input, idx[j], idx[i]) == 0)
-                j++;
-            double cd = (double)j / (double)seg_len;
-            for (int64_t k = i; k < j; k++) {
-                vec_array_set_valid(result, idx[k]);
-                result->buf.dbl[idx[k]] = cd;
-            }
-            i = j;
-        }
-        free(idx);
+    case WIN_CUME_DIST:
+        win_eval_cume_dist(input, start, seg_len, result);
         break;
-    }
     }
 
     (void)seg_len;
@@ -426,7 +516,23 @@ static VecBatch *window_next_batch(VecNode *self) {
             }
 
             VecArray out = vec_array_alloc(VEC_DOUBLE, n_rows);
+            const VecArray *in_arr = (in_col >= 0) ? &cols[in_col] : NULL;
 
+            /* Pre-set all validity bits so the parallel loop only needs to
+               clear bits for NAs.  We use a per-row byte flag (null_flags)
+               instead of bitmap clear to avoid byte-level races, then apply
+               nulls sequentially afterwards. */
+            vec_array_set_all_valid(&out);
+            uint8_t *null_flags = (uint8_t *)calloc((size_t)n_rows, 1);
+
+            /* Each group is independent — parallelize the outer loop.
+               All rank-like sorts use win_merge_sort (thread-safe, no globals).
+               Writes to out.buf.dbl[rows[j]] are safe because each row belongs
+               to exactly one group.  null_flags[row] is one byte per row, so
+               no sharing between threads. */
+#ifdef _OPENMP
+            #pragma omp parallel for schedule(dynamic) if(n_groups > 64)
+#endif
             for (int64_t g = 0; g < n_groups; g++) {
                 int64_t glen = grp_lens[g];
                 int64_t *rows = grp_rows[g];
@@ -434,91 +540,53 @@ static VecBatch *window_next_batch(VecNode *self) {
                 switch (ws->kind) {
                 case WIN_ROW_NUMBER:
                     for (int64_t j = 0; j < glen; j++) {
-                        vec_array_set_valid(&out, rows[j]);
                         out.buf.dbl[rows[j]] = (double)(j + 1);
                     }
                     break;
 
                 case WIN_RANK: {
-                    /* O(n log n) per group: sort group row indices by value */
                     int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    int64_t *stmp   = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
                     for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
-                    qsort_arr_ctx = &cols[in_col];
-                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    win_merge_sort(sorted, stmp, glen, in_arr);
                     int64_t rank = 1;
                     for (int64_t j = 0; j < glen; j++) {
-                        if (j > 0 && vec_compare_values(&cols[in_col],
+                        if (j > 0 && vec_compare_values(in_arr,
                                 sorted[j], sorted[j - 1]) != 0)
                             rank = j + 1;
-                        vec_array_set_valid(&out, sorted[j]);
                         out.buf.dbl[sorted[j]] = (double)rank;
                     }
+                    free(stmp);
                     free(sorted);
                     break;
                 }
                 case WIN_DENSE_RANK: {
                     int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    int64_t *stmp   = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
                     for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
-                    qsort_arr_ctx = &cols[in_col];
-                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    win_merge_sort(sorted, stmp, glen, in_arr);
                     int64_t rank = 1;
                     for (int64_t j = 0; j < glen; j++) {
-                        if (j > 0 && vec_compare_values(&cols[in_col],
+                        if (j > 0 && vec_compare_values(in_arr,
                                 sorted[j], sorted[j - 1]) != 0)
                             rank++;
-                        vec_array_set_valid(&out, sorted[j]);
                         out.buf.dbl[sorted[j]] = (double)rank;
                     }
+                    free(stmp);
                     free(sorted);
                     break;
                 }
 
                 case WIN_LAG:
-                    for (int64_t j = 0; j < glen; j++) {
-                        int64_t src_j = j - ws->offset;
-                        if (src_j < 0 || src_j >= glen) {
-                            if (ws->has_default) {
-                                vec_array_set_valid(&out, rows[j]);
-                                out.buf.dbl[rows[j]] = ws->default_val;
-                            } else {
-                                vec_array_set_null(&out, rows[j]);
-                            }
-                        } else {
-                            int64_t src_row = rows[src_j];
-                            if (!vec_array_is_valid(&cols[in_col], src_row)) {
-                                vec_array_set_null(&out, rows[j]);
-                            } else {
-                                vec_array_set_valid(&out, rows[j]);
-                                out.buf.dbl[rows[j]] = (cols[in_col].type == VEC_DOUBLE) ?
-                                    cols[in_col].buf.dbl[src_row] :
-                                    (double)cols[in_col].buf.i64[src_row];
-                            }
-                        }
-                    }
+                    win_grp_shift(in_arr, rows, glen, -1, ws->offset,
+                                  ws->default_val, ws->has_default,
+                                  out.buf.dbl, null_flags);
                     break;
 
                 case WIN_LEAD:
-                    for (int64_t j = 0; j < glen; j++) {
-                        int64_t src_j = j + ws->offset;
-                        if (src_j < 0 || src_j >= glen) {
-                            if (ws->has_default) {
-                                vec_array_set_valid(&out, rows[j]);
-                                out.buf.dbl[rows[j]] = ws->default_val;
-                            } else {
-                                vec_array_set_null(&out, rows[j]);
-                            }
-                        } else {
-                            int64_t src_row = rows[src_j];
-                            if (!vec_array_is_valid(&cols[in_col], src_row)) {
-                                vec_array_set_null(&out, rows[j]);
-                            } else {
-                                vec_array_set_valid(&out, rows[j]);
-                                out.buf.dbl[rows[j]] = (cols[in_col].type == VEC_DOUBLE) ?
-                                    cols[in_col].buf.dbl[src_row] :
-                                    (double)cols[in_col].buf.i64[src_row];
-                            }
-                        }
-                    }
+                    win_grp_shift(in_arr, rows, glen, +1, ws->offset,
+                                  ws->default_val, ws->has_default,
+                                  out.buf.dbl, null_flags);
                     break;
 
                 case WIN_CUMSUM: {
@@ -526,14 +594,13 @@ static VecBatch *window_next_batch(VecNode *self) {
                     int poisoned = 0;
                     for (int64_t j = 0; j < glen; j++) {
                         int64_t ri = rows[j];
-                        if (poisoned || !vec_array_is_valid(&cols[in_col], ri)) {
-                            vec_array_set_null(&out, ri);
+                        if (poisoned || !vec_array_is_valid(in_arr, ri)) {
+                            null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (cols[in_col].type == VEC_DOUBLE) ?
-                                cols[in_col].buf.dbl[ri] : (double)cols[in_col].buf.i64[ri];
+                            double v = (in_arr->type == VEC_DOUBLE) ?
+                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
                             acc += v;
-                            vec_array_set_valid(&out, ri);
                             out.buf.dbl[ri] = acc;
                         }
                     }
@@ -546,15 +613,14 @@ static VecBatch *window_next_batch(VecNode *self) {
                     int poisoned = 0;
                     for (int64_t j = 0; j < glen; j++) {
                         int64_t ri = rows[j];
-                        if (poisoned || !vec_array_is_valid(&cols[in_col], ri)) {
-                            vec_array_set_null(&out, ri);
+                        if (poisoned || !vec_array_is_valid(in_arr, ri)) {
+                            null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (cols[in_col].type == VEC_DOUBLE) ?
-                                cols[in_col].buf.dbl[ri] : (double)cols[in_col].buf.i64[ri];
+                            double v = (in_arr->type == VEC_DOUBLE) ?
+                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
                             acc += v;
                             cnt++;
-                            vec_array_set_valid(&out, ri);
                             out.buf.dbl[ri] = acc / (double)cnt;
                         }
                     }
@@ -566,14 +632,13 @@ static VecBatch *window_next_batch(VecNode *self) {
                     int poisoned = 0;
                     for (int64_t j = 0; j < glen; j++) {
                         int64_t ri = rows[j];
-                        if (poisoned || !vec_array_is_valid(&cols[in_col], ri)) {
-                            vec_array_set_null(&out, ri);
+                        if (poisoned || !vec_array_is_valid(in_arr, ri)) {
+                            null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (cols[in_col].type == VEC_DOUBLE) ?
-                                cols[in_col].buf.dbl[ri] : (double)cols[in_col].buf.i64[ri];
+                            double v = (in_arr->type == VEC_DOUBLE) ?
+                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
                             if (v < cur) cur = v;
-                            vec_array_set_valid(&out, ri);
                             out.buf.dbl[ri] = cur;
                         }
                     }
@@ -585,14 +650,13 @@ static VecBatch *window_next_batch(VecNode *self) {
                     int poisoned = 0;
                     for (int64_t j = 0; j < glen; j++) {
                         int64_t ri = rows[j];
-                        if (poisoned || !vec_array_is_valid(&cols[in_col], ri)) {
-                            vec_array_set_null(&out, ri);
+                        if (poisoned || !vec_array_is_valid(in_arr, ri)) {
+                            null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (cols[in_col].type == VEC_DOUBLE) ?
-                                cols[in_col].buf.dbl[ri] : (double)cols[in_col].buf.i64[ri];
+                            double v = (in_arr->type == VEC_DOUBLE) ?
+                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
                             if (v > cur) cur = v;
-                            vec_array_set_valid(&out, ri);
                             out.buf.dbl[ri] = cur;
                         }
                     }
@@ -603,7 +667,6 @@ static VecBatch *window_next_batch(VecNode *self) {
                     int nt = ws->offset;  /* number of tiles */
                     for (int64_t j = 0; j < glen; j++) {
                         int64_t bucket = (j * nt / glen) + 1;
-                        vec_array_set_valid(&out, rows[j]);
                         out.buf.dbl[rows[j]] = (double)bucket;
                     }
                     break;
@@ -611,47 +674,36 @@ static VecBatch *window_next_batch(VecNode *self) {
 
                 case WIN_PERCENT_RANK: {
                     int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                    int64_t *stmp   = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
                     for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
-                    qsort_arr_ctx = &cols[in_col];
-                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
+                    win_merge_sort(sorted, stmp, glen, in_arr);
                     int64_t rank = 1;
                     for (int64_t j = 0; j < glen; j++) {
-                        if (j > 0 && vec_compare_values(&cols[in_col],
+                        if (j > 0 && vec_compare_values(in_arr,
                                 sorted[j], sorted[j - 1]) != 0)
                             rank = j + 1;
-                        vec_array_set_valid(&out, sorted[j]);
                         if (glen <= 1)
                             out.buf.dbl[sorted[j]] = 0.0;
                         else
                             out.buf.dbl[sorted[j]] = (double)(rank - 1) / (double)(glen - 1);
                     }
+                    free(stmp);
                     free(sorted);
                     break;
                 }
 
-                case WIN_CUME_DIST: {
-                    int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
-                    for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
-                    qsort_arr_ctx = &cols[in_col];
-                    qsort(sorted, (size_t)glen, sizeof(int64_t), cmp_indices_asc);
-                    int64_t si = 0;
-                    while (si < glen) {
-                        int64_t sj = si + 1;
-                        while (sj < glen && vec_compare_values(&cols[in_col],
-                                sorted[sj], sorted[si]) == 0)
-                            sj++;
-                        double cd = (double)sj / (double)glen;
-                        for (int64_t sk = si; sk < sj; sk++) {
-                            vec_array_set_valid(&out, sorted[sk]);
-                            out.buf.dbl[sorted[sk]] = cd;
-                        }
-                        si = sj;
-                    }
-                    free(sorted);
+                case WIN_CUME_DIST:
+                    win_grp_cume_dist(in_arr, rows, glen, out.buf.dbl);
                     break;
                 }
-                }
             }
+
+            /* Apply null flags to the validity bitmap (sequential, no races) */
+            for (int64_t r = 0; r < n_rows; r++) {
+                if (null_flags[r])
+                    vec_array_set_null(&out, r);
+            }
+            free(null_flags);
 
             result->columns[n_cols + w] = out;
             result->col_names[n_cols + w] = (char *)malloc(

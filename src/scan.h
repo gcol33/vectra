@@ -7,15 +7,22 @@
 
 typedef struct VecExpr VecExpr;  /* forward decl */
 
+typedef struct VtrIndex VtrIndex;  /* forward decl */
+
 typedef struct {
     VecNode        base;
     Vtr1File      *file;
     int           *col_mask;       /* which columns to read */
     uint32_t       next_rg;        /* next row group to read */
+    uint32_t       last_rg;        /* exclusive upper bound (0 = use n_rowgroups) */
+    int            rg_range_set;   /* 1 = binary search narrowed the range */
     VecExpr       *predicate;      /* pushed-down filter predicate (NULL = none) */
     int            pred_borrowed;  /* 1 = don't free predicate (owned by filter node) */
     TombstoneSet  *tombstone;      /* deleted rows (NULL = no deletions) */
     int64_t        rg_row_base;    /* physical row index of first row in current rg */
+    VtrIndex      *index;          /* persistent hash index (NULL = none) */
+    uint8_t       *rg_bitmap;      /* from hash index probe: 1 = visit this rg */
+    char          *vtr_path;       /* path to .vtr file (for deferred index lookups) */
 } ScanNode;
 
 /* Create a scan node over a .vtr file.

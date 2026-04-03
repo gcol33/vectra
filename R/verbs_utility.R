@@ -229,6 +229,12 @@ pull <- function(.data, var = -1) {
 #' @export
 pull.vectra_node <- function(.data, var = -1) {
   var_expr <- substitute(var)
+  # Validate length 1 for literal values (not symbols that need schema lookup)
+  if (!is.name(var_expr)) {
+    val <- eval(var_expr, parent.frame())
+    if (length(val) != 1)
+      stop(sprintf("var must be length 1, got length %d", length(val)))
+  }
   schema <- .Call(C_node_schema, .data$.node)
 
   if (is.name(var_expr)) {
@@ -312,6 +318,8 @@ slice_head <- function(.data, n = 1L) {
 
 #' @export
 slice_head.vectra_node <- function(.data, n = 1L) {
+  if (!is.numeric(n) || length(n) != 1 || is.na(n) || n < 1 || n != floor(n))
+    stop(sprintf("n must be a positive integer, got %s", deparse(n)))
   new_xptr <- .Call(C_limit_node, .data$.node, as.double(n))
   structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
 }
@@ -324,6 +332,8 @@ slice_tail <- function(.data, n = 1L) {
 
 #' @export
 slice_tail.vectra_node <- function(.data, n = 1L) {
+  if (!is.numeric(n) || length(n) != 1 || is.na(n) || n < 1 || n != floor(n))
+    stop(sprintf("n must be a positive integer, got %s", deparse(n)))
   # Must materialize to know total rows, then take last n
   df <- collect(.data)
   nr <- nrow(df)
@@ -339,6 +349,10 @@ slice_min <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 
 #' @export
 slice_min.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
+  if (!is.numeric(n) || length(n) != 1 || is.na(n) || n < 1 || n != floor(n))
+    stop(sprintf("n must be a positive integer, got %s", deparse(n)))
+  if (!is.logical(with_ties) || length(with_ties) != 1 || is.na(with_ties))
+    stop(sprintf("with_ties must be TRUE or FALSE, got %s", deparse(with_ties)))
   order_col <- as.character(substitute(order_by))
   if (!with_ties) {
     new_xptr <- .Call(C_topn_node, .data$.node, order_col, FALSE,
@@ -375,6 +389,10 @@ slice_max <- function(.data, order_by, n = 1L, with_ties = TRUE) {
 
 #' @export
 slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
+  if (!is.numeric(n) || length(n) != 1 || is.na(n) || n < 1 || n != floor(n))
+    stop(sprintf("n must be a positive integer, got %s", deparse(n)))
+  if (!is.logical(with_ties) || length(with_ties) != 1 || is.na(with_ties))
+    stop(sprintf("with_ties must be TRUE or FALSE, got %s", deparse(with_ties)))
   order_col <- as.character(substitute(order_by))
   if (!with_ties) {
     new_xptr <- .Call(C_topn_node, .data$.node, order_col, TRUE,

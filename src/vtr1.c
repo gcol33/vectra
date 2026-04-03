@@ -1,4 +1,5 @@
 #include "vtr1.h"
+#include "vec_omp.h"
 #include "vtr_codec.h"
 #include "array.h"
 #include "batch.h"
@@ -13,6 +14,19 @@ static void write_u8(FILE *fp, uint8_t v)   { fwrite(&v, 1, 1, fp); }
 static void write_u16(FILE *fp, uint16_t v) { fwrite(&v, 2, 1, fp); }
 static void write_u32(FILE *fp, uint32_t v) { fwrite(&v, 4, 1, fp); }
 static void write_u64(FILE *fp, uint64_t v) { fwrite(&v, 8, 1, fp); }
+
+/* Pack the first 8 bytes of a string into a big-endian uint64 for
+   lexicographic comparison via zone maps.  Short strings are padded:
+   - pad = 0x00 for min values (smallest possible completion)
+   - pad = 0xFF for max values (largest possible completion) */
+static uint64_t pack_str_prefix(const char *s, int64_t len, uint8_t pad) {
+    uint64_t r = 0;
+    for (int i = 0; i < 8; i++) {
+        uint8_t b = (i < len) ? (uint8_t)s[i] : pad;
+        r = (r << 8) | b;
+    }
+    return r;
+}
 
 static uint8_t read_u8(FILE *fp) {
     uint8_t v = 0;
@@ -69,29 +83,59 @@ void vtr1_write_rowgroup(FILE *fp, const VecBatch *batch) {
     /* v3: per-column statistics */
     for (int c = 0; c < batch->n_cols; c++) {
         const VecArray *col = &batch->columns[c];
-        if (col->type == VEC_STRING || batch->n_rows == 0) {
+        if (batch->n_rows == 0) {
             write_u8(fp, 0); /* no stats */
             write_u64(fp, 0); /* min placeholder */
             write_u64(fp, 0); /* max placeholder */
+        } else if (col->type == VEC_STRING) {
+            /* String zone maps: pack first 8 bytes of lex min/max as big-endian
+               uint64.  Min padded with 0x00, max padded with 0xFF so comparisons
+               are conservative (never skip a batch that could match). */
+            const int64_t *offs = col->buf.str.offsets;
+            const char    *data = col->buf.str.data;
+            int found = 0;
+            uint64_t mn = 0, mx = 0;
+            for (int64_t i = 0; i < batch->n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                int64_t slen = offs[i + 1] - offs[i];
+                const char *s = data + offs[i];
+                uint64_t lo = pack_str_prefix(s, slen, 0x00);
+                uint64_t hi = pack_str_prefix(s, slen, 0xFF);
+                if (!found) {
+                    mn = lo;
+                    mx = hi;
+                    found = 1;
+                } else {
+                    if (lo < mn) mn = lo;
+                    if (hi > mx) mx = hi;
+                }
+            }
+            write_u8(fp, found ? (uint8_t)1 : (uint8_t)0);
+            uint64_t mn_store = found ? mn : 0;
+            uint64_t mx_store = found ? mx : 0;
+            write_u64(fp, mn_store);
+            write_u64(fp, mx_store);
         } else if (col->type == VEC_INT64) {
             int64_t mn = INT64_MAX, mx = INT64_MIN;
             int found = 0;
+            #pragma omp parallel for if(batch->n_rows > VEC_OMP_THRESHOLD) schedule(static) reduction(min:mn) reduction(max:mx) reduction(|:found)
             for (int64_t i = 0; i < batch->n_rows; i++) {
                 if (!vec_array_is_valid(col, i)) continue;
-                if (!found || col->buf.i64[i] < mn) mn = col->buf.i64[i];
-                if (!found || col->buf.i64[i] > mx) mx = col->buf.i64[i];
+                if (col->buf.i64[i] < mn) mn = col->buf.i64[i];
+                if (col->buf.i64[i] > mx) mx = col->buf.i64[i];
                 found = 1;
             }
             write_u8(fp, found ? (uint8_t)1 : (uint8_t)0);
             write_u64(fp, found ? (uint64_t)mn : 0);
             write_u64(fp, found ? (uint64_t)mx : 0);
         } else if (col->type == VEC_DOUBLE) {
-            double mn = 0, mx = 0;
+            double mn = HUGE_VAL, mx = -HUGE_VAL;
             int found = 0;
+            #pragma omp parallel for if(batch->n_rows > VEC_OMP_THRESHOLD) schedule(static) reduction(min:mn) reduction(max:mx) reduction(|:found)
             for (int64_t i = 0; i < batch->n_rows; i++) {
                 if (!vec_array_is_valid(col, i)) continue;
-                if (!found || col->buf.dbl[i] < mn) mn = col->buf.dbl[i];
-                if (!found || col->buf.dbl[i] > mx) mx = col->buf.dbl[i];
+                if (col->buf.dbl[i] < mn) mn = col->buf.dbl[i];
+                if (col->buf.dbl[i] > mx) mx = col->buf.dbl[i];
                 found = 1;
             }
             write_u8(fp, found ? (uint8_t)1 : (uint8_t)0);
@@ -251,7 +295,8 @@ Vtr1File *vtr1_open(const char *path) {
                 uint64_t val2 = read_u64(fp);
                 if (stats[c].has_stats) {
                     VecType t = file->header.schema.col_types[c];
-                    if (t == VEC_INT64) {
+                    if (t == VEC_INT64 || t == VEC_STRING) {
+                        /* For strings: packed big-endian prefix stored as int64 */
                         stats[c].i64.min = (int64_t)val1;
                         stats[c].i64.max = (int64_t)val2;
                     } else if (t == VEC_DOUBLE) {
@@ -300,6 +345,43 @@ Vtr1File *vtr1_open(const char *path) {
                     break;
                 }
                 }
+            }
+        }
+    }
+
+    /* Detect sorted columns: check if row group stats are monotonically
+       ordered (max[i] <= min[i+1]) for each column with stats. */
+    file->col_sorted = NULL;
+    if (file->header.version >= 3 && file->header.n_rowgroups > 1) {
+        file->col_sorted = (uint8_t *)calloc((size_t)n_schema_cols, 1);
+        if (file->col_sorted) {
+            for (int c = 0; c < n_schema_cols; c++) {
+                VecType t = file->header.schema.col_types[c];
+                int sorted = 1;
+                for (uint32_t rg = 0; rg + 1 < file->header.n_rowgroups; rg++) {
+                    Vtr1ColStat *sa = file->rowgroups[rg].col_stats;
+                    Vtr1ColStat *sb = file->rowgroups[rg + 1].col_stats;
+                    if (!sa || !sb || !sa[c].has_stats || !sb[c].has_stats) {
+                        sorted = 0;
+                        break;
+                    }
+                    if (t == VEC_INT64 || t == VEC_STRING) {
+                        /* For strings: packed prefix stored as int64, compare as uint64 */
+                        if ((uint64_t)sa[c].i64.max > (uint64_t)sb[c].i64.min) {
+                            sorted = 0;
+                            break;
+                        }
+                    } else if (t == VEC_DOUBLE) {
+                        if (sa[c].dbl.max > sb[c].dbl.min) {
+                            sorted = 0;
+                            break;
+                        }
+                    } else {
+                        sorted = 0;
+                        break;
+                    }
+                }
+                file->col_sorted[c] = (uint8_t)sorted;
             }
         }
     }
@@ -450,5 +532,6 @@ void vtr1_close(Vtr1File *file) {
             free(file->rowgroups[rg].col_stats);
         free(file->rowgroups);
     }
+    free(file->col_sorted);
     free(file);
 }

@@ -16,7 +16,9 @@ typedef enum {
     AGG_FIRST,
     AGG_LAST,
     AGG_ANY,
-    AGG_ALL
+    AGG_ALL,
+    AGG_N_DISTINCT,
+    AGG_MEDIAN
 } AggKind;
 
 /* Accumulator for one aggregation per group */
@@ -43,6 +45,14 @@ typedef struct {
     double   *last_dbl;    /* last non-NA value for last() */
     int64_t  *last_i64;
     int      *has_first;   /* 1 if first value captured */
+    /* n_distinct: per-group open-addressing hash sets of 64-bit hashes */
+    uint64_t **nd_slots;   /* nd_slots[g] = hash table for group g */
+    int64_t  *nd_size;     /* power-of-2 table size per group */
+    int64_t  *nd_count;    /* distinct count per group */
+    /* median: per-group dynamic double arrays */
+    double   **med_vals;   /* med_vals[g] = value array for group g */
+    int64_t  *med_count;   /* values stored per group */
+    int64_t  *med_cap;     /* capacity per group */
 } AggAccum;
 
 /* Initialize accumulator */

@@ -3,6 +3,12 @@
 #' @importFrom stats sd var median
 NULL
 
+# -- package-level constants --------------------------------------------------
+
+.DEFAULT_BATCH_SIZE <- 65536L
+.TIFF_BATCH_SIZE <- 256L
+.TYPE_INFERENCE_ROWS <- 1000L
+
 # Build a 0-row data.frame proxy from schema, enabling where() etc.
 # Maps vectra types to R column types so tidyselect predicates work.
 # Annotations override the base type (Date, POSIXct -> double with class;

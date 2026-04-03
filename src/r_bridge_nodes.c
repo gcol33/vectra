@@ -9,6 +9,7 @@
 #include "topn.h"
 #include "limit.h"
 #include "join.h"
+#include "fuzzy_join.h"
 #include "window.h"
 #include "concat.h"
 #include "expr.h"
@@ -97,6 +98,8 @@ static AggKind parse_agg_kind(const char *s) {
     if (strcmp(s, "last") == 0) return AGG_LAST;
     if (strcmp(s, "any") == 0) return AGG_ANY;
     if (strcmp(s, "all") == 0) return AGG_ALL;
+    if (strcmp(s, "n_distinct") == 0) return AGG_N_DISTINCT;
+    if (strcmp(s, "median") == 0) return AGG_MEDIAN;
     vectra_error("unknown aggregation function: %s", s);
     return AGG_COUNT; /* unreachable */
 }
@@ -311,4 +314,64 @@ SEXP C_concat_node(SEXP node_xptrs) {
     }
     ConcatNode *cn = concat_node_create(n, children);
     return wrap_node((VecNode *)cn);
+}
+
+/* --- C_fuzzy_join_node --- */
+
+SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
+                       SEXP by_probe_sexp, SEXP by_build_sexp,
+                       SEXP block_probe_sexp, SEXP block_build_sexp,
+                       SEXP method_sexp, SEXP max_dist_sexp,
+                       SEXP n_threads_sexp, SEXP suffix_y_sexp) {
+    VecNode *probe = unwrap_node(probe_xptr);
+    R_ClearExternalPtr(probe_xptr);
+    VecNode *build = unwrap_node(build_xptr);
+    R_ClearExternalPtr(build_xptr);
+
+    const VecSchema *pschema = &probe->output_schema;
+    const VecSchema *bschema = &build->output_schema;
+
+    /* Resolve key column indices */
+    const char *pk = CHAR(STRING_ELT(by_probe_sexp, 0));
+    const char *bk = CHAR(STRING_ELT(by_build_sexp, 0));
+    int probe_key = vec_schema_find_col(pschema, pk);
+    int build_key = vec_schema_find_col(bschema, bk);
+    if (probe_key < 0)
+        vectra_error("fuzzy_join: probe key column not found: %s", pk);
+    if (build_key < 0)
+        vectra_error("fuzzy_join: build key column not found: %s", bk);
+
+    /* Resolve optional blocking columns */
+    int probe_block = -1, build_block = -1;
+    if (block_probe_sexp != R_NilValue && block_build_sexp != R_NilValue) {
+        const char *bp = CHAR(STRING_ELT(block_probe_sexp, 0));
+        const char *bb = CHAR(STRING_ELT(block_build_sexp, 0));
+        probe_block = vec_schema_find_col(pschema, bp);
+        build_block = vec_schema_find_col(bschema, bb);
+        if (probe_block < 0)
+            vectra_error("fuzzy_join: probe block column not found: %s", bp);
+        if (build_block < 0)
+            vectra_error("fuzzy_join: build block column not found: %s", bb);
+    }
+
+    /* Parse method */
+    int method_int = INTEGER(method_sexp)[0];
+    FuzzyMethod method;
+    if (method_int == 0) method = FUZZY_DL;
+    else if (method_int == 1) method = FUZZY_LEVENSHTEIN;
+    else if (method_int == 2) method = FUZZY_JW;
+    else vectra_error("fuzzy_join: unknown method: %d", method_int);
+
+    double max_dist = REAL(max_dist_sexp)[0];
+    int n_threads = INTEGER(n_threads_sexp)[0];
+    const char *suffix_y = CHAR(STRING_ELT(suffix_y_sexp, 0));
+
+    FuzzyJoinNode *fj = fuzzy_join_node_create(
+        probe, build,
+        probe_key, build_key,
+        probe_block, build_block,
+        method, max_dist, n_threads,
+        suffix_y
+    );
+    return wrap_node((VecNode *)fj);
 }

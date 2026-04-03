@@ -28,8 +28,9 @@ static VecBatch *project_select_gather(ProjectNode *pn, VecBatch *input) {
             vec_batch_free(input);
             vectra_error("select: column not found: %s", pe->output_name);
         }
-        out->col_names[i] = (char *)malloc(strlen(pe->output_name) + 1);
-        strcpy(out->col_names[i], pe->output_name);
+        size_t on_len = strlen(pe->output_name);
+        out->col_names[i] = (char *)malloc(on_len + 1);
+        memcpy(out->col_names[i], pe->output_name, on_len + 1);
 
         if (input->sel) {
             out->columns[i] = vec_array_gather(&input->columns[found],
@@ -91,9 +92,9 @@ static VecBatch *project_mutate_path(ProjectNode *pn, VecBatch *input) {
             continue;
         }
         orig_to_work[c] = wi;
-        work->col_names[wi] = (char *)malloc(
-            strlen(input->col_names[c]) + 1);
-        strcpy(work->col_names[wi], input->col_names[c]);
+        size_t cn_len = strlen(input->col_names[c]);
+        work->col_names[wi] = (char *)malloc(cn_len + 1);
+        memcpy(work->col_names[wi], input->col_names[c], cn_len + 1);
 
         if (has_sel) {
             work->columns[wi] = vec_array_gather(&input->columns[c],
@@ -143,8 +144,9 @@ static VecBatch *project_mutate_path(ProjectNode *pn, VecBatch *input) {
                 vec_batch_free(work);
                 vectra_error("select: column not found: %s", pe->output_name);
             }
-            out->col_names[i] = (char *)malloc(strlen(pe->output_name) + 1);
-            strcpy(out->col_names[i], pe->output_name);
+            size_t on_len = strlen(pe->output_name);
+            out->col_names[i] = (char *)malloc(on_len + 1);
+            memcpy(out->col_names[i], pe->output_name, on_len + 1);
 
             /* Check if this column might be used by a later expression.
                If so, deep copy; otherwise transfer ownership. */
@@ -175,8 +177,9 @@ static VecBatch *project_mutate_path(ProjectNode *pn, VecBatch *input) {
         } else {
             /* Evaluate expression against working batch */
             VecArray *result = vec_expr_eval(pe->expr, working);
-            out->col_names[i] = (char *)malloc(strlen(pe->output_name) + 1);
-            strcpy(out->col_names[i], pe->output_name);
+            size_t on_len = strlen(pe->output_name);
+            out->col_names[i] = (char *)malloc(on_len + 1);
+            memcpy(out->col_names[i], pe->output_name, on_len + 1);
             out->columns[i] = *result;
             free(result);
 
@@ -216,9 +219,9 @@ static VecBatch *project_mutate_path(ProjectNode *pn, VecBatch *input) {
                                            out->columns[i].type);
                 working->columns[new_n - 1] = *ref;
                 free(ref);
-                working->col_names[new_n - 1] = (char *)malloc(
-                    strlen(pe->output_name) + 1);
-                strcpy(working->col_names[new_n - 1], pe->output_name);
+                size_t wn_len = strlen(pe->output_name);
+                working->col_names[new_n - 1] = (char *)malloc(wn_len + 1);
+                memcpy(working->col_names[new_n - 1], pe->output_name, wn_len + 1);
             }
         }
     }

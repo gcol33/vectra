@@ -1,4 +1,5 @@
 #include "filter.h"
+#include "vec_omp.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -25,12 +26,54 @@ static void apply_mask_sel(VecBatch *batch, const VecArray *mask) {
         (size_t)(n_sel > 0 ? n_sel : 1) * sizeof(int32_t));
     if (!sel) vectra_error("alloc failed for filter sel");
 
-    int32_t j = 0;
-    for (int64_t li = 0; li < n_logical; li++) {
-        int64_t pi = vec_batch_physical_row(batch, li);
-        if (vec_array_is_valid(mask, pi) && mask->buf.bln[pi])
-            sel[j++] = (int32_t)pi;
+#ifdef _OPENMP
+    if (n_logical > VEC_OMP_THRESHOLD) {
+        int nthreads = omp_get_max_threads();
+        int64_t *offsets = (int64_t *)calloc((size_t)(nthreads + 1), sizeof(int64_t));
+
+        /* Phase 1: each thread counts its matches */
+        #pragma omp parallel
+        {
+            int tid = omp_get_thread_num();
+            int64_t local_count = 0;
+            #pragma omp for schedule(static)
+            for (int64_t li = 0; li < n_logical; li++) {
+                int64_t pi = vec_batch_physical_row(batch, li);
+                if (vec_array_is_valid(mask, pi) && mask->buf.bln[pi])
+                    local_count++;
+            }
+            offsets[tid + 1] = local_count;
+        }
+
+        /* Phase 2: prefix sum on offsets */
+        for (int t = 1; t <= nthreads; t++)
+            offsets[t] += offsets[t - 1];
+
+        /* Phase 3: each thread writes at its offset */
+        #pragma omp parallel
+        {
+            int tid = omp_get_thread_num();
+            int64_t pos = offsets[tid];
+            #pragma omp for schedule(static)
+            for (int64_t li = 0; li < n_logical; li++) {
+                int64_t pi = vec_batch_physical_row(batch, li);
+                if (vec_array_is_valid(mask, pi) && mask->buf.bln[pi])
+                    sel[pos++] = (int32_t)pi;
+            }
+        }
+
+        free(offsets);
+    } else {
+#endif
+        int32_t j = 0;
+        for (int64_t li = 0; li < n_logical; li++) {
+            int64_t pi = vec_batch_physical_row(batch, li);
+            if (vec_array_is_valid(mask, pi) && mask->buf.bln[pi])
+                sel[j++] = (int32_t)pi;
+        }
+#ifdef _OPENMP
     }
+#endif
 
     /* Replace any existing sel */
     free(batch->sel);

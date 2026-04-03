@@ -30,8 +30,7 @@
 #'
 #' @export
 delete_vtr <- function(path, row_ids) {
-  if (!is.character(path) || length(path) != 1)
-    stop("path must be a single character string")
+  check_scalar_string(path)
   if (!is.numeric(row_ids) && !is.integer(row_ids))
     stop("row_ids must be a numeric or integer vector of 0-based row indices")
   path <- normalizePath(path, mustWork = TRUE)

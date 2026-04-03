@@ -1,4 +1,5 @@
 #include "sort.h"
+#include "vec_omp.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -98,9 +99,24 @@ static void merge_sort_impl(int64_t *indices, int64_t *tmp, int64_t n,
                              const InMemCtx *ctx) {
     if (n <= 1) return;
     int64_t mid = n / 2;
-    merge_sort_impl(indices, tmp, mid, ctx);
-    merge_sort_impl(indices + mid, tmp, n - mid, ctx);
 
+#ifdef _OPENMP
+    if (n > VEC_OMP_THRESHOLD) {
+        #pragma omp task shared(ctx) if(n > VEC_OMP_THRESHOLD)
+        merge_sort_impl(indices, tmp, mid, ctx);
+        #pragma omp task shared(ctx) if(n > VEC_OMP_THRESHOLD)
+        merge_sort_impl(indices + mid, tmp + mid, n - mid, ctx);
+        #pragma omp taskwait
+    } else {
+#endif
+        merge_sort_impl(indices, tmp, mid, ctx);
+        merge_sort_impl(indices + mid, tmp + mid, n - mid, ctx);
+#ifdef _OPENMP
+    }
+#endif
+
+    /* Merge phase: merge indices[0..mid-1] and indices[mid..n-1] into tmp[0..n-1],
+       then copy back. This runs after both halves are sorted. */
     int64_t i = 0, j = mid, k = 0;
     while (i < mid && j < n) {
         if (compare_rows_cross(ctx->columns, indices[i],
@@ -125,36 +141,43 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
 
     switch (src->type) {
     case VEC_INT64:
+        /* Pre-build validity bitmap, then parallel-copy data values */
         for (int64_t i = 0; i < n; i++) {
             int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
+            if (vec_array_is_valid(src, si))
                 vec_array_set_valid(&dst, i);
-                dst.buf.i64[i] = src->buf.i64[si];
-            } else {
+            else
                 vec_array_set_null(&dst, i);
-            }
+        }
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            dst.buf.i64[i] = src->buf.i64[indices[i]];
         }
         break;
     case VEC_DOUBLE:
         for (int64_t i = 0; i < n; i++) {
             int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
+            if (vec_array_is_valid(src, si))
                 vec_array_set_valid(&dst, i);
-                dst.buf.dbl[i] = src->buf.dbl[si];
-            } else {
+            else
                 vec_array_set_null(&dst, i);
-            }
+        }
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            dst.buf.dbl[i] = src->buf.dbl[indices[i]];
         }
         break;
     case VEC_BOOL:
         for (int64_t i = 0; i < n; i++) {
             int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
+            if (vec_array_is_valid(src, si))
                 vec_array_set_valid(&dst, i);
-                dst.buf.bln[i] = src->buf.bln[si];
-            } else {
+            else
                 vec_array_set_null(&dst, i);
-            }
+        }
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            dst.buf.bln[i] = src->buf.bln[indices[i]];
         }
         break;
     case VEC_STRING: {
@@ -256,7 +279,19 @@ static char *spill_sorted_run(VecArrayBuilder *builders, int n_cols,
     for (int64_t i = 0; i < n_rows; i++) indices[i] = i;
 
     InMemCtx ctx = { columns, n_keys, (SortKey *)keys };
-    merge_sort_impl(indices, tmp, n_rows, &ctx);
+#ifdef _OPENMP
+    if (n_rows > VEC_OMP_THRESHOLD) {
+        #pragma omp parallel
+        {
+            #pragma omp single
+            merge_sort_impl(indices, tmp, n_rows, &ctx);
+        }
+    } else {
+#endif
+        merge_sort_impl(indices, tmp, n_rows, &ctx);
+#ifdef _OPENMP
+    }
+#endif
     free(tmp);
 
     /* Write multi-rowgroup spill file */
@@ -508,7 +543,19 @@ static void build_memory_result(SortNode *sn, VecArray *columns,
     for (int64_t i = 0; i < n_rows; i++) indices[i] = i;
 
     InMemCtx ctx = { columns, sn->n_keys, sn->keys };
-    merge_sort_impl(indices, tmp, n_rows, &ctx);
+#ifdef _OPENMP
+    if (n_rows > VEC_OMP_THRESHOLD) {
+        #pragma omp parallel
+        {
+            #pragma omp single
+            merge_sort_impl(indices, tmp, n_rows, &ctx);
+        }
+    } else {
+#endif
+        merge_sort_impl(indices, tmp, n_rows, &ctx);
+#ifdef _OPENMP
+    }
+#endif
     free(tmp);
 
     VecBatch *result = vec_batch_alloc(n_cols, n_rows);

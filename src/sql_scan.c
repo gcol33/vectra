@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define SQL_MAX_INFER_COLS 64
+
 /* ------------------------------------------------------------------ */
 /*  Type mapping from declared SQLite types                            */
 /* ------------------------------------------------------------------ */
@@ -30,15 +32,17 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
     int n_cols = sn->n_cols;
     int64_t batch_size = sn->batch_size;
 
-    /* Column accumulators (stack arrays, max 64 cols) */
-    int64_t *col_i64[64];
-    double  *col_dbl[64];
-    uint8_t *col_bln[64];
-    char   **col_str_ptrs[64];
-    int64_t *col_str_lens[64];
-    uint8_t *col_nulls[64];
+    /* Column accumulators (stack arrays, max SQL_MAX_INFER_COLS cols) */
+    int64_t *col_i64[SQL_MAX_INFER_COLS];
+    double  *col_dbl[SQL_MAX_INFER_COLS];
+    uint8_t *col_bln[SQL_MAX_INFER_COLS];
+    char   **col_str_ptrs[SQL_MAX_INFER_COLS];
+    int64_t *col_str_lens[SQL_MAX_INFER_COLS];
+    uint8_t *col_nulls[SQL_MAX_INFER_COLS];
 
-    if (n_cols > 64) vectra_error("SQL scan: more than 64 columns not supported");
+    if (n_cols > SQL_MAX_INFER_COLS)
+        vectra_error("SQL scan: more than %d columns not supported",
+                     SQL_MAX_INFER_COLS);
 
     int64_t rows_cap = batch_size < 1024 ? batch_size : 1024;
 

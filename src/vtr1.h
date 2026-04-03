@@ -33,6 +33,7 @@ typedef struct {
     FILE        *fp;
     Vtr1Header   header;
     Vtr1RowGroup *rowgroups;  /* array of n_rowgroups entries */
+    uint8_t     *col_sorted;  /* [n_cols] — 1 if row groups are sorted by this col */
 } Vtr1File;
 
 /* Open a .vtr file for reading, parse header and row group index */

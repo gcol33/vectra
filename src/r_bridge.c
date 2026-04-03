@@ -119,9 +119,9 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
                 VecArray arr = vec_array_alloc(type, rg_rows);
                 vec_array_set_all_valid(&arr);
 
-                batch->col_names[c] = (char *)malloc(
-                    strlen(schema.col_names[c]) + 1);
-                strcpy(batch->col_names[c], schema.col_names[c]);
+                size_t cn_len = strlen(schema.col_names[c]);
+                batch->col_names[c] = (char *)malloc(cn_len + 1);
+                memcpy(batch->col_names[c], schema.col_names[c], cn_len + 1);
 
                 if (Rf_isFactor(col)) {
                     /* Factor: convert codes to level strings */
@@ -461,8 +461,9 @@ static void collect_plan_lines(VecNode *node, int depth,
     pos += written;
     buf[pos] = '\0';
 
-    lines[*count] = (char *)malloc(strlen(buf) + 1);
-    strcpy(lines[*count], buf);
+    size_t buf_len = strlen(buf);
+    lines[*count] = (char *)malloc(buf_len + 1);
+    memcpy(lines[*count], buf, buf_len + 1);
     (*count)++;
 
     VecNode *children[16];

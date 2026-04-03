@@ -1,8 +1,14 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
+#include <R.h>
+#include <Rinternals.h>
 #include "r_bridge.h"
 #include "vtr_append.h"
+
+/* block.c R bridge functions */
+SEXP C_block_materialize(SEXP node_xptr);
+SEXP C_block_lookup(SEXP block_xptr, SEXP col_name, SEXP keys, SEXP ci);
 #include "vtr_delete.h"
 #include "vtr_diff.h"
 
@@ -28,10 +34,15 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_tiff_scan_node", (DL_FUNC) &C_tiff_scan_node, 2},
     {"C_tiff_scan_meta", (DL_FUNC) &C_tiff_scan_meta, 1},
     {"C_write_tiff",     (DL_FUNC) &C_write_tiff,     3},
-    {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 2},
+    {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 3},
     {"C_append_vtr",     (DL_FUNC) &C_append_vtr,     2},
     {"C_delete_vtr",     (DL_FUNC) &C_delete_vtr,      2},
     {"C_diff_vtr",       (DL_FUNC) &C_diff_vtr,        3},
+    {"C_fuzzy_join_node", (DL_FUNC) &C_fuzzy_join_node, 10},
+    {"C_block_materialize", (DL_FUNC) &C_block_materialize, 1},
+    {"C_block_lookup",      (DL_FUNC) &C_block_lookup,      4},
+    {"C_create_index",      (DL_FUNC) &C_create_index,      3},
+    {"C_has_index",         (DL_FUNC) &C_has_index,         2},
     {NULL, NULL, 0}
 };
 

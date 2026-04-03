@@ -42,7 +42,7 @@ tbl <- function(path) {
 #' unlink(f)
 #'
 #' @export
-tbl_csv <- function(path, batch_size = 65536L) {
+tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE) {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
   path <- normalizePath(path, mustWork = TRUE)
@@ -70,7 +70,7 @@ tbl_csv <- function(path, batch_size = 65536L) {
 #' }
 #'
 #' @export
-tbl_sqlite <- function(path, table, batch_size = 65536L) {
+tbl_sqlite <- function(path, table, batch_size = .DEFAULT_BATCH_SIZE) {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
   if (!is.character(table) || length(table) != 1)
@@ -104,7 +104,7 @@ tbl_sqlite <- function(path, table, batch_size = 65536L) {
 #' }
 #'
 #' @export
-tbl_tiff <- function(path, batch_size = 256L) {
+tbl_tiff <- function(path, batch_size = .TIFF_BATCH_SIZE) {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
   path <- normalizePath(path, mustWork = TRUE)

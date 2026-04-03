@@ -228,6 +228,10 @@ count <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
 
 #' @export
 count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
+  if (!is.logical(sort) || length(sort) != 1 || is.na(sort))
+    stop(sprintf("sort must be TRUE or FALSE, got %s", deparse(sort)))
+  if (!is.null(name) && (!is.character(name) || length(name) != 1))
+    stop(sprintf("name must be NULL or a single string, got %s of length %d", class(name)[1], length(name)))
   grp_exprs <- eval(substitute(alist(...)))
   grp_names <- vapply(grp_exprs, as.character, character(1))
   cnt_name <- if (!is.null(name)) name else "n"
@@ -263,6 +267,10 @@ tally <- function(x, wt = NULL, sort = FALSE, name = NULL) {
 
 #' @export
 tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
+  if (!is.logical(sort) || length(sort) != 1 || is.na(sort))
+    stop(sprintf("sort must be TRUE or FALSE, got %s", deparse(sort)))
+  if (!is.null(name) && (!is.character(name) || length(name) != 1))
+    stop(sprintf("name must be NULL or a single string, got %s of length %d", class(name)[1], length(name)))
   cnt_name <- if (!is.null(name)) name else "n"
   wt_expr <- substitute(wt)
   key_names <- if (!is.null(x$.groups)) x$.groups else character(0)
@@ -314,13 +322,13 @@ parse_agg_expr <- function(expr, output_name) {
     }
   }
 
-  # median and n_distinct are R-level fallbacks (need all values per group)
+  # median and n_distinct are now native C aggregations
   if (fn == "median") {
     col_name <- if (is.name(col_arg)) as.character(col_arg) else NULL
     if (is.null(col_name))
       stop("median() requires a simple column reference, not an expression")
     return(list(name = output_name, kind = "median", col = col_name,
-                na_rm = na_rm, .r_fallback = TRUE))
+                na_rm = na_rm))
   }
 
   if (fn == "n_distinct") {
@@ -328,7 +336,7 @@ parse_agg_expr <- function(expr, output_name) {
     if (is.null(col_name))
       stop("n_distinct() requires a simple column reference, not an expression")
     return(list(name = output_name, kind = "n_distinct", col = col_name,
-                na_rm = FALSE, .r_fallback = TRUE))
+                na_rm = FALSE))
   }
 
   if (is.name(col_arg)) {

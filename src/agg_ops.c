@@ -136,9 +136,111 @@ void agg_accum_ensure(AggAccum *acc, int64_t n_groups) {
         for (int64_t i = old_cap; i < new_cap; i++) acc->has_value[i] = 1;
         grow_has_na(acc, old_cap, new_cap);
         break;
+    case AGG_N_DISTINCT:
+        acc->nd_slots = (uint64_t **)realloc(acc->nd_slots, (size_t)new_cap * sizeof(uint64_t *));
+        acc->nd_size = (int64_t *)realloc(acc->nd_size, (size_t)new_cap * sizeof(int64_t));
+        acc->nd_count = (int64_t *)realloc(acc->nd_count, (size_t)new_cap * sizeof(int64_t));
+        if (!acc->nd_slots || !acc->nd_size || !acc->nd_count) vectra_error("agg alloc failed");
+        for (int64_t i = old_cap; i < new_cap; i++) {
+            acc->nd_slots[i] = NULL;
+            acc->nd_size[i] = 0;
+            acc->nd_count[i] = 0;
+        }
+        grow_has_na(acc, old_cap, new_cap);
+        break;
+    case AGG_MEDIAN:
+        acc->med_vals = (double **)realloc(acc->med_vals, (size_t)new_cap * sizeof(double *));
+        acc->med_count = (int64_t *)realloc(acc->med_count, (size_t)new_cap * sizeof(int64_t));
+        acc->med_cap = (int64_t *)realloc(acc->med_cap, (size_t)new_cap * sizeof(int64_t));
+        if (!acc->med_vals || !acc->med_count || !acc->med_cap) vectra_error("agg alloc failed");
+        for (int64_t i = old_cap; i < new_cap; i++) {
+            acc->med_vals[i] = NULL;
+            acc->med_count[i] = 0;
+            acc->med_cap[i] = 0;
+        }
+        grow_has_na(acc, old_cap, new_cap);
+        break;
     }
     acc->capacity = new_cap;
     acc->n_groups = n_groups;
+}
+
+/* --- n_distinct hash set helpers --- */
+
+/* Sentinel: 0 means empty slot. We map hash 0 -> 1 to avoid collision. */
+static uint64_t nd_hash_val_i64(int64_t v) {
+    uint64_t h = (uint64_t)v * 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL; h ^= h >> 33;
+    return h == 0 ? 1 : h;
+}
+
+static uint64_t nd_hash_val_dbl(double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return nd_hash_val_i64((int64_t)bits);
+}
+
+static uint64_t nd_hash_val_str(const char *s, int64_t len) {
+    /* FNV-1a */
+    uint64_t h = 0xCBF29CE484222325ULL;
+    for (int64_t i = 0; i < len; i++) {
+        h ^= (uint64_t)(unsigned char)s[i];
+        h *= 0x100000001B3ULL;
+    }
+    return h == 0 ? 1 : h;
+}
+
+/* Insert hash into group's set. Returns 1 if new, 0 if already present. */
+static int nd_insert(AggAccum *acc, int64_t g, uint64_t h) {
+    /* Lazy init: start with 16 slots */
+    if (acc->nd_slots[g] == NULL) {
+        acc->nd_size[g] = 16;
+        acc->nd_slots[g] = (uint64_t *)calloc(16, sizeof(uint64_t));
+        if (!acc->nd_slots[g]) vectra_error("n_distinct alloc failed");
+    }
+    /* Grow at 70% load */
+    if (acc->nd_count[g] * 10 >= acc->nd_size[g] * 7) {
+        int64_t new_sz = acc->nd_size[g] * 2;
+        uint64_t *new_slots = (uint64_t *)calloc((size_t)new_sz, sizeof(uint64_t));
+        if (!new_slots) vectra_error("n_distinct alloc failed");
+        /* Rehash */
+        for (int64_t i = 0; i < acc->nd_size[g]; i++) {
+            if (acc->nd_slots[g][i] != 0) {
+                uint64_t slot = acc->nd_slots[g][i] & ((uint64_t)new_sz - 1);
+                while (new_slots[slot] != 0) slot = (slot + 1) & ((uint64_t)new_sz - 1);
+                new_slots[slot] = acc->nd_slots[g][i];
+            }
+        }
+        free(acc->nd_slots[g]);
+        acc->nd_slots[g] = new_slots;
+        acc->nd_size[g] = new_sz;
+    }
+    uint64_t mask = (uint64_t)(acc->nd_size[g] - 1);
+    uint64_t slot = h & mask;
+    while (acc->nd_slots[g][slot] != 0) {
+        if (acc->nd_slots[g][slot] == h) return 0; /* already present */
+        slot = (slot + 1) & mask;
+    }
+    acc->nd_slots[g][slot] = h;
+    acc->nd_count[g]++;
+    return 1;
+}
+
+/* --- median value array helper --- */
+
+static void med_append(AggAccum *acc, int64_t g, double val) {
+    if (acc->med_count[g] >= acc->med_cap[g]) {
+        int64_t new_cap = acc->med_cap[g] == 0 ? 16 : acc->med_cap[g] * 2;
+        acc->med_vals[g] = (double *)realloc(acc->med_vals[g], (size_t)new_cap * sizeof(double));
+        if (!acc->med_vals[g]) vectra_error("median alloc failed");
+        acc->med_cap[g] = new_cap;
+    }
+    acc->med_vals[g][acc->med_count[g]++] = val;
+}
+
+static int dbl_cmp(const void *a, const void *b) {
+    double da = *(const double *)a, db = *(const double *)b;
+    return (da > db) - (da < db);
 }
 
 void agg_accum_feed(AggAccum *acc, int64_t group_id,
@@ -279,6 +381,38 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
             if (col->buf.dbl[row] == 0.0) acc->has_value[group_id] = 0;
         } else if (acc->input_type == VEC_INT64) {
             if (col->buf.i64[row] == 0) acc->has_value[group_id] = 0;
+        }
+        break;
+    case AGG_N_DISTINCT:
+        if (!is_valid) break; /* NAs are not counted as distinct values */
+        {
+            uint64_t h;
+            if (acc->input_type == VEC_INT64)
+                h = nd_hash_val_i64(col->buf.i64[row]);
+            else if (acc->input_type == VEC_DOUBLE)
+                h = nd_hash_val_dbl(col->buf.dbl[row]);
+            else if (acc->input_type == VEC_STRING) {
+                int64_t so = col->buf.str.offsets[row];
+                int64_t slen = col->buf.str.offsets[row+1] - so;
+                h = nd_hash_val_str(col->buf.str.data + so, slen);
+            } else if (acc->input_type == VEC_BOOL)
+                h = nd_hash_val_i64((int64_t)col->buf.bln[row]);
+            else break;
+            nd_insert(acc, group_id, h);
+        }
+        break;
+    case AGG_MEDIAN:
+        if (!is_valid) {
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
+        {
+            double val;
+            if (acc->input_type == VEC_DOUBLE) val = col->buf.dbl[row];
+            else if (acc->input_type == VEC_INT64) val = (double)col->buf.i64[row];
+            else if (acc->input_type == VEC_BOOL) val = (double)col->buf.bln[row];
+            else break;
+            med_append(acc, group_id, val);
         }
         break;
     }
@@ -445,6 +579,32 @@ VecArray agg_accum_finish(AggAccum *acc) {
         }
         return arr;
     }
+    case AGG_N_DISTINCT: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        vec_array_set_all_valid(&arr);
+        for (int64_t i = 0; i < n; i++)
+            arr.buf.dbl[i] = (double)(acc->nd_count ? acc->nd_count[i] : 0);
+        return arr;
+    }
+    case AGG_MEDIAN: {
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (acc->has_na && acc->has_na[i]) {
+                vec_array_set_null(&arr, i);
+            } else if (acc->med_count[i] == 0) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i);
+                qsort(acc->med_vals[i], (size_t)acc->med_count[i], sizeof(double), dbl_cmp);
+                int64_t m = acc->med_count[i];
+                if (m % 2 == 1)
+                    arr.buf.dbl[i] = acc->med_vals[i][m / 2];
+                else
+                    arr.buf.dbl[i] = (acc->med_vals[i][m / 2 - 1] + acc->med_vals[i][m / 2]) / 2.0;
+            }
+        }
+        return arr;
+    }
     }
 
     VecArray empty;
@@ -469,5 +629,19 @@ void agg_accum_free(AggAccum *acc) {
     free(acc->last_dbl);
     free(acc->last_i64);
     free(acc->has_first);
+    /* n_distinct hash sets */
+    if (acc->nd_slots) {
+        for (int64_t i = 0; i < acc->capacity; i++) free(acc->nd_slots[i]);
+        free(acc->nd_slots);
+    }
+    free(acc->nd_size);
+    free(acc->nd_count);
+    /* median value arrays */
+    if (acc->med_vals) {
+        for (int64_t i = 0; i < acc->capacity; i++) free(acc->med_vals[i]);
+        free(acc->med_vals);
+    }
+    free(acc->med_count);
+    free(acc->med_cap);
     memset(acc, 0, sizeof(*acc));
 }

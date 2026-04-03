@@ -187,9 +187,13 @@ within each partition.
 the full tidyselect vocabulary:
 
 - `starts_with()`, `ends_with()`, `contains()`, `matches()`
+
 - `everything()`, `last_col()`
+
 - `all_of()`, `any_of()`
+
 - `where()` predicates (e.g. `where(is.numeric)`)
+
 - `-column` negation
 
 `where()` works because vectra builds a 0-row typed proxy data.frame from the
@@ -271,10 +275,15 @@ supports NA values. The bitmap is bit-packed (1 bit per row, 1 = valid).
 ### Propagation
 
 - **Arithmetic**: `NA + x = NA`, `NA * x = NA`
+
 - **Comparison**: `NA > x = NA`, `x == NA = NA`
+
 - **Boolean**: `NA & FALSE = FALSE`, `NA & TRUE = NA`, `NA | TRUE = TRUE`, `NA | FALSE = NA`
+
 - **Aggregation**: NAs are included by default; use `na.rm = TRUE` to exclude
+
 - **Joins**: NA keys never match (same as SQL NULL semantics)
+
 - **Window functions**: `cumsum()` and friends propagate NA forward
 
 ### is.na()
@@ -287,9 +296,11 @@ a boolean column based on the validity bitmap.
 - `filter()`, `select()`, `mutate()`, `rename()`, `relocate()`: preserve input
   order
 - `arrange()`: produces a total order (stable sort)
+
 - `group_by() |> summarise()`: output order is **not guaranteed** (hash-based
   path) or sorted by key (sort-based path); do not depend on either
 - `distinct()`: output order is not guaranteed
+
 - Joins: probe-side order is preserved within each batch; build-side order is
   not guaranteed
 - `bind_rows()`: child order is preserved (first child's rows, then second's,
@@ -300,9 +311,13 @@ a boolean column based on the validity bitmap.
 ### Streaming nodes (constant memory per batch)
 
 - Scan (`.vtr`, CSV, SQLite, TIFF)
+
 - Filter
+
 - Project (select / mutate / rename / relocate / transmute)
+
 - Limit (slice_head, head)
+
 - Concat (bind_rows)
 
 ### Materializing nodes
@@ -364,6 +379,7 @@ Row groups (repeated):
 ### Version history
 
 - **Version 1**: Base format with typed columns and validity bitmaps.
+
 - **Version 2**: Adds per-column annotation strings for Date, POSIXct, and
   factor roundtripping.
 - **Version 3** (current): Adds per-column per-rowgroup statistics (min/max)
@@ -401,9 +417,11 @@ optimizer auto-inserts a `ProjectNode` (visible as `hidden mutate` in
 shows:
 
 - Node types in execution order (leaf to root)
+
 - Per-node annotations: streaming/materializing, column pruning, predicate
   pushdown, v3 stats, hidden mutate
 - Grouping columns if present
+
 - Output schema (column names and types)
 
 ```r
@@ -428,10 +446,13 @@ will happen internally. Node ordering and naming may change between versions.
 ## Current limitations
 
 - **slice_tail materializes**: There is no reverse-scan optimization.
+
 - **distinct with .keep_all**: Falls back to R when `.keep_all = TRUE` with a
   column subset.
 - **Limited string operations**: `nchar()`, `substr()`, `grepl()` (fixed match only), `tolower()`, `toupper()`, `trimws()`, `paste0()` (2 args), `gsub()`/`sub()` (fixed patterns), `startsWith()`, `endsWith()` are supported. No regex or multi-argument `paste()`. Use `collect()` first for unsupported string operations.
+
 - **Single-threaded**: The engine uses one thread. Parallelism is not planned.
+
 - **Predicate pushdown is .vtr only**: CSV, SQLite, and TIFF scans do not
   benefit from predicate pushdown or column pruning.
 
@@ -444,6 +465,7 @@ vectra has these fallback paths to base R:
 2. **distinct with .keep_all and column subset**: Falls back to `duplicated()`
    in R (emits a message).
 3. **slice_tail**: Must see all rows to take the last n; returns a data.frame.
+
 4. **slice_min/slice_max with `with_ties = TRUE`** (the default): Collects all
    data to identify ties at the boundary; returns a data.frame.
 5. **reframe**: Always collects and evaluates in R; returns a data.frame.

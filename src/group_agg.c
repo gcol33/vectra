@@ -7,6 +7,7 @@
 #include "builder.h"
 #include "sort.h"
 #include "error.h"
+#include "vec_omp.h"
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -199,18 +200,33 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
             batch_keys[k] = batch->columns[key_indices[k]];
 
         int64_t n_logical = vec_batch_logical_rows(batch);
+
+        /* Pre-compute row hashes in parallel.  The hash function reads
+           only from immutable batch columns, so there are no conflicts.
+           Insert + accumulate remain sequential (hash table writes and
+           accumulator feeds have data dependencies). */
+        uint64_t *row_hashes = (uint64_t *)malloc(
+            (size_t)(n_logical > 0 ? n_logical : 1) * sizeof(uint64_t));
+        if (!row_hashes) vectra_error("alloc failed for row hash array");
+
+        #pragma omp parallel for if(n_logical > VEC_OMP_THRESHOLD) schedule(static)
         for (int64_t li = 0; li < n_logical; li++) {
             int64_t r = vec_batch_physical_row(batch, li);
-
             uint64_t h = 0;
             for (int k = 0; k < ga->n_keys; k++) {
                 uint64_t kh = vec_hash_value(&batch_keys[k], r);
                 h = (k == 0) ? kh : vec_hash_combine(h, kh);
             }
+            row_hashes[li] = h;
+        }
+
+        /* Sequential insert + accumulate using pre-computed hashes */
+        for (int64_t li = 0; li < n_logical; li++) {
+            int64_t r = vec_batch_physical_row(batch, li);
 
             int was_new = 0;
             int64_t gid = vec_ht_find_or_insert(
-                &ht, h, batch_keys, ga->n_keys, r,
+                &ht, row_hashes[li], batch_keys, ga->n_keys, r,
                 arena.arenas, arena.length, &was_new);
 
             if (was_new) {
@@ -228,6 +244,8 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
                 }
             }
         }
+
+        free(row_hashes);
 
         free(batch_keys);
         vec_batch_free(batch);
@@ -258,15 +276,16 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
             result->columns[k] = *copy;
             free(copy);
         }
-        result->col_names[k] = (char *)malloc(strlen(ga->key_names[k]) + 1);
-        strcpy(result->col_names[k], ga->key_names[k]);
+        size_t kn_len = strlen(ga->key_names[k]);
+        result->col_names[k] = (char *)malloc(kn_len + 1);
+        memcpy(result->col_names[k], ga->key_names[k], kn_len + 1);
     }
 
     for (int a = 0; a < ga->n_aggs; a++) {
         result->columns[ga->n_keys + a] = agg_accum_finish(&accums[a]);
-        result->col_names[ga->n_keys + a] = (char *)malloc(
-            strlen(ga->agg_specs[a].output_name) + 1);
-        strcpy(result->col_names[ga->n_keys + a], ga->agg_specs[a].output_name);
+        size_t on_len = strlen(ga->agg_specs[a].output_name);
+        result->col_names[ga->n_keys + a] = (char *)malloc(on_len + 1);
+        memcpy(result->col_names[ga->n_keys + a], ga->agg_specs[a].output_name, on_len + 1);
     }
 
     for (int a = 0; a < ga->n_aggs; a++)
@@ -562,14 +581,15 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
 
     for (int k = 0; k < ga->n_keys; k++) {
         result->columns[k] = vec_builder_finish(&key_builders[k]);
-        result->col_names[k] = (char *)malloc(strlen(ga->key_names[k]) + 1);
-        strcpy(result->col_names[k], ga->key_names[k]);
+        size_t kn_len = strlen(ga->key_names[k]);
+        result->col_names[k] = (char *)malloc(kn_len + 1);
+        memcpy(result->col_names[k], ga->key_names[k], kn_len + 1);
     }
     for (int a = 0; a < ga->n_aggs; a++) {
         result->columns[ga->n_keys + a] = vec_builder_finish(&agg_builders[a]);
-        result->col_names[ga->n_keys + a] = (char *)malloc(
-            strlen(ga->agg_specs[a].output_name) + 1);
-        strcpy(result->col_names[ga->n_keys + a], ga->agg_specs[a].output_name);
+        size_t on_len = strlen(ga->agg_specs[a].output_name);
+        result->col_names[ga->n_keys + a] = (char *)malloc(on_len + 1);
+        memcpy(result->col_names[ga->n_keys + a], ga->agg_specs[a].output_name, on_len + 1);
     }
 
     /* Cleanup */

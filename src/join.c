@@ -1,4 +1,5 @@
 #include "join.h"
+#include "vec_omp.h"
 #include "hash.h"
 #include "array.h"
 #include "batch.h"
@@ -202,11 +203,25 @@ static void join_build(JoinNode *jn) {
         }
     }
 
-    /* Build hash table */
+    /* Build hash table: pre-compute hashes in parallel, insert sequentially.
+       Hashing is the expensive part (60-80% of build cost); insertion into
+       the open-addressing table with chaining is cheap but has write conflicts. */
     jn->jht = jht_create(r_nrows > 0 ? r_nrows : 1);
-    for (int64_t r = 0; r < r_nrows; r++) {
-        uint64_t h = hash_join_key(jn->r_cols, jn->rkey_idx, jn->n_keys, r);
-        jht_insert(&jn->jht, h, r);
+    {
+        uint64_t *build_hashes = (uint64_t *)malloc(
+            (size_t)(r_nrows > 0 ? r_nrows : 1) * sizeof(uint64_t));
+        if (!build_hashes) vectra_error("alloc failed for build hash array");
+
+        #pragma omp parallel for if(r_nrows > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t r = 0; r < r_nrows; r++) {
+            build_hashes[r] = hash_join_key(jn->r_cols, jn->rkey_idx,
+                                             jn->n_keys, r);
+        }
+
+        for (int64_t r = 0; r < r_nrows; r++)
+            jht_insert(&jn->jht, build_hashes[r], r);
+
+        free(build_hashes);
     }
 
     /* full_join: allocate build_matched bitset */
@@ -249,7 +264,7 @@ static inline uint64_t hash_dbl(double val) {
     return h;
 }
 
-static inline uint64_t hash_str(const char *data, int64_t off, int64_t end) {
+static inline uint64_t hash_string(const char *data, int64_t off, int64_t end) {
     uint64_t h = FNV_OFFSET;
     const uint8_t *p = (const uint8_t *)(data + off);
     int64_t len = end - off;
@@ -310,11 +325,14 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         (size_t)(p_logical > 0 ? p_logical : 1) * sizeof(uint64_t));
     if (!phash) vectra_error("alloc failed for probe hash array");
 
-    /* Fast path: 1-key with specialized hash to avoid per-row dispatch */
+    /* Fast path: 1-key with specialized hash to avoid per-row dispatch.
+       Each loop is embarrassingly parallel — phash[li] depends only on
+       read-only input arrays, so we parallelize with OpenMP. */
     if (jn->n_keys == 1) {
         const VecArray *pkey = &probe_cols[jn->lkey_idx[0]];
         switch (pkey->type) {
         case VEC_INT64:
+            #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = vec_array_is_valid(pkey, pi)
@@ -323,6 +341,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
             }
             break;
         case VEC_DOUBLE:
+            #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = vec_array_is_valid(pkey, pi)
@@ -331,16 +350,18 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
             }
             break;
         case VEC_STRING:
+            #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = vec_array_is_valid(pkey, pi)
-                    ? hash_str(pkey->buf.str.data,
+                    ? hash_string(pkey->buf.str.data,
                                pkey->buf.str.offsets[pi],
                                pkey->buf.str.offsets[pi + 1])
                     : (FNV_OFFSET ^ 0xFF);
             }
             break;
         default:
+            #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = hash_join_key(probe_cols, jn->lkey_idx,
@@ -350,6 +371,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         }
     } else {
         /* Generic composite key hash */
+        #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
         for (int64_t li = 0; li < p_logical; li++) {
             int64_t pi = vec_batch_physical_row(pbatch, li);
             phash[li] = hash_join_key(probe_cols, jn->lkey_idx,
@@ -470,8 +492,9 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
     for (int c = 0; c < out_ncols; c++) {
         result->columns[c] = vec_builder_finish(&out[c]);
         const char *nm = jn->base.output_schema.col_names[c];
-        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
-        strcpy(result->col_names[c], nm);
+        size_t nm_len = strlen(nm);
+        result->col_names[c] = (char *)malloc(nm_len + 1);
+        memcpy(result->col_names[c], nm, nm_len + 1);
     }
     free(out);
     return result;
@@ -541,8 +564,9 @@ static VecBatch *join_finalize(JoinNode *jn) {
     for (int c = 0; c < out_ncols; c++) {
         result->columns[c] = vec_builder_finish(&out[c]);
         const char *nm = jn->base.output_schema.col_names[c];
-        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
-        strcpy(result->col_names[c], nm);
+        size_t nm_len = strlen(nm);
+        result->col_names[c] = (char *)malloc(nm_len + 1);
+        memcpy(result->col_names[c], nm, nm_len + 1);
     }
     free(out);
     return result;
@@ -636,10 +660,12 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     jn->kind = kind;
     jn->n_keys = n_keys;
     jn->keys = keys;
-    jn->suffix_x = (char *)malloc(strlen(suffix_x) + 1);
-    strcpy(jn->suffix_x, suffix_x);
-    jn->suffix_y = (char *)malloc(strlen(suffix_y) + 1);
-    strcpy(jn->suffix_y, suffix_y);
+    size_t sx_len = strlen(suffix_x);
+    jn->suffix_x = (char *)malloc(sx_len + 1);
+    memcpy(jn->suffix_x, suffix_x, sx_len + 1);
+    size_t sy_len = strlen(suffix_y);
+    jn->suffix_y = (char *)malloc(sy_len + 1);
+    memcpy(jn->suffix_y, suffix_y, sy_len + 1);
     jn->state = JSTATE_BUILD;
 
     const VecSchema *ls = &left->output_schema;

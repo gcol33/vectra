@@ -40,7 +40,11 @@ typedef enum {
     EXPR_DL_DIST_NORM,     /* dl_dist_norm(x, pattern) -> double 0.0-1.0 */
     EXPR_JARO_WINKLER,     /* jaro_winkler(x, pattern) -> double 0.0-1.0 similarity */
     EXPR_RESOLVE,          /* resolve(fk, pk, val) -> FK lookup within same table */
-    EXPR_PROPAGATE         /* propagate(parent_fk, pk, seed) -> iterative tree fill */
+    EXPR_PROPAGATE,        /* propagate(parent_fk, pk, seed) -> iterative tree fill */
+    EXPR_CASE_WHEN,        /* case_when(cond1 ~ val1, ...) */
+    EXPR_COALESCE,         /* coalesce(a, b, c, ...) -> first non-NA */
+    EXPR_PASTE,            /* paste(a, b, ..., sep) or paste0(a, b, ...) */
+    EXPR_STR_EXTRACT       /* str_extract(x, pattern) -> first regex match */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -103,6 +107,16 @@ struct VecExpr {
 
     /* EXPR_LEVENSHTEIN / EXPR_LEVENSHTEIN_NORM */
     int64_t max_dist;  /* -1 = no bound; >= 0 = early termination threshold */
+
+    /* Variable-arity children (case_when, coalesce, paste, etc.) */
+    int64_t   n_children;
+    VecExpr **children;
+
+    /* EXPR_PASTE: separator string (NULL = paste0, i.e. no separator) */
+    char *paste_sep;
+
+    /* EXPR_GREPL / EXPR_GSUB / EXPR_SUB: 1 = fixed match (default), 0 = regex */
+    int fixed;
 };
 
 /* Allocate a new expression node */

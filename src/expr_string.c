@@ -3,187 +3,67 @@
 #include "scalar_ops.h"
 #include "coerce.h"
 #include "error.h"
+#include "string_distance.h"
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <regex.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
-/* Wagner-Fischer Levenshtein distance with single-row buffer.
-   If max_dist >= 0, returns max_dist + 1 as soon as the minimum
-   possible distance exceeds the bound (early termination). */
+/* Expand regex backreferences (\1..\9) in replacement string.
+   Writes expanded replacement to dst, returns bytes written. */
+static inline int64_t backref_write(char *dst, const char *rep, int64_t rlen,
+                                     const regmatch_t *matches, int max_groups,
+                                     const char *cursor) {
+    int64_t w = 0;
+    for (int64_t j = 0; j < rlen; ) {
+        if (rep[j] == '\\' && j + 1 < rlen && rep[j+1] >= '1' && rep[j+1] <= '9') {
+            int gi = rep[j+1] - '0';
+            if (gi < max_groups && matches[gi].rm_so >= 0) {
+                int64_t gl = matches[gi].rm_eo - matches[gi].rm_so;
+                memcpy(dst + w, cursor + matches[gi].rm_so, (size_t)gl);
+                w += gl;
+            }
+            j += 2;
+        } else { dst[w++] = rep[j++]; }
+    }
+    return w;
+}
+
+/* Compute expanded replacement length for backreferences. */
+static inline int64_t backref_len(const char *rep, int64_t rlen,
+                                   const regmatch_t *matches, int max_groups) {
+    int64_t len = 0;
+    for (int64_t j = 0; j < rlen; ) {
+        if (rep[j] == '\\' && j + 1 < rlen && rep[j+1] >= '1' && rep[j+1] <= '9') {
+            int gi = rep[j+1] - '0';
+            if (gi < max_groups && matches[gi].rm_so >= 0)
+                len += matches[gi].rm_eo - matches[gi].rm_so;
+            j += 2;
+        } else { len++; j++; }
+    }
+    return len;
+}
+
+/* Thin wrappers around shared implementations in string_distance.h,
+   preserving the call-site names used throughout this file. */
 static int64_t levenshtein_distance(const char *s, int64_t len_s,
                                      const char *t, int64_t len_t,
                                      int64_t max_dist) {
-    if (len_s == 0) return len_t;
-    if (len_t == 0) return len_s;
-
-    /* Use shorter string as column to minimize memory */
-    if (len_s > len_t) {
-        const char *tmp_s = s; s = t; t = tmp_s;
-        int64_t tmp_l = len_s; len_s = len_t; len_t = tmp_l;
-    }
-
-    /* Quick lower-bound check: length difference alone exceeds max_dist */
-    if (max_dist >= 0 && (len_t - len_s) > max_dist)
-        return max_dist + 1;
-
-    int64_t *prev = (int64_t *)malloc((size_t)(len_s + 1) * sizeof(int64_t));
-    for (int64_t i = 0; i <= len_s; i++) prev[i] = i;
-
-    for (int64_t j = 1; j <= len_t; j++) {
-        int64_t prev_diag = prev[0];
-        prev[0] = j;
-        int64_t row_min = prev[0];
-        for (int64_t i = 1; i <= len_s; i++) {
-            int64_t cost = (s[i-1] == t[j-1]) ? 0 : 1;
-            int64_t val = prev[i-1] + 1;               /* delete */
-            if (prev[i] + 1 < val) val = prev[i] + 1;  /* insert */
-            int64_t diag = prev_diag + cost;             /* substitute */
-            if (diag < val) val = diag;
-            prev_diag = prev[i];
-            prev[i] = val;
-            if (val < row_min) row_min = val;
-        }
-        /* Early termination: if every cell in this row exceeds max_dist,
-           the final result can only grow. */
-        if (max_dist >= 0 && row_min > max_dist) {
-            free(prev);
-            return max_dist + 1;
-        }
-    }
-    int64_t result = prev[len_s];
-    free(prev);
-    return result;
+    return strdist_levenshtein(s, len_s, t, len_t, max_dist);
 }
 
-/* Optimal String Alignment (restricted Damerau-Levenshtein) distance.
-   Adds transposition as a primitive operation (cost 1) on top of
-   insert/delete/substitute. Uses two-row buffer: O(min(m,n)) space.
-   Supports optional max_dist early termination. */
 static int64_t dl_distance(const char *s, int64_t len_s,
                             const char *t, int64_t len_t,
                             int64_t max_dist) {
-    if (len_s == 0) return len_t;
-    if (len_t == 0) return len_s;
-
-    /* Use shorter string as column */
-    if (len_s > len_t) {
-        const char *tmp_s = s; s = t; t = tmp_s;
-        int64_t tmp_l = len_s; len_s = len_t; len_t = tmp_l;
-    }
-
-    if (max_dist >= 0 && (len_t - len_s) > max_dist)
-        return max_dist + 1;
-
-    /* Need two previous rows for transposition check */
-    int64_t *prev2 = (int64_t *)malloc((size_t)(len_s + 1) * sizeof(int64_t));
-    int64_t *prev  = (int64_t *)malloc((size_t)(len_s + 1) * sizeof(int64_t));
-    int64_t *curr  = (int64_t *)malloc((size_t)(len_s + 1) * sizeof(int64_t));
-
-    for (int64_t i = 0; i <= len_s; i++) prev[i] = i;
-
-    for (int64_t j = 1; j <= len_t; j++) {
-        curr[0] = j;
-        int64_t row_min = curr[0];
-        for (int64_t i = 1; i <= len_s; i++) {
-            int64_t cost = (s[i-1] == t[j-1]) ? 0 : 1;
-            int64_t val = prev[i-1] + cost;                 /* substitute */
-            if (prev[i] + 1 < val) val = prev[i] + 1;      /* insert */
-            if (curr[i-1] + 1 < val) val = curr[i-1] + 1;  /* delete */
-            /* Transposition: swap of two adjacent characters */
-            if (i > 1 && j > 1 && s[i-1] == t[j-2] && s[i-2] == t[j-1]) {
-                int64_t trans = prev2[i-2] + cost;
-                if (trans < val) val = trans;
-            }
-            curr[i] = val;
-            if (val < row_min) row_min = val;
-        }
-        if (max_dist >= 0 && row_min > max_dist) {
-            free(prev2); free(prev); free(curr);
-            return max_dist + 1;
-        }
-        /* Rotate rows: prev2 <- prev, prev <- curr, curr <- prev2 */
-        int64_t *tmp = prev2;
-        prev2 = prev;
-        prev = curr;
-        curr = tmp;
-    }
-    int64_t result = prev[len_s];
-    free(prev2); free(prev); free(curr);
-    return result;
+    return strdist_dl(s, len_s, t, len_t, max_dist);
 }
 
-/* Jaro-Winkler similarity score (0.0 = completely different, 1.0 = identical).
-   Jaro base + Winkler prefix bonus (up to 4 chars, p = 0.1). */
 static double jaro_winkler_sim(const char *s, int64_t len_s,
                                 const char *t, int64_t len_t) {
-    if (len_s == 0 && len_t == 0) return 1.0;
-    if (len_s == 0 || len_t == 0) return 0.0;
-
-    int64_t match_window = (len_s > len_t ? len_s : len_t) / 2 - 1;
-    if (match_window < 0) match_window = 0;
-
-    /* Stack-allocate flags for typical name lengths, heap for long strings */
-    uint8_t s_stack[256], t_stack[256];
-    uint8_t *s_matched, *t_matched;
-    int heap_alloc = 0;
-    if (len_s <= 256 && len_t <= 256) {
-        s_matched = s_stack;
-        t_matched = t_stack;
-    } else {
-        s_matched = (uint8_t *)malloc((size_t)len_s);
-        t_matched = (uint8_t *)malloc((size_t)len_t);
-        heap_alloc = 1;
-    }
-    memset(s_matched, 0, (size_t)len_s);
-    memset(t_matched, 0, (size_t)len_t);
-
-    int64_t matches = 0;
-    int64_t transpositions = 0;
-
-    /* Count matches */
-    for (int64_t i = 0; i < len_s; i++) {
-        int64_t lo = (i - match_window > 0) ? (i - match_window) : 0;
-        int64_t hi = (i + match_window + 1 < len_t) ? (i + match_window + 1) : len_t;
-        for (int64_t j = lo; j < hi; j++) {
-            if (!t_matched[j] && s[i] == t[j]) {
-                s_matched[i] = 1;
-                t_matched[j] = 1;
-                matches++;
-                break;
-            }
-        }
-    }
-
-    if (matches == 0) {
-        if (heap_alloc) { free(s_matched); free(t_matched); }
-        return 0.0;
-    }
-
-    /* Count transpositions */
-    int64_t k = 0;
-    for (int64_t i = 0; i < len_s; i++) {
-        if (!s_matched[i]) continue;
-        while (!t_matched[k]) k++;
-        if (s[i] != t[k]) transpositions++;
-        k++;
-    }
-
-    if (heap_alloc) { free(s_matched); free(t_matched); }
-
-    double m = (double)matches;
-    double jaro = (m / (double)len_s + m / (double)len_t +
-                   (m - (double)(transpositions / 2)) / m) / 3.0;
-
-    /* Winkler prefix bonus: up to 4 shared prefix chars, p = 0.1 */
-    int64_t prefix = 0;
-    int64_t max_prefix = (len_s < len_t ? len_s : len_t);
-    if (max_prefix > 4) max_prefix = 4;
-    for (int64_t i = 0; i < max_prefix; i++) {
-        if (s[i] == t[i]) prefix++;
-        else break;
-    }
-
-    return jaro + (double)prefix * 0.1 * (1.0 - jaro);
+    return strdist_jaro_winkler(s, len_s, t, len_t);
 }
 
 VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
@@ -287,25 +167,50 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_BOOL, n);
 
-        for (int64_t i = 0; i < n; i++) {
-            if (!vec_array_is_valid(s, i)) {
-                vec_array_set_null(out, i);
-                continue;
+        if (!expr->fixed) {
+            /* Regex mode — parallel with per-thread compiled regex */
+            regex_t re_check;
+            if (regcomp(&re_check, pattern, REG_EXTENDED | REG_NOSUB) != 0)
+                vectra_error("grepl: invalid regex pattern: %s", pattern);
+            regfree(&re_check);
+            #pragma omp parallel if(n > 1000)
+            {
+                regex_t re_local;
+                regcomp(&re_local, pattern, REG_EXTENDED | REG_NOSUB);
+                #pragma omp for schedule(dynamic, 64)
+                for (int64_t i = 0; i < n; i++) {
+                    if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
+                    vec_array_set_valid(out, i);
+                    int64_t so = s->buf.str.offsets[i];
+                    int64_t slen = s->buf.str.offsets[i + 1] - so;
+                    char *tmp = (char *)malloc((size_t)(slen + 1));
+                    if (!tmp) {
+                        vec_array_set_null(out, i);
+                        continue;
+                    }
+                    memcpy(tmp, s->buf.str.data + so, (size_t)slen);
+                    tmp[slen] = '\0';
+                    out->buf.bln[i] = (uint8_t)(regexec(&re_local, tmp, 0, NULL, 0) == 0);
+                    free(tmp);
+                }
+                regfree(&re_local);
             }
-            vec_array_set_valid(out, i);
-            int64_t so = s->buf.str.offsets[i];
-            int64_t slen = s->buf.str.offsets[i + 1] - so;
-            int found = 0;
-            if (pat_len <= slen) {
-                for (int64_t j = 0; j <= slen - pat_len; j++) {
-                    if (memcmp(s->buf.str.data + so + j, pattern,
-                               (size_t)pat_len) == 0) {
-                        found = 1;
-                        break;
+        } else {
+            /* Fixed substring match */
+            for (int64_t i = 0; i < n; i++) {
+                if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                int64_t so = s->buf.str.offsets[i];
+                int64_t slen = s->buf.str.offsets[i + 1] - so;
+                int found = 0;
+                if (pat_len <= slen) {
+                    for (int64_t j = 0; j <= slen - pat_len; j++) {
+                        if (memcmp(s->buf.str.data + so + j, pattern, (size_t)pat_len) == 0)
+                            { found = 1; break; }
                     }
                 }
+                out->buf.bln[i] = (uint8_t)found;
             }
-            out->buf.bln[i] = (uint8_t)found;
         }
 
         vec_array_free(s); free(s);
@@ -372,33 +277,108 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
     case EXPR_IN: {
         VecArray *o = vec_expr_eval(expr->operand, batch);
         int64_t n = o->length;
+        int64_t ns = expr->n_set;
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_BOOL, n);
-        for (int64_t i = 0; i < n; i++) {
-            if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
-            vec_array_set_valid(out, i);
-            int found = 0;
-            if (o->type == VEC_DOUBLE) {
-                double v = o->buf.dbl[i];
-                for (int64_t j = 0; j < expr->n_set; j++) {
-                    if (v == expr->set_dbl[j]) { found = 1; break; }
+
+        /* For large sets, build a hash set for O(1) lookup */
+        if (ns > 16) {
+            /* FNV-1a hash set with open addressing */
+            int64_t ht_cap = 1;
+            while (ht_cap < ns * 2) ht_cap <<= 1;
+            int64_t mask = ht_cap - 1;
+            uint64_t *ht_hashes = (uint64_t *)calloc((size_t)ht_cap, sizeof(uint64_t));
+            int8_t *ht_used = (int8_t *)calloc((size_t)ht_cap, sizeof(int8_t));
+            int64_t *ht_idx = (int64_t *)malloc((size_t)ht_cap * sizeof(int64_t));
+            /* Insert set values */
+            for (int64_t j = 0; j < ns; j++) {
+                uint64_t h;
+                if (o->type == VEC_DOUBLE) {
+                    double v = expr->set_dbl[j];
+                    memcpy(&h, &v, sizeof(h));
+                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
+                } else if (o->type == VEC_INT64) {
+                    int64_t v = expr->set_i64[j];
+                    memcpy(&h, &v, sizeof(h));
+                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
+                } else {
+                    const char *s = expr->set_str[j];
+                    h = 0xcbf29ce484222325ULL;
+                    for (const char *p = s; *p; p++)
+                        h = (h ^ (uint8_t)*p) * 0x00000100000001B3ULL;
                 }
-            } else if (o->type == VEC_INT64) {
-                int64_t v = o->buf.i64[i];
-                for (int64_t j = 0; j < expr->n_set; j++) {
-                    if (v == expr->set_i64[j]) { found = 1; break; }
+                int64_t slot = (int64_t)(h & (uint64_t)mask);
+                while (ht_used[slot]) slot = (slot + 1) & mask;
+                ht_hashes[slot] = h;
+                ht_used[slot] = 1;
+                ht_idx[slot] = j;
+            }
+            for (int64_t i = 0; i < n; i++) {
+                if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                uint64_t h;
+                if (o->type == VEC_DOUBLE) {
+                    double v = o->buf.dbl[i];
+                    memcpy(&h, &v, sizeof(h));
+                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
+                } else if (o->type == VEC_INT64) {
+                    int64_t v = o->buf.i64[i];
+                    memcpy(&h, &v, sizeof(h));
+                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
+                } else {
+                    int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
+                    h = 0xcbf29ce484222325ULL;
+                    for (int64_t k = so2; k < eo2; k++)
+                        h = (h ^ (uint8_t)o->buf.str.data[k]) * 0x00000100000001B3ULL;
                 }
-            } else if (o->type == VEC_STRING) {
-                int64_t so = o->buf.str.offsets[i], eo = o->buf.str.offsets[i + 1];
-                int64_t slen = eo - so;
-                for (int64_t j = 0; j < expr->n_set; j++) {
-                    int64_t clen = (int64_t)strlen(expr->set_str[j]);
-                    if (slen == clen && memcmp(o->buf.str.data + so, expr->set_str[j], (size_t)slen) == 0) {
-                        found = 1; break;
+                int found = 0;
+                int64_t slot = (int64_t)(h & (uint64_t)mask);
+                while (ht_used[slot]) {
+                    if (ht_hashes[slot] == h) {
+                        int64_t j = ht_idx[slot];
+                        /* Verify equality */
+                        if (o->type == VEC_DOUBLE) {
+                            if (o->buf.dbl[i] == expr->set_dbl[j]) { found = 1; break; }
+                        } else if (o->type == VEC_INT64) {
+                            if (o->buf.i64[i] == expr->set_i64[j]) { found = 1; break; }
+                        } else {
+                            int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
+                            int64_t slen2 = eo2 - so2;
+                            int64_t clen = (int64_t)strlen(expr->set_str[j]);
+                            if (slen2 == clen && memcmp(o->buf.str.data + so2, expr->set_str[j], (size_t)slen2) == 0)
+                                { found = 1; break; }
+                        }
+                    }
+                    slot = (slot + 1) & mask;
+                }
+                out->buf.bln[i] = (uint8_t)found;
+            }
+            free(ht_hashes); free(ht_used); free(ht_idx);
+        } else {
+            /* Small set: linear scan */
+            for (int64_t i = 0; i < n; i++) {
+                if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                int found = 0;
+                if (o->type == VEC_DOUBLE) {
+                    double v = o->buf.dbl[i];
+                    for (int64_t j = 0; j < ns; j++)
+                        if (v == expr->set_dbl[j]) { found = 1; break; }
+                } else if (o->type == VEC_INT64) {
+                    int64_t v = o->buf.i64[i];
+                    for (int64_t j = 0; j < ns; j++)
+                        if (v == expr->set_i64[j]) { found = 1; break; }
+                } else if (o->type == VEC_STRING) {
+                    int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
+                    int64_t slen2 = eo2 - so2;
+                    for (int64_t j = 0; j < ns; j++) {
+                        int64_t clen = (int64_t)strlen(expr->set_str[j]);
+                        if (slen2 == clen && memcmp(o->buf.str.data + so2, expr->set_str[j], (size_t)slen2) == 0)
+                            { found = 1; break; }
                     }
                 }
+                out->buf.bln[i] = (uint8_t)found;
             }
-            out->buf.bln[i] = (uint8_t)found;
         }
         vec_array_free(o); free(o);
         return out;
@@ -482,11 +462,92 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         if (s->type != VEC_STRING) vectra_error("gsub/sub: argument must be string");
         const char *pat = expr->gsub_pattern;
         const char *rep = expr->gsub_replacement;
-        int64_t plen = (int64_t)strlen(pat);
         int64_t rlen = (int64_t)strlen(rep);
         int64_t n = s->length;
         int only_first = (op == EXPR_SUB);
-        /* First pass: compute output sizes */
+
+        if (!expr->fixed) {
+            /* Regex mode: compile regex, two-pass replacement with backreference support */
+            #define MAX_GROUPS 10
+            regex_t re;
+            if (regcomp(&re, pat, REG_EXTENDED) != 0)
+                vectra_error("gsub/sub: invalid regex: %s", pat);
+
+            /* Pass 1: compute output lengths */
+            int64_t *out_lens = (int64_t *)malloc((size_t)n * sizeof(int64_t));
+            int64_t total = 0;
+            for (int64_t i = 0; i < n; i++) {
+                out_lens[i] = 0;
+                if (!vec_array_is_valid(s, i)) continue;
+                int64_t so = s->buf.str.offsets[i];
+                int64_t slen = s->buf.str.offsets[i+1] - so;
+                char *tmp = (char *)malloc((size_t)(slen + 1));
+                memcpy(tmp, s->buf.str.data + so, (size_t)slen);
+                tmp[slen] = '\0';
+                regmatch_t matches[MAX_GROUPS];
+                const char *cursor = tmp;
+                int64_t olen = 0;
+                int replaced = 0;
+                while (regexec(&re, cursor, MAX_GROUPS, matches, 0) == 0 && matches[0].rm_so != matches[0].rm_eo) {
+                    int64_t exp_len = backref_len(rep, rlen, matches, MAX_GROUPS);
+                    olen += matches[0].rm_so + exp_len;
+                    cursor += matches[0].rm_eo;
+                    replaced = 1;
+                    if (only_first) { olen += (int64_t)strlen(cursor); break; }
+                }
+                if (!only_first || !replaced) olen += (int64_t)strlen(cursor);
+                if (!replaced) olen = slen;
+                out_lens[i] = olen;
+                total += olen;
+                free(tmp);
+            }
+            VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+            *out = vec_array_alloc(VEC_STRING, n);
+            free(out->buf.str.data);
+            out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
+            out->buf.str.data_len = total;
+            /* Pass 2: fill with backreference expansion */
+            int64_t off = 0;
+            for (int64_t i = 0; i < n; i++) {
+                out->buf.str.offsets[i] = off;
+                if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                int64_t so = s->buf.str.offsets[i];
+                int64_t slen = s->buf.str.offsets[i+1] - so;
+                char *tmp = (char *)malloc((size_t)(slen + 1));
+                memcpy(tmp, s->buf.str.data + so, (size_t)slen);
+                tmp[slen] = '\0';
+                regmatch_t matches[MAX_GROUPS];
+                const char *cursor = tmp;
+                int replaced = 0;
+                while (regexec(&re, cursor, MAX_GROUPS, matches, 0) == 0 && matches[0].rm_so != matches[0].rm_eo) {
+                    if (matches[0].rm_so > 0) { memcpy(out->buf.str.data + off, cursor, (size_t)matches[0].rm_so); off += matches[0].rm_so; }
+                    off += backref_write(out->buf.str.data + off, rep, rlen, matches, MAX_GROUPS, cursor);
+                    cursor += matches[0].rm_eo;
+                    replaced = 1;
+                    if (only_first) {
+                        int64_t rem = (int64_t)strlen(cursor);
+                        if (rem > 0) { memcpy(out->buf.str.data + off, cursor, (size_t)rem); off += rem; }
+                        cursor += rem;
+                        break;
+                    }
+                }
+                if (!only_first || !replaced) {
+                    int64_t rem = (int64_t)strlen(cursor);
+                    if (rem > 0) { memcpy(out->buf.str.data + off, cursor, (size_t)rem); off += rem; }
+                }
+                free(tmp);
+            }
+            out->buf.str.offsets[n] = off;
+            free(out_lens);
+            regfree(&re);
+            #undef MAX_GROUPS
+            vec_array_free(s); free(s);
+            return out;
+        }
+
+        /* Fixed string replacement (original code) */
+        int64_t plen = (int64_t)strlen(pat);
         int64_t total = 0;
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(s, i)) continue;
@@ -543,7 +604,6 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                     j++;
                 }
             }
-            /* Copy remaining chars after last match check */
             if (j < slen) {
                 int64_t rem = slen - j;
                 memcpy(out->buf.str.data + off, s->buf.str.data + so + j, (size_t)rem);
@@ -582,6 +642,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             *out = vec_array_alloc(VEC_INT64, n);
         }
 
+        #pragma omp parallel for schedule(dynamic, 64) if(n > 1000)
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(a, i) || (b && !vec_array_is_valid(b, i))) {
                 vec_array_set_null(out, i);
@@ -638,6 +699,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             *out = vec_array_alloc(VEC_INT64, n);
         }
 
+        #pragma omp parallel for schedule(dynamic, 64) if(n > 1000)
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(a, i) || (b && !vec_array_is_valid(b, i))) {
                 vec_array_set_null(out, i);
@@ -687,6 +749,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_DOUBLE, n);
 
+        #pragma omp parallel for schedule(dynamic, 64) if(n > 1000)
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(a, i) || (b && !vec_array_is_valid(b, i))) {
                 vec_array_set_null(out, i);
@@ -709,6 +772,133 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         }
         vec_array_free(a); free(a);
         if (b) { vec_array_free(b); free(b); }
+        return out;
+    }
+    case EXPR_PASTE: {
+        /* N-ary paste with optional separator */
+        int64_t nc = expr->n_children;
+        int64_t n = batch->n_rows;
+        const char *sep = expr->paste_sep;
+        int64_t sep_len = sep ? (int64_t)strlen(sep) : 0;
+
+        /* Evaluate all children and coerce to string */
+        VecArray **args = (VecArray **)malloc((size_t)nc * sizeof(VecArray *));
+        for (int64_t c = 0; c < nc; c++) {
+            VecArray *raw = vec_expr_eval(expr->children[c], batch);
+            if (raw->type != VEC_STRING) {
+                args[c] = vec_coerce(raw, VEC_STRING);
+                vec_array_free(raw); free(raw);
+            } else {
+                args[c] = raw;
+            }
+        }
+
+        /* Pass 1: compute total output length */
+        int64_t total = 0;
+        for (int64_t i = 0; i < n; i++) {
+            int any_na = 0;
+            for (int64_t c = 0; c < nc; c++) {
+                if (!vec_array_is_valid(args[c], i)) { any_na = 1; break; }
+            }
+            if (any_na) continue;
+            for (int64_t c = 0; c < nc; c++) {
+                total += args[c]->buf.str.offsets[i+1] - args[c]->buf.str.offsets[i];
+                if (c < nc - 1) total += sep_len;
+            }
+        }
+
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_STRING, n);
+        free(out->buf.str.data);
+        out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
+        out->buf.str.data_len = total;
+
+        /* Pass 2: fill */
+        int64_t off = 0;
+        for (int64_t i = 0; i < n; i++) {
+            out->buf.str.offsets[i] = off;
+            int any_na = 0;
+            for (int64_t c = 0; c < nc; c++) {
+                if (!vec_array_is_valid(args[c], i)) { any_na = 1; break; }
+            }
+            if (any_na) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
+            for (int64_t c = 0; c < nc; c++) {
+                int64_t s = args[c]->buf.str.offsets[i];
+                int64_t l = args[c]->buf.str.offsets[i+1] - s;
+                if (l > 0) memcpy(out->buf.str.data + off, args[c]->buf.str.data + s, (size_t)l);
+                off += l;
+                if (c < nc - 1 && sep_len > 0) {
+                    memcpy(out->buf.str.data + off, sep, (size_t)sep_len);
+                    off += sep_len;
+                }
+            }
+        }
+        out->buf.str.offsets[n] = off;
+        for (int64_t c = 0; c < nc; c++) { vec_array_free(args[c]); free(args[c]); }
+        free(args);
+        return out;
+    }
+    case EXPR_STR_EXTRACT: {
+        VecArray *s = vec_expr_eval(expr->operand, batch);
+        if (s->type != VEC_STRING) vectra_error("str_extract: argument must be string");
+        const char *pattern = expr->lit_str;
+        int64_t n = s->length;
+        regex_t re;
+        if (regcomp(&re, pattern, REG_EXTENDED) != 0)
+            vectra_error("str_extract: invalid regex: %s", pattern);
+        int has_groups = (re.re_nsub > 0);
+        int nmatch = has_groups ? 2 : 1;
+        regmatch_t *matches = (regmatch_t *)malloc((size_t)nmatch * sizeof(regmatch_t));
+        /* Pass 1: compute output lengths */
+        int64_t total = 0;
+        int64_t *out_lens = (int64_t *)malloc((size_t)n * sizeof(int64_t));
+        for (int64_t i = 0; i < n; i++) {
+            out_lens[i] = -1;
+            if (!vec_array_is_valid(s, i)) continue;
+            int64_t so = s->buf.str.offsets[i];
+            int64_t slen = s->buf.str.offsets[i+1] - so;
+            char *tmp = (char *)malloc((size_t)(slen + 1));
+            memcpy(tmp, s->buf.str.data + so, (size_t)slen);
+            tmp[slen] = '\0';
+            if (regexec(&re, tmp, (size_t)nmatch, matches, 0) == 0) {
+                int mi = has_groups ? 1 : 0;
+                if (matches[mi].rm_so >= 0) {
+                    out_lens[i] = matches[mi].rm_eo - matches[mi].rm_so;
+                    total += out_lens[i];
+                }
+            }
+            free(tmp);
+        }
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_STRING, n);
+        free(out->buf.str.data);
+        out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
+        out->buf.str.data_len = total;
+        /* Pass 2: fill */
+        int64_t off = 0;
+        for (int64_t i = 0; i < n; i++) {
+            out->buf.str.offsets[i] = off;
+            if (!vec_array_is_valid(s, i) || out_lens[i] < 0) {
+                vec_array_set_null(out, i); continue;
+            }
+            vec_array_set_valid(out, i);
+            int64_t so = s->buf.str.offsets[i];
+            int64_t slen = s->buf.str.offsets[i+1] - so;
+            char *tmp = (char *)malloc((size_t)(slen + 1));
+            memcpy(tmp, s->buf.str.data + so, (size_t)slen);
+            tmp[slen] = '\0';
+            regexec(&re, tmp, (size_t)nmatch, matches, 0);
+            int mi = has_groups ? 1 : 0;
+            int64_t mlen = matches[mi].rm_eo - matches[mi].rm_so;
+            if (mlen > 0) memcpy(out->buf.str.data + off, tmp + matches[mi].rm_so, (size_t)mlen);
+            off += mlen;
+            free(tmp);
+        }
+        out->buf.str.offsets[n] = off;
+        free(out_lens); free(matches);
+        regfree(&re);
+        vec_array_free(s); free(s);
         return out;
     }
     default:

@@ -25,3 +25,9 @@
 ^\.doc\.R$
 ^\.build\.R$
 ^\.compile_check\.R$
+^\.pkgdown\.R$
+^\.cran_build\.R$
+^\.pkgdown_build\.R$
+^\.run-build\.R$
+^\.run-test-block\.R$
+^\.test-phase.*\.R$

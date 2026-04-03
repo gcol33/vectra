@@ -418,6 +418,8 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->lit_str = (char *)malloc(strlen(pat) + 1);
         strcpy(e->lit_str, pat);
         e->operand = parse_expr(list_get(lst, "operand"), schema);
+        SEXP fixed_sexp = list_get(lst, "fixed");
+        e->fixed = (fixed_sexp != R_NilValue) ? Rf_asLogical(fixed_sexp) : 1;
         e->result_type = VEC_BOOL;
         return e;
     }
@@ -492,10 +494,62 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
     }
 
     if (strcmp(kind, "paste0") == 0) {
+        /* Backward compat: old 2-arg paste0 with left/right fields */
         VecExpr *e = vec_expr_alloc(EXPR_PASTE0);
         e->left = parse_expr(list_get(lst, "left"), schema);
         e->right = parse_expr(list_get(lst, "right"), schema);
         e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "paste") == 0) {
+        /* N-arg paste/paste0 with children array */
+        SEXP args_sexp = list_get(lst, "args");
+        int64_t nc = Rf_length(args_sexp);
+        VecExpr *e = vec_expr_alloc(EXPR_PASTE);
+        e->n_children = nc;
+        e->children = (VecExpr **)malloc((size_t)nc * sizeof(VecExpr *));
+        for (int64_t i = 0; i < nc; i++)
+            e->children[i] = parse_expr(VECTOR_ELT(args_sexp, (R_xlen_t)i), schema);
+        SEXP sep_sexp = list_get(lst, "sep");
+        if (sep_sexp != R_NilValue && TYPEOF(sep_sexp) == STRSXP) {
+            const char *sep = CHAR(STRING_ELT(sep_sexp, 0));
+            e->paste_sep = (char *)malloc(strlen(sep) + 1);
+            strcpy(e->paste_sep, sep);
+        }
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "case_when") == 0) {
+        SEXP cases_sexp = list_get(lst, "cases");
+        SEXP def_sexp = list_get(lst, "default");
+        int n_cases = Rf_length(cases_sexp);
+        int has_default = (def_sexp != R_NilValue && TYPEOF(def_sexp) == VECSXP);
+        VecExpr *e = vec_expr_alloc(EXPR_CASE_WHEN);
+        e->n_children = n_cases * 2 + (has_default ? 1 : 0);
+        e->children = (VecExpr **)malloc((size_t)e->n_children * sizeof(VecExpr *));
+        VecType val_type = VEC_STRING; /* will be overridden by first value */
+        for (int i = 0; i < n_cases; i++) {
+            SEXP cas = VECTOR_ELT(cases_sexp, i);
+            e->children[i * 2] = parse_expr(list_get(cas, "cond"), schema);
+            e->children[i * 2 + 1] = parse_expr(list_get(cas, "val"), schema);
+            if (i == 0) val_type = e->children[1]->result_type;
+        }
+        if (has_default) {
+            e->children[n_cases * 2] = parse_expr(def_sexp, schema);
+            if (n_cases == 0) val_type = e->children[0]->result_type;
+        }
+        e->result_type = val_type;
+        return e;
+    }
+    if (strcmp(kind, "coalesce") == 0) {
+        SEXP args_sexp = list_get(lst, "args");
+        int64_t nc = Rf_length(args_sexp);
+        VecExpr *e = vec_expr_alloc(EXPR_COALESCE);
+        e->n_children = nc;
+        e->children = (VecExpr **)malloc((size_t)nc * sizeof(VecExpr *));
+        for (int64_t i = 0; i < nc; i++)
+            e->children[i] = parse_expr(VECTOR_ELT(args_sexp, (R_xlen_t)i), schema);
+        e->result_type = (nc > 0) ? e->children[0]->result_type : VEC_DOUBLE;
         return e;
     }
     if (strcmp(kind, "startsWith") == 0) {
@@ -524,6 +578,18 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         strcpy(e->gsub_pattern, pat);
         e->gsub_replacement = (char *)malloc(strlen(rep) + 1);
         strcpy(e->gsub_replacement, rep);
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        SEXP fixed_sexp = list_get(lst, "fixed");
+        e->fixed = (fixed_sexp != R_NilValue) ? Rf_asLogical(fixed_sexp) : 1;
+        e->result_type = VEC_STRING;
+        return e;
+    }
+    if (strcmp(kind, "str_extract") == 0) {
+        VecExpr *e = vec_expr_alloc(EXPR_STR_EXTRACT);
+        const char *pat = list_get_string(lst, "pattern");
+        if (!pat) vectra_error("str_extract missing 'pattern'");
+        e->lit_str = (char *)malloc(strlen(pat) + 1);
+        strcpy(e->lit_str, pat);
         e->operand = parse_expr(list_get(lst, "operand"), schema);
         e->result_type = VEC_STRING;
         return e;

@@ -31,9 +31,10 @@ void vec_batch_free(VecBatch *batch) {
 void vec_batch_set_names(VecBatch *batch, char **names) {
     for (int i = 0; i < batch->n_cols; i++) {
         free(batch->col_names[i]);
-        batch->col_names[i] = (char *)malloc(strlen(names[i]) + 1);
+        size_t len = strlen(names[i]);
+        batch->col_names[i] = (char *)malloc(len + 1);
         if (!batch->col_names[i]) vectra_error("failed to allocate column name");
-        strcpy(batch->col_names[i], names[i]);
+        memcpy(batch->col_names[i], names[i], len + 1);
     }
 }
 
