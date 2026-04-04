@@ -3,19 +3,19 @@
 Opens a CSV file for lazy, streaming query execution. Column types are
 inferred from the first 1000 rows. No data is read until
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md) is
-called.
+called. Gzip-compressed files (`.csv.gz`) are supported transparently.
 
 ## Usage
 
 ``` r
-tbl_csv(path, batch_size = 65536L)
+tbl_csv(path, batch_size = .DEFAULT_BATCH_SIZE)
 ```
 
 ## Arguments
 
 - path:
 
-  Path to a `.csv` file.
+  Path to a `.csv` or `.csv.gz` file.
 
 - batch_size:
 

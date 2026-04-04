@@ -1,8 +1,13 @@
 <urlset xmlns = 'http://www.sitemaps.org/schemas/sitemap/0.9'>
 <url><loc>https://gillescolling.com/vectra/404.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/engine.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/articles/formats.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/index.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/articles/indexing.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/articles/joins.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/articles/large-data.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/quickstart.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/articles/string-ops.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/authors.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/CLAUDE.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/extension.html</loc></url>
@@ -14,8 +19,11 @@
 <url><loc>https://gillescolling.com/vectra/reference/append_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/arrange.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/bind_rows.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/block_fuzzy_lookup.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/block_lookup.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/collect.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/count.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/create_index.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/cross_join.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/delete_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/desc.html</loc></url>
@@ -23,11 +31,14 @@
 <url><loc>https://gillescolling.com/vectra/reference/distinct.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/explain.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/filter.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/fuzzy_join.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/glimpse.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/group_by.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/has_index.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/head.vectra_node.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/index.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/left_join.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/materialize.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/mutate.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/print.vectra_node.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/pull.html</loc></url>
@@ -42,6 +53,7 @@
 <url><loc>https://gillescolling.com/vectra/reference/tbl_csv.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_sqlite.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_tiff.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tbl_xlsx.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/transmute.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/ungroup.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/write_csv.html</loc></url>

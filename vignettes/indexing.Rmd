@@ -494,9 +494,13 @@ pulls batches from its child. The annotations on each line tell us:
 - `ProjectNode`: handles `select()`, `mutate()`, and `rename()`. Always
   streaming.
 - `SortNode`: materializes all input, sorts, then streams output.
+
 - `GroupAggNode`: hash-based grouping and aggregation. Materializes groups.
+
 - `JoinNode`: hash join. Materializes the build side (right table).
+
 - `WindowNode`: window functions. May materialize partitions.
+
 - `TopNNode`: combined sort + limit. More efficient than separate sort and
   limit for small N.
 - `ConcatNode`: union of multiple inputs (`bind_rows()`). Streaming.
@@ -508,8 +512,11 @@ pulls batches from its child. The annotations on each line tell us:
 - `materializing`: the node must consume all input before producing output.
   Sorts and some aggregations are materializing.
 - `predicate pushdown`: filter condition was absorbed into the scan.
+
 - `v4 stats`: zone-map statistics are available for row group pruning.
+
 - `hash index`: a `.vtri` index is being used for row group identification.
+
 - `N/M cols (pruned)`: only N of M columns in the file are actually read.
 
 When diagnosing a slow query, start at the ScanNode and work upward. The scan

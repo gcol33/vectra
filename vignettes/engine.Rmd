@@ -340,6 +340,7 @@ the estimate exceeds the memory budget (default 1 GB, defined as
 `DEFAULT_MEM_BUDGET`), the node flushes the accumulated data as a sorted run:
 
 1. The builders are finished into arrays.
+
 2. The arrays are sorted in-place using a parallel merge sort (OpenMP task
    spawning above 32,768 rows, sequential below).
 3. The sorted data is written to a temporary `.vtr` file in the system temp
@@ -416,6 +417,7 @@ Row groups (repeated):
 ### Version history
 
 - **Version 1**: Base format with typed columns and validity bitmaps.
+
 - **Version 2**: Adds per-column annotation strings for Date, POSIXct, and
   factor roundtripping.
 - **Version 3**: Adds per-column per-rowgroup statistics (min/max) enabling

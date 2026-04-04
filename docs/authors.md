@@ -11,12 +11,12 @@ Source:
 [`DESCRIPTION`](https://github.com/gcol33/vectra/blob/HEAD/DESCRIPTION)
 
 Colling G (2026). *vectra: Columnar Query Engine for Larger-than-RAM
-Data*. R package version 0.3.3, <https://gillescolling.com/vectra/>.
+Data*. R package version 0.4.0, <https://gillescolling.com/vectra/>.
 
     @Manual{,
       title = {vectra: Columnar Query Engine for Larger-than-RAM Data},
       author = {Gilles Colling},
       year = {2026},
-      note = {R package version 0.3.3},
+      note = {R package version 0.4.0},
       url = {https://gillescolling.com/vectra/},
     }

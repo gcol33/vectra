@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.3.3</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -32,6 +32,11 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="articles/quickstart.html">Getting Started with vectra</a></li>
     <li><a class="dropdown-item" href="articles/engine.html">vectra Engine Reference</a></li>
+    <li><a class="dropdown-item" href="articles/formats.html">Format Backends</a></li>
+    <li><a class="dropdown-item" href="articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
+    <li><a class="dropdown-item" href="articles/indexing.html">Indexing and Query Optimization</a></li>
+    <li><a class="dropdown-item" href="articles/large-data.html">Working with Large Data</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="reference/index.html">Reference</a></li>
 <li class="nav-item"><a class="nav-link" href="news/index.html">Changelog</a></li>
@@ -88,22 +93,29 @@
 <div class="section level3">
 <h3 id="c-engine-src">C engine (<code>src/</code>)<a class="anchor" aria-label="anchor" href="#c-engine-src"></a></h3>
 <p>Pure C11, links zlib (TIFF deflate) and zstd (vtr compression). Key types in <code>src/types.h</code>: - <code>VecType</code>: int64, double, bool, string - <code>VecArray</code>: single column with validity bitmap and type-punned data union - <code>VecBatch</code>: row group (n columns + optional selection vector for zero-copy filtering) - <code>VecNode</code>: pull-based plan node with <code>next_batch()</code> and <code>free_node()</code> vtable</p>
-<p>Plan nodes (each in its own <code>.h</code>/<code>.c</code> pair): - <code>scan</code> (vtr file reader) -&gt; <code>filter</code> -&gt; <code>project</code> (select/mutate/rename) -&gt; <code>sort</code> -&gt; <code>limit</code> - <code>topn</code> (combined sort+limit optimization) - <code>group_agg</code> (hash-based grouping + aggregation: n, sum, mean, min, max) - <code>join</code> (hash join: left, inner, right, full, semi, anti) - <code>window</code> (row_number, rank, dense_rank, lag, lead, cumsum, cummean, cummin, cummax) - <code>concat</code> (union / bind_rows)</p>
+<p>Plan nodes (each in its own <code>.h</code>/<code>.c</code> pair): - <code>scan</code> (vtr file reader with zone-map pruning, binary search, and hash index pushdown) -&gt; <code>filter</code> -&gt; <code>project</code> (select/mutate/rename) -&gt; <code>sort</code> -&gt; <code>limit</code> - <code>topn</code> (combined sort+limit optimization) - <code>group_agg</code> (hash-based grouping + aggregation: n, sum, mean, min, max, n_distinct, median) - <code>join</code> (hash join: left, inner, right, full, semi, anti) - <code>fuzzy_join</code> (levenshtein/DL/Jaro-Winkler distance joins) - <code>window</code> (row_number, rank, dense_rank, lag, lead, cumsum, cummean, cummin, cummax) - <code>concat</code> (union / bind_rows) - <code>block</code> (block-nested-loop join helper)</p>
+<p>Expression evaluation (<code>src/expr.h</code>, <code>src/expr.c</code>, <code>src/expr_string.c</code>): - Variable-arity children array on <code>VecExpr</code> supports N-arg functions - String ops: <code>paste</code>/<code>paste0</code> (N-ary), <code>grepl</code>/<code>gsub</code>/<code>sub</code> (fixed + POSIX regex with backreferences), <code>str_extract</code> (regex capture groups), <code>toupper</code>/<code>tolower</code>/<code>trimws</code>/<code>nchar</code>/<code>substr</code>/<code>startsWith</code>/<code>endsWith</code> - Fuzzy matching: <code>levenshtein</code>, <code>dl_dist</code>, <code>jaro_winkler</code> (OpenMP parallelized) - Control flow: <code>case_when</code>, <code>coalesce</code>, <code>ifelse</code> - Set ops: <code>%in%</code> with hash set acceleration for large sets</p>
+<p>Aggregation (<code>src/agg_ops.h</code>, <code>src/agg_ops.c</code>): - <code>n_distinct</code>: per-group open-addressing hash set (FNV-1a, 70% load factor) - <code>median</code>: per-group dynamic array + qsort</p>
+<p>Hash indexes (<code>src/vtri.h</code>, <code>src/vtri.c</code>): - <code>.vtri</code> sidecar files for O(1) row group pruning on equality predicates - v1 format: single-column indexes - v2 format: composite multi-column indexes (FNV-1a hash combining) - Case-insensitive index option - Accelerates <code>==</code> and <code>%in%</code> predicates; composites accelerate AND-combined equality predicates - <code>scan.c</code> detects index-eligible predicates and prunes row groups via bitmap</p>
+<p>OpenMP parallelization (<code>src/vec_omp.h</code>): - CPU-bound string ops (<code>grepl</code> regex, <code>levenshtein</code>, <code>dl_dist</code>, <code>jaro_winkler</code>) use <code>#pragma omp parallel for schedule(dynamic, 64)</code> with threshold <code>n &gt; 1000</code> - Per-thread regex compilation for thread safety - OpenMP flags already in <code>Makevars</code>/<code>Makevars.win</code></p>
 <p>Format backends (scan + write, each in own <code>.h</code>/<code>.c</code> pair): - <code>csv_scan</code> / <code>csv_write</code>: streaming CSV with type inference from first 1000 rows - <code>sql_scan</code> / <code>sql_write</code>: SQLite read/write via embedded sqlite3 (<code>sqlite_format.c</code>) - <code>tiff_scan</code> / <code>tiff_write</code>: GeoTIFF raster read/write (pixels → rows with x, y, band columns)</p>
-<p>R-to-C bridge: <code>src/r_bridge.c</code> implements all <code>C_*</code> entry points registered in <code>src/init.c</code>.</p>
+<p>Write control (<code>src/vtr_write.h</code>, <code>src/vtr_write.c</code>): - <code>vtr_write_node_batched()</code>: accumulates rows from upstream batches using <code>VecArrayBuilder</code>, flushes when buffer reaches target <code>batch_size</code> - Exposed via <code>write_vtr(node, path, batch_size = NULL)</code></p>
+<p>R-to-C bridge split across multiple files registered in <code>src/init.c</code>: - <code>src/r_bridge.c</code>: core entry points (tbl, collect, explain) - <code>src/r_bridge_core.c</code>: expression parsing (R list → VecExpr) - <code>src/r_bridge_nodes.c</code>: verb node creation (filter, project, sort, group_agg, window, join, etc.) - <code>src/r_bridge_io.c</code>: format read/write entry points - <code>src/r_bridge_index.c</code>: index creation/querying entry points</p>
 </div>
 <div class="section level3">
 <h3 id="r-layer-r">R layer (<code>R/</code>)<a class="anchor" aria-label="anchor" href="#r-layer-r"></a></h3>
 <ul><li>
-<code>tbl.R</code>: Entry points for all format backends: <code><a href="reference/tbl.html">tbl()</a></code> (vtr), <code><a href="reference/tbl_csv.html">tbl_csv()</a></code>, <code><a href="reference/tbl_sqlite.html">tbl_sqlite()</a></code>, <code><a href="reference/tbl_tiff.html">tbl_tiff()</a></code>.</li>
+<code>tbl.R</code>: Entry points for all format backends: <code><a href="reference/tbl.html">tbl()</a></code> (vtr), <code><a href="reference/tbl_csv.html">tbl_csv()</a></code>, <code><a href="reference/tbl_sqlite.html">tbl_sqlite()</a></code>, <code><a href="reference/tbl_xlsx.html">tbl_xlsx()</a></code>, <code><a href="reference/tbl_tiff.html">tbl_tiff()</a></code>.</li>
 <li>
-<code>write.R</code>: Writers for all formats: <code><a href="reference/write_vtr.html">write_vtr()</a></code>, <code><a href="reference/write_csv.html">write_csv()</a></code>, <code><a href="reference/write_sqlite.html">write_sqlite()</a></code>, <code><a href="reference/write_tiff.html">write_tiff()</a></code>. Writers are S3 generics dispatching on <code>vectra_node</code> (streaming) and <code>data.frame</code>.</li>
+<code>write.R</code>: Writers for all formats: <code><a href="reference/write_vtr.html">write_vtr()</a></code>, <code><a href="reference/write_csv.html">write_csv()</a></code>, <code><a href="reference/write_sqlite.html">write_sqlite()</a></code>, <code><a href="reference/write_tiff.html">write_tiff()</a></code>. Writers are S3 generics dispatching on <code>vectra_node</code> (streaming) and <code>data.frame</code>. Node-level <code>batch_size</code> parameter controls output row group size.</li>
 <li>
-<code>expr.R</code>: NSE expression serializer. Captures R expressions (arithmetic, comparison, boolean, is.na) into nested lists that the C bridge interprets. This is the translation layer between dplyr-style expressions and the C engine.</li>
+<code>expr.R</code>: NSE expression serializer. Captures R expressions (arithmetic, comparison, boolean, <code>case_when</code>, <code>coalesce</code>, multi-arg <code>paste</code>/<code>paste0</code>, regex <code>grepl</code>/<code>gsub</code>/<code>sub</code>, <code>str_extract</code>, <code>%in%</code>) into nested lists that the C bridge interprets. This is the translation layer between dplyr-style expressions and the C engine.</li>
 <li>
 <code>verbs.R</code>: All dplyr verb implementations as S3 methods on <code>vectra_node</code>. Verbs build new nodes via <code><a href="https://rdrr.io/r/base/CallExternal.html" class="external-link">.Call()</a></code> to C entry points.</li>
 <li>
-<code>joins.R</code>: Join verbs + <code>parse_join_keys()</code> for <code>by</code> argument handling.</li>
+<code>verbs_grouping.R</code>: <code><a href="reference/group_by.html">group_by()</a></code>, <code><a href="reference/summarise.html">summarise()</a></code>, <code><a href="reference/count.html">count()</a></code>/<code><a href="reference/count.html">tally()</a></code>. Native C aggregations: <code>n()</code>, <code><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum()</a></code>, <code><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">min()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">max()</a></code>, <code>n_distinct()</code>, <code><a href="https://rdrr.io/r/stats/median.html" class="external-link">median()</a></code>.</li>
+<li>
+<code>joins.R</code>: Join verbs + <code>parse_join_keys()</code> for <code>by</code> argument handling. Includes fuzzy joins.</li>
 <li>
 <code>across.R</code>: <code><a href="reference/across.html">across()</a></code> expansion for mutate/summarise.</li>
 <li>
@@ -112,6 +124,10 @@
 <code>bind.R</code>: <code><a href="reference/bind_rows.html">bind_rows()</a></code> (streaming <code>ConcatNode</code> when schemas match, R fallback otherwise) and <code><a href="reference/bind_rows.html">bind_cols()</a></code>.</li>
 <li>
 <code>reframe.R</code>: Variable-length summarise via <code><a href="reference/collect.html">collect()</a></code> fallback.</li>
+<li>
+<code>index.R</code>: <code><a href="reference/create_index.html">create_index()</a></code> (single or composite multi-column) and <code><a href="reference/has_index.html">has_index()</a></code> for <code>.vtri</code> sidecar hash indexes.</li>
+<li>
+<code>block.R</code>: Block lookup utilities.</li>
 <li>
 <code>explain.R</code>: Prints the query plan tree for debugging.</li>
 </ul></div>
@@ -130,6 +146,12 @@
 <strong>String ownership</strong>: <code>VecArray.owns_data</code> flag distinguishes owned vs borrowed string buffers to avoid double-free in hash join arenas.</li>
 <li>
 <strong>Grouping is metadata-only</strong>: <code><a href="reference/group_by.html">group_by()</a></code> just attaches <code>.groups</code> to the R list; the C-level <code>group_agg</code> node receives key names when <code><a href="reference/summarise.html">summarise()</a></code> is called.</li>
+<li>
+<strong>Two-pass string building</strong>: String-producing expressions (gsub, str_extract, paste) compute total output length first, allocate once, then fill — avoids realloc churn.</li>
+<li>
+<strong>Variable-arity VecExpr</strong>: <code>case_when</code>, <code>coalesce</code>, and N-ary <code>paste</code> use a <code>children</code> array on <code>VecExpr</code> rather than fixed left/right operands.</li>
+<li>
+<strong>Hash index pushdown</strong>: <code>scan.c</code> detects equality predicates (single or AND-combined composite) and probes <code>.vtri</code> sidecar indexes to prune row groups before reading data. Composes with zone-map pruning and binary search on sorted columns.</li>
 </ul></div>
 </div>
 

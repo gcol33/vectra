@@ -7,7 +7,7 @@ centers derived from the affine geotransform. NoData values become `NA`.
 ## Usage
 
 ``` r
-tbl_tiff(path, batch_size = 256L)
+tbl_tiff(path, batch_size = .TIFF_BATCH_SIZE)
 ```
 
 ## Arguments

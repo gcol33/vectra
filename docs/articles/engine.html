@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.3.3</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -49,6 +49,11 @@
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
+    <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
+    <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
+    <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
+    <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
@@ -76,7 +81,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-02</h4>
+            <h4 data-toc-skip class="date">2026-04-04</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/engine.Rmd" class="external-link"><code>vignettes/engine.Rmd</code></a></small>
       <div class="d-none name"><code>engine.Rmd</code></div>
@@ -707,7 +712,7 @@ Date arithmetic (adding/subtracting days) works via standard
 <pre><code>bool &lt; int64 &lt; double</code></pre>
 <p>When an expression combines two different numeric types, the narrower
 type is promoted to the wider type before evaluation. String columns
-cannot participate in arithmetic or comparison with numeric columns —
+cannot participate in arithmetic or comparison with numeric columns;
 this is an error.</p>
 </div>
 <div class="section level3">
@@ -851,13 +856,38 @@ transmute)</p></li>
 <div class="section level3">
 <h3 id="external-sort-spill-to-disk">External sort (spill-to-disk)<a class="anchor" aria-label="anchor" href="#external-sort-spill-to-disk"></a>
 </h3>
-<p><code><a href="../reference/arrange.html">arrange()</a></code> uses an external merge sort when accumulated
-data exceeds 1 GB. Sorted runs are spilled to temporary
-<code>.vtr</code> files, then merged via a k-way min-heap. This keeps
-peak memory bounded regardless of input size.</p>
+<p><code><a href="../reference/arrange.html">arrange()</a></code> accumulates incoming batches into column
+builders in memory. After each batch, the sort node estimates total
+memory usage across all builders. When the estimate exceeds the memory
+budget (default 1 GB, defined as <code>DEFAULT_MEM_BUDGET</code>), the
+node flushes the accumulated data as a sorted run:</p>
+<ol style="list-style-type: decimal">
+<li><p>The builders are finished into arrays.</p></li>
+<li><p>The arrays are sorted in-place using a parallel merge sort
+(OpenMP task spawning above 32,768 rows, sequential below).</p></li>
+<li><p>The sorted data is written to a temporary <code>.vtr</code> file
+in the system temp directory, split into row groups of 65,536 rows
+each.</p></li>
+<li><p>The builders are reset and accumulation continues.</p></li>
+</ol>
+<p>This spill cycle repeats as many times as needed. A 10 GB dataset
+with a 1 GB budget produces approximately 10 spill files.</p>
+<p>Once all input is consumed, the sort node enters the merge phase. It
+opens all spill files as <code>Vtr1File</code> readers and runs a k-way
+merge using a min-heap. Each heap entry holds a reference to one merge
+run (one spill file) and tracks the current row group and cursor
+position within that run. The merge emits batches of up to 65,536 rows,
+reading row groups from spill files on demand. Peak memory during the
+merge phase is proportional to k (number of runs) times the row group
+size, not the total dataset size.</p>
+<p>If all data fits within the 1 GB budget, no spill occurs. The node
+sorts in memory and emits the result directly. This is the common case
+for datasets under ~100 million rows (depending on column count and
+types).</p>
 <p>The sort-based <code>group_by() |&gt; summarise()</code> path (used
 internally when the engine detects it is advantageous) also benefits
-from this spill mechanism.</p>
+from this spill mechanism. Temporary spill files are deleted when the
+sort node is freed.</p>
 </div>
 <div class="section level3">
 <h3 id="join-memory-model">Join memory model<a class="anchor" aria-label="anchor" href="#join-memory-model"></a>
@@ -866,16 +896,28 @@ from this spill mechanism.</p>
 <ol style="list-style-type: decimal">
 <li>
 <strong>Build phase</strong>: The entire right-side table is
-materialized into a hash table in memory.</li>
+materialized into a hash table in memory. Key columns are hashed using
+FNV-1a. For single-key joins, the hash is computed directly on the key
+bytes. For multi-key joins, per-key hashes are combined via XOR and FNV
+prime multiplication. The hash table uses open addressing. Key hashing
+is OpenMP-parallelized for batches above 32,768 rows.</li>
 <li>
 <strong>Probe phase</strong>: Left-side batches stream through one
-at a time, probing the hash table.</li>
+at a time, probing the hash table. For each left row, the engine
+computes the key hash, looks up the hash table, and verifies key
+equality (hash collisions are resolved by comparison). Probe-side
+hashing is also parallelized.</li>
 <li>
 <strong>Finalize phase</strong> (full_join only): Unmatched
-right-side rows are emitted in chunks of 65,536 rows.</li>
+right-side rows are emitted in chunks of 65,536 rows. A matched-flag
+array tracks which right-side rows participated in the join.</li>
 </ol>
 <p>The memory cost of a join is proportional to the right-side table
-size. The left side streams and does not accumulate.</p>
+size (data arrays plus hash table overhead). The left side streams and
+does not accumulate. For this reason, place the smaller table on the
+right side of the join. The <code>right_join</code> verb handles this
+automatically by swapping sides internally and remapping columns in the
+output.</p>
 </div>
 </div>
 <div class="section level2">
@@ -889,15 +931,18 @@ granularity.</p>
 </h3>
 <pre><code>Header:
   magic bytes ("VTR1")
-  version (1 or 2)
+  version (uint16: 1–4)
   n_cols, n_rowgroups
-  per-column: name + type byte [+ annotation string in v2]
+  per-column: name + type byte [+ annotation string in v2+]
   row group index (byte offsets)
 
 Row groups (repeated):
   per-column:
     validity bitmap (bit-packed)
-    typed data array (int64/double/bool/string)</code></pre>
+    [v4] encoding tag (1 byte) + compression tag (1 byte)
+    [v4] uncompressed_size (uint32)
+    typed data array (int64/double/bool/string)
+  [v3+] per-column statistics (min/max)</code></pre>
 </div>
 <div class="section level3">
 <h3 id="version-history">Version history<a class="anchor" aria-label="anchor" href="#version-history"></a>
@@ -907,10 +952,84 @@ Row groups (repeated):
 validity bitmaps.</p></li>
 <li><p><strong>Version 2</strong>: Adds per-column annotation strings
 for Date, POSIXct, and factor roundtripping.</p></li>
-<li><p><strong>Version 3</strong> (current): Adds per-column
-per-rowgroup statistics (min/max) enabling predicate pushdown. Writing
-always produces v3. All versions are readable.</p></li>
+<li><p><strong>Version 3</strong>: Adds per-column per-rowgroup
+statistics (min/max) enabling zone-map predicate pushdown.</p></li>
+<li><p><strong>Version 4</strong> (current): Adds a two-layer encoding
+and compression stack. Writing always produces v4. All versions (v1–v4)
+are readable.</p></li>
 </ul>
+</div>
+<div class="section level3">
+<h3 id="encoding-and-compression-v4">Encoding and compression (v4)<a class="anchor" aria-label="anchor" href="#encoding-and-compression-v4"></a>
+</h3>
+<p>v4 applies two transformations to each column chunk (one column in
+one row group), in order: an <strong>encoding</strong> step and a
+<strong>compression</strong> step.</p>
+<p>Encoding transforms data logically to expose redundancy. The encoder
+picks the best encoding per column per row group automatically:</p>
+<table class="table">
+<colgroup>
+<col width="22%">
+<col width="27%">
+<col width="25%">
+<col width="25%">
+</colgroup>
+<thead><tr class="header">
+<th align="left">Encoding</th>
+<th align="left">Applies to</th>
+<th align="left">Condition</th>
+<th align="left">Mechanism</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td align="left">PLAIN</td>
+<td align="left">all types</td>
+<td align="left">default</td>
+<td align="left">Raw bytes, no transformation</td>
+</tr>
+<tr class="even">
+<td align="left">DICTIONARY</td>
+<td align="left">string</td>
+<td align="left">unique ratio &lt; 50%</td>
+<td align="left">Builds a string dictionary; stores indices as RLE
+(run-length encoded)</td>
+</tr>
+<tr class="odd">
+<td align="left">DELTA</td>
+<td align="left">int64</td>
+<td align="left">monotonically increasing</td>
+<td align="left">Stores first value + deltas (all &gt;= 0)</td>
+</tr>
+</tbody>
+</table>
+<p>DICTIONARY encoding is the most impactful for typical categorical
+string columns. The encoder counts distinct values in a single pass
+using an open-addressing hash table (70% load factor, dynamic resizing).
+If fewer than half the values are unique, it emits a dictionary (offset
+array + packed strings) followed by RLE-encoded indices. The RLE step
+collapses runs of repeated indices into (value, count) pairs, which is
+effective when rows with the same category are clustered (e.g. after a
+sort). If more than half the values are unique, the encoder aborts
+dictionary encoding and falls back to PLAIN with zero overhead.</p>
+<p>DELTA encoding stores an initial value followed by the difference
+between consecutive values. It targets auto-increment IDs, timestamps,
+and other monotonic integer sequences where the deltas are small and
+compress well.</p>
+<p>Compression squeezes bytes physically after encoding. vectra uses a
+built-in LZ77 compressor (LZ-VTR), approximately 120 lines of C with no
+external dependencies. The compressor uses a 3-byte minimum match,
+256-byte maximum offset, and a hash table for match finding. It skips
+column chunks smaller than 64 bytes (not worth the overhead). If
+compression does not reduce size, the chunk is stored uncompressed.
+There is no configuration knob; the format always attempts compression
+on eligible chunks.</p>
+<p>The two-layer design is intentional. Encoding and compression solve
+different problems. DICTIONARY and DELTA reduce the entropy of the data
+(fewer distinct byte patterns, smaller integer ranges). LZ-VTR then
+exploits the reduced entropy at the byte level. Applying both layers
+yields better ratios than either layer alone, particularly for
+RLE-encoded dictionary indices where long runs of identical small
+integers compress to near zero.</p>
 </div>
 </div>
 <div class="section level2">
@@ -923,19 +1042,64 @@ automatically:</p>
 <h3 id="predicate-pushdown">Predicate pushdown<a class="anchor" aria-label="anchor" href="#predicate-pushdown"></a>
 </h3>
 <p>When a <code>FilterNode</code> sits above a <code>ScanNode</code>
-reading a v3 <code>.vtr</code> file, the filter predicate is attached to
-the scan. The scan uses per-rowgroup min/max statistics to skip row
-groups that cannot contain matching rows. This is visible in
-<code><a href="../reference/explain.html">explain()</a></code> as <code>predicate pushdown</code> on the
-ScanNode.</p>
+reading a <code>.vtr</code> file (v3+), the filter predicate is attached
+to the scan. The scan then applies up to three pruning strategies on its
+first <code>next_batch()</code> call, in priority order:</p>
+<ol style="list-style-type: decimal">
+<li><p><strong>Hash index pushdown</strong> (highest priority). If a
+<code>.vtri</code> sidecar index exists for the predicate column(s), the
+scan probes the index to build a row-group bitmap. Row groups not in the
+bitmap are skipped entirely. This handles <code>==</code> and
+<code>%in%</code> predicates. For composite indexes, AND-combined
+equality predicates on the indexed columns are matched and probed as a
+single composite key. See the Hash indexes section below for
+details.</p></li>
+<li><p><strong>Binary search on sorted columns</strong>. If the
+<code>.vtr</code> file records that a column is sorted and the predicate
+is a simple comparison (<code>==</code>, <code>&lt;</code>,
+<code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>) against a
+literal, the scan binary-searches the row group stats to find the first
+and last row groups that could contain matching rows. The scan range is
+narrowed to <code>[first_rg, last_rg)</code>. For AND-combined
+predicates on the same sorted column
+(e.g. <code>x &gt;= 10 &amp; x &lt; 100</code>), both bounds are
+applied. For OR-combined predicates, the union of both ranges is
+used.</p></li>
+<li><p><strong>Zone-map pruning</strong> (applied per row group during
+iteration). Each row group in a v3+ file stores per-column min/max
+statistics. Before reading a row group’s data from disk, the scan
+evaluates the pushed-down predicate against the row group’s stats. If
+the predicate is provably false for the entire row group
+(e.g. <code>filter(x &gt; 100)</code> on a row group where max(x) = 50),
+that row group is skipped entirely without touching the underlying
+bytes. Zone-map pruning handles comparison operators on numeric and
+string columns, AND/OR combinations, and <code>%in%</code> predicates
+(checking whether any set value falls within the row group’s min/max
+range). String zone maps use a packed 8-byte prefix representation for
+efficient comparison.</p></li>
+</ol>
+<p>These three strategies compose. The scan first applies hash index and
+binary search to narrow the set of candidate row groups, then checks
+zone-map stats on each candidate before reading data. In
+<code><a href="../reference/explain.html">explain()</a></code> output, predicate pushdown appears as
+<code>predicate pushdown</code> and <code>v3 stats</code> annotations on
+the ScanNode.</p>
 </div>
 <div class="section level3">
 <h3 id="column-pruning">Column pruning<a class="anchor" aria-label="anchor" href="#column-pruning"></a>
 </h3>
 <p>The optimizer walks the plan tree top-down and determines which
-columns each node actually needs from its child. At scan nodes, unneeded
-columns are excluded from disk reads. This is visible in
-<code><a href="../reference/explain.html">explain()</a></code> as <code>2/5 cols (pruned)</code>.</p>
+columns each node actually needs from its child. The required column set
+at each node is the union of: columns referenced in the node’s own
+expressions (filter predicates, mutate expressions, aggregation
+functions), columns passed through to the parent, and join key columns.
+At scan nodes, unneeded columns are excluded from disk reads by setting
+a column mask. For a 100-column <code>.vtr</code> file where only 3
+columns are needed, this means 97 columns are never deserialized, never
+decompressed, and never decoded. This is visible in
+<code><a href="../reference/explain.html">explain()</a></code> as <code>3/100 cols (pruned)</code>. Column
+pruning applies to all <code>.vtr</code> scans regardless of format
+version.</p>
 </div>
 <div class="section level3">
 <h3 id="hidden-mutate-insertion">Hidden mutate insertion<a class="anchor" aria-label="anchor" href="#hidden-mutate-insertion"></a>
@@ -943,8 +1107,15 @@ columns are excluded from disk reads. This is visible in
 <p>When <code><a href="../reference/summarise.html">summarise()</a></code> contains nested expressions like
 <code>mean(x + y)</code>, the optimizer auto-inserts a
 <code>ProjectNode</code> (visible as <code>hidden mutate</code> in
-<code><a href="../reference/explain.html">explain()</a></code>) to compute the intermediate result before
-aggregation.</p>
+<code><a href="../reference/explain.html">explain()</a></code>) to compute the intermediate expression
+<code>x + y</code> before aggregation. This is necessary because the
+C-level aggregation nodes (GroupAgg) operate on single columns, not on
+expression trees. The hidden mutate computes the intermediate column and
+gives it a generated name, which the aggregation node then references.
+The same mechanism applies to <code>sum(log(x))</code>,
+<code>n_distinct(a + b)</code>, and similar patterns. The inserted node
+is visible in <code><a href="../reference/explain.html">explain()</a></code> output but invisible to the user’s
+pipeline.</p>
 </div>
 </div>
 <div class="section level2">
@@ -978,6 +1149,276 @@ of how it will happen internally. Node ordering and naming may change
 between versions.</p>
 </div>
 <div class="section level2">
+<h2 id="hash-indexes--vtri">Hash indexes (.vtri)<a class="anchor" aria-label="anchor" href="#hash-indexes--vtri"></a>
+</h2>
+<p>vectra supports persistent on-disk hash indexes stored as
+<code>.vtri</code> sidecar files alongside <code>.vtr</code> data files.
+These indexes enable O(1) row group pruning for equality predicates,
+turning full-table scans into targeted reads.</p>
+<div class="section level3">
+<h3 id="creating-indexes">Creating indexes<a class="anchor" aria-label="anchor" href="#creating-indexes"></a>
+</h3>
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Single-column index</span></span>
+<span><span class="fu"><a href="../reference/create_index.html">create_index</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span>, <span class="st">"species"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Case-insensitive index</span></span>
+<span><span class="fu"><a href="../reference/create_index.html">create_index</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span>, <span class="st">"species"</span>, ci <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Composite (multi-column) index</span></span>
+<span><span class="fu"><a href="../reference/create_index.html">create_index</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"country"</span>, <span class="st">"year"</span><span class="op">)</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Check if an index exists</span></span>
+<span><span class="fu"><a href="../reference/has_index.html">has_index</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span>, <span class="st">"species"</span><span class="op">)</span></span></code></pre></div>
+<p><code><a href="../reference/create_index.html">create_index()</a></code> reads the <code>.vtr</code> file, hashes
+every value in the indexed column(s) per row group, and writes a
+<code>.vtri</code> file. The file name encodes the indexed columns:
+<code>data.species.vtri</code> for a single-column index,
+<code>data.country_year.vtri</code> for a composite.</p>
+</div>
+<div class="section level3">
+<h3 id="index-format">Index format<a class="anchor" aria-label="anchor" href="#index-format"></a>
+</h3>
+<p>The <code>.vtri</code> format is a chained hash table mapping key
+hashes to row group indices:</p>
+<ul>
+<li>
+<strong>v1</strong> (single-column): stores one column index, a
+case-insensitive flag, hash entries, row group entries, a slot heads
+array, and a next-pointer chain. Hashing uses FNV-1a on the raw column
+bytes. For case-insensitive indexes, the hash folds ASCII uppercase to
+lowercase before hashing.</li>
+<li>
+<strong>v2</strong> (composite): stores multiple column indices. The
+composite hash combines per-column FNV-1a hashes via XOR and
+multiplication with the FNV prime, producing a single 64-bit hash per
+row group entry.</li>
+</ul>
+</div>
+<div class="section level3">
+<h3 id="how-the-scan-uses-indexes">How the scan uses indexes<a class="anchor" aria-label="anchor" href="#how-the-scan-uses-indexes"></a>
+</h3>
+<p>When a <code>ScanNode</code> opens a <code>.vtr</code> file, it
+checks for <code>.vtri</code> sidecar files matching the columns
+referenced in the pushed-down predicate. For single-column indexes, it
+matches <code>==</code> predicates and <code>%in%</code> predicates. For
+composite indexes, it matches AND-combined equality predicates where
+every indexed column has an <code>== literal</code> clause.</p>
+<p>On match, the scan probes the index to produce a row-group bitmap.
+For <code>%in%</code> predicates, the scan probes once per set element
+and ORs the bitmaps together. Row groups with a 0 bit in the bitmap are
+never read from disk. This is the first pruning step, applied before
+binary search and zone-map checks.</p>
+</div>
+<div class="section level3">
+<h3 id="performance-characteristics">Performance characteristics<a class="anchor" aria-label="anchor" href="#performance-characteristics"></a>
+</h3>
+<p>Index probing is O(k) where k is the number of query keys (1 for
+<code>==</code>, n for <code>%in%</code>). Each probe is a hash
+computation plus a chain walk in the slot array. The index file is
+memory-mapped at open time, so repeated probes pay no I/O cost. For
+tables with many row groups and selective equality predicates, index
+pushdown can reduce I/O by orders of magnitude compared to zone-map
+pruning alone.</p>
+</div>
+</div>
+<div class="section level2">
+<h2 id="materialized-blocks">Materialized blocks<a class="anchor" aria-label="anchor" href="#materialized-blocks"></a>
+</h2>
+<p><code><a href="../reference/materialize.html">materialize()</a></code> consumes a vectra node and stores the
+result as a persistent in-memory columnar block. Unlike nodes, which are
+consumed on <code><a href="../reference/collect.html">collect()</a></code> and cannot be reused, blocks persist
+and support repeated lookups.</p>
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">blk</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"backbone.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">taxonID</span>, <span class="va">canonicalName</span>, <span class="va">genus</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/materialize.html">materialize</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
+<div class="section level3">
+<h3 id="exact-lookups">Exact lookups<a class="anchor" aria-label="anchor" href="#exact-lookups"></a>
+</h3>
+<p><code><a href="../reference/block_lookup.html">block_lookup()</a></code> performs hash-based lookups on a string
+column. Hash indices are built lazily on first use and cached for
+subsequent calls. The return value is a data.frame with a
+<code>query_idx</code> column (1-based position in the input keys
+vector) plus all columns from the block.</p>
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">hits</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/block_lookup.html">block_lookup</a></span><span class="op">(</span><span class="va">blk</span>, <span class="st">"canonicalName"</span>,</span>
+<span>                     <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Pinus sylvestris"</span><span class="op">)</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Case-insensitive</span></span>
+<span><span class="va">hits</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/block_lookup.html">block_lookup</a></span><span class="op">(</span><span class="va">blk</span>, <span class="st">"canonicalName"</span>,</span>
+<span>                     <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"quercus robur"</span><span class="op">)</span>, ci <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="fuzzy-lookups">Fuzzy lookups<a class="anchor" aria-label="anchor" href="#fuzzy-lookups"></a>
+</h3>
+<p><code><a href="../reference/block_fuzzy_lookup.html">block_fuzzy_lookup()</a></code> computes string distances between
+query keys and a block column. Three distance methods are available:
+Damerau-Levenshtein (<code>"dl"</code>, default), Levenshtein
+(<code>"levenshtein"</code>), and Jaro-Winkler (<code>"jw"</code>).
+Results are filtered by a maximum normalized distance threshold (default
+0.2).</p>
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">fuzzy</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/block_fuzzy_lookup.html">block_fuzzy_lookup</a></span><span class="op">(</span><span class="va">blk</span>, <span class="st">"canonicalName"</span>,</span>
+<span>                            <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robar"</span>, <span class="st">"Pinus silvestris"</span><span class="op">)</span>,</span>
+<span>                            method <span class="op">=</span> <span class="st">"dl"</span>, max_dist <span class="op">=</span> <span class="fl">0.2</span><span class="op">)</span></span></code></pre></div>
+<p>An optional blocking column reduces the search space by requiring
+exact matches on a second column before computing distances. This is
+useful for taxonomic lookups where genus is known:</p>
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">fuzzy</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/block_fuzzy_lookup.html">block_fuzzy_lookup</a></span><span class="op">(</span><span class="va">blk</span>, <span class="st">"canonicalName"</span>,</span>
+<span>                            <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robar"</span><span class="op">)</span>,</span>
+<span>                            block_col <span class="op">=</span> <span class="st">"genus"</span>,</span>
+<span>                            block_keys <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus"</span><span class="op">)</span>,</span>
+<span>                            n_threads <span class="op">=</span> <span class="fl">4L</span><span class="op">)</span></span></code></pre></div>
+<p>Fuzzy lookups are OpenMP-parallelized. The <code>n_threads</code>
+parameter controls the thread count (default 4).</p>
+</div>
+<div class="section level3">
+<h3 id="use-case">Use case<a class="anchor" aria-label="anchor" href="#use-case"></a>
+</h3>
+<p>Materialized blocks are designed for repeated lookups against a
+reference table. The typical pattern is: load a backbone or codelist
+once with <code><a href="../reference/materialize.html">materialize()</a></code>, then probe it many times with
+different query vectors. The block stays in memory across calls, and its
+internal hash index (for exact lookups) is built once and reused.</p>
+</div>
+</div>
+<div class="section level2">
+<h2 id="openmp-parallelization">OpenMP parallelization<a class="anchor" aria-label="anchor" href="#openmp-parallelization"></a>
+</h2>
+<p>The C engine uses OpenMP for CPU-bound operations where the
+per-element cost is high enough to justify thread management overhead.
+Parallelism is conditional: operations fall back to single-threaded
+execution when the batch size is below a threshold or when the platform
+does not support OpenMP.</p>
+<div class="section level3">
+<h3 id="which-operations-parallelize">Which operations parallelize<a class="anchor" aria-label="anchor" href="#which-operations-parallelize"></a>
+</h3>
+<table class="table">
+<colgroup>
+<col width="28%">
+<col width="28%">
+<col width="25%">
+<col width="17%">
+</colgroup>
+<thead><tr class="header">
+<th align="left">Operation</th>
+<th align="left">Threshold</th>
+<th align="left">Schedule</th>
+<th align="left">Notes</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td align="left">
+<code><a href="../reference/filter.html">filter()</a></code> (selection vector build)</td>
+<td align="left">32,768 rows</td>
+<td align="left">parallel prefix sum</td>
+<td align="left">Two-phase: count matches per thread, then write at
+offsets</td>
+</tr>
+<tr class="even">
+<td align="left">
+<code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code> with regex</td>
+<td align="left">1,000 rows</td>
+<td align="left"><code>dynamic, 64</code></td>
+<td align="left">Per-thread regex compilation for thread safety</td>
+</tr>
+<tr class="odd">
+<td align="left">
+<code>levenshtein()</code>, <code>dl_dist()</code>,
+<code>jaro_winkler()</code>
+</td>
+<td align="left">1,000 rows</td>
+<td align="left"><code>dynamic, 64</code></td>
+<td align="left">Fuzzy string distance in mutate expressions</td>
+</tr>
+<tr class="even">
+<td align="left">Sort (merge sort)</td>
+<td align="left">32,768 rows</td>
+<td align="left"><code>task</code></td>
+<td align="left">Recursive task spawning for parallel merge sort</td>
+</tr>
+<tr class="odd">
+<td align="left">Sort (key extraction)</td>
+<td align="left">32,768 rows</td>
+<td align="left"><code>static</code></td>
+<td align="left">Parallel extraction of sort keys into index arrays</td>
+</tr>
+<tr class="even">
+<td align="left">Join (build-side hashing)</td>
+<td align="left">32,768 rows</td>
+<td align="left"><code>static</code></td>
+<td align="left">Parallel hash computation for build-side keys</td>
+</tr>
+<tr class="odd">
+<td align="left">Join (probe-side hashing)</td>
+<td align="left">32,768 rows</td>
+<td align="left"><code>static</code></td>
+<td align="left">Parallel hash computation for probe-side keys</td>
+</tr>
+<tr class="even">
+<td align="left">Window (data copy)</td>
+<td align="left">32,768 rows</td>
+<td align="left"><code>static</code></td>
+<td align="left">Parallel copy of partition data</td>
+</tr>
+<tr class="odd">
+<td align="left">Window (group dispatch)</td>
+<td align="left">64 groups</td>
+<td align="left"><code>dynamic</code></td>
+<td align="left">Parallel window computation across groups</td>
+</tr>
+<tr class="even">
+<td align="left">Collect (column append)</td>
+<td align="left">8 columns</td>
+<td align="left"><code>static</code></td>
+<td align="left">Parallel column-by-column append to R vectors</td>
+</tr>
+<tr class="odd">
+<td align="left">Zone-map stat computation</td>
+<td align="left">32,768 rows</td>
+<td align="left">
+<code>static</code> with <code>reduction</code>
+</td>
+<td align="left">Parallel min/max scan during write</td>
+</tr>
+<tr class="even">
+<td align="left">Block fuzzy lookup</td>
+<td align="left">always (if &gt; 0 keys)</td>
+<td align="left">
+<code>dynamic, 1</code> per key /
+<code>dynamic, 16</code> per row</td>
+<td align="left">Parallelized by query key and by block row</td>
+</tr>
+<tr class="odd">
+<td align="left">Literal fill (broadcast)</td>
+<td align="left">32,768 rows</td>
+<td align="left"><code>static</code></td>
+<td align="left">Parallel fill for constant columns</td>
+</tr>
+</tbody>
+</table>
+<p>The general-purpose threshold is 32,768 rows
+(<code>VEC_OMP_THRESHOLD</code>). String operations use a lower
+threshold of 1,000 rows because their per-element cost (regex
+compilation, edit distance matrices) is much higher than arithmetic.</p>
+</div>
+<div class="section level3">
+<h3 id="thread-safety">Thread safety<a class="anchor" aria-label="anchor" href="#thread-safety"></a>
+</h3>
+<p>Regex operations (<code>grepl</code> with regex patterns) compile the
+POSIX regex once per thread. Each thread owns its own
+<code>regex_t</code> instance, allocated in thread-local scope inside
+the <code>#pragma omp parallel</code> block. This avoids both contention
+and the overhead of recompiling the regex per row.</p>
+<p>The filter node uses a parallel prefix sum to build the selection
+vector without locking. Each thread counts matches in its chunk, a
+sequential scan computes prefix offsets, then each thread writes
+selected indices at its computed offset.</p>
+</div>
+</div>
+<div class="section level2">
 <h2 id="current-limitations">Current limitations<a class="anchor" aria-label="anchor" href="#current-limitations"></a>
 </h2>
 <ul>
@@ -985,18 +1426,18 @@ between versions.</p>
 reverse-scan optimization.</p></li>
 <li><p><strong>distinct with .keep_all</strong>: Falls back to R when
 <code>.keep_all = TRUE</code> with a column subset.</p></li>
-<li><p><strong>Limited string operations</strong>: <code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>,
-<code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code> (fixed match only),
-<code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower()</a></code>, <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper()</a></code>, <code><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws()</a></code>,
-<code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0()</a></code> (2 args), <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">gsub()</a></code>/<code><a href="https://rdrr.io/r/base/grep.html" class="external-link">sub()</a></code>
-(fixed patterns), <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">startsWith()</a></code>, <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">endsWith()</a></code> are
-supported. No regex or multi-argument <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste()</a></code>. Use
-<code><a href="../reference/collect.html">collect()</a></code> first for unsupported string operations.</p></li>
-<li><p><strong>Single-threaded</strong>: The engine uses one thread.
-Parallelism is not planned.</p></li>
 <li><p><strong>Predicate pushdown is .vtr only</strong>: CSV, SQLite,
-and TIFF scans do not benefit from predicate pushdown or column
-pruning.</p></li>
+and TIFF scans do not benefit from predicate pushdown, column pruning,
+or hash index acceleration.</p></li>
+<li><p><strong>No SIMD</strong>: Arithmetic and comparison operations
+use scalar loops. The compiler may auto-vectorize some patterns, but
+there are no explicit SIMD intrinsics.</p></li>
+<li><p><strong>OpenMP availability varies</strong>: On macOS, R ships
+without OpenMP by default. Users must install <code>libomp</code>
+(e.g. via Homebrew) and configure the compiler flags. On Windows
+(rtools) and Linux, OpenMP is typically available out of the box. When
+OpenMP is not available, all operations run single-threaded with no
+functional difference.</p></li>
 </ul>
 </div>
 <div class="section level2">

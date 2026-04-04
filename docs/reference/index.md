@@ -12,6 +12,8 @@ Open files for lazy query execution
   : Create a lazy table reference from a SQLite database
 - [`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md)
   : Create a lazy table reference from a GeoTIFF raster
+- [`tbl_xlsx()`](https://gillescolling.com/vectra/reference/tbl_xlsx.md)
+  : Create a lazy table reference from an Excel (.xlsx) file
 
 ## Data sinks
 
@@ -36,6 +38,10 @@ Incremental updates to .vtr files
   : Logically delete rows from a .vtr file
 - [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
   : Compute the logical diff between two .vtr files
+- [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  : Create a hash index on a .vtr file column
+- [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  : Check if a hash index exists for a .vtr column
 
 ## Single-table verbs
 
@@ -99,12 +105,25 @@ Transform, filter, and reshape
   : Join two vectra tables
 - [`cross_join()`](https://gillescolling.com/vectra/reference/cross_join.md)
   : Cross join two vectra tables
+- [`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)
+  : Fuzzy join two vectra tables by string distance
 
 ## Combining tables
 
 - [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md)
   [`bind_cols()`](https://gillescolling.com/vectra/reference/bind_rows.md)
   : Bind rows or columns from multiple vectra tables
+
+## Block operations
+
+In-memory materialization and lookup
+
+- [`materialize()`](https://gillescolling.com/vectra/reference/materialize.md)
+  : Materialize a vectra node into a reusable in-memory block
+- [`block_lookup()`](https://gillescolling.com/vectra/reference/block_lookup.md)
+  : Probe a materialized block by column value
+- [`block_fuzzy_lookup()`](https://gillescolling.com/vectra/reference/block_fuzzy_lookup.md)
+  : Fuzzy-match query keys against a materialized block
 
 ## Diagnostics
 

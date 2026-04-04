@@ -22,6 +22,11 @@ articles:
   contents:
   - quickstart
   - engine
+  - formats
+  - joins
+  - string-ops
+  - indexing
+  - large-data
 reference:
 - title: Data sources
   desc: Open files for lazy query execution
@@ -30,6 +35,7 @@ reference:
   - tbl_csv
   - tbl_sqlite
   - tbl_tiff
+  - tbl_xlsx
 - title: Data sinks
   desc: Write query results or data.frames to disk
   contents:
@@ -43,6 +49,8 @@ reference:
   - append_vtr
   - delete_vtr
   - diff_vtr
+  - create_index
+  - has_index
 - title: Single-table verbs
   desc: Transform, filter, and reshape
   contents:
@@ -79,10 +87,17 @@ reference:
   - semi_join
   - anti_join
   - cross_join
+  - fuzzy_join
 - title: Combining tables
   contents:
   - bind_rows
   - bind_cols
+- title: Block operations
+  desc: In-memory materialization and lookup
+  contents:
+  - materialize
+  - block_lookup
+  - block_fuzzy_lookup
 - title: Diagnostics
   contents:
   - explain

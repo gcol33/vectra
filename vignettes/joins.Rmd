@@ -480,6 +480,7 @@ The three available methods have different characteristics:
 - **`"dl"`** (Damerau-Levenshtein, the default): counts insertions, deletions,
   substitutions, and transpositions. Good general-purpose metric for typos.
 - **`"levenshtein"`**: same as DL but without transpositions. Slightly stricter.
+
 - **`"jw"`** (Jaro-Winkler): gives more weight to matching prefixes. Designed
   for short strings like personal names; works well for genus-level matching.
 

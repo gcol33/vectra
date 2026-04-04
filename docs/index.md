@@ -177,11 +177,28 @@ pak::pak("gcol33/vectra")
 ## Documentation
 
 - [Getting
-  Started](https://gillescolling.com/vectra/articles/quickstart.html) -
-  Practical tutorial with runnable examples
+  Started](https://gillescolling.com/vectra/articles/quickstart.html) —
+  Full walkthrough with runnable examples
+- [Format
+  Backends](https://gillescolling.com/vectra/articles/formats.html) —
+  CSV, SQLite, Excel, GeoTIFF, and streaming conversion pipelines
+- [Joins](https://gillescolling.com/vectra/articles/joins.html) — All
+  join types, fuzzy joins, key coercion, and memory model
+- [String
+  Operations](https://gillescolling.com/vectra/articles/string-ops.html)
+  — Pattern matching, fuzzy matching, and block lookups
+- [Indexing and
+  Optimization](https://gillescolling.com/vectra/articles/indexing.html)
+  — Hash indexes, zone-map pruning, column pruning, and reading
+  [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
+  output
+- [Working with Large
+  Data](https://gillescolling.com/vectra/articles/large-data.html) —
+  Streaming pipelines, append/delete/diff, external sort, and memory
+  budgeting
 - [Engine
-  Reference](https://gillescolling.com/vectra/articles/engine.html) -
-  Execution model, types, coercion, memory guarantees, and limitations
+  Reference](https://gillescolling.com/vectra/articles/engine.html) —
+  Execution model, types, coercion, .vtr format, and limitations
 - [Function Reference](https://gillescolling.com/vectra/reference/)
 
 ## Support

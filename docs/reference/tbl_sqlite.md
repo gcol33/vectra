@@ -10,7 +10,7 @@ called.
 ## Usage
 
 ``` r
-tbl_sqlite(path, table, batch_size = 65536L)
+tbl_sqlite(path, table, batch_size = .DEFAULT_BATCH_SIZE)
 ```
 
 ## Arguments
