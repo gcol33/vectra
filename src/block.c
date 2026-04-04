@@ -5,11 +5,18 @@
 #include "optimize.h"
 #include "collect.h"
 #include "error.h"
+#include "string_distance.h"
+#include "fuzzy_join.h"
 #include <R.h>
 #include <Rinternals.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* FNV-1a hashing (same constants as hash.c)                          */
@@ -485,6 +492,328 @@ SEXP C_block_lookup(SEXP block_xptr, SEXP col_name, SEXP keys, SEXP ci_sexp) {
 
     free(query_idx);
     free(block_row);
+
+    UNPROTECT(3);
+    return df;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* String access helpers (local copies — static in fuzzy_join.c)      */
+/* ------------------------------------------------------------------ */
+
+static inline const char *blk_str_ptr(const VecArray *arr, int64_t row) {
+    return arr->buf.str.data + arr->buf.str.offsets[row];
+}
+
+static inline int64_t blk_str_len(const VecArray *arr, int64_t row) {
+    return arr->buf.str.offsets[row + 1] - arr->buf.str.offsets[row];
+}
+
+/* ------------------------------------------------------------------ */
+/* Compute normalized distance (local copy — static in fuzzy_join.c)  */
+/* ------------------------------------------------------------------ */
+
+static inline double blk_compute_dist(FuzzyMethod method,
+                                      const char *a, int64_t la,
+                                      const char *b, int64_t lb,
+                                      double max_dist) {
+    if (method == FUZZY_JW) {
+        double sim = strdist_jaro_winkler(a, la, b, lb);
+        return 1.0 - sim;
+    }
+    int64_t max_len = la > lb ? la : lb;
+    if (max_len == 0) return 0.0;
+    int64_t max_raw = (int64_t)ceil(max_dist * (double)max_len);
+    int64_t raw;
+    if (method == FUZZY_DL) {
+        raw = strdist_dl(a, la, b, lb, max_raw);
+    } else {
+        raw = strdist_levenshtein(a, la, b, lb, max_raw);
+    }
+    if (raw > max_raw) return max_dist + 1.0;
+    return (double)raw / (double)max_len;
+}
+
+/* ------------------------------------------------------------------ */
+/* Thread-local growable buffer for fuzzy lookup matches               */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int64_t *query_idx;
+    int64_t *block_row;
+    double  *dist;
+    int64_t  count;
+    int64_t  capacity;
+} FuzzyLookupBuf;
+
+static void flbuf_init(FuzzyLookupBuf *buf, int64_t cap) {
+    buf->query_idx = (int64_t *)malloc((size_t)cap * sizeof(int64_t));
+    buf->block_row = (int64_t *)malloc((size_t)cap * sizeof(int64_t));
+    buf->dist      = (double *)malloc((size_t)cap * sizeof(double));
+    buf->count = 0;
+    buf->capacity = cap;
+    if (!buf->query_idx || !buf->block_row || !buf->dist)
+        vectra_error("alloc failed for FuzzyLookupBuf");
+}
+
+static void flbuf_push(FuzzyLookupBuf *buf, int64_t qi, int64_t br, double d) {
+    if (buf->count >= buf->capacity) {
+        buf->capacity *= 2;
+        buf->query_idx = (int64_t *)realloc(buf->query_idx,
+            (size_t)buf->capacity * sizeof(int64_t));
+        buf->block_row = (int64_t *)realloc(buf->block_row,
+            (size_t)buf->capacity * sizeof(int64_t));
+        buf->dist = (double *)realloc(buf->dist,
+            (size_t)buf->capacity * sizeof(double));
+        if (!buf->query_idx || !buf->block_row || !buf->dist)
+            vectra_error("realloc failed for FuzzyLookupBuf");
+    }
+    buf->query_idx[buf->count] = qi;
+    buf->block_row[buf->count] = br;
+    buf->dist[buf->count]      = d;
+    buf->count++;
+}
+
+static void flbuf_free(FuzzyLookupBuf *buf) {
+    free(buf->query_idx);
+    free(buf->block_row);
+    free(buf->dist);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* R bridge: C_block_fuzzy_lookup                                      */
+/* ------------------------------------------------------------------ */
+
+SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
+                          SEXP method_sexp, SEXP max_dist_sexp,
+                          SEXP block_col_name, SEXP block_keys,
+                          SEXP n_threads_sexp) {
+
+    ColumnBlock *blk = (ColumnBlock *)R_ExternalPtrAddr(block_xptr);
+    if (!blk) Rf_error("block has been freed");
+
+    const char *mcname = CHAR(STRING_ELT(match_col_name, 0));
+    FuzzyMethod method = (FuzzyMethod)Rf_asInteger(method_sexp);
+    double max_dist = Rf_asReal(max_dist_sexp);
+    int n_threads = Rf_asInteger(n_threads_sexp);
+    if (n_threads < 1) n_threads = 1;
+
+    /* Find match column index */
+    int match_col_idx = -1;
+    for (int i = 0; i < blk->n_cols; i++) {
+        if (strcmp(blk->schema.col_names[i], mcname) == 0) {
+            match_col_idx = i;
+            break;
+        }
+    }
+    if (match_col_idx < 0)
+        Rf_error("column '%s' not found in block", mcname);
+    if (blk->schema.col_types[match_col_idx] != VEC_STRING)
+        Rf_error("column '%s' is not a string column", mcname);
+
+    const VecArray *match_arr = &blk->columns[match_col_idx];
+
+    /* Blocking column (optional) */
+    int use_blocking = (block_col_name != R_NilValue);
+    int block_col_idx = -1;
+    BlockIndex *blk_idx = NULL;
+
+    if (use_blocking) {
+        const char *bcname = CHAR(STRING_ELT(block_col_name, 0));
+        for (int i = 0; i < blk->n_cols; i++) {
+            if (strcmp(blk->schema.col_names[i], bcname) == 0) {
+                block_col_idx = i;
+                break;
+            }
+        }
+        if (block_col_idx < 0)
+            Rf_error("blocking column '%s' not found in block", bcname);
+        if (blk->schema.col_types[block_col_idx] != VEC_STRING)
+            Rf_error("blocking column '%s' is not a string column",
+                     CHAR(STRING_ELT(block_col_name, 0)));
+        if (block_keys == R_NilValue)
+            Rf_error("block_keys required when block_col is provided");
+        if (XLENGTH(block_keys) != XLENGTH(keys))
+            Rf_error("block_keys must have same length as keys");
+
+        blk_idx = block_get_index(blk, block_col_idx, 0);
+    }
+
+    /* Extract query keys */
+    int64_t n_keys = XLENGTH(keys);
+
+    /* Allocate thread-local buffers */
+#ifdef _OPENMP
+    if (n_threads > omp_get_max_threads())
+        n_threads = omp_get_max_threads();
+#else
+    n_threads = 1;
+#endif
+
+    FuzzyLookupBuf *tbufs = (FuzzyLookupBuf *)malloc(
+        (size_t)n_threads * sizeof(FuzzyLookupBuf));
+    if (!tbufs) Rf_error("alloc failed for thread buffers");
+    for (int t = 0; t < n_threads; t++)
+        flbuf_init(&tbufs[t], 256);
+
+    int64_t blk_nrows = blk->n_rows;
+
+    if (use_blocking) {
+        /* ---- Blocked fuzzy lookup ---- */
+        int64_t idx_mask = blk_idx->n_slots - 1;
+
+        #ifdef _OPENMP
+        #pragma omp parallel for num_threads(n_threads) schedule(dynamic, 64)
+        #endif
+        for (int64_t q = 0; q < n_keys; q++) {
+            #ifdef _OPENMP
+            int tid = omp_get_thread_num();
+            #else
+            int tid = 0;
+            #endif
+
+            SEXP ks = STRING_ELT(keys, (R_xlen_t)q);
+            if (ks == NA_STRING) continue;
+            const char *key = CHAR(ks);
+            int64_t key_len = (int64_t)strlen(key);
+
+            /* Get blocking key for this query */
+            SEXP bks = STRING_ELT(block_keys, (R_xlen_t)q);
+            if (bks == NA_STRING) continue;
+            const char *bkey = CHAR(bks);
+            int64_t bkey_len = (int64_t)strlen(bkey);
+
+            /* Probe the block index for candidate rows */
+            uint64_t h = fnv1a_bytes(bkey, bkey_len);
+            int64_t slot = (int64_t)(h & (uint64_t)idx_mask);
+            int64_t e = blk_idx->heads[slot];
+
+            while (e >= 0) {
+                if (blk_idx->entry_hash[e] == h &&
+                    str_eq(blk_idx->col, blk_idx->entry_row[e],
+                           bkey, bkey_len, 0)) {
+                    int64_t r = blk_idx->entry_row[e];
+                    /* Skip NULL in match column */
+                    if (match_arr->validity &&
+                        !vec_array_is_valid(match_arr, r)) {
+                        e = blk_idx->entry_next[e];
+                        continue;
+                    }
+                    const char *bstr = blk_str_ptr(match_arr, r);
+                    int64_t blen = blk_str_len(match_arr, r);
+                    double d = blk_compute_dist(method, key, key_len,
+                                                bstr, blen, max_dist);
+                    if (d <= max_dist)
+                        flbuf_push(&tbufs[tid], q, r, d);
+                }
+                e = blk_idx->entry_next[e];
+            }
+        }
+    } else {
+        /* ---- Unblocked fuzzy lookup: compare against all rows ---- */
+        #ifdef _OPENMP
+        #pragma omp parallel for num_threads(n_threads) schedule(dynamic, 16)
+        #endif
+        for (int64_t q = 0; q < n_keys; q++) {
+            #ifdef _OPENMP
+            int tid = omp_get_thread_num();
+            #else
+            int tid = 0;
+            #endif
+
+            SEXP ks = STRING_ELT(keys, (R_xlen_t)q);
+            if (ks == NA_STRING) continue;
+            const char *key = CHAR(ks);
+            int64_t key_len = (int64_t)strlen(key);
+
+            for (int64_t r = 0; r < blk_nrows; r++) {
+                if (match_arr->validity &&
+                    !vec_array_is_valid(match_arr, r))
+                    continue;
+                const char *bstr = blk_str_ptr(match_arr, r);
+                int64_t blen = blk_str_len(match_arr, r);
+                double d = blk_compute_dist(method, key, key_len,
+                                            bstr, blen, max_dist);
+                if (d <= max_dist)
+                    flbuf_push(&tbufs[tid], q, r, d);
+            }
+        }
+    }
+
+    /* Merge thread-local buffers */
+    int64_t total = 0;
+    for (int t = 0; t < n_threads; t++)
+        total += tbufs[t].count;
+
+    int64_t *merged_qi = (int64_t *)malloc((size_t)(total + 1) * sizeof(int64_t));
+    int64_t *merged_br = (int64_t *)malloc((size_t)(total + 1) * sizeof(int64_t));
+    double  *merged_d  = (double *)malloc((size_t)(total + 1) * sizeof(double));
+    if (!merged_qi || !merged_br || !merged_d)
+        Rf_error("alloc failed for merged fuzzy results");
+
+    int64_t pos = 0;
+    for (int t = 0; t < n_threads; t++) {
+        if (tbufs[t].count > 0) {
+            memcpy(merged_qi + pos, tbufs[t].query_idx,
+                   (size_t)tbufs[t].count * sizeof(int64_t));
+            memcpy(merged_br + pos, tbufs[t].block_row,
+                   (size_t)tbufs[t].count * sizeof(int64_t));
+            memcpy(merged_d + pos, tbufs[t].dist,
+                   (size_t)tbufs[t].count * sizeof(double));
+            pos += tbufs[t].count;
+        }
+        flbuf_free(&tbufs[t]);
+    }
+    free(tbufs);
+
+    /* Build output data.frame: query_idx + fuzzy_dist + all block columns */
+    int out_ncols = 2 + blk->n_cols;
+    SEXP df    = PROTECT(Rf_allocVector(VECSXP, out_ncols));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, out_ncols));
+
+    /* Column 0: query_idx (1-based) */
+    {
+        SEXP qcol = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)total));
+        int *qp = INTEGER(qcol);
+        for (int64_t i = 0; i < total; i++)
+            qp[i] = (int)(merged_qi[i] + 1);
+        SET_VECTOR_ELT(df, 0, qcol);
+        SET_STRING_ELT(names, 0, Rf_mkChar("query_idx"));
+        UNPROTECT(1);
+    }
+
+    /* Column 1: fuzzy_dist */
+    {
+        SEXP dcol = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)total));
+        double *dp = REAL(dcol);
+        memcpy(dp, merged_d, (size_t)total * sizeof(double));
+        SET_VECTOR_ELT(df, 1, dcol);
+        SET_STRING_ELT(names, 1, Rf_mkChar("fuzzy_dist"));
+        UNPROTECT(1);
+    }
+
+    /* Columns 2..n_cols+1: gathered block columns */
+    for (int c = 0; c < blk->n_cols; c++) {
+        SEXP col = block_array_gather_sexp(&blk->columns[c],
+                                           merged_br, total);
+        SET_VECTOR_ELT(df, c + 2, col);
+        SET_STRING_ELT(names, c + 2,
+            Rf_mkCharCE(blk->schema.col_names[c], CE_UTF8));
+    }
+
+    /* data.frame attributes */
+    Rf_setAttrib(df, R_NamesSymbol, names);
+    SEXP row_names = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(row_names)[0] = NA_INTEGER;
+    INTEGER(row_names)[1] = -(int)total;
+    Rf_setAttrib(df, R_RowNamesSymbol, row_names);
+    Rf_setAttrib(df, R_ClassSymbol, Rf_mkString("data.frame"));
+
+    free(merged_qi);
+    free(merged_br);
+    free(merged_d);
 
     UNPROTECT(3);
     return df;

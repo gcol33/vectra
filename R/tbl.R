@@ -27,9 +27,9 @@ tbl <- function(path) {
 #'
 #' Opens a CSV file for lazy, streaming query execution. Column types are
 #' inferred from the first 1000 rows. No data is read until [collect()] is
-#' called.
+#' called. Gzip-compressed files (`.csv.gz`) are supported transparently.
 #'
-#' @param path Path to a `.csv` file.
+#' @param path Path to a `.csv` or `.csv.gz` file.
 #' @param batch_size Number of rows per batch (default 65536).
 #'
 #' @return A `vectra_node` object representing a lazy scan of the CSV file.
@@ -80,6 +80,45 @@ tbl_sqlite <- function(path, table, batch_size = .DEFAULT_BATCH_SIZE) {
   xptr <- .Call(C_sql_scan_node, path, table, as.double(batch_size))
   structure(list(.node = xptr, .path = path, .table = table),
             class = "vectra_node")
+}
+
+#' Create a lazy table reference from an Excel (.xlsx) file
+#'
+#' Reads a sheet from an Excel workbook into a vectra node for lazy query
+#' execution. The sheet is read into memory via
+#' \code{\link[openxlsx2:read_xlsx]{openxlsx2::read_xlsx()}} and then converted
+#' to vectra's internal format. Requires the \pkg{openxlsx2} package.
+#'
+#' @param path Path to an `.xlsx` file.
+#' @param sheet Sheet to read: either a name (character) or 1-based index
+#'   (integer). Default `1L` (first sheet).
+#' @param batch_size Number of rows per batch (default 65536).
+#'
+#' @return A `vectra_node` object representing a lazy scan of the sheet.
+#'
+#' @examples
+#' \dontrun{
+#' node <- tbl_xlsx("data.xlsx")
+#' node |> filter(score > 80) |> collect()
+#'
+#' # Read a specific sheet by name
+#' node <- tbl_xlsx("data.xlsx", sheet = "Sheet2")
+#' }
+#'
+#' @export
+tbl_xlsx <- function(path, sheet = 1L, batch_size = .DEFAULT_BATCH_SIZE) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  if (!(is.character(sheet) || is.numeric(sheet)) || length(sheet) != 1)
+    stop("sheet must be a single character string or integer")
+
+  if (!requireNamespace("openxlsx2", quietly = TRUE))
+    stop("Package 'openxlsx2' is required for tbl_xlsx(). ",
+         "Install it with: install.packages('openxlsx2')")
+
+  path <- normalizePath(path, mustWork = TRUE)
+  df <- openxlsx2::read_xlsx(path, sheet = sheet)
+  df_to_node(df)
 }
 
 #' Create a lazy table reference from a GeoTIFF raster

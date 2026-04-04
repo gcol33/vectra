@@ -4,7 +4,7 @@
 \alias{tbl_tiff}
 \title{Create a lazy table reference from a GeoTIFF raster}
 \usage{
-tbl_tiff(path, batch_size = 256L)
+tbl_tiff(path, batch_size = .TIFF_BATCH_SIZE)
 }
 \arguments{
 \item{path}{Path to a GeoTIFF file.}

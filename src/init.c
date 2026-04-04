@@ -9,6 +9,9 @@
 /* block.c R bridge functions */
 SEXP C_block_materialize(SEXP node_xptr);
 SEXP C_block_lookup(SEXP block_xptr, SEXP col_name, SEXP keys, SEXP ci);
+SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col, SEXP keys,
+                          SEXP method, SEXP max_dist, SEXP block_col,
+                          SEXP block_keys, SEXP n_threads);
 #include "vtr_delete.h"
 #include "vtr_diff.h"
 
@@ -40,7 +43,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_diff_vtr",       (DL_FUNC) &C_diff_vtr,        3},
     {"C_fuzzy_join_node", (DL_FUNC) &C_fuzzy_join_node, 10},
     {"C_block_materialize", (DL_FUNC) &C_block_materialize, 1},
-    {"C_block_lookup",      (DL_FUNC) &C_block_lookup,      4},
+    {"C_block_lookup",        (DL_FUNC) &C_block_lookup,        4},
+    {"C_block_fuzzy_lookup",  (DL_FUNC) &C_block_fuzzy_lookup,  8},
     {"C_create_index",      (DL_FUNC) &C_create_index,      3},
     {"C_has_index",         (DL_FUNC) &C_has_index,         2},
     {NULL, NULL, 0}

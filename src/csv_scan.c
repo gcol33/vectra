@@ -1,4 +1,5 @@
 #include "csv_scan.h"
+#include "csv_reader.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -95,28 +96,29 @@ static void fv_free(FieldVec *v) {
 /* Read one logical CSV line (handles quoted fields with embedded newlines).
    Preserves raw content including quotes so csv_split_fields can parse them.
    Returns 0 on success, -1 on EOF before any data. */
-static int csv_read_line(FILE *fp, GBuf *line) {
+static int csv_read_line(CsvReader *rd, GBuf *line) {
     gbuf_clear(line);
-    int c = fgetc(fp);
-    if (c == EOF) return -1;
+    int c = rd->getc_fn(rd);
+    if (c == -1) return -1;
 
     int in_quote = 0;
-    while (c != EOF) {
+    while (c != -1) {
         if (in_quote) {
             gbuf_push(line, (char)c);
             if (c == '"') {
-                int next = fgetc(fp);
+                int next = rd->getc_fn(rd);
                 if (next == '"') {
                     /* Escaped quote — keep both */
                     gbuf_push(line, (char)next);
                 } else {
                     /* End of quoted field */
                     in_quote = 0;
-                    if (next == EOF) break;
+                    if (next == -1) break;
                     if (next == '\n') break;
                     if (next == '\r') {
-                        int peek = fgetc(fp);
-                        if (peek != '\n' && peek != EOF) ungetc(peek, fp);
+                        int peek = rd->getc_fn(rd);
+                        if (peek != '\n' && peek != -1)
+                            rd->ungetc_fn(rd, peek);
                         break;
                     }
                     /* Push whatever follows the closing quote */
@@ -130,14 +132,15 @@ static int csv_read_line(FILE *fp, GBuf *line) {
             } else if (c == '\n') {
                 break;
             } else if (c == '\r') {
-                int peek = fgetc(fp);
-                if (peek != '\n' && peek != EOF) ungetc(peek, fp);
+                int peek = rd->getc_fn(rd);
+                if (peek != '\n' && peek != -1)
+                    rd->ungetc_fn(rd, peek);
                 break;
             } else {
                 gbuf_push(line, (char)c);
             }
         }
-        c = fgetc(fp);
+        c = rd->getc_fn(rd);
     }
     return 0;
 }
@@ -230,8 +233,8 @@ static int try_parse_bool(const char *s) {
 
 /* Infer types by reading up to infer_n rows from current position.
    Seeks back to original position when done. */
-static VecType *csv_infer_types(FILE *fp, int n_cols, int64_t infer_n) {
-    long start_pos = ftell(fp);
+static VecType *csv_infer_types(CsvReader *rd, int n_cols, int64_t infer_n) {
+    int64_t start_pos = rd->tell_fn(rd);
 
     /* Start everything as unknown (use -1 as sentinel) */
     int *state = (int *)calloc((size_t)n_cols, sizeof(int));
@@ -243,7 +246,7 @@ static VecType *csv_infer_types(FILE *fp, int n_cols, int64_t infer_n) {
     fv_init(&fields);
 
     int64_t rows_read = 0;
-    while (rows_read < infer_n && csv_read_line(fp, &line) == 0) {
+    while (rows_read < infer_n && csv_read_line(rd, &line) == 0) {
         csv_split_fields(line.data, line.len, &fields);
         int nc = fields.n < n_cols ? fields.n : n_cols;
         for (int c = 0; c < nc; c++) {
@@ -301,7 +304,7 @@ static VecType *csv_infer_types(FILE *fp, int n_cols, int64_t infer_n) {
     }
     free(state);
 
-    fseek(fp, start_pos, SEEK_SET);
+    rd->seek_fn(rd, start_pos);
     return types;
 }
 
@@ -366,7 +369,7 @@ static VecBatch *csv_read_batch(CsvScanNode *sn) {
     FieldVec fields;
     fv_init(&fields);
 
-    while (n_rows < batch_size && csv_read_line(sn->fp, &line) == 0) {
+    while (n_rows < batch_size && csv_read_line(sn->reader, &line) == 0) {
         /* Skip completely blank lines */
         if (line.len == 0) continue;
 
@@ -484,7 +487,7 @@ static VecBatch *csv_scan_next_batch(VecNode *self) {
 
 static void csv_scan_free(VecNode *self) {
     CsvScanNode *sn = (CsvScanNode *)self;
-    if (sn->fp) fclose(sn->fp);
+    if (sn->reader) sn->reader->close_fn(sn->reader);
     free(sn->col_types);
     vec_schema_free(&sn->base.output_schema);
     free(sn);
@@ -497,15 +500,15 @@ static void csv_scan_free(VecNode *self) {
 #define CSV_INFER_ROWS 1000
 
 CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) vectra_error("cannot open CSV file: %s", path);
+    CsvReader *rd = csv_reader_open(path);
+    if (!rd) vectra_error("cannot open CSV file: %s", path);
 
     /* Read header line */
     GBuf line;
     gbuf_init(&line);
-    if (csv_read_line(fp, &line) != 0) {
+    if (csv_read_line(rd, &line) != 0) {
         gbuf_free(&line);
-        fclose(fp);
+        rd->close_fn(rd);
         vectra_error("CSV file is empty: %s", path);
     }
 
@@ -517,18 +520,18 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
     int n_cols = header_fields.n;
     if (n_cols == 0) {
         fv_free(&header_fields);
-        fclose(fp);
+        rd->close_fn(rd);
         vectra_error("CSV header has no columns: %s", path);
     }
 
     /* Record data start position */
-    long data_start = ftell(fp);
+    int64_t data_start = rd->tell_fn(rd);
 
     /* Infer types from first N rows */
-    VecType *col_types = csv_infer_types(fp, n_cols, CSV_INFER_ROWS);
+    VecType *col_types = csv_infer_types(rd, n_cols, CSV_INFER_ROWS);
 
     /* Seek back to data start for reading */
-    fseek(fp, data_start, SEEK_SET);
+    rd->seek_fn(rd, data_start);
 
     /* Build schema */
     char **names = (char **)malloc((size_t)n_cols * sizeof(char *));
@@ -542,7 +545,7 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
     CsvScanNode *sn = (CsvScanNode *)calloc(1, sizeof(CsvScanNode));
     if (!sn) vectra_error("alloc failed for CsvScanNode");
 
-    sn->fp = fp;
+    sn->reader = rd;
     sn->data_start = data_start;
     sn->n_file_cols = n_cols;
     sn->col_types = col_types;

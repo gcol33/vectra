@@ -4,10 +4,10 @@
 \alias{tbl_csv}
 \title{Create a lazy table reference from a CSV file}
 \usage{
-tbl_csv(path, batch_size = 65536L)
+tbl_csv(path, batch_size = .DEFAULT_BATCH_SIZE)
 }
 \arguments{
-\item{path}{Path to a \code{.csv} file.}
+\item{path}{Path to a \code{.csv} or \code{.csv.gz} file.}
 
 \item{batch_size}{Number of rows per batch (default 65536).}
 }
@@ -17,7 +17,7 @@ A \code{vectra_node} object representing a lazy scan of the CSV file.
 \description{
 Opens a CSV file for lazy, streaming query execution. Column types are
 inferred from the first 1000 rows. No data is read until \code{\link[=collect]{collect()}} is
-called.
+called. Gzip-compressed files (\code{.csv.gz}) are supported transparently.
 }
 \examples{
 f <- tempfile(fileext = ".csv")

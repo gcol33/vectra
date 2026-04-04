@@ -4,7 +4,7 @@
 \alias{tbl_sqlite}
 \title{Create a lazy table reference from a SQLite database}
 \usage{
-tbl_sqlite(path, table, batch_size = 65536L)
+tbl_sqlite(path, table, batch_size = .DEFAULT_BATCH_SIZE)
 }
 \arguments{
 \item{path}{Path to a SQLite database file.}
