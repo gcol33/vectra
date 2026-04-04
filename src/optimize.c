@@ -337,6 +337,12 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
         ConcatNode *cn = (ConcatNode *)node;
         for (int i = 0; i < cn->n_children; i++)
             propagate_cols(cn->children[i], parent_needed, parent_ncols);
+        /* Sync output schema with first child (children may have been pruned) */
+        if (cn->children[0]->output_schema.n_cols != cn->base.output_schema.n_cols) {
+            vec_schema_free(&cn->base.output_schema);
+            cn->base.output_schema = vec_schema_copy(
+                &cn->children[0]->output_schema);
+        }
         return;
     }
 

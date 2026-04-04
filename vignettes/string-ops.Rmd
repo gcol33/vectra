@@ -1,0 +1,1012 @@
+---
+title: "String Operations and Fuzzy Matching"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{String Operations and Fuzzy Matching}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+
+String-heavy datasets are common in ecology. Species names arrive with typos,
+observer notes contain free-text descriptions, and site labels mix upper and
+lower case in ways that break joins. Cleaning and matching these strings is
+often the slowest part of an analysis pipeline, both in wall-clock time and in
+the number of lines of R code required.
+
+vectra handles all string operations inside its C engine, operating directly
+on raw byte buffers rather than going through R's internal `CHARSXP` string
+pool. When you write `mutate(name_clean = tolower(trimws(species)))`, that
+expression is serialized into an execution plan and evaluated in C as data
+flows through the pipeline. No temporary R character vectors are allocated, no
+intermediate copies exist, and the global string cache that R maintains for
+every unique character value is bypassed entirely.
+
+This architecture has two practical consequences. First, string operations
+scale linearly with data size and do not suffer from R's O(n log n) string
+interning overhead. Second, the CPU-intensive operations (regex matching,
+edit-distance computation) can be parallelized with OpenMP because the C
+engine owns the memory layout. For datasets with more than a thousand rows,
+vectra automatically distributes regex `grepl`, `levenshtein`, `dl_dist`, and
+`jaro_winkler` across available cores.
+
+This vignette walks through every string operation vectra supports, from
+basic transformations through regex pattern matching to fuzzy joins. We will
+use ecological data throughout: species names with realistic errors, site
+labels from field surveys, and observer notes that need cleaning before
+analysis. The examples are deliberately small so that outputs fit on screen,
+but every operation shown here works identically on datasets with millions of
+rows, streaming through memory one row group at a time without materializing
+the full result until `collect()` is called.
+
+
+## Basic string functions
+
+We will start with a small dataset of tree observations where names need
+cleaning. The data has trailing spaces, inconsistent case, and a few columns
+we will want to slice apart.
+
+```{r basic-data}
+library(vectra)
+
+trees <- data.frame(
+  species  = c("Quercus robur  ", "  fagus sylvatica", "ACER platanoides",
+               "Betula pendula", "  Pinus SYLVESTRIS  "),
+  site     = c("plot_A01", "plot_B12", "plot_A01", "plot_C03", "plot_B12"),
+  observer = c("J. Smith", "A. Mueller", "J. Smith",
+               "B. Novak", "A. Mueller"),
+  dbh_cm   = c(45.2, 38.1, 22.7, 31.0, 55.3),
+  stringsAsFactors = FALSE
+)
+
+f <- tempfile(fileext = ".vtr")
+write_vtr(trees, f)
+```
+
+### Trimming whitespace
+
+`trimws()` strips leading and trailing whitespace from every value in a
+column. The C engine operates on the raw bytes, so the overhead per string is
+a single pass to find the first and last non-space characters. We apply it
+inside `mutate()` just as we would in base R.
+
+```{r trimws}
+tbl(f) |>
+  mutate(species_clean = trimws(species)) |>
+  select(species, species_clean) |>
+  collect()
+```
+
+The original column is preserved alongside the cleaned version. If we no
+longer need it, a subsequent `select()` drops it from the pipeline before any
+downstream node sees it.
+
+### Case conversion
+
+`toupper()` and `tolower()` convert ASCII characters in place. These are pure
+byte-level operations (A-Z mapped to a-z and vice versa), so they are
+effectively free compared to the I/O cost of reading the column from disk.
+
+```{r case}
+tbl(f) |>
+  mutate(species_lower = tolower(trimws(species)),
+         species_upper = toupper(trimws(species))) |>
+  select(species_lower, species_upper) |>
+  collect()
+```
+
+Chaining `tolower(trimws(...))` creates a single expression node in the plan.
+The engine evaluates the innermost function first and passes the result
+directly to the outer one, with no intermediate allocation visible from R.
+
+### String length
+
+`nchar()` returns the byte length of each string as a double (vectra's
+integer type). This is useful for filtering out suspiciously short or long
+entries that might indicate data-entry errors.
+
+```{r nchar}
+tbl(f) |>
+  mutate(name_len = nchar(trimws(species))) |>
+  select(species, name_len) |>
+  collect()
+```
+
+Because vectra operates on raw bytes, `nchar()` returns the byte length, not
+the number of Unicode code points. For pure ASCII text (English letters,
+digits, common punctuation), bytes and characters are the same thing. But for
+multi-byte UTF-8 characters such as accented letters ("ü" = 2 bytes, "é" = 2
+bytes) or CJK ideographs (3 bytes each), the reported length will be higher
+than what `base::nchar()` returns in R. The same applies to `substr()`: its
+start and stop positions refer to byte offsets. In ecological data, this
+rarely matters because taxonomic names and site codes are overwhelmingly
+ASCII, but it is worth keeping in mind if your data contains place names with
+diacritics or observer names in non-Latin scripts.
+
+### Extracting substrings
+
+`substr(x, start, stop)` and `substring(x, first, last)` both extract a
+portion of each string by position. Positions are 1-based, following R
+convention. These are useful for pulling fixed-width codes out of identifier
+columns.
+
+```{r substr}
+tbl(f) |>
+  mutate(plot_letter = substr(site, 6, 6),
+         plot_number = substr(site, 7, 8)) |>
+  select(site, plot_letter, plot_number) |>
+  collect()
+```
+
+The site codes follow a `plot_X##` pattern, so character 6 is the letter and
+characters 7-8 are the numeric part. Both are returned as strings.
+
+### Prefix and suffix tests
+
+`startsWith()` and `endsWith()` return a logical column. They take a literal
+string argument (not a column reference) and match it against the beginning or
+end of each value. Because the comparison is a simple memcmp on the byte
+prefix or suffix, it runs faster than a regex equivalent.
+
+```{r starts-ends}
+tbl(f) |>
+  filter(startsWith(site, "plot_A")) |>
+  select(species, site) |>
+  collect()
+```
+
+```{r endswith}
+tbl(f) |>
+  mutate(is_mueller = endsWith(observer, "Mueller")) |>
+  select(observer, is_mueller) |>
+  collect()
+```
+
+`startsWith` and `endsWith` are particularly useful in `filter()` for
+subsetting data by site code prefixes or file path suffixes, since the C
+engine can evaluate them without compiling a regex.
+
+
+## String concatenation
+
+`paste()` and `paste0()` concatenate an arbitrary number of arguments into a
+single string column. These are N-ary functions: you can pass two columns,
+five columns, or a mix of columns and literal strings. The C engine's
+two-pass string builder computes the total output length across all arguments
+first, allocates a single buffer, and fills it in one sweep.
+
+### paste0: no separator
+
+`paste0()` joins its arguments with no separator, which is the common case
+for building identifiers or composite keys.
+
+```{r paste0}
+tbl(f) |>
+  mutate(record_id = paste0(site, "_", trimws(species))) |>
+  select(record_id) |>
+  collect()
+```
+
+Here we pass three arguments: the `site` column, a literal underscore, and
+the trimmed species name. The engine handles mixed column-and-literal
+arguments natively.
+
+### paste: custom separator
+
+`paste()` uses a space as the default separator, matching base R behaviour.
+The `sep` parameter overrides this.
+
+```{r paste-sep}
+tbl(f) |>
+  mutate(label = paste(observer, site, sep = " @ ")) |>
+  select(label) |>
+  collect()
+```
+
+### Multi-column paste
+
+When building composite labels from more than two columns, passing all of
+them in a single `paste()` call is cleaner than nesting multiple `paste0()`
+calls.
+
+```{r paste-multi}
+tbl(f) |>
+  mutate(full_label = paste(observer, site,
+                            trimws(species), sep = " | ")) |>
+  select(full_label) |>
+  collect()
+```
+
+The engine constructs each output string in a single allocation regardless of
+how many arguments are passed, so there is no performance penalty for
+concatenating five columns versus two.
+
+
+## Pattern matching: fixed strings
+
+vectra's `grepl()`, `gsub()`, and `sub()` accept a `fixed` parameter that
+controls whether the pattern is treated as a literal byte sequence or as a
+POSIX regular expression. When `fixed = TRUE` (the default in vectra), the
+engine uses a direct substring search, which avoids the cost of compiling a
+regex automaton. For exact substring tests and simple replacements, this is
+the right choice.
+
+Note that vectra defaults to `fixed = TRUE`, which differs from base R where
+`fixed` defaults to `FALSE`. We chose this default because in our experience
+the majority of string filtering and replacement tasks in data cleaning
+involve literal substrings, not regex patterns. When you need actual regex,
+pass `fixed = FALSE` explicitly. This is covered in the next section.
+
+### Filtering with grepl
+
+`grepl(pattern, x, fixed = TRUE)` returns a boolean column that is `TRUE`
+wherever the pattern appears as a literal substring. We use it here to find
+all records where the observer's surname contains "Smith".
+
+```{r grepl-fixed}
+tbl(f) |>
+  filter(grepl("Smith", observer, fixed = TRUE)) |>
+  collect()
+```
+
+Only one row matches. The fixed-string search scans each byte buffer with a
+Boyer-Moore-style skip, so it scales well even on columns with long string
+values.
+
+### Replacing with gsub and sub
+
+`gsub(pattern, replacement, x, fixed = TRUE)` replaces every occurrence of
+the pattern; `sub()` replaces only the first. Both accept `fixed = TRUE` for
+literal matching and return a new string column.
+
+A common cleaning task is standardizing separators. Suppose our site codes
+sometimes use underscores and sometimes hyphens.
+
+```{r gsub-fixed}
+messy_sites <- data.frame(
+  site = c("plot_A01", "plot-B12", "plot_A01", "plot-C03", "plot_B12"),
+  stringsAsFactors = FALSE
+)
+f2 <- tempfile(fileext = ".vtr")
+write_vtr(messy_sites, f2)
+
+tbl(f2) |>
+  mutate(site_clean = gsub("-", "_", site, fixed = TRUE)) |>
+  collect()
+```
+
+Every hyphen becomes an underscore. Since `fixed = TRUE` is the default,
+writing `gsub("-", "_", site)` without the explicit argument produces the
+same result.
+
+### sub: first match only
+
+`sub()` replaces only the first occurrence. This is useful when a pattern
+might appear multiple times and we want to change just the leading instance.
+
+```{r sub-fixed}
+notes <- data.frame(
+  note = c("tree dead, bark loose, dead branches",
+           "alive, healthy canopy",
+           "dead standing, no bark"),
+  stringsAsFactors = FALSE
+)
+f3 <- tempfile(fileext = ".vtr")
+write_vtr(notes, f3)
+
+tbl(f3) |>
+  mutate(note_edited = sub("dead", "DEAD", note, fixed = TRUE)) |>
+  select(note, note_edited) |>
+  collect()
+```
+
+In the first row, only the first "dead" is uppercased; the second "dead" in
+"dead branches" remains unchanged. `gsub` would have replaced both.
+
+
+## Pattern matching: regex
+
+When literal substring matching is not enough, vectra supports full POSIX
+regular expressions by passing `fixed = FALSE`. The C engine compiles each
+regex pattern once per batch using `regcomp()` and applies it across all rows.
+For batches with more than 1000 rows, the matching loop is parallelized with
+OpenMP, with each thread compiling its own copy of the regex for thread
+safety.
+
+The regex dialect is POSIX Extended Regular Expressions (ERE), the same
+dialect used by `grep -E` on Unix systems. This means character classes like
+`[A-Z]`, quantifiers `+`, `*`, `?`, alternation with `|`, and grouping with
+`()` all work as expected. Backreferences in replacement strings (`\\1`,
+`\\2`) refer to captured groups. Perl-specific extensions like lookaheads,
+lookbehinds, and non-greedy quantifiers (`*?`) are not supported; this is a
+deliberate constraint that keeps the regex engine simple and predictable.
+
+### Regex filtering with grepl
+
+We will build a dataset with species names that have various formatting
+issues. The regex `^[A-Z][a-z]+ [a-z]+$` matches properly formatted binomial
+names (capital genus, lowercase epithet, single space).
+
+```{r grepl-regex}
+species_list <- data.frame(
+  name = c("Quercus robur", "fagus sylvatica", "ACER PLATANOIDES",
+           "Betula pendula", "Pinus  sylvestris", "Tilia cordata"),
+  stringsAsFactors = FALSE
+)
+f4 <- tempfile(fileext = ".vtr")
+write_vtr(species_list, f4)
+
+tbl(f4) |>
+  mutate(valid_format = grepl("^[A-Z][a-z]+ [a-z]+$",
+                              name, fixed = FALSE)) |>
+  collect()
+```
+
+Three names fail: "fagus sylvatica" (lowercase genus), "ACER PLATANOIDES"
+(all caps), and "Pinus  sylvestris" (double space). This kind of validation
+pass is a useful first step before attempting joins against a reference
+taxonomy.
+
+### Regex replacement with gsub
+
+`gsub()` with `fixed = FALSE` supports POSIX regex in the pattern and
+backreferences in the replacement string. Backreferences `\\1`, `\\2`, etc.
+refer to captured groups in the pattern.
+
+Suppose we want to reformat species names from "Genus epithet" to
+"G. epithet" for compact display labels.
+
+```{r gsub-regex}
+tbl(f4) |>
+  mutate(short_name = gsub("^([A-Za-z])[a-z]+ ([a-z]+)$",
+                           "\\1. \\2",
+                           name, fixed = FALSE)) |>
+  select(name, short_name) |>
+  collect()
+```
+
+The pattern captures the first letter of the genus as group `\\1` and the
+entire epithet as group `\\2`. Rows that do not match the pattern are returned
+unchanged, which is consistent with base R's `gsub` behaviour.
+
+### sub with regex: first match only
+
+`sub()` with regex works the same way but replaces only the first match. This
+is handy for stripping a leading prefix that varies in length.
+
+```{r sub-regex}
+records <- data.frame(
+  code = c("ID:001-Quercus", "ID:042-Fagus",
+           "ID:007-Betula", "ID:113-Pinus"),
+  stringsAsFactors = FALSE
+)
+f5 <- tempfile(fileext = ".vtr")
+write_vtr(records, f5)
+
+tbl(f5) |>
+  mutate(genus = sub("^ID:[0-9]+-", "", code, fixed = FALSE)) |>
+  select(code, genus) |>
+  collect()
+```
+
+The regex `^ID:[0-9]+-` matches the literal "ID:" prefix, one or more digits,
+and the trailing hyphen. Replacing it with an empty string leaves just the
+genus name.
+
+### str_extract: capturing structured parts
+
+`str_extract(x, pattern)` returns the first match of the regex pattern, or
+`NA` if no match is found. When the pattern contains a capture group (round
+brackets), `str_extract` returns the contents of that group rather than the
+full match.
+
+This is particularly useful for pulling structured components out of
+semi-formatted strings. Here we extract numeric plot identifiers from site
+codes.
+
+```{r str-extract}
+sites <- data.frame(
+  site_code = c("Forest_Plot_042", "Meadow_Transect_007",
+                "Forest_Plot_113", "Wetland_Quad_019"),
+  stringsAsFactors = FALSE
+)
+f6 <- tempfile(fileext = ".vtr")
+write_vtr(sites, f6)
+
+tbl(f6) |>
+  mutate(plot_num = str_extract(site_code, "([0-9]+)")) |>
+  select(site_code, plot_num) |>
+  collect()
+```
+
+The capture group `([0-9]+)` matches one or more digits. Since there is a
+group, `str_extract` returns the group content. Without the parentheses, it
+would return the full match, which in this case is the same.
+
+A more interesting example extracts the habitat type from the site code. The
+pattern uses a group to capture everything before the first underscore.
+
+```{r str-extract-habitat}
+tbl(f6) |>
+  mutate(habitat = str_extract(site_code, "^([A-Za-z]+)_")) |>
+  select(site_code, habitat) |>
+  collect()
+```
+
+The group captures "Forest", "Meadow", "Forest", "Wetland" while the
+trailing underscore is part of the match but not part of the group. This
+approach is cleaner than combining `substr` with a computed position.
+
+
+## Fuzzy string matching
+
+Exact string matching breaks down when data comes from multiple sources with
+inconsistent spelling. A field botanist writes "Qurecus robur" (transposed
+letters), a database export has "Fagus silvatica" (single-letter substitution),
+and a citizen-science platform records "quercus ROBUR" (case mismatch). Fuzzy
+string matching quantifies how different two strings are and lets us match
+records that are close enough.
+
+vectra provides three families of distance functions, all usable inside
+`mutate()` and `filter()`. Each takes two string arguments (columns or
+literals) and returns a numeric distance or similarity score. The raw variants
+(`levenshtein`, `dl_dist`) return integer edit counts; the normalized variants
+(`levenshtein_norm`, `dl_dist_norm`) divide by the length of the longer
+string to produce a value between 0 and 1; and `jaro_winkler` returns a
+similarity score where 1 means identical.
+
+### Levenshtein distance
+
+`levenshtein(x, y)` counts the minimum number of single-character edits
+(insertions, deletions, substitutions) needed to transform `x` into `y`. The
+result is a non-negative integer. `levenshtein_norm(x, y)` divides by the
+length of the longer string, producing a value between 0 (identical) and 1
+(completely different).
+
+```{r levenshtein-data}
+typos <- data.frame(
+  field_name = c("Qurecus robur", "Fagus silvatica",
+                 "Acer platanodes", "Betula pendula",
+                 "Pinus sylvestrs"),
+  ref_name   = c("Quercus robur", "Fagus sylvatica",
+                 "Acer platanoides", "Betula pendula",
+                 "Pinus sylvestris"),
+  stringsAsFactors = FALSE
+)
+f7 <- tempfile(fileext = ".vtr")
+write_vtr(typos, f7)
+
+tbl(f7) |>
+  mutate(lev = levenshtein(field_name, ref_name),
+         lev_norm = levenshtein_norm(field_name, ref_name)) |>
+  collect()
+```
+
+"Qurecus robur" vs "Quercus robur" has a Levenshtein distance of 2 (the
+transposed "re" to "er" counts as two operations: delete and insert, or two
+substitutions depending on the alignment). "Betula pendula" matches exactly,
+giving a distance of 0.
+
+### Damerau-Levenshtein distance
+
+`dl_dist(x, y)` extends Levenshtein by counting transpositions of two
+adjacent characters as a single edit operation. This better reflects the
+kinds of errors humans make when typing. `dl_dist_norm(x, y)` is the
+normalized variant.
+
+```{r dl-dist}
+tbl(f7) |>
+  mutate(dl = dl_dist(field_name, ref_name),
+         dl_norm = dl_dist_norm(field_name, ref_name)) |>
+  collect()
+```
+
+Compare the first row: "Qurecus" vs "Quercus" is a transposition of "r" and
+"e". Levenshtein counts this as 2 edits, but Damerau-Levenshtein counts it as
+1. For human-typed data, DL distance is usually the better default because
+transposition errors are common.
+
+### Jaro-Winkler similarity
+
+`jaro_winkler(x, y)` returns a similarity score between 0 and 1, where 1
+means the strings are identical. Unlike the edit-distance functions, higher
+values indicate better matches. Jaro-Winkler gives extra weight to matching
+prefixes, making it particularly effective for personal names and short
+strings where the first few characters are usually correct.
+
+```{r jaro-winkler}
+tbl(f7) |>
+  mutate(jw = jaro_winkler(field_name, ref_name)) |>
+  collect()
+```
+
+The scores are all above 0.9 for these examples because the errors are small
+relative to string length. Jaro-Winkler is less informative for long strings
+with small differences (everything scores above 0.95) but excels at
+distinguishing between short strings like surnames.
+
+### Choosing a distance metric
+
+The choice depends on the error profile of your data:
+
+- **Damerau-Levenshtein** (`dl_dist` / `dl_dist_norm`): the best general
+  default. Handles insertions, deletions, substitutions, and transpositions.
+  Use this for species names, place names, and any free-text field where typos
+  are the primary error source.
+
+- **Levenshtein** (`levenshtein` / `levenshtein_norm`): appropriate when
+  transpositions are rare or when you need compatibility with systems that
+  use classical Levenshtein. The scores will be slightly more conservative
+  (higher distance) than DL for transposed strings.
+
+- **Jaro-Winkler** (`jaro_winkler`): best for short strings (under 15
+  characters) and personal names. The prefix weighting helps when the first
+  few characters are reliable and errors tend to occur later in the string.
+  Less useful for long species names where a single-character change barely
+  moves the score.
+
+### Filtering by distance threshold
+
+In practice, we often want to flag records that exceed some distance threshold
+from a reference value. Here we filter for species entries that are within a
+normalized DL distance of 0.15 from "Quercus robur".
+
+```{r filter-fuzzy}
+field_data <- data.frame(
+  species = c("Qurecus robur", "Quercus robor", "Fagus sylvatica",
+              "Quercus robur", "Quercis rubur", "Betula pendula"),
+  plot    = c("A1", "A2", "B1", "A3", "B2", "C1"),
+  stringsAsFactors = FALSE
+)
+f8 <- tempfile(fileext = ".vtr")
+write_vtr(field_data, f8)
+
+tbl(f8) |>
+  mutate(dist = dl_dist_norm(species, "Quercus robur")) |>
+  filter(dist < 0.15) |>
+  collect()
+```
+
+Only entries close to "Quercus robur" survive the filter. "Fagus sylvatica"
+and "Betula pendula" are too distant, and "Quercis rubur" sits right at the
+boundary (whether it passes depends on the exact normalized distance).
+
+### Ranking by similarity
+
+When matching against multiple candidates, sorting by distance gives us the
+best matches first.
+
+```{r rank-fuzzy}
+tbl(f8) |>
+  mutate(sim = jaro_winkler(species, "Quercus robur")) |>
+  arrange(desc(sim)) |>
+  collect()
+```
+
+The exact match scores 1.0, and the candidates with small typos rank next.
+This pattern is useful for building a shortlist of probable matches to review
+manually.
+
+
+## Fuzzy joins
+
+Fuzzy matching within `mutate()` works when we already have paired columns to
+compare. More often, we have two separate tables and need to find which rows
+in a messy dataset correspond to which rows in a clean reference. This is
+where `fuzzy_join()` comes in.
+
+### Basic fuzzy join
+
+`fuzzy_join(x, y, by, method, max_dist)` joins two vectra tables using
+approximate string matching. The `by` argument is a named character vector of
+length 1 specifying which columns to compare. The result includes all columns
+from both sides plus a `fuzzy_dist` column with the normalized distance of
+each match.
+
+```{r fuzzy-join-basic}
+ref <- data.frame(
+  canonical = c("Quercus robur", "Fagus sylvatica",
+                "Acer platanoides", "Betula pendula",
+                "Pinus sylvestris", "Tilia cordata"),
+  family    = c("Fagaceae", "Fagaceae", "Sapindaceae",
+                "Betulaceae", "Pinaceae", "Malvaceae"),
+  stringsAsFactors = FALSE
+)
+f_ref <- tempfile(fileext = ".vtr")
+write_vtr(ref, f_ref)
+
+messy <- data.frame(
+  field_species = c("Qurecus robur", "Fagus silvatica",
+                    "Acer platanodes", "Betla pendula",
+                    "Pinis sylvestris"),
+  count         = c(12L, 7L, 3L, 15L, 9L),
+  stringsAsFactors = FALSE
+)
+f_messy <- tempfile(fileext = ".vtr")
+write_vtr(messy, f_messy)
+
+fuzzy_join(
+  tbl(f_messy), tbl(f_ref),
+  by = c("field_species" = "canonical"),
+  method = "dl",
+  max_dist = 0.25
+) |> collect()
+```
+
+Each messy field name finds its closest match in the reference table. The
+`fuzzy_dist` column shows how far apart they are, which is useful for
+flagging matches that might need manual verification (say, anything above
+0.15).
+
+### Methods: dl, levenshtein, jw
+
+The `method` parameter selects the distance algorithm. The three options are
+`"dl"` (Damerau-Levenshtein, the default), `"levenshtein"`, and `"jw"`
+(Jaro-Winkler). When using `"jw"`, `max_dist` is interpreted as the maximum
+*dissimilarity* (i.e., `1 - jaro_winkler_score`), so `max_dist = 0.2` keeps
+matches with a Jaro-Winkler score of 0.8 or higher.
+
+```{r fuzzy-join-jw}
+fuzzy_join(
+  tbl(f_messy), tbl(f_ref),
+  by = c("field_species" = "canonical"),
+  method = "jw",
+  max_dist = 0.15
+) |> collect()
+```
+
+Jaro-Winkler produces a tighter match set here because it penalizes
+differences in the prefix more heavily.
+
+### Blocking for performance
+
+Without blocking, `fuzzy_join` compares every probe row against every
+build row. For large tables this is quadratic. The `block_by` parameter
+specifies a column for exact-match blocking: only pairs that share the same
+blocking key are compared.
+
+In a taxonomic context, the natural blocking key is the genus. We split the
+genus from both sides and block on it, so "Qurecus robur" is only compared
+against reference rows where the genus starts with "Q" (or more precisely,
+where the blocking column matches exactly).
+
+```{r fuzzy-join-blocked}
+ref_blocked <- data.frame(
+  genus     = c("Quercus", "Fagus", "Acer",
+                "Betula", "Pinus", "Tilia"),
+  canonical = c("Quercus robur", "Fagus sylvatica",
+                "Acer platanoides", "Betula pendula",
+                "Pinus sylvestris", "Tilia cordata"),
+  family    = c("Fagaceae", "Fagaceae", "Sapindaceae",
+                "Betulaceae", "Pinaceae", "Malvaceae"),
+  stringsAsFactors = FALSE
+)
+f_ref2 <- tempfile(fileext = ".vtr")
+write_vtr(ref_blocked, f_ref2)
+
+messy_blocked <- data.frame(
+  genus_field   = c("Quercus", "Fagus", "Acer",
+                    "Betula", "Pinus"),
+  field_species = c("Qurecus robur", "Fagus silvatica",
+                    "Acer platanodes", "Betla pendula",
+                    "Pinis sylvestris"),
+  count         = c(12L, 7L, 3L, 15L, 9L),
+  stringsAsFactors = FALSE
+)
+f_messy2 <- tempfile(fileext = ".vtr")
+write_vtr(messy_blocked, f_messy2)
+
+fuzzy_join(
+  tbl(f_messy2), tbl(f_ref2),
+  by = c("field_species" = "canonical"),
+  method = "dl",
+  max_dist = 0.25,
+  block_by = c("genus_field" = "genus")
+) |> collect()
+```
+
+With blocking, each probe row is compared against at most one reference row
+(the one sharing its genus) instead of all six. On real datasets with
+thousands of reference species, this reduces the number of distance
+computations by orders of magnitude.
+
+### Thread control
+
+The `n_threads` parameter controls how many OpenMP threads the distance
+computations use. The default is 4, which is a reasonable starting point. On
+a workstation with many cores, increasing it to 8 or 16 can help for large
+joins. On a laptop where other processes need CPU time, reducing it to 2 is
+reasonable.
+
+```{r fuzzy-join-threads, eval = FALSE}
+fuzzy_join(
+  tbl(f_messy), tbl(f_ref),
+  by = c("field_species" = "canonical"),
+  method = "dl",
+  max_dist = 0.25,
+  n_threads = 8L
+) |> collect()
+```
+
+
+## Block lookups
+
+`fuzzy_join()` is a streaming operation: the probe side flows through the
+pipeline and the build side is materialized into a hash table internally. But
+sometimes we need to look up the same reference repeatedly with different
+query sets, and rebuilding the hash table each time is wasteful.
+
+`materialize()` converts a vectra node into a persistent in-memory block. Once
+materialized, we can probe it with `block_lookup()` (exact matching) or
+`block_fuzzy_lookup()` (fuzzy matching) as many times as needed without
+re-reading the source data.
+
+### Exact lookups
+
+`block_lookup(block, column, keys)` performs a hash-based exact match on a
+string column. The hash index is built lazily on the first call and cached for
+subsequent calls.
+
+```{r block-lookup}
+blk <- tbl(f_ref) |>
+  select(canonical, family) |>
+  materialize()
+
+block_lookup(blk, "canonical",
+             c("Quercus robur", "Betula pendula"))
+```
+
+The result includes a `query_idx` column that maps each result row back to
+the input key vector (1-based). Queries that match multiple rows in the block
+return all matches.
+
+### Case-insensitive lookups
+
+Field data often has inconsistent capitalization. The `ci = TRUE` parameter
+performs case-insensitive matching without requiring a separate lowercased
+column in the reference.
+
+```{r block-lookup-ci}
+block_lookup(blk, "canonical",
+             c("quercus robur", "BETULA PENDULA"),
+             ci = TRUE)
+```
+
+Both queries match despite the case mismatch. Internally, the engine builds a
+separate case-folded hash index on first use and caches it alongside the
+case-sensitive one.
+
+### Fuzzy lookups
+
+`block_fuzzy_lookup()` computes string distances between query keys and every
+row in the block (or, with blocking, only rows sharing a blocking key). The
+interface mirrors `fuzzy_join()` but operates on a materialized block.
+
+```{r block-fuzzy}
+blk2 <- tbl(f_ref2) |>
+  select(genus, canonical, family) |>
+  materialize()
+
+block_fuzzy_lookup(
+  blk2, "canonical",
+  keys = c("Qurecus robur", "Fagus silvatica"),
+  method = "dl",
+  max_dist = 0.2,
+  block_col = "genus",
+  block_keys = c("Quercus", "Fagus"),
+  n_threads = 2L
+)
+```
+
+The `block_col` and `block_keys` arguments work together: the first query
+("Qurecus robur") is only compared against rows where `genus == "Quercus"`,
+and the second query against rows where `genus == "Fagus"`. This is the
+same blocking logic as `fuzzy_join()` but applied to a materialized block
+that can be reused across multiple lookup calls without re-reading disk.
+
+
+## Performance
+
+String operations in vectra fall into three performance tiers. Understanding
+which tier an operation belongs to helps predict where the bottleneck will be
+in a pipeline.
+
+### Tier 1: byte-level operations (essentially free)
+
+`toupper`, `tolower`, `trimws`, `nchar`, `substr`, `startsWith`, `endsWith`,
+and `paste`/`paste0` all operate on raw bytes with O(n) single-pass
+algorithms. Their cost is negligible compared to disk I/O. On a modern SSD,
+reading a 100 MB string column takes roughly 50 ms; applying `tolower` to it
+adds less than 1 ms, so in practice these operations contribute negligible
+overhead compared to the I/O cost of reading the data from disk.
+
+### Tier 2: pattern matching (depends on pattern complexity)
+
+`grepl`, `gsub`, `sub`, and `str_extract` compile a POSIX regex (or set up a
+fixed-string scanner) and apply it to every row. Fixed-string matching
+(`fixed = TRUE`) is in tier 1 territory. Regex matching cost depends on the
+pattern: a simple alternation like `^(A|B|C)$` is nearly as fast as fixed,
+while a pattern with nested quantifiers like `(.+?)*` can be exponentially
+slow on pathological inputs. For batches larger than 1000 rows, the engine
+distributes the matching loop across OpenMP threads with per-thread regex
+compilation, so doubling the available cores roughly halves the wall time.
+
+The practical advice: use `fixed = TRUE` (or omit the parameter, since it
+defaults to `TRUE`) whenever the pattern is a literal string. Reserve
+`fixed = FALSE` for cases where you genuinely need regex features like
+character classes, alternations, or capture groups.
+
+### Tier 3: fuzzy distance computation (CPU-bound)
+
+`levenshtein`, `dl_dist`, and `jaro_winkler` compute an O(m*n) dynamic
+programming alignment for each pair of strings, where m and n are the string
+lengths. For column-vs-column comparisons in `mutate()`, this is O(rows *
+m * n). For fuzzy joins without blocking, it is O(probe_rows * build_rows *
+m * n). Blocking reduces this to O(probe_rows * avg_partition_size * m * n),
+which is why it matters so much. A loose `max_dist` does not change the
+number of distance computations, but it increases the number of rows that
+survive the threshold, and in a many-to-many fuzzy join this can cause a
+combinatorial explosion of output rows. If both tables contain 10,000 rows
+and a generous threshold matches each probe row to 50 build rows, the result
+has 500,000 rows. Tightening `max_dist` or adding a `block_by` column are
+the two most effective ways to keep the output manageable.
+
+All three distance functions use OpenMP parallelization when the input exceeds
+1000 rows. The work is distributed with `schedule(dynamic, 64)`, meaning
+threads grab 64-row chunks as they finish, which balances load well when
+string lengths vary.
+
+### Two-pass string building
+
+String-producing expressions (everything that outputs a new string column)
+use a two-pass strategy. The first pass computes the output length for each
+row without writing any bytes. The second pass allocates a single contiguous
+buffer and fills it. This avoids the realloc-and-copy pattern that R uses
+internally, which can fragment memory and cause O(n^2) behaviour on long
+strings. For `paste()` with many arguments or `gsub` with complex
+replacements, the two-pass approach keeps memory allocation linear.
+
+
+## Practical guidance
+
+### Which distance metric for which use case
+
+For taxonomic name matching, `dl_dist_norm` with a threshold of 0.15-0.20 is
+the workhorse. It catches transpositions (the most common typo type in Latin
+binomials), single-letter substitutions, and dropped characters. If your
+reference list is large and you can block on genus, the false-positive rate at
+0.20 is low enough for automated matching with a manual review pass for
+distances above 0.10.
+
+For matching personal names (observers, collectors, authors),
+`jaro_winkler` with a threshold of 0.10-0.15 (remember, this is
+dissimilarity, so 0.10 means a similarity score of 0.90 or higher) is the
+better choice. Names are short, and the prefix weighting in Jaro-Winkler
+exploits the fact that people rarely mistype the first letter of their own
+name.
+
+For free-text fields where errors include missing words, reordered words, or
+abbreviations, none of these character-level metrics work well. Consider
+preprocessing with `tolower`, `trimws`, and `gsub` to normalize the strings
+before computing distances.
+
+### Choosing max_dist thresholds
+
+Start conservative (low `max_dist`) and increase gradually. A `max_dist` of
+0.10 with DL distance catches most single-character typos in strings of 10+
+characters. At 0.20, you start matching strings that differ by two edits,
+which increases recall but also increases false positives. Above 0.30, the
+match set usually contains too much noise to be useful without manual
+filtering.
+
+For Jaro-Winkler, the scale is inverted (higher score = better match). A
+`max_dist` of 0.10 (score >= 0.90) is a reasonable starting point. Below 0.05
+(score >= 0.95), you catch only very minor differences.
+
+A useful workflow is to run the fuzzy join once with a generous threshold, sort
+the results by `fuzzy_dist`, and examine the matches near the boundary. This
+gives an empirical sense of where true matches end and false positives begin
+for your specific data.
+
+### Handling encoding issues
+
+vectra operates on raw bytes and assumes UTF-8 encoding. If your input data
+is Latin-1 or another encoding, convert it to UTF-8 before writing to `.vtr`
+format. In R, `iconv(x, from = "latin1", to = "UTF-8")` handles this. Once
+the data is in UTF-8, all string operations work correctly on ASCII characters
+and pass through multi-byte sequences without corruption, though the distance
+metrics count bytes rather than Unicode code points for multi-byte characters.
+
+This byte-level behaviour has a practical implication for distance
+computation: if your strings contain accented characters encoded as multi-byte
+UTF-8 sequences (e.g., "u" + combining accent), the edit distance between
+"u" and "ü" will be larger than 1 because the engine sees multiple bytes
+changing, not a single character. For Latin-alphabet ecological data (species
+names, place names), this is rarely a problem because accented characters are
+uncommon in standardized taxonomic databases. If your data does include
+accented characters, consider normalizing them to ASCII before computing
+distances (e.g., replacing "ü" with "u" via `gsub`).
+
+### Common cleaning patterns
+
+A typical cleaning pipeline chains several string operations before matching.
+Here is a pattern we use repeatedly for species name standardization.
+
+```{r cleaning-pattern}
+raw_names <- data.frame(
+  species = c("  Quercus ROBUR ", "fagus sylvatica.",
+              "Acer platanoides (L.)", "BETULA   pendula"),
+  stringsAsFactors = FALSE
+)
+f9 <- tempfile(fileext = ".vtr")
+write_vtr(raw_names, f9)
+
+tbl(f9) |>
+  mutate(clean = tolower(trimws(species))) |>
+  mutate(clean = gsub(".", "", clean, fixed = TRUE)) |>
+  mutate(clean = gsub(" +", " ", clean, fixed = FALSE)) |>
+  select(species, clean) |>
+  collect()
+```
+
+The pipeline strips whitespace, lowercases everything, removes periods,
+and collapses multiple spaces into one. Each `mutate()` call creates a
+streaming node, so chaining them costs no extra memory. After this cleaning, the
+strings are ready for exact or fuzzy matching against a standardized reference.
+
+### Combining approaches
+
+The most effective matching strategy layers exact and fuzzy methods. Start
+with an exact join on cleaned names (catching the easy cases at near-zero
+cost), then run a fuzzy join on the unmatched remainder. This avoids spending
+CPU cycles on distance computations for records that match perfectly after
+basic cleaning.
+
+```{r layered-matching}
+ref_clean <- data.frame(
+  canonical = c("quercus robur", "fagus sylvatica",
+                "acer platanoides", "betula pendula"),
+  status    = c("accepted", "accepted", "accepted", "accepted"),
+  stringsAsFactors = FALSE
+)
+f_refc <- tempfile(fileext = ".vtr")
+write_vtr(ref_clean, f_refc)
+
+cleaned <- tbl(f9) |>
+  mutate(clean = tolower(trimws(species))) |>
+  mutate(clean = gsub(".", "", clean, fixed = TRUE)) |>
+  mutate(clean = gsub(" +", " ", clean, fixed = FALSE))
+
+# Step 1: exact join on cleaned names
+exact <- left_join(
+  cleaned, tbl(f_refc),
+  by = c("clean" = "canonical")
+) |> collect()
+
+exact
+```
+
+Records where `status` is `NA` did not match exactly and would go to a second
+pass with `fuzzy_join()`. In this example all four match after cleaning, which
+is the ideal outcome: the fuzzy join handles only the genuinely ambiguous
+cases.
+
+This layered strategy reflects how taxonomic name resolution works in
+practice. The Global Biodiversity Information Facility (GBIF) backbone
+taxonomy, for instance, contains over 7 million names. Running a fuzzy join
+against the full list for every input record would be prohibitively expensive.
+Cleaning first, exact-matching second, and fuzzy-matching only the remainder
+keeps the computational cost proportional to the number of genuinely
+problematic records rather than the total dataset size. In a typical
+citizen-science dataset, 80-90% of records match exactly after basic
+normalization, leaving only 10-20% for the distance computation stage.

@@ -245,7 +245,7 @@ bool < int64 < double
 
 When an expression combines two different numeric types, the narrower type is
 promoted to the wider type before evaluation. String columns cannot participate
-in arithmetic or comparison with numeric columns --- this is an error.
+in arithmetic or comparison with numeric columns; this is an error.
 
 ### Join key coercion
 
@@ -334,26 +334,60 @@ These nodes buffer data in memory:
 
 ### External sort (spill-to-disk)
 
-`arrange()` uses an external merge sort when accumulated data exceeds 1 GB.
-Sorted runs are spilled to temporary `.vtr` files, then merged via a k-way
-min-heap. This keeps peak memory bounded regardless of input size.
+`arrange()` accumulates incoming batches into column builders in memory. After
+each batch, the sort node estimates total memory usage across all builders. When
+the estimate exceeds the memory budget (default 1 GB, defined as
+`DEFAULT_MEM_BUDGET`), the node flushes the accumulated data as a sorted run:
+
+1. The builders are finished into arrays.
+2. The arrays are sorted in-place using a parallel merge sort (OpenMP task
+   spawning above 32,768 rows, sequential below).
+3. The sorted data is written to a temporary `.vtr` file in the system temp
+   directory, split into row groups of 65,536 rows each.
+4. The builders are reset and accumulation continues.
+
+This spill cycle repeats as many times as needed. A 10 GB dataset with a 1 GB
+budget produces approximately 10 spill files.
+
+Once all input is consumed, the sort node enters the merge phase. It opens all
+spill files as `Vtr1File` readers and runs a k-way merge using a min-heap. Each
+heap entry holds a reference to one merge run (one spill file) and tracks the
+current row group and cursor position within that run. The merge emits batches
+of up to 65,536 rows, reading row groups from spill files on demand. Peak
+memory during the merge phase is proportional to k (number of runs) times the
+row group size, not the total dataset size.
+
+If all data fits within the 1 GB budget, no spill occurs. The node sorts in
+memory and emits the result directly. This is the common case for datasets
+under ~100 million rows (depending on column count and types).
 
 The sort-based `group_by() |> summarise()` path (used internally when the
 engine detects it is advantageous) also benefits from this spill mechanism.
+Temporary spill files are deleted when the sort node is freed.
 
 ### Join memory model
 
 Joins use a **build-right, probe-left** hash join:
 
 1. **Build phase**: The entire right-side table is materialized into a hash
-   table in memory.
+   table in memory. Key columns are hashed using FNV-1a. For single-key joins,
+   the hash is computed directly on the key bytes. For multi-key joins, per-key
+   hashes are combined via XOR and FNV prime multiplication. The hash table uses
+   open addressing. Key hashing is OpenMP-parallelized for batches above 32,768
+   rows.
 2. **Probe phase**: Left-side batches stream through one at a time, probing the
-   hash table.
+   hash table. For each left row, the engine computes the key hash, looks up
+   the hash table, and verifies key equality (hash collisions are resolved by
+   comparison). Probe-side hashing is also parallelized.
 3. **Finalize phase** (full_join only): Unmatched right-side rows are emitted in
-   chunks of 65,536 rows.
+   chunks of 65,536 rows. A matched-flag array tracks which right-side rows
+   participated in the join.
 
-The memory cost of a join is proportional to the right-side table size. The
-left side streams and does not accumulate.
+The memory cost of a join is proportional to the right-side table size (data
+arrays plus hash table overhead). The left side streams and does not accumulate.
+For this reason, place the smaller table on the right side of the join. The
+`right_join` verb handles this automatically by swapping sides internally and
+remapping columns in the output.
 
 ## The .vtr file format
 
@@ -365,26 +399,72 @@ fast sequential reads with row-group-level granularity.
 ```
 Header:
   magic bytes ("VTR1")
-  version (1 or 2)
+  version (uint16: 1–4)
   n_cols, n_rowgroups
-  per-column: name + type byte [+ annotation string in v2]
+  per-column: name + type byte [+ annotation string in v2+]
   row group index (byte offsets)
 
 Row groups (repeated):
   per-column:
     validity bitmap (bit-packed)
+    [v4] encoding tag (1 byte) + compression tag (1 byte)
+    [v4] uncompressed_size (uint32)
     typed data array (int64/double/bool/string)
+  [v3+] per-column statistics (min/max)
 ```
 
 ### Version history
 
 - **Version 1**: Base format with typed columns and validity bitmaps.
-
 - **Version 2**: Adds per-column annotation strings for Date, POSIXct, and
   factor roundtripping.
-- **Version 3** (current): Adds per-column per-rowgroup statistics (min/max)
-  enabling predicate pushdown. Writing always produces v3. All versions are
-  readable.
+- **Version 3**: Adds per-column per-rowgroup statistics (min/max) enabling
+  zone-map predicate pushdown.
+- **Version 4** (current): Adds a two-layer encoding and compression stack.
+  Writing always produces v4. All versions (v1–v4) are readable.
+
+### Encoding and compression (v4)
+
+v4 applies two transformations to each column chunk (one column in one row
+group), in order: an **encoding** step and a **compression** step.
+
+Encoding transforms data logically to expose redundancy. The encoder picks the
+best encoding per column per row group automatically:
+
+| Encoding | Applies to | Condition | Mechanism |
+|:---------|:-----------|:----------|:----------|
+| PLAIN | all types | default | Raw bytes, no transformation |
+| DICTIONARY | string | unique ratio < 50% | Builds a string dictionary; stores indices as RLE (run-length encoded) |
+| DELTA | int64 | monotonically increasing | Stores first value + deltas (all >= 0) |
+
+DICTIONARY encoding is the most impactful for typical categorical string
+columns. The encoder counts distinct values in a single pass using an
+open-addressing hash table (70% load factor, dynamic resizing). If fewer than
+half the values are unique, it emits a dictionary (offset array + packed
+strings) followed by RLE-encoded indices. The RLE step collapses runs of
+repeated indices into (value, count) pairs, which is effective when rows with
+the same category are clustered (e.g. after a sort). If more than half the
+values are unique, the encoder aborts dictionary encoding and falls back to
+PLAIN with zero overhead.
+
+DELTA encoding stores an initial value followed by the difference between
+consecutive values. It targets auto-increment IDs, timestamps, and other
+monotonic integer sequences where the deltas are small and compress well.
+
+Compression squeezes bytes physically after encoding. vectra uses a built-in
+LZ77 compressor (LZ-VTR), approximately 120 lines of C with no external
+dependencies. The compressor uses a 3-byte minimum match, 256-byte maximum
+offset, and a hash table for match finding. It skips column chunks smaller than
+64 bytes (not worth the overhead). If compression does not reduce size, the
+chunk is stored uncompressed. There is no configuration knob; the format always
+attempts compression on eligible chunks.
+
+The two-layer design is intentional. Encoding and compression solve different
+problems. DICTIONARY and DELTA reduce the entropy of the data (fewer distinct
+byte patterns, smaller integer ranges). LZ-VTR then exploits the reduced
+entropy at the byte level. Applying both layers yields better ratios than
+either layer alone, particularly for RLE-encoded dictionary indices where long
+runs of identical small integers compress to near zero.
 
 ## Query optimizer
 
@@ -393,23 +473,66 @@ plan. Two optimization passes run automatically:
 
 ### Predicate pushdown
 
-When a `FilterNode` sits above a `ScanNode` reading a v3 `.vtr` file, the
-filter predicate is attached to the scan. The scan uses per-rowgroup min/max
-statistics to skip row groups that cannot contain matching rows. This is
-visible in `explain()` as `predicate pushdown` on the ScanNode.
+When a `FilterNode` sits above a `ScanNode` reading a `.vtr` file (v3+), the
+filter predicate is attached to the scan. The scan then applies up to three
+pruning strategies on its first `next_batch()` call, in priority order:
+
+1. **Hash index pushdown** (highest priority). If a `.vtri` sidecar index
+   exists for the predicate column(s), the scan probes the index to build a
+   row-group bitmap. Row groups not in the bitmap are skipped entirely. This
+   handles `==` and `%in%` predicates. For composite indexes, AND-combined
+   equality predicates on the indexed columns are matched and probed as a
+   single composite key. See the Hash indexes section below for details.
+
+2. **Binary search on sorted columns**. If the `.vtr` file records that a
+   column is sorted and the predicate is a simple comparison (`==`, `<`, `<=`,
+   `>`, `>=`) against a literal, the scan binary-searches the row group stats
+   to find the first and last row groups that could contain matching rows. The
+   scan range is narrowed to `[first_rg, last_rg)`. For AND-combined
+   predicates on the same sorted column (e.g. `x >= 10 & x < 100`), both
+   bounds are applied. For OR-combined predicates, the union of both ranges is
+   used.
+
+3. **Zone-map pruning** (applied per row group during iteration). Each row
+   group in a v3+ file stores per-column min/max statistics. Before reading a
+   row group's data from disk, the scan evaluates the pushed-down predicate
+   against the row group's stats. If the predicate is provably false for the
+   entire row group (e.g. `filter(x > 100)` on a row group where max(x) = 50),
+   that row group is skipped entirely without touching the underlying bytes.
+   Zone-map pruning handles comparison operators on numeric and string columns,
+   AND/OR combinations, and `%in%` predicates (checking whether any set value
+   falls within the row group's min/max range). String zone maps use a packed
+   8-byte prefix representation for efficient comparison.
+
+These three strategies compose. The scan first applies hash index and binary
+search to narrow the set of candidate row groups, then checks zone-map stats on
+each candidate before reading data. In `explain()` output, predicate pushdown
+appears as `predicate pushdown` and `v3 stats` annotations on the ScanNode.
 
 ### Column pruning
 
 The optimizer walks the plan tree top-down and determines which columns each
-node actually needs from its child. At scan nodes, unneeded columns are
-excluded from disk reads. This is visible in `explain()` as
-`2/5 cols (pruned)`.
+node actually needs from its child. The required column set at each node is the
+union of: columns referenced in the node's own expressions (filter predicates,
+mutate expressions, aggregation functions), columns passed through to the
+parent, and join key columns. At scan nodes, unneeded columns are excluded from
+disk reads by setting a column mask. For a 100-column `.vtr` file where only 3
+columns are needed, this means 97 columns are never deserialized, never
+decompressed, and never decoded. This is visible in `explain()` as
+`3/100 cols (pruned)`. Column pruning applies to all `.vtr` scans regardless
+of format version.
 
 ### Hidden mutate insertion
 
 When `summarise()` contains nested expressions like `mean(x + y)`, the
 optimizer auto-inserts a `ProjectNode` (visible as `hidden mutate` in
-`explain()`) to compute the intermediate result before aggregation.
+`explain()`) to compute the intermediate expression `x + y` before aggregation.
+This is necessary because the C-level aggregation nodes (GroupAgg) operate on
+single columns, not on expression trees. The hidden mutate computes the
+intermediate column and gives it a generated name, which the aggregation node
+then references. The same mechanism applies to `sum(log(x))`, `n_distinct(a +
+b)`, and similar patterns. The inserted node is visible in `explain()` output
+but invisible to the user's pipeline.
 
 ## explain() contract
 
@@ -443,18 +566,191 @@ tbl("data.vtr") |>
 The plan tree is a description of what will happen, not a guarantee of how it
 will happen internally. Node ordering and naming may change between versions.
 
+## Hash indexes (.vtri)
+
+vectra supports persistent on-disk hash indexes stored as `.vtri` sidecar files
+alongside `.vtr` data files. These indexes enable O(1) row group pruning for
+equality predicates, turning full-table scans into targeted reads.
+
+### Creating indexes
+
+```r
+# Single-column index
+create_index(tbl("data.vtr"), "species")
+
+# Case-insensitive index
+create_index(tbl("data.vtr"), "species", ci = TRUE)
+
+# Composite (multi-column) index
+create_index(tbl("data.vtr"), c("country", "year"))
+
+# Check if an index exists
+has_index(tbl("data.vtr"), "species")
+```
+
+`create_index()` reads the `.vtr` file, hashes every value in the indexed
+column(s) per row group, and writes a `.vtri` file. The file name encodes the
+indexed columns: `data.species.vtri` for a single-column index,
+`data.country_year.vtri` for a composite.
+
+### Index format
+
+The `.vtri` format is a chained hash table mapping key hashes to row group
+indices:
+
+- **v1** (single-column): stores one column index, a case-insensitive flag,
+  hash entries, row group entries, a slot heads array, and a next-pointer chain.
+  Hashing uses FNV-1a on the raw column bytes. For case-insensitive indexes,
+  the hash folds ASCII uppercase to lowercase before hashing.
+- **v2** (composite): stores multiple column indices. The composite hash
+  combines per-column FNV-1a hashes via XOR and multiplication with the FNV
+  prime, producing a single 64-bit hash per row group entry.
+
+### How the scan uses indexes
+
+When a `ScanNode` opens a `.vtr` file, it checks for `.vtri` sidecar files
+matching the columns referenced in the pushed-down predicate. For single-column
+indexes, it matches `==` predicates and `%in%` predicates. For composite
+indexes, it matches AND-combined equality predicates where every indexed column
+has an `== literal` clause.
+
+On match, the scan probes the index to produce a row-group bitmap. For `%in%`
+predicates, the scan probes once per set element and ORs the bitmaps together.
+Row groups with a 0 bit in the bitmap are never read from disk. This is the
+first pruning step, applied before binary search and zone-map checks.
+
+### Performance characteristics
+
+Index probing is O(k) where k is the number of query keys (1 for `==`, n for
+`%in%`). Each probe is a hash computation plus a chain walk in the slot array.
+The index file is memory-mapped at open time, so repeated probes pay no I/O
+cost. For tables with many row groups and selective equality predicates, index
+pushdown can reduce I/O by orders of magnitude compared to zone-map pruning
+alone.
+
+## Materialized blocks
+
+`materialize()` consumes a vectra node and stores the result as a persistent
+in-memory columnar block. Unlike nodes, which are consumed on `collect()` and
+cannot be reused, blocks persist and support repeated lookups.
+
+```r
+blk <- tbl("backbone.vtr") |>
+  select(taxonID, canonicalName, genus) |>
+  materialize()
+```
+
+### Exact lookups
+
+`block_lookup()` performs hash-based lookups on a string column. Hash indices
+are built lazily on first use and cached for subsequent calls. The return value
+is a data.frame with a `query_idx` column (1-based position in the input keys
+vector) plus all columns from the block.
+
+```r
+hits <- block_lookup(blk, "canonicalName",
+                     c("Quercus robur", "Pinus sylvestris"))
+
+# Case-insensitive
+hits <- block_lookup(blk, "canonicalName",
+                     c("quercus robur"), ci = TRUE)
+```
+
+### Fuzzy lookups
+
+`block_fuzzy_lookup()` computes string distances between query keys and a
+block column. Three distance methods are available: Damerau-Levenshtein
+(`"dl"`, default), Levenshtein (`"levenshtein"`), and Jaro-Winkler (`"jw"`).
+Results are filtered by a maximum normalized distance threshold (default 0.2).
+
+```r
+fuzzy <- block_fuzzy_lookup(blk, "canonicalName",
+                            c("Quercus robar", "Pinus silvestris"),
+                            method = "dl", max_dist = 0.2)
+```
+
+An optional blocking column reduces the search space by requiring exact matches
+on a second column before computing distances. This is useful for taxonomic
+lookups where genus is known:
+
+```r
+fuzzy <- block_fuzzy_lookup(blk, "canonicalName",
+                            c("Quercus robar"),
+                            block_col = "genus",
+                            block_keys = c("Quercus"),
+                            n_threads = 4L)
+```
+
+Fuzzy lookups are OpenMP-parallelized. The `n_threads` parameter controls the
+thread count (default 4).
+
+### Use case
+
+Materialized blocks are designed for repeated lookups against a reference table.
+The typical pattern is: load a backbone or codelist once with `materialize()`,
+then probe it many times with different query vectors. The block stays in memory
+across calls, and its internal hash index (for exact lookups) is built once and
+reused.
+
+## OpenMP parallelization
+
+The C engine uses OpenMP for CPU-bound operations where the per-element cost is
+high enough to justify thread management overhead. Parallelism is conditional:
+operations fall back to single-threaded execution when the batch size is below a
+threshold or when the platform does not support OpenMP.
+
+### Which operations parallelize
+
+| Operation | Threshold | Schedule | Notes |
+|:----------|:----------|:---------|:------|
+| `filter()` (selection vector build) | 32,768 rows | parallel prefix sum | Two-phase: count matches per thread, then write at offsets |
+| `grepl()` with regex | 1,000 rows | `dynamic, 64` | Per-thread regex compilation for thread safety |
+| `levenshtein()`, `dl_dist()`, `jaro_winkler()` | 1,000 rows | `dynamic, 64` | Fuzzy string distance in mutate expressions |
+| Sort (merge sort) | 32,768 rows | `task` | Recursive task spawning for parallel merge sort |
+| Sort (key extraction) | 32,768 rows | `static` | Parallel extraction of sort keys into index arrays |
+| Join (build-side hashing) | 32,768 rows | `static` | Parallel hash computation for build-side keys |
+| Join (probe-side hashing) | 32,768 rows | `static` | Parallel hash computation for probe-side keys |
+| Window (data copy) | 32,768 rows | `static` | Parallel copy of partition data |
+| Window (group dispatch) | 64 groups | `dynamic` | Parallel window computation across groups |
+| Collect (column append) | 8 columns | `static` | Parallel column-by-column append to R vectors |
+| Zone-map stat computation | 32,768 rows | `static` with `reduction` | Parallel min/max scan during write |
+| Block fuzzy lookup | always (if > 0 keys) | `dynamic, 1` per key / `dynamic, 16` per row | Parallelized by query key and by block row |
+| Literal fill (broadcast) | 32,768 rows | `static` | Parallel fill for constant columns |
+
+The general-purpose threshold is 32,768 rows (`VEC_OMP_THRESHOLD`). String
+operations use a lower threshold of 1,000 rows because their per-element cost
+(regex compilation, edit distance matrices) is much higher than arithmetic.
+
+### Thread safety
+
+Regex operations (`grepl` with regex patterns) compile the POSIX regex once per
+thread. Each thread owns its own `regex_t` instance, allocated in thread-local
+scope inside the `#pragma omp parallel` block. This avoids both contention and
+the overhead of recompiling the regex per row.
+
+The filter node uses a parallel prefix sum to build the selection vector without
+locking. Each thread counts matches in its chunk, a sequential scan computes
+prefix offsets, then each thread writes selected indices at its computed offset.
+
 ## Current limitations
 
 - **slice_tail materializes**: There is no reverse-scan optimization.
 
 - **distinct with .keep_all**: Falls back to R when `.keep_all = TRUE` with a
   column subset.
-- **Limited string operations**: `nchar()`, `substr()`, `grepl()` (fixed match only), `tolower()`, `toupper()`, `trimws()`, `paste0()` (2 args), `gsub()`/`sub()` (fixed patterns), `startsWith()`, `endsWith()` are supported. No regex or multi-argument `paste()`. Use `collect()` first for unsupported string operations.
-
-- **Single-threaded**: The engine uses one thread. Parallelism is not planned.
 
 - **Predicate pushdown is .vtr only**: CSV, SQLite, and TIFF scans do not
-  benefit from predicate pushdown or column pruning.
+  benefit from predicate pushdown, column pruning, or hash index acceleration.
+
+- **No SIMD**: Arithmetic and comparison operations use scalar loops. The
+  compiler may auto-vectorize some patterns, but there are no explicit SIMD
+  intrinsics.
+
+- **OpenMP availability varies**: On macOS, R ships without OpenMP by default.
+  Users must install `libomp` (e.g. via Homebrew) and configure the compiler
+  flags. On Windows (rtools) and Linux, OpenMP is typically available out of the
+  box. When OpenMP is not available, all operations run single-threaded with no
+  functional difference.
 
 ## Fallback behavior
 

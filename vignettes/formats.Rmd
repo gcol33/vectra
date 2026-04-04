@@ -1,0 +1,408 @@
+---
+title: "Format Backends"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Format Backends}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+
+vectra reads and writes five formats: its native `.vtr`, CSV, SQLite, Excel, and
+GeoTIFF. Each reader returns the same `vectra_node` object. Once a node exists,
+the engine treats it identically regardless of where the data came from. A filter
+on a CSV scan produces the same plan tree as a filter on a `.vtr` scan. The same
+verbs work, the same expressions evaluate, and `collect()` materializes an R
+data.frame either way.
+
+This matters because format choice becomes a deployment decision, not a code
+decision. We can prototype a pipeline against a CSV export, convert the data to
+`.vtr` for production, and the pipeline code stays the same apart from the
+opening `tbl_*()` call.
+
+Writers mirror the readers. `write_vtr()`, `write_csv()`, `write_sqlite()`, and
+`write_tiff()` are all S3 generics dispatching on both `vectra_node` and
+`data.frame`. When the input is a node, writes stream batch-by-batch through the
+plan tree. The full dataset never needs to fit in memory. This is the core of
+vectra's format conversion story: pipe a reader into a writer, and data flows
+from source format to target format in bounded memory.
+
+```{r intro-demo}
+library(vectra)
+
+# Write mtcars to .vtr, then read it back lazily
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+node <- tbl(f)
+node
+```
+
+The node prints its schema but holds no data. Columns, types, and row count are
+in the file header; the actual values stay on disk until `collect()`.
+
+## The .vtr format
+
+`.vtr` is vectra's native binary columnar format. It stores data in row groups,
+where each row group contains all columns for a slice of rows. The current
+version (v4) applies a two-stage encoding stack per column per row group:
+first a logical encoding (dictionary for low-cardinality strings, delta for
+monotonic integers, or plain pass-through), then byte-level compression via
+Zstandard when it actually shrinks the data.
+
+This layout gives the scan node several optimization paths that other formats
+cannot support. Zone-map statistics (min/max per column per row group) let the
+engine skip entire row groups that cannot match a filter predicate. Column
+pruning avoids reading columns that the query never references. And hash indexes
+(`.vtri` sidecar files) enable O(1) row group lookup on equality predicates.
+
+```{r vtr-roundtrip}
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+
+tbl(f) |>
+  filter(cyl == 6) |>
+  select(mpg, cyl, hp) |>
+  collect()
+```
+
+When we call `write_vtr()` with a `vectra_node` input, the writer streams
+batches from the upstream plan and writes each batch as one row group. The full
+result never materializes in memory. For `data.frame` inputs, the data is
+written directly from R's memory in a single row group.
+
+The `batch_size` parameter on `write_vtr()` controls how many rows accumulate
+before flushing a row group. Smaller row groups mean more granular zone-map
+statistics and finer predicate pruning. Larger row groups reduce per-group
+overhead and compress better.
+
+```{r vtr-batch-size}
+f <- tempfile(fileext = ".vtr")
+csv <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv, row.names = FALSE)
+
+# Convert CSV to .vtr with 10-row row groups
+tbl_csv(csv) |> write_vtr(f, batch_size = 10)
+
+# The file now has multiple row groups
+tbl(f) |> collect() |> nrow()
+```
+
+`append_vtr()` adds new row groups to an existing file without rewriting it.
+This is useful for incremental data ingestion where new batches arrive over
+time.
+
+## CSV
+
+`tbl_csv()` opens a CSV file for streaming reads. Column types are inferred
+from the first 1000 rows: numeric-looking columns become doubles, integer-
+looking columns become integers, and everything else is a string. Gzip-
+compressed files (`.csv.gz`) are detected and decompressed transparently.
+
+```{r csv-read}
+csv <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv, row.names = FALSE)
+
+tbl_csv(csv) |>
+  filter(hp > 200) |>
+  select(mpg, hp, wt) |>
+  collect()
+```
+
+The `batch_size` parameter controls how many rows the CSV scanner reads per
+internal batch. The default (65536) works well for most files. Smaller values
+reduce peak memory at the cost of more read calls.
+
+`write_csv()` streams from any node. It writes a standard comma-separated file
+with a header row. There is no gzip output option; if we need compressed output,
+we convert to `.vtr` instead, which applies Zstandard automatically.
+
+```{r csv-write}
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+
+out_csv <- tempfile(fileext = ".csv")
+tbl(f) |>
+  filter(cyl == 4) |>
+  write_csv(out_csv)
+
+# Verify the output
+read.csv(out_csv) |> head()
+```
+
+CSV has no predicate pushdown or column pruning. Every row and every column is
+read and parsed, then the engine's filter and project nodes discard what the
+query does not need. For one-off analyses this is fine. For repeated queries on
+the same data, converting to `.vtr` once and querying many times is faster.
+
+## SQLite
+
+`tbl_sqlite()` connects to a SQLite database and streams a table through
+vectra's engine. Column types are inferred from the declared types in the
+`CREATE TABLE` statement. All filtering, grouping, and aggregation happen in
+vectra's C engine, not via SQL queries. The SQLite library is used only as a
+row source.
+
+```{r sqlite-read}
+db <- tempfile(fileext = ".sqlite")
+write_sqlite(mtcars, db, "cars")
+
+tbl_sqlite(db, "cars") |>
+  filter(mpg > 25) |>
+  select(mpg, cyl, wt) |>
+  collect()
+```
+
+The `table` argument names which table to scan. A database can hold many tables;
+each `tbl_sqlite()` call opens one.
+
+SQLite is a natural choice when data already lives in a database, or when other
+tools (Python, command-line utilities, web applications) need to read the same
+file. The format is self-contained, widely supported, and handles concurrent
+reads well.
+
+`write_sqlite()` streams from any node into a SQLite table. If the table already
+exists, rows are appended. This makes it straightforward to export vectra query
+results for consumption by non-R tools.
+
+```{r sqlite-write}
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+
+db <- tempfile(fileext = ".sqlite")
+tbl(f) |>
+  filter(cyl == 8) |>
+  write_sqlite(db, "v8_cars")
+
+# Read it back through vectra
+tbl_sqlite(db, "v8_cars") |> collect()
+```
+
+## Excel
+
+`tbl_xlsx()` reads a sheet from an Excel workbook. It requires the `openxlsx2`
+package, which is listed in Suggests. The sheet is specified by name or by
+1-based index (default: first sheet).
+
+Unlike the other backends, Excel support is read-only. There is no `write_xlsx()`
+function. Excel's format is complex and writing it adds little value when CSV
+or SQLite serve the same interoperability purpose with less overhead.
+
+Under the hood, `tbl_xlsx()` reads the sheet into a data.frame via `openxlsx2`
+and then converts it to a vectra node. This means the sheet does load into
+memory during the initial read, but all subsequent operations (filter, mutate,
+join) are lazy and stream through the C engine.
+
+```r
+# Not run (requires openxlsx2)
+node <- tbl_xlsx("survey_results.xlsx", sheet = "Q1_2025")
+node |>
+  filter(score >= 80) |>
+  select(respondent, score, region) |>
+  collect()
+```
+
+For large Excel files that do not fit in memory, export to CSV first and use
+`tbl_csv()`.
+
+## GeoTIFF
+
+`tbl_tiff()` reads raster data. Each pixel becomes a row with `x` and `y`
+columns (pixel center coordinates derived from the geotransform) and one column
+per band (`band1`, `band2`, etc.). NoData values become `NA`. This tabular
+representation lets us apply the full verb set to raster data: filter by
+spatial extent, threshold band values, compute derived indices, join with
+point observations.
+
+The default `batch_size` is 256 raster rows, much smaller than the CSV/SQLite
+default. Raster data is dense. A 10,000 x 10,000 single-band TIFF has 100
+million pixels, so each raster row of 10,000 pixels already constitutes a
+meaningful batch.
+
+```r
+# Not run (requires a GeoTIFF file)
+tbl_tiff("temperature.tif") |>
+  filter(band1 > 25, x >= 10, x <= 20) |>
+  collect()
+```
+
+`write_tiff()` writes query results back to a GeoTIFF. The data must contain
+`x` and `y` columns and one or more numeric band columns. Grid dimensions and
+the geotransform are inferred from the coordinate arrays. The `compress`
+parameter enables DEFLATE compression.
+
+This round-trip capability makes vectra useful for raster ETL: read a TIFF,
+filter or transform it with standard verbs, write a new TIFF. No dependency
+on spatial packages is needed for the read-process-write loop itself, though
+`terra::rast(df, type = "xyz")` can convert results to `SpatRaster` objects
+when spatial operations are needed.
+
+## Streaming conversion pipelines
+
+The practical payoff of uniform node types is format conversion with zero
+full-dataset materialization. We pipe a reader into a writer, and data flows
+from source to target one batch at a time. Memory use stays proportional to
+one batch, not the full dataset.
+
+The simplest case: convert CSV to `.vtr`.
+
+```{r convert-csv-vtr}
+csv <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv, row.names = FALSE)
+
+vtr <- tempfile(fileext = ".vtr")
+tbl_csv(csv) |> write_vtr(vtr)
+
+tbl(vtr) |> collect() |> head()
+```
+
+We can filter during conversion. Only rows passing the predicate are written.
+
+```{r convert-filtered}
+csv <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv, row.names = FALSE)
+
+vtr <- tempfile(fileext = ".vtr")
+tbl_csv(csv) |>
+  filter(mpg > 20) |>
+  mutate(kpl = mpg * 0.425144) |>
+  write_vtr(vtr)
+
+tbl(vtr) |> collect()
+```
+
+Multi-step ETL works the same way. Read from one format, transform, write to
+another.
+
+```{r etl-pipeline}
+# CSV -> filter + transform -> SQLite
+csv <- tempfile(fileext = ".csv")
+write.csv(mtcars, csv, row.names = FALSE)
+
+db <- tempfile(fileext = ".sqlite")
+tbl_csv(csv) |>
+  filter(cyl >= 6) |>
+  select(mpg, cyl, hp, wt) |>
+  mutate(power_weight = hp / wt) |>
+  write_sqlite(db, "powerful_cars")
+
+# SQLite -> VTR
+vtr <- tempfile(fileext = ".vtr")
+tbl_sqlite(db, "powerful_cars") |> write_vtr(vtr)
+
+tbl(vtr) |> collect()
+```
+
+Each arrow in the pipeline is a streaming connection. The CSV scanner reads a
+batch, the filter discards rows, the project computes new columns, and the
+SQLite writer inserts the result. Then the next batch flows through. At no point
+does the full dataset exist in memory. For datasets that dwarf available RAM,
+this is the only way these conversions can work.
+
+Conversion pipelines also compose with joins. We can read two sources in
+different formats and join them.
+
+```{r join-across-formats}
+f1 <- tempfile(fileext = ".vtr")
+f2 <- tempfile(fileext = ".csv")
+
+cars_main <- mtcars[, c("mpg", "cyl", "hp")]
+cars_extra <- data.frame(cyl = c(4, 6, 8), label = c("small", "mid", "big"))
+
+write_vtr(cars_main, f1)
+write.csv(cars_extra, f2, row.names = FALSE)
+
+tbl(f1) |>
+  left_join(tbl_csv(f2), by = "cyl") |>
+  collect() |>
+  head()
+```
+
+## Batch size
+
+The `batch_size` parameter appears on readers and on `write_vtr()`. It controls
+different things depending on context.
+
+On **readers** (`tbl_csv`, `tbl_sqlite`), batch size sets how many rows the
+scanner reads per pull from the source. The default 65536 balances memory use
+against per-call overhead. Larger values read more rows per call, which can be
+faster for simple scan-heavy queries. Smaller values keep peak memory lower,
+which matters when individual rows are wide (many columns or long strings).
+
+On **`write_vtr()`**, batch size controls how many rows accumulate before
+flushing a row group to disk. This directly affects the structure of the
+output file. Each row group carries its own zone-map statistics (min and max
+per column), so more row groups mean finer-grained predicate pushdown. Fewer
+row groups mean less metadata overhead and better compression ratios, because
+the compressor sees more data per block.
+
+```{r batch-size-effect}
+csv <- tempfile(fileext = ".csv")
+big <- data.frame(
+  id = seq_len(1000),
+  value = rnorm(1000)
+)
+write.csv(big, csv, row.names = FALSE)
+
+# Small row groups: more granular zone maps
+f_small <- tempfile(fileext = ".vtr")
+tbl_csv(csv) |> write_vtr(f_small, batch_size = 100)
+
+# Default: single row group for 1000 rows
+f_default <- tempfile(fileext = ".vtr")
+tbl_csv(csv) |> write_vtr(f_default)
+
+cat("Small batches:", file.size(f_small), "bytes\n")
+cat("Default:      ", file.size(f_default), "bytes\n")
+```
+
+For `tbl_tiff`, the default batch size is 256 raster rows, reflecting the
+high per-row density of raster data. Increasing it speeds up reads on files
+with few bands. Decreasing it helps when many bands produce very wide rows.
+
+There is no batch size parameter on `tbl()` (the `.vtr` reader). Row groups
+are defined by the file; the scanner reads one row group per `next_batch()`
+call, respecting whatever batch size was chosen at write time.
+
+## Format comparison
+
+The table below summarizes what each format supports. The right format depends
+on the workload: `.vtr` for repeated analytical queries, CSV for interchange,
+SQLite for multi-tool access, Excel for one-off imports, GeoTIFF for raster
+data.
+
+| Feature | .vtr | CSV | SQLite | Excel | GeoTIFF |
+|:--------|:-----|:----|:-------|:------|:--------|
+| Streaming read | yes | yes | yes | no | yes |
+| Streaming write | yes | yes | yes | -- | yes |
+| Predicate pushdown | yes | no | no | no | no |
+| Column pruning | yes | no | no | no | no |
+| Zone-map skip | yes | no | no | no | no |
+| Hash index support | yes | no | no | no | no |
+| Compression | zstd | gzip (read) | -- | -- | deflate |
+| Size on disk | small | large | medium | medium | variable |
+| Random access | by row group | no | by rowid | no | by raster row |
+| External tool support | vectra only | universal | wide | wide | GIS tools |
+
+`.vtr` wins on query performance because it is the only format where the
+scanner can skip data before reading it. Zone maps, column pruning, and hash
+indexes all reduce I/O. For a dataset queried repeatedly, converting to `.vtr`
+once pays for itself quickly.
+
+CSV and SQLite have broad tool support. If the data needs to flow to Python,
+a dashboard, or a command-line tool, these formats avoid lock-in. SQLite adds
+transactional writes and concurrent read access that flat files lack.
+
+GeoTIFF is specialized. It carries spatial metadata (coordinate reference
+system, geotransform) that the other formats do not. When the output is a
+raster, GeoTIFF is the right choice; when the output is a table derived from
+raster data, `.vtr` or CSV may be more practical.
