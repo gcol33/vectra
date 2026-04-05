@@ -106,38 +106,65 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #'
 #' The data must contain `x` and `y` columns (pixel center coordinates) and
 #' one or more numeric band columns. Grid dimensions and geotransform are
-#' inferred from the x/y coordinate arrays. Missing pixels are written as NaN.
+#' inferred from the x/y coordinate arrays. Missing pixels are written as NaN
+#' (or the type-appropriate nodata value for integer pixel types).
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path for the output GeoTIFF file.
 #' @param compress Logical; use DEFLATE compression? Default `FALSE`.
+#' @param pixel_type Character string specifying the output pixel type.
+#'   One of `"float64"` (default), `"float32"`, `"int16"`, `"int32"`,
+#'   `"uint8"`, or `"uint16"`.
+#' @param metadata Optional character string of GDAL_METADATA XML to embed
+#'   in the file (tag 42112). Use [tiff_metadata()] to read it back.
 #' @param ... Reserved for future use.
 #'
 #' @return Invisible `NULL`.
 #'
 #' @examples
 #' \dontrun{
-#' tbl_tiff("climate.tif") |>
-#'   filter(band1 > 25) |>
-#'   write_tiff("filtered.tif")
+#' # Write as int16 with DEFLATE compression
+#' df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
+#' write_tiff(df, "out.tif", compress = TRUE, pixel_type = "int16")
 #' }
 #'
 #' @export
-write_tiff <- function(x, path, compress = FALSE, ...) {
+write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
+                       metadata = NULL, ...) {
   UseMethod("write_tiff")
 }
 
+.pixel_type_code <- c(
+  float64 = 0L, float32 = 1L, int16 = 2L, int32 = 3L,
+  uint8 = 4L, uint16 = 5L
+)
+
 #' @export
-write_tiff.vectra_node <- function(x, path, compress = FALSE, ...) {
+write_tiff.vectra_node <- function(x, path, compress = FALSE,
+                                   pixel_type = "float64",
+                                   metadata = NULL, ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
-  .Call(C_write_tiff, x$.node, path, as.logical(compress))
+
+  pt <- .pixel_type_code[pixel_type]
+  if (is.na(pt))
+    stop(sprintf("pixel_type must be one of [%s], got '%s'",
+                 paste(names(.pixel_type_code), collapse = ", "), pixel_type))
+
+  if (!is.null(metadata) && (!is.character(metadata) || length(metadata) != 1))
+    stop("metadata must be a single character string or NULL")
+
+  # Always use the typed path — it handles all pixel types including float64
+  .Call(C_write_tiff_typed, x$.node, path, as.logical(compress), pt, metadata)
   invisible(NULL)
 }
 
 #' @export
-write_tiff.data.frame <- function(x, path, compress = FALSE, ...) {
-  write_tiff.vectra_node(df_to_node(x), path, compress, ...)
+write_tiff.data.frame <- function(x, path, compress = FALSE,
+                                  pixel_type = "float64",
+                                  metadata = NULL, ...) {
+  write_tiff.vectra_node(df_to_node(x), path, compress, pixel_type,
+                         metadata, ...)
 }
 
 #' Write data to a .vtr file

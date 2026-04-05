@@ -4,7 +4,14 @@
 \alias{write_tiff}
 \title{Write query results to a GeoTIFF file}
 \usage{
-write_tiff(x, path, compress = FALSE, ...)
+write_tiff(
+  x,
+  path,
+  compress = FALSE,
+  pixel_type = "float64",
+  metadata = NULL,
+  ...
+)
 }
 \arguments{
 \item{x}{A \code{vectra_node} (lazy query) or a \code{data.frame}.}
@@ -12,6 +19,13 @@ write_tiff(x, path, compress = FALSE, ...)
 \item{path}{File path for the output GeoTIFF file.}
 
 \item{compress}{Logical; use DEFLATE compression? Default \code{FALSE}.}
+
+\item{pixel_type}{Character string specifying the output pixel type.
+One of \code{"float64"} (default), \code{"float32"}, \code{"int16"}, \code{"int32"},
+\code{"uint8"}, or \code{"uint16"}.}
+
+\item{metadata}{Optional character string of GDAL_METADATA XML to embed
+in the file (tag 42112). Use \code{\link[=tiff_metadata]{tiff_metadata()}} to read it back.}
 
 \item{...}{Reserved for future use.}
 }
@@ -21,13 +35,14 @@ Invisible \code{NULL}.
 \description{
 The data must contain \code{x} and \code{y} columns (pixel center coordinates) and
 one or more numeric band columns. Grid dimensions and geotransform are
-inferred from the x/y coordinate arrays. Missing pixels are written as NaN.
+inferred from the x/y coordinate arrays. Missing pixels are written as NaN
+(or the type-appropriate nodata value for integer pixel types).
 }
 \examples{
 \dontrun{
-tbl_tiff("climate.tif") |>
-  filter(band1 > 25) |>
-  write_tiff("filtered.tif")
+# Write as int16 with DEFLATE compression
+df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
+write_tiff(df, "out.tif", compress = TRUE, pixel_type = "int16")
 }
 
 }

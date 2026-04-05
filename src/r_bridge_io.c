@@ -59,6 +59,18 @@ static void tiff_writer(VecNode *node, const char *path, void *ctx) {
 }
 
 typedef struct {
+    int use_deflate;
+    int pixel_type;
+    const char *metadata_xml;
+} TiffTypedCtx;
+
+static void tiff_typed_writer(VecNode *node, const char *path, void *ctx) {
+    TiffTypedCtx *tc = (TiffTypedCtx *)ctx;
+    tiff_write_node_typed(node, path, tc->use_deflate, tc->pixel_type,
+                          tc->metadata_xml);
+}
+
+typedef struct {
     int64_t batch_size;
 } VtrWriteCtx;
 
@@ -117,6 +129,134 @@ SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp, SEXP batch_size_sexp) {
         .batch_size = (batch_size_sexp == R_NilValue) ? 0 : (int64_t)Rf_asReal(batch_size_sexp)
     };
     return write_node_dispatch(node_xptr, path_sexp, vtr_writer, &ctx);
+}
+
+/* --- C_tiff_extract_points --- */
+
+SEXP C_tiff_extract_points(SEXP path_sexp, SEXP x_sexp, SEXP y_sexp) {
+    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
+    int64_t n = Rf_xlength(x_sexp);
+
+    TiffReader *reader = NULL;
+    if (tiff_reader_open(fpath, &reader) != 0) {
+        const char *msg = reader ? tiff_reader_errmsg(reader) : "unknown";
+        tiff_reader_close(reader);
+        vectra_error("cannot open GeoTIFF: %s", msg);
+    }
+
+    int nb = tiff_reader_nbands(reader);
+
+    /* Allocate output band arrays */
+    double **bands = (double **)malloc((size_t)nb * sizeof(double *));
+    if (!bands) {
+        tiff_reader_close(reader);
+        vectra_error("alloc failed for point extraction");
+    }
+    for (int b = 0; b < nb; b++) {
+        bands[b] = (double *)malloc((size_t)n * sizeof(double));
+        if (!bands[b]) {
+            for (int j = 0; j < b; j++) free(bands[j]);
+            free(bands);
+            tiff_reader_close(reader);
+            vectra_error("alloc failed for band data");
+        }
+    }
+
+    /* Extract */
+    if (tiff_reader_extract_points(reader, n, REAL(x_sexp), REAL(y_sexp),
+                                    bands) != 0) {
+        const char *msg = tiff_reader_errmsg(reader);
+        for (int b = 0; b < nb; b++) free(bands[b]);
+        free(bands);
+        tiff_reader_close(reader);
+        vectra_error("TIFF extract error: %s", msg);
+    }
+
+    tiff_reader_close(reader);
+
+    /* Build R data.frame: x, y, band1, band2, ... */
+    int n_cols = 2 + nb;
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, n_cols));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, n_cols));
+
+    /* x column (copy input) */
+    SEXP x_out = PROTECT(Rf_allocVector(REALSXP, n));
+    memcpy(REAL(x_out), REAL(x_sexp), (size_t)n * sizeof(double));
+    SET_VECTOR_ELT(result, 0, x_out);
+    SET_STRING_ELT(names, 0, Rf_mkChar("x"));
+    UNPROTECT(1); /* x_out */
+
+    /* y column (copy input) */
+    SEXP y_out = PROTECT(Rf_allocVector(REALSXP, n));
+    memcpy(REAL(y_out), REAL(y_sexp), (size_t)n * sizeof(double));
+    SET_VECTOR_ELT(result, 1, y_out);
+    SET_STRING_ELT(names, 1, Rf_mkChar("y"));
+    UNPROTECT(1); /* y_out */
+
+    /* Band columns */
+    for (int b = 0; b < nb; b++) {
+        SEXP col = PROTECT(Rf_allocVector(REALSXP, n));
+        double *dst = REAL(col);
+        for (int64_t i = 0; i < n; i++) {
+            dst[i] = isnan(bands[b][i]) ? NA_REAL : bands[b][i];
+        }
+        SET_VECTOR_ELT(result, 2 + b, col);
+        char bname[16];
+        snprintf(bname, 16, "band%d", b + 1);
+        SET_STRING_ELT(names, 2 + b, Rf_mkChar(bname));
+        UNPROTECT(1); /* col */
+        free(bands[b]);
+    }
+    free(bands);
+
+    /* Set as data.frame */
+    Rf_setAttrib(result, R_NamesSymbol, names);
+    SEXP rownames = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(rownames)[0] = NA_INTEGER;
+    INTEGER(rownames)[1] = -(int)n;
+    Rf_setAttrib(result, R_RowNamesSymbol, rownames);
+    Rf_setAttrib(result, R_ClassSymbol, Rf_mkString("data.frame"));
+
+    UNPROTECT(3); /* result, names, rownames */
+    return result;
+}
+
+/* --- C_write_tiff_typed --- */
+
+SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path_sexp,
+                        SEXP compress_sexp, SEXP pixel_type_sexp,
+                        SEXP metadata_sexp) {
+    TiffTypedCtx ctx;
+    ctx.use_deflate = Rf_asLogical(compress_sexp);
+    ctx.pixel_type = Rf_asInteger(pixel_type_sexp);
+    ctx.metadata_xml = (metadata_sexp == R_NilValue)
+                        ? NULL : CHAR(STRING_ELT(metadata_sexp, 0));
+    return write_node_dispatch(node_xptr, path_sexp, tiff_typed_writer, &ctx);
+}
+
+/* --- C_tiff_read_metadata --- */
+
+SEXP C_tiff_read_metadata(SEXP path_sexp) {
+    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
+
+    TiffReader *reader = NULL;
+    if (tiff_reader_open(fpath, &reader) != 0) {
+        const char *msg = reader ? tiff_reader_errmsg(reader) : "unknown";
+        tiff_reader_close(reader);
+        vectra_error("cannot open GeoTIFF: %s", msg);
+    }
+
+    const char *meta = tiff_reader_metadata(reader);
+    SEXP result;
+    if (meta) {
+        result = PROTECT(Rf_mkString(meta));
+    } else {
+        result = PROTECT(Rf_ScalarString(NA_STRING));
+    }
+
+    tiff_reader_close(reader);
+    UNPROTECT(1);
+    return result;
 }
 
 /* --- C_tiff_scan_meta --- */

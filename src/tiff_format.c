@@ -23,6 +23,7 @@
 #define TAG_SAMPLE_FORMAT        339
 #define TAG_MODEL_TIEPOINT       33922
 #define TAG_MODEL_PIXEL_SCALE    33550
+#define TAG_GDAL_METADATA        42112
 #define TAG_GDAL_NODATA          42113
 
 #define COMPRESS_NONE     1
@@ -264,6 +265,8 @@ struct TiffReader {
     double nodata;
     int    has_nodata;
 
+    char  *metadata;   /* GDAL_METADATA (tag 42112), NULL if absent */
+
     char errmsg[256];
 };
 
@@ -342,7 +345,7 @@ static int parse_ifd(TiffReader *r) {
             break;
         }
         case TAG_BITS_PER_SAMPLE: {
-            int64_t *v = read_tag_ints(io, dtype, 1, valp, entry_val_bytes);
+            int64_t *v = read_tag_ints(io, dtype, count, valp, entry_val_bytes);
             if (v) { r->bits_per_sample = (int)v[0]; free(v); }
             break;
         }
@@ -378,7 +381,7 @@ static int parse_ifd(TiffReader *r) {
             break;
         }
         case TAG_SAMPLE_FORMAT: {
-            int64_t *v = read_tag_ints(io, dtype, 1, valp, entry_val_bytes);
+            int64_t *v = read_tag_ints(io, dtype, count, valp, entry_val_bytes);
             if (v) { r->sample_format = (int)v[0]; free(v); }
             break;
         }
@@ -402,6 +405,10 @@ static int parse_ifd(TiffReader *r) {
                 r->has_geotransform = 1;
             }
             free(v);
+            break;
+        }
+        case TAG_GDAL_METADATA: {
+            r->metadata = read_tag_ascii(io, count, valp, entry_val_bytes);
             break;
         }
         case TAG_GDAL_NODATA: {
@@ -586,6 +593,7 @@ const double *tiff_reader_geotransform(TiffReader *r) { return r->gt; }
 double tiff_reader_nodata(TiffReader *r) { return r->nodata; }
 int tiff_reader_has_nodata(TiffReader *r) { return r->has_nodata; }
 
+const char *tiff_reader_metadata(TiffReader *r) { return r->metadata; }
 const char *tiff_reader_errmsg(TiffReader *r) { return r->errmsg; }
 
 int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
@@ -669,11 +677,158 @@ int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
     return 0;
 }
 
+/* ================================================================== */
+/*  Point extraction: sample band values at (x,y) coordinates          */
+/* ================================================================== */
+
+/* Comparison for sorting point indices by strip index */
+typedef struct { int64_t idx; int64_t strip; int64_t col; int64_t row; } PointLoc;
+
+static int pointloc_cmp(const void *a, const void *b) {
+    const PointLoc *pa = (const PointLoc *)a;
+    const PointLoc *pb = (const PointLoc *)b;
+    if (pa->strip < pb->strip) return -1;
+    if (pa->strip > pb->strip) return  1;
+    return 0;
+}
+
+int tiff_reader_extract_points(TiffReader *r, int64_t n_points,
+                                const double *xs, const double *ys,
+                                double **out_bands) {
+    int64_t W = r->width;
+    int64_t H = r->height;
+    int nb = r->n_bands;
+    int bps = r->bits_per_sample;
+    int bytes_per_sample = bps / 8;
+    int pixel_bytes = bytes_per_sample * nb;
+    int rps = r->rows_per_strip;
+
+    /* Precompute inverse affine geotransform.
+       Forward:  x = gt[0] + (c+0.5)*gt[1] + (r+0.5)*gt[2]
+                 y = gt[3] + (c+0.5)*gt[4] + (r+0.5)*gt[5]
+       Inverse:  solve for (c+0.5, r+0.5) given (x, y).  */
+    double det = r->gt[1] * r->gt[5] - r->gt[2] * r->gt[4];
+    if (fabs(det) < 1e-30) {
+        snprintf(r->errmsg, 256, "degenerate geotransform (det ~ 0)");
+        return -1;
+    }
+    double inv_det = 1.0 / det;
+    /* inv[0]*dx + inv[1]*dy = col+0.5,  inv[2]*dx + inv[3]*dy = row+0.5 */
+    double inv0 =  r->gt[5] * inv_det;
+    double inv1 = -r->gt[2] * inv_det;
+    double inv2 = -r->gt[4] * inv_det;
+    double inv3 =  r->gt[1] * inv_det;
+
+    /* Invert geotransform for each point, build sorted work list */
+    PointLoc *locs = (PointLoc *)malloc((size_t)n_points * sizeof(PointLoc));
+    if (!locs) {
+        snprintf(r->errmsg, 256, "alloc failed for point extraction");
+        return -1;
+    }
+
+    /* Initialize all outputs to NaN (out-of-bounds default).
+       Compiler auto-vectorizes this assignment loop. */
+    for (int b = 0; b < nb; b++)
+        for (int64_t i = 0; i < n_points; i++)
+            out_bands[b][i] = NAN;
+
+    int64_t n_valid = 0;
+    for (int64_t i = 0; i < n_points; i++) {
+        double dx = xs[i] - r->gt[0];
+        double dy = ys[i] - r->gt[3];
+        /* fc, fr are fractional pixel coordinates (col+0.5, row+0.5) */
+        double fc = inv0 * dx + inv1 * dy - 0.5;
+        double fr = inv2 * dx + inv3 * dy - 0.5;
+        int64_t col = (int64_t)floor(fc + 0.5); /* nearest pixel */
+        int64_t row = (int64_t)floor(fr + 0.5);
+
+        if (col < 0 || col >= W || row < 0 || row >= H)
+            continue; /* out of bounds — already NaN */
+
+        locs[n_valid].idx   = i;
+        locs[n_valid].col   = col;
+        locs[n_valid].row   = row;
+        locs[n_valid].strip = row / rps;
+        n_valid++;
+    }
+
+    /* Sort by strip for sequential I/O */
+    if (n_valid > 1)
+        qsort(locs, (size_t)n_valid, sizeof(PointLoc), pointloc_cmp);
+
+    /* Process points strip by strip */
+    int64_t pi = 0;
+    while (pi < n_valid) {
+        int64_t cur_strip = locs[pi].strip;
+
+        /* Read this strip */
+        int64_t strip_row_start = cur_strip * rps;
+        int64_t strip_rows = rps;
+        if (strip_row_start + strip_rows > H)
+            strip_rows = H - strip_row_start;
+
+        int64_t expected_bytes;
+        if (r->planar_config == 1)
+            expected_bytes = strip_rows * W * pixel_bytes;
+        else
+            expected_bytes = strip_rows * W * bytes_per_sample;
+
+        int64_t actual_len = 0;
+        uint8_t *strip_data = read_strip(r, cur_strip, expected_bytes, &actual_len);
+        if (!strip_data) {
+            snprintf(r->errmsg, 256, "failed to read strip %lld",
+                     (long long)cur_strip);
+            free(locs);
+            return -1;
+        }
+
+        /* Extract pixel values for all points in this strip */
+        if (r->planar_config == 1) {
+            while (pi < n_valid && locs[pi].strip == cur_strip) {
+                int64_t oi = locs[pi].idx;
+                int64_t col = locs[pi].col;
+                int64_t sr = locs[pi].row - strip_row_start;
+                int64_t pixel_off = (sr * W + col) * pixel_bytes;
+                for (int b = 0; b < nb; b++) {
+                    double val = extract_pixel(strip_data,
+                        pixel_off + b * bytes_per_sample,
+                        bps, r->sample_format, &r->io);
+                    if (r->has_nodata && val == r->nodata)
+                        val = NAN;
+                    out_bands[b][oi] = val;
+                }
+                pi++;
+            }
+        } else {
+            while (pi < n_valid && locs[pi].strip == cur_strip) {
+                int64_t oi = locs[pi].idx;
+                int64_t col = locs[pi].col;
+                int64_t sr = locs[pi].row - strip_row_start;
+                for (int b = 0; b < nb; b++) {
+                    int64_t pixel_off = (sr * W + col) * bytes_per_sample;
+                    double val = extract_pixel(strip_data, pixel_off,
+                        bps, r->sample_format, &r->io);
+                    if (r->has_nodata && val == r->nodata)
+                        val = NAN;
+                    out_bands[b][oi] = val;
+                }
+                pi++;
+            }
+        }
+
+        free(strip_data);
+    }
+
+    free(locs);
+    return 0;
+}
+
 void tiff_reader_close(TiffReader *r) {
     if (!r) return;
     if (r->io.fp) fclose(r->io.fp);
     free(r->strip_offsets);
     free(r->strip_byte_counts);
+    free(r->metadata);
     free(r);
 }
 
@@ -704,17 +859,39 @@ struct TiffWriter {
     int      use_deflate;
     int      rows_per_strip;
 
+    int      pixel_type;       /* TIFF_PIXEL_* enum */
+    int      bytes_per_sample; /* derived: 1, 2, 4, or 8 */
+    int      bits_per_sample;  /* derived: 8, 16, 32, or 64 */
+    int      sample_format;    /* derived: SAMPLE_UINT/INT/FLOAT */
+
     int64_t  n_strips;
     uint32_t *strip_offsets;
     uint32_t *strip_byte_counts;
     int64_t   strips_written;
 
+    char    *metadata;         /* GDAL_METADATA XML (tag 42112), or NULL */
+
     char errmsg[256];
 };
 
-int tiff_writer_open(const char *path, TiffWriter **out,
-                     int64_t width, int64_t height, int n_bands,
-                     const double *gt, double nodata, int use_deflate) {
+/* Compute pixel type properties */
+static void pixel_type_props(int pixel_type,
+                              int *bytes_out, int *bits_out, int *fmt_out) {
+    switch (pixel_type) {
+    case TIFF_PIXEL_FLOAT32: *bytes_out = 4; *bits_out = 32; *fmt_out = SAMPLE_FLOAT; return;
+    case TIFF_PIXEL_INT16:   *bytes_out = 2; *bits_out = 16; *fmt_out = SAMPLE_INT;   return;
+    case TIFF_PIXEL_INT32:   *bytes_out = 4; *bits_out = 32; *fmt_out = SAMPLE_INT;   return;
+    case TIFF_PIXEL_UINT8:   *bytes_out = 1; *bits_out = 8;  *fmt_out = SAMPLE_UINT;  return;
+    case TIFF_PIXEL_UINT16:  *bytes_out = 2; *bits_out = 16; *fmt_out = SAMPLE_UINT;  return;
+    default: /* TIFF_PIXEL_FLOAT64 */
+        *bytes_out = 8; *bits_out = 64; *fmt_out = SAMPLE_FLOAT; return;
+    }
+}
+
+int tiff_writer_open_typed(const char *path, TiffWriter **out,
+                           int64_t width, int64_t height, int n_bands,
+                           const double *gt, double nodata,
+                           int use_deflate, int pixel_type) {
     TiffWriter *w = (TiffWriter *)calloc(1, sizeof(TiffWriter));
     if (!w) return -1;
 
@@ -731,6 +908,10 @@ int tiff_writer_open(const char *path, TiffWriter **out,
     w->use_deflate = use_deflate;
     w->rows_per_strip = 256;
     if (w->rows_per_strip > height) w->rows_per_strip = (int)height;
+
+    w->pixel_type = pixel_type;
+    pixel_type_props(pixel_type, &w->bytes_per_sample,
+                     &w->bits_per_sample, &w->sample_format);
 
     if (gt) {
         memcpy(w->gt, gt, 6 * sizeof(double));
@@ -755,11 +936,91 @@ int tiff_writer_open(const char *path, TiffWriter **out,
     return 0;
 }
 
+int tiff_writer_open(const char *path, TiffWriter **out,
+                     int64_t width, int64_t height, int n_bands,
+                     const double *gt, double nodata, int use_deflate) {
+    return tiff_writer_open_typed(path, out, width, height, n_bands,
+                                  gt, nodata, use_deflate, TIFF_PIXEL_FLOAT64);
+}
+
+void tiff_writer_set_metadata(TiffWriter *w, const char *xml) {
+    free(w->metadata);
+    w->metadata = xml ? strdup(xml) : NULL;
+}
+
+/* Write a single pixel sample to raw buffer at given offset */
+static void write_pixel(uint8_t *raw, int64_t off, double val,
+                        TiffWriter *w) {
+    int pt = w->pixel_type;
+
+    /* Handle NaN → nodata substitution for integer types */
+    if (isnan(val) && pt != TIFF_PIXEL_FLOAT64 && pt != TIFF_PIXEL_FLOAT32) {
+        val = w->nodata;
+    }
+
+    switch (pt) {
+    case TIFF_PIXEL_FLOAT32: {
+        float f = (float)val;
+        memcpy(raw + off, &f, 4);
+        break;
+    }
+    case TIFF_PIXEL_INT16: {
+        double clamped = val < -32768.0 ? -32768.0 :
+                         val > 32767.0  ? 32767.0  : val;
+        int16_t iv = (int16_t)lrint(clamped);
+        write_le16(raw + off, (uint16_t)iv);
+        break;
+    }
+    case TIFF_PIXEL_INT32: {
+        double clamped = val < -2147483648.0 ? -2147483648.0 :
+                         val > 2147483647.0  ? 2147483647.0  : val;
+        int32_t iv = (int32_t)lrint(clamped);
+        write_le32(raw + off, (uint32_t)iv);
+        break;
+    }
+    case TIFF_PIXEL_UINT8: {
+        double clamped = val < 0.0 ? 0.0 : val > 255.0 ? 255.0 : val;
+        raw[off] = (uint8_t)lrint(clamped);
+        break;
+    }
+    case TIFF_PIXEL_UINT16: {
+        double clamped = val < 0.0 ? 0.0 : val > 65535.0 ? 65535.0 : val;
+        write_le16(raw + off, (uint16_t)lrint(clamped));
+        break;
+    }
+    default: /* TIFF_PIXEL_FLOAT64 */
+        memcpy(raw + off, &val, 8);
+        break;
+    }
+}
+
+/* Fill n samples with the nodata/NaN pattern */
+static void fill_nodata(uint8_t *raw, int64_t n_samples, TiffWriter *w) {
+    int bps = w->bytes_per_sample;
+
+    if (w->pixel_type == TIFF_PIXEL_FLOAT64) {
+        double nan_val = NAN;
+        for (int64_t i = 0; i < n_samples; i++)
+            memcpy(raw + i * 8, &nan_val, 8);
+    } else if (w->pixel_type == TIFF_PIXEL_FLOAT32) {
+        float nan_val = NAN;
+        for (int64_t i = 0; i < n_samples; i++)
+            memcpy(raw + i * 4, &nan_val, 4);
+    } else {
+        /* Integer types: fill with nodata pattern */
+        uint8_t pattern[8];
+        write_pixel(pattern, 0, w->nodata, w);
+        for (int64_t i = 0; i < n_samples; i++)
+            memcpy(raw + i * bps, pattern, (size_t)bps);
+    }
+}
+
 int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
                            const double *const *bands) {
     int64_t W = w->width;
     int nb = w->n_bands;
     int rps = w->rows_per_strip;
+    int bps = w->bytes_per_sample;
 
     /* Write one strip at a time */
     int64_t first_strip = row_start / rps;
@@ -776,8 +1037,8 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
         int64_t srows = r1 - r0;
         if (srows <= 0) continue;
 
-        /* Build raw strip: chunky interleaved Float64 */
-        int64_t raw_size = srows * W * nb * 8;
+        /* Build raw strip: chunky interleaved, typed */
+        int64_t raw_size = srows * W * nb * bps;
         uint8_t *raw = (uint8_t *)malloc((size_t)raw_size);
         if (!raw) {
             snprintf(w->errmsg, 256, "alloc failed for strip data");
@@ -789,32 +1050,27 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
             int64_t dst_row = row - srow_start;
             for (int64_t col = 0; col < W; col++) {
                 int64_t src_idx = src_row * W + col;
-                int64_t dst_off = (dst_row * W + col) * nb * 8;
+                int64_t dst_off = (dst_row * W + col) * nb * bps;
                 for (int b = 0; b < nb; b++) {
-                    double val = bands[b][src_idx];
-                    memcpy(raw + dst_off + b * 8, &val, 8);
+                    write_pixel(raw, dst_off + b * bps, bands[b][src_idx], w);
                 }
             }
         }
 
         /* Actual strip size (may be smaller than rps for last strip) */
         int64_t actual_rows = srow_end - srow_start;
-        int64_t strip_raw_size = actual_rows * W * nb * 8;
+        int64_t strip_raw_size = actual_rows * W * nb * bps;
 
         /* If we don't have all rows for this strip yet, pad with nodata */
         if (srows < actual_rows) {
-            /* Need to fill missing rows with NaN */
             uint8_t *full = (uint8_t *)calloc(1, (size_t)strip_raw_size);
             if (!full) {
                 free(raw);
                 return -1;
             }
-            /* Fill with NaN */
-            double nan_val = NAN;
-            for (int64_t i = 0; i < actual_rows * W * nb; i++)
-                memcpy(full + i * 8, &nan_val, 8);
+            fill_nodata(full, actual_rows * W * nb, w);
             /* Copy the rows we have */
-            int64_t dst_offset = (r0 - srow_start) * W * nb * 8;
+            int64_t dst_offset = (r0 - srow_start) * W * nb * bps;
             memcpy(full + dst_offset, raw, (size_t)raw_size);
             free(raw);
             raw = full;
@@ -872,6 +1128,8 @@ int tiff_writer_finish(TiffWriter *w) {
 
     int nb = w->n_bands;
     int64_t ns = w->n_strips;
+    uint16_t bps_val = (uint16_t)w->bits_per_sample;
+    uint16_t sf_val  = (uint16_t)w->sample_format;
 
     /* Write auxiliary data blocks before IFD:
        1. StripOffsets array (4*ns bytes)
@@ -880,7 +1138,8 @@ int tiff_writer_finish(TiffWriter *w) {
        4. SampleFormat array (2*nb bytes) — if nb > 1
        5. ModelPixelScale (3 doubles = 24 bytes)
        6. ModelTiepoint (6 doubles = 48 bytes)
-       7. GDAL_NODATA string
+       7. GDAL_METADATA string (if set)
+       8. GDAL_NODATA string
     */
 
     /* StripOffsets */
@@ -903,7 +1162,7 @@ int tiff_writer_finish(TiffWriter *w) {
     uint32_t off_bps = (uint32_t)ftell(w->fp);
     for (int b = 0; b < nb; b++) {
         uint8_t buf[2];
-        write_le16(buf, 64);
+        write_le16(buf, bps_val);
         fwrite(buf, 1, 2, w->fp);
     }
 
@@ -911,7 +1170,7 @@ int tiff_writer_finish(TiffWriter *w) {
     uint32_t off_sf = (uint32_t)ftell(w->fp);
     for (int b = 0; b < nb; b++) {
         uint8_t buf[2];
-        write_le16(buf, SAMPLE_FLOAT);
+        write_le16(buf, sf_val);
         fwrite(buf, 1, 2, w->fp);
     }
 
@@ -927,6 +1186,15 @@ int tiff_writer_finish(TiffWriter *w) {
     {
         double tp[6] = { 0, 0, 0, w->gt[0], w->gt[3], 0 };
         fwrite(tp, sizeof(double), 6, w->fp);
+    }
+
+    /* GDAL_METADATA string (tag 42112) */
+    uint32_t off_metadata = 0;
+    int metadata_len = 0;
+    if (w->metadata) {
+        metadata_len = (int)strlen(w->metadata) + 1; /* include null */
+        off_metadata = (uint32_t)ftell(w->fp);
+        fwrite(w->metadata, 1, (size_t)metadata_len, w->fp);
     }
 
     /* GDAL_NODATA string */
@@ -945,6 +1213,7 @@ int tiff_writer_finish(TiffWriter *w) {
                         StripOffsets, SPP, RowsPerStrip, StripByteCounts,
                         PlanarConfig, SampleFormat, ModelPixelScale */
     n_tags++; /* ModelTiepoint */
+    if (w->metadata) n_tags++;
     if (w->has_nodata) n_tags++;
 
     /* Write IFD */
@@ -966,9 +1235,12 @@ int tiff_writer_finish(TiffWriter *w) {
     write_ifd_entry(ent, TAG_IMAGE_LENGTH, TIFF_LONG, 1, (uint32_t)w->height);
     fwrite(ent, 1, 12, w->fp);
 
-    /* 258: BitsPerSample */
+    /* 258: BitsPerSample — inline when fits in value field (TIFF spec) */
     if (nb == 1) {
-        write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT, 1, 64);
+        write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT, 1, bps_val);
+    } else if (nb == 2) {
+        write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT, 2,
+                         (uint32_t)bps_val | ((uint32_t)bps_val << 16));
     } else {
         write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT,
                          (uint32_t)nb, off_bps);
@@ -1018,9 +1290,12 @@ int tiff_writer_finish(TiffWriter *w) {
     write_ifd_entry(ent, TAG_PLANAR_CONFIG, TIFF_SHORT, 1, 1);
     fwrite(ent, 1, 12, w->fp);
 
-    /* 339: SampleFormat */
+    /* 339: SampleFormat — inline when fits in value field (TIFF spec) */
     if (nb == 1) {
-        write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT, 1, SAMPLE_FLOAT);
+        write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT, 1, sf_val);
+    } else if (nb == 2) {
+        write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT, 2,
+                         (uint32_t)sf_val | ((uint32_t)sf_val << 16));
     } else {
         write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT,
                          (uint32_t)nb, off_sf);
@@ -1035,12 +1310,26 @@ int tiff_writer_finish(TiffWriter *w) {
     write_ifd_entry(ent, TAG_MODEL_TIEPOINT, TIFF_DOUBLE, 6, off_tiepoint);
     fwrite(ent, 1, 12, w->fp);
 
+    /* 42112: GDAL_METADATA */
+    if (w->metadata) {
+        if (metadata_len <= 4) {
+            write_ifd_entry(ent, TAG_GDAL_METADATA, TIFF_ASCII,
+                             (uint32_t)metadata_len, 0);
+            memcpy(ent + 8, w->metadata, (size_t)metadata_len);
+            if (metadata_len < 4) memset(ent + 8 + metadata_len, 0,
+                                          (size_t)(4 - metadata_len));
+        } else {
+            write_ifd_entry(ent, TAG_GDAL_METADATA, TIFF_ASCII,
+                             (uint32_t)metadata_len, off_metadata);
+        }
+        fwrite(ent, 1, 12, w->fp);
+    }
+
     /* 42113: GDAL_NODATA */
     if (w->has_nodata) {
         if (nodata_len <= 4) {
             write_ifd_entry(ent, TAG_GDAL_NODATA, TIFF_ASCII,
                              (uint32_t)nodata_len, 0);
-            /* Inline the short string */
             memcpy(ent + 8, nodata_str, (size_t)nodata_len);
             if (nodata_len < 4) memset(ent + 8 + nodata_len, 0,
                                         (size_t)(4 - nodata_len));
@@ -1072,5 +1361,6 @@ void tiff_writer_close(TiffWriter *w) {
     if (w->fp) fclose(w->fp);
     free(w->strip_offsets);
     free(w->strip_byte_counts);
+    free(w->metadata);
     free(w);
 }

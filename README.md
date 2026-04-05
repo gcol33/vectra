@@ -30,6 +30,10 @@ tbl_tiff("worldclim_bio1.tif") |>
   mutate(temp_c = band1 / 10) |>
   collect()
 
+# Point extraction — sample raster values at coordinates, no terra needed
+tiff_extract_points("worldclim_bio1.tif",
+                    x = c(10.5, 11.2), y = c(47.1, 47.3))
+
 # SQLite — zero-dependency, no DBI required
 tbl_sqlite("survey.db", "responses") |>
   filter(year == 2025) |>
@@ -118,6 +122,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 - **Window functions**: `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`
 - **String expressions**: `nchar()`, `substr()`, `grepl()` evaluated in the engine without round-tripping to R
 - **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF --- all produce the same lazy query nodes
+- **Integer TIFF output**: write rasters as `int16`/`int32`/`uint8`/`uint16`/`float32` with embedded GDAL metadata for 5-10x smaller files
 
 ## Features
 
@@ -134,7 +139,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()`, `resolve()`, `propagate()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
 | **Schema** | `vtr_schema()`, `link()`, `lookup()` — star schema definition and dimension lookup with match reporting |
-| **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()`, `append_vtr()`, `delete_vtr()`, `diff_vtr()` |
+| **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()`, `tiff_extract_points()`, `tiff_metadata()`, `append_vtr()`, `delete_vtr()`, `diff_vtr()` |
 | **Inspect** | `explain()`, `glimpse()`, `print()`, `pull()` |
 
 Full tidyselect support in `select()`, `rename()`, `relocate()`, and `across()`: `starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`, `everything()`, `all_of()`, `any_of()`.

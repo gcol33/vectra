@@ -11,6 +11,14 @@
 
 #define TIFF_MAX_BANDS 64
 
+/* Pixel storage type for writer */
+#define TIFF_PIXEL_FLOAT64  0
+#define TIFF_PIXEL_FLOAT32  1
+#define TIFF_PIXEL_INT16    2
+#define TIFF_PIXEL_INT32    3
+#define TIFF_PIXEL_UINT8    4
+#define TIFF_PIXEL_UINT16   5
+
 /* ---- Reader ---- */
 
 typedef struct TiffReader TiffReader;
@@ -40,6 +48,20 @@ int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
                            double *out_x, double *out_y,
                            double **out_bands);
 
+/* Extract band values at specific (x, y) coordinates.
+   n_points: number of query points
+   xs, ys: coordinate arrays (n_points each)
+   out_bands[band]: output arrays (n_points each), caller-allocated
+   Points outside the raster extent get NaN.
+   Returns 0 on success, -1 on error. */
+int tiff_reader_extract_points(TiffReader *r, int64_t n_points,
+                                const double *xs, const double *ys,
+                                double **out_bands);
+
+/* GDAL_METADATA (tag 42112) XML string, or NULL if not present.
+   Returned pointer is owned by the reader — do not free. */
+const char *tiff_reader_metadata(TiffReader *r);
+
 const char *tiff_reader_errmsg(TiffReader *r);
 void tiff_reader_close(TiffReader *r);
 
@@ -56,6 +78,16 @@ typedef struct TiffWriter TiffWriter;
 int tiff_writer_open(const char *path, TiffWriter **out,
                      int64_t width, int64_t height, int n_bands,
                      const double *gt, double nodata, int use_deflate);
+
+/* Open a writer with explicit pixel type (TIFF_PIXEL_*). */
+int tiff_writer_open_typed(const char *path, TiffWriter **out,
+                           int64_t width, int64_t height, int n_bands,
+                           const double *gt, double nodata,
+                           int use_deflate, int pixel_type);
+
+/* Attach GDAL_METADATA XML to be written into tag 42112.
+   Must be called before tiff_writer_finish(). */
+void tiff_writer_set_metadata(TiffWriter *w, const char *xml);
 
 /* Write a block of rows [row_start, row_start+n_rows).
    bands[b] = array of width * n_rows doubles, row-major.

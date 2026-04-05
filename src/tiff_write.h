@@ -9,4 +9,9 @@
    use_deflate: 1 to compress strips with DEFLATE. */
 void tiff_write_node(VecNode *node, const char *path, int use_deflate);
 
+/* Write with explicit pixel type (TIFF_PIXEL_*) and optional GDAL_METADATA.
+   metadata_xml may be NULL. */
+void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
+                           int pixel_type, const char *metadata_xml);
+
 #endif /* VECTRA_TIFF_WRITE_H */

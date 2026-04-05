@@ -152,3 +152,77 @@ tbl_tiff <- function(path, batch_size = .TIFF_BATCH_SIZE) {
   structure(list(.node = xptr, .path = path, .tiff_meta = meta),
             class = "vectra_node")
 }
+
+#' Extract raster values at point coordinates
+#'
+#' Samples band values from a GeoTIFF at specific (x, y) locations using the
+#' file's affine geotransform. Only the strips containing query points are read,
+#' making this efficient for sparse point sets on large rasters.
+#'
+#' Points that fall outside the raster extent return `NA` for all bands.
+#' Pixel assignment uses nearest-pixel rounding (i.e., the point is assigned to
+#' the pixel whose center is closest).
+#'
+#' @param path Path to a GeoTIFF file.
+#' @param x Numeric vector of x coordinates, or a data.frame / matrix with
+#'   columns named `x` and `y`.
+#' @param y Numeric vector of y coordinates (ignored if `x` is a data.frame).
+#'
+#' @return A data.frame with columns `x`, `y`, `band1`, `band2`, etc.
+#'   One row per input point, in the same order as the input.
+#'
+#' @examples
+#' \dontrun{
+#' # Sample temperature at 3 locations
+#' pts <- data.frame(x = c(10.5, 11.2, 12.0), y = c(47.1, 47.3, 47.5))
+#' tiff_extract_points("climate.tif", pts)
+#'
+#' # Or pass x and y separately
+#' tiff_extract_points("climate.tif", x = c(10.5, 11.2), y = c(47.1, 47.3))
+#' }
+#'
+#' @export
+tiff_extract_points <- function(path, x, y = NULL) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+
+  if (is.data.frame(x) || is.matrix(x)) {
+    if (!all(c("x", "y") %in% colnames(x)))
+      stop("when x is a data.frame/matrix it must have columns 'x' and 'y'")
+    y <- as.double(x[, "y"])
+    x <- as.double(x[, "x"])
+  } else {
+    if (is.null(y))
+      stop("y is required when x is a numeric vector")
+    x <- as.double(x)
+    y <- as.double(y)
+  }
+
+  if (length(x) != length(y))
+    stop(sprintf("x and y must have the same length (got %d and %d)",
+                 length(x), length(y)))
+
+  .Call(C_tiff_extract_points, path, x, y)
+}
+
+#' Read GDAL_METADATA from a GeoTIFF
+#'
+#' Returns the GDAL_METADATA XML string (TIFF tag 42112) embedded in a
+#' GeoTIFF file. Returns `NA` if the tag is not present.
+#'
+#' @param path Path to a GeoTIFF file.
+#' @return A single character string containing the XML, or `NA_character_`.
+#'
+#' @examples
+#' \dontrun{
+#' tiff_metadata("climate.tif")
+#' }
+#'
+#' @export
+tiff_metadata <- function(path) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  .Call(C_tiff_read_metadata, path)
+}

@@ -95,6 +95,11 @@ static double find_resolution(const double *uniq, int64_t n) {
 /* ------------------------------------------------------------------ */
 
 void tiff_write_node(VecNode *node, const char *path, int use_deflate) {
+    tiff_write_node_typed(node, path, use_deflate, TIFF_PIXEL_FLOAT64, NULL);
+}
+
+void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
+                           int pixel_type, const char *metadata_xml) {
     const VecSchema *schema = &node->output_schema;
     int n_cols = schema->n_cols;
 
@@ -205,12 +210,23 @@ void tiff_write_node(VecNode *node, const char *path, int use_deflate) {
 
     /* Write TIFF */
     TiffWriter *writer = NULL;
-    if (tiff_writer_open(path, &writer, width, height, n_bands,
-                          gt, NAN, use_deflate) != 0) {
+    double nodata_val = NAN;
+    /* For integer types, set a conventional nodata if caller hasn't */
+    if (pixel_type == TIFF_PIXEL_INT16)  nodata_val = -32768.0;
+    else if (pixel_type == TIFF_PIXEL_INT32)  nodata_val = -2147483648.0;
+    else if (pixel_type == TIFF_PIXEL_UINT8)  nodata_val = 255.0;
+    else if (pixel_type == TIFF_PIXEL_UINT16) nodata_val = 65535.0;
+
+    if (tiff_writer_open_typed(path, &writer, width, height, n_bands,
+                                gt, nodata_val, use_deflate,
+                                pixel_type) != 0) {
         const char *msg = writer ? tiff_writer_errmsg(writer) : "unknown";
         tiff_writer_close(writer);
         vectra_error("write_tiff failed: %s", msg);
     }
+
+    if (metadata_xml)
+        tiff_writer_set_metadata(writer, metadata_xml);
 
     /* Write all rows at once */
     if (tiff_writer_write_rows(writer, 0, height,
