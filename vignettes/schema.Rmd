@@ -1,0 +1,398 @@
+---
+title: "Star Schemas and Lookup"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Star Schemas and Lookup}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## The flat-table problem
+
+Ecological analyses almost always involve multiple tables. Observations live in
+one file, species traits in another, site metadata in a third, climate variables
+in a fourth. The natural instinct is to join everything into a single wide
+data.frame early on, then work from that flat table for the rest of the
+analysis.
+
+This works for small datasets. At scale, it creates problems.
+
+A biodiversity monitoring program with 50 million observations, 12,000 species
+each carrying 40 trait columns, 3,000 sites with 25 metadata fields, and a
+climate grid with 19 bioclimatic variables produces a flat table with over 80
+columns per row. Most analyses use 5 to 10 of those columns. The remaining 70+
+columns burn memory, slow down scans, and make column names collide across
+tables (requiring `.x` and `.y` suffixes that propagate through downstream
+code). When a new trait column is added to the species reference, every script
+that built the flat table needs updating.
+
+Relational databases solved this decades ago with foreign keys and normalized
+schemas. The data stays in separate tables; queries join them on demand, pulling
+only the columns the query needs. vectra brings the same pattern to file-based
+analytical workflows with three functions: `link()`, `vtr_schema()`, and
+`lookup()`.
+
+
+## The star schema concept
+
+A star schema organizes data around a central **fact table** (the primary
+dataset with measurements or events) linked to multiple **dimension tables**
+(reference data that enriches the facts). The fact table holds foreign keys that
+point into each dimension. In database terminology, the fact table sits at the
+center and dimensions radiate outward like points of a star.
+
+For ecological data, the mapping is direct:
+
+| Role | Table | Key | Columns |
+|:-----|:------|:----|:--------|
+| Fact | observations | sp_id, site_id, date | count, biomass, cover |
+| Dimension | species | sp_id | name, family, order, red_list_status, ... |
+| Dimension | sites | site_id | habitat, elevation, lat, lon, country, ... |
+| Dimension | climate | site_id | bio1, bio2, ..., bio19 |
+| Dimension | traits | sp_id | body_mass, diet, dispersal, ... |
+
+Each dimension table has a unique key. The fact table references those keys but
+stores only the measurements. To answer "what is the average count per habitat
+type?", we need exactly two columns from the site dimension (site_id and
+habitat) and one from the fact table (count). A flat table would have loaded all
+25 site columns and all 40 trait columns into memory for no reason.
+
+
+## Setting up a schema
+
+We will build a schema from three tables: field observations of tree species
+across monitoring sites, a species reference with taxonomic and conservation
+data, and a site metadata table.
+
+```{r data-setup}
+library(vectra)
+
+# Fact table: field observations
+obs_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  obs_id  = 1:12,
+  sp_id   = c(1, 2, 3, 1, 2, 4, 3, 1, 5, 2, 3, 1),
+  site_id = c(1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4),
+  count   = c(5, 12, 3, 8, 15, 2, 7, 20, 1, 9, 4, 11),
+  dbh_cm  = c(35, 22, 48, 31, 19, 55, 42, 28, 12, 25, 39, 33)
+), obs_path)
+
+# Dimension: species
+sp_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  sp_id       = 1:4,
+  name        = c("Quercus robur", "Fagus sylvatica",
+                   "Pinus sylvestris", "Abies alba"),
+  family      = c("Fagaceae", "Fagaceae", "Pinaceae", "Pinaceae"),
+  red_list    = c("LC", "LC", "LC", "NT"),
+  shade_tol   = c(0.4, 0.8, 0.2, 0.7),
+  max_height  = c(40, 45, 35, 55),
+  stringsAsFactors = FALSE
+), sp_path)
+
+# Dimension: sites
+site_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  site_id   = 1:4,
+  site_name = c("Wienerwald A", "Wienerwald B",
+                "Donau-Auen", "Neusiedlersee"),
+  habitat   = c("Deciduous", "Deciduous", "Riparian", "Steppe"),
+  elev_m    = c(450, 520, 155, 120),
+  annual_precip_mm = c(750, 780, 550, 600),
+  stringsAsFactors = FALSE
+), site_path)
+```
+
+`link()` describes how a dimension table connects to the fact table. The first
+argument is the key column (the column name shared between fact and dimension),
+the second is a `vectra_node` pointing to the dimension file.
+
+```{r links}
+sp_link   <- link("sp_id", tbl(sp_path))
+site_link <- link("site_id", tbl(site_path))
+```
+
+`vtr_schema()` ties the fact table and its dimension links together. Each link
+gets a name that becomes the alias used in `lookup()` calls.
+
+```{r schema}
+s <- vtr_schema(
+  fact = tbl(obs_path),
+  sp   = sp_link,
+  site = site_link
+)
+s
+```
+
+The print output shows the fact table's column count and each dimension with its
+key. The schema object is lightweight. It holds pointers to the underlying
+files, not copies of the data.
+
+
+## Looking up dimension columns
+
+`lookup()` is the verb that resolves columns through the schema. Bare names
+refer to fact columns. The `dim$col` syntax refers to a specific column in a
+named dimension.
+
+```{r lookup-basic}
+lookup(s, count, sp$name, site$habitat, .report = FALSE) |> collect()
+```
+
+The result has 12 rows (one per observation) and exactly 3 columns. No trait
+columns, no climate data, no site coordinates were loaded. vectra built the
+join tree internally: `left_join` the species dimension on `sp_id`, then
+`left_join` the site dimension on `site_id`, then project down to the three
+requested columns.
+
+Requesting columns from only one dimension skips the other entirely. The
+species file is never opened in this call:
+
+```{r lookup-one-dim}
+lookup(s, count, dbh_cm, site$habitat, site$elev_m, .report = FALSE) |>
+  collect()
+```
+
+
+## Match reporting
+
+By default, `lookup()` checks each referenced dimension for unmatched keys
+before building the join tree. The check runs an `anti_join` on fresh node
+copies, so it does not consume the lazy nodes used for the actual result.
+
+Our fact table contains `sp_id = 5` (row 9), which has no entry in the species
+dimension. The report catches this:
+
+```{r report}
+result <- lookup(s, count, sp$name) |> collect()
+```
+
+One observation out of 12 had an `sp_id` that the species table did not
+recognize. The message names the dimension, shows how many rows were
+unmatched, and previews the offending key values. For a left join, those rows
+survive with NA in the dimension columns:
+
+```{r report-na}
+result
+```
+
+Row 9 has `name = NA` because sp_id 5 does not exist in the species reference.
+The match report makes this visible at query time rather than three pipeline
+stages later when an aggregation silently drops NA groups.
+
+When all keys match, the report confirms it:
+
+```{r report-ok}
+lookup(s, count, site$habitat) |> collect()
+```
+
+All 12 observations have valid site_ids.
+
+To suppress the report (useful inside functions or loops where the message would
+be noise), set `.report = FALSE`:
+
+```{r report-off}
+lookup(s, count, sp$name, .report = FALSE) |> collect()
+```
+
+
+## Named keys
+
+Sometimes the fact table and dimension table use different column names for the
+same logical key. The species dimension might call it `species_id` while the
+fact table calls it `sp_id`.
+
+`link()` accepts named character vectors, the same `c("fact_col" = "dim_col")`
+syntax used by `left_join()`:
+
+```{r named-keys}
+# Dimension with a different key name
+sp2_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  species_code = 1:4,
+  latin_name   = c("Quercus robur", "Fagus sylvatica",
+                    "Pinus sylvestris", "Abies alba"),
+  stringsAsFactors = FALSE
+), sp2_path)
+
+s2 <- vtr_schema(
+  fact = tbl(obs_path),
+  sp   = link(c("sp_id" = "species_code"), tbl(sp2_path))
+)
+
+lookup(s2, count, sp$latin_name, .report = FALSE) |> collect()
+```
+
+The named key tells vectra that the fact table's `sp_id` maps to the
+dimension's `species_code`. The result column is named `latin_name`, matching
+the dimension.
+
+Composite keys (joining on multiple columns) work the same way. A temporal
+dimension keyed by both site and year would use
+`link(c("site_id", "year"), tbl(temporal_path))`.
+
+
+## Join modes
+
+The `.join` parameter controls whether unmatched fact rows are kept or dropped.
+The default is `"left"`, which preserves every fact row and fills unmatched
+dimension columns with NA. This is the safe default for exploratory work: no
+data disappears silently.
+
+`"inner"` drops fact rows with no dimension match. This is useful when the
+analysis requires complete records across all referenced dimensions.
+
+```{r join-inner}
+# Only observations with known species
+lookup(s, count, sp$name, .join = "inner", .report = FALSE) |> collect()
+```
+
+The 12-row fact table shrinks to 11 rows. The observation with `sp_id = 5`
+(which had no species match) is gone. With an inner join, the match report
+becomes less critical because the join itself enforces completeness. But it
+still flags the issue before data goes missing:
+
+```{r join-inner-report}
+lookup(s, count, sp$name, .join = "inner") |> collect()
+```
+
+
+## Reusing the schema
+
+The schema object does not hold live data. It stores file paths and reopens
+fresh scan nodes each time `lookup()` is called. This means the same schema
+works across multiple analyses without invalidating previous results.
+
+```{r reuse}
+# Analysis 1: species composition by habitat
+a1 <- lookup(s, sp$name, site$habitat, .report = FALSE) |> collect()
+
+# Analysis 2: stem diameter by elevation
+a2 <- lookup(s, dbh_cm, site$elev_m, .report = FALSE) |> collect()
+
+# Analysis 3: conservation status across sites
+a3 <- lookup(s, count, sp$red_list, site$site_name, .report = FALSE) |>
+  collect()
+```
+
+```{r reuse-show}
+a1
+a2
+a3
+```
+
+Three different column selections from the same schema, each building its own
+join tree internally. No flat table required.
+
+
+## Practical patterns
+
+### Pattern 1: filtering before lookup
+
+`lookup()` works on the fact table as registered in the schema. To filter the
+fact table before looking up dimensions, apply the filter to the source file and
+register a new schema:
+
+```{r pattern-filter}
+s_large <- vtr_schema(
+  fact = tbl(obs_path) |> filter(count >= 5),
+  sp   = link("sp_id", tbl(sp_path)),
+  site = link("site_id", tbl(site_path))
+)
+lookup(s_large, count, sp$name, site$habitat, .report = FALSE) |> collect()
+```
+
+The filter runs lazily inside the join tree. Only observations with count >= 5
+reach the join nodes.
+
+
+### Pattern 2: aggregation after lookup
+
+Because `lookup()` returns a `vectra_node`, it composes with all downstream
+verbs. Group by a dimension column and aggregate:
+
+```{r pattern-agg}
+lookup(s, count, sp$family, .report = FALSE) |>
+  group_by(family) |>
+  summarise(total = sum(count), n_obs = n()) |>
+  collect()
+```
+
+This pipeline scans the fact table, joins only the species dimension (to get
+`family`), groups on it, and computes the aggregation. The site dimension is
+never touched.
+
+```{r pattern-agg2}
+lookup(s, count, site$habitat, .report = FALSE) |>
+  group_by(habitat) |>
+  summarise(mean_count = mean(count), max_count = max(count)) |>
+  collect()
+```
+
+
+### Pattern 3: multiple dimensions in one aggregation
+
+Crossing two dimension columns in a grouping creates a two-way summary:
+
+```{r pattern-cross}
+lookup(s, count, sp$family, site$habitat, .report = FALSE) |>
+  group_by(family, habitat) |>
+  summarise(total = sum(count)) |>
+  collect()
+```
+
+
+### Pattern 4: writing results back
+
+Lookup results can be written directly to any output format, since the return
+value is a standard `vectra_node`:
+
+```{r pattern-write}
+out_path <- tempfile(fileext = ".vtr")
+lookup(s, count, sp$name, site$habitat, .report = FALSE) |>
+  write_vtr(out_path)
+
+tbl(out_path) |> collect()
+```
+
+The write streams through the join tree batch by batch. The full joined result
+never needs to exist in memory at once.
+
+
+## When not to use a schema
+
+Schemas are most valuable when multiple analyses query the same set of linked
+tables with different column selections. For a one-off join where the column
+set is known upfront, a direct `left_join()` call is simpler and equally
+efficient.
+
+Schemas also require file-backed nodes. Tables created from in-memory
+data.frames (without writing to a `.vtr` or `.csv` first) cannot be registered
+as schema links, because the engine needs to reopen fresh scan nodes from
+file paths. If the dimension data lives only in memory, write it to a tempfile
+first or use `left_join()` directly.
+
+The sweet spot is any project where the same fact table is analyzed repeatedly
+against a stable set of dimension tables, each time needing a different
+slice of columns. Environmental monitoring, biodiversity databases, long-running
+survey programs, species distribution modelling pipelines: all fit the pattern.
+
+For those workflows, registering the schema once (in a project setup script or
+at the top of an analysis) replaces dozens of `left_join()` calls scattered
+across the codebase, makes column provenance explicit (`sp$name` is
+unambiguous in a way that a bare `name` column in a 100-column flat table
+is not), and catches broken keys before they propagate.
+
+
+```{r cleanup, include = FALSE}
+unlink(c(obs_path, sp_path, site_path, sp2_path, out_path))
+```
