@@ -28,12 +28,20 @@ typedef struct {
     Vtr1ColStat *col_stats;  /* array of n_cols entries (NULL for v1/v2) */
 } Vtr1RowGroup;
 
+/* Reusable scratch buffer — grows but never shrinks */
+typedef struct {
+    uint8_t *data;
+    size_t   capacity;
+} Vtr1Scratch;
+
 /* File handle for reading */
 typedef struct {
     FILE        *fp;
     Vtr1Header   header;
     Vtr1RowGroup *rowgroups;  /* array of n_rowgroups entries */
     uint8_t     *col_sorted;  /* [n_cols] — 1 if row groups are sorted by this col */
+    Vtr1Scratch  scratch_enc; /* reusable buffer for encoded data reads */
+    Vtr1Scratch  scratch_dec; /* reusable buffer for decompression output */
 } Vtr1File;
 
 /* Open a .vtr file for reading, parse header and row group index */
@@ -43,6 +51,13 @@ Vtr1File *vtr1_open(const char *path);
    col_mask: bit array of length n_cols, 1 = load this column */
 VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
                              const int *col_mask);
+
+/* Read all row groups in parallel using thread-local FILE handles.
+   Returns malloc'd array of VecBatch* (caller frees each with vec_batch_free).
+   path: needed to open per-thread file handles.
+   out_count: set to number of batches returned. */
+VecBatch **vtr1_read_parallel(Vtr1File *file, const int *col_mask,
+                              const char *path, uint32_t *out_count);
 
 /* Close and free */
 void vtr1_close(Vtr1File *file);

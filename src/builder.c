@@ -10,8 +10,14 @@ static void ensure_capacity(VecArrayBuilder *b, int64_t extra) {
     int64_t needed = b->length + extra;
     if (needed <= b->capacity) return;
 
-    int64_t new_cap = b->capacity == 0 ? INITIAL_CAP : b->capacity;
-    while (new_cap < needed) new_cap *= 2;
+    int64_t new_cap;
+    if (b->capacity == 0) {
+        /* First allocation: jump directly to needed size (avoid doubling loop) */
+        new_cap = needed < INITIAL_CAP ? INITIAL_CAP : needed;
+    } else {
+        new_cap = b->capacity;
+        while (new_cap < needed) new_cap *= 2;
+    }
 
     int64_t old_vbytes = vec_validity_bytes(b->capacity);
     int64_t new_vbytes = vec_validity_bytes(new_cap);
@@ -67,11 +73,12 @@ void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
     if (arr->length == 0) return;
     ensure_capacity(b, arr->length);
 
-    /* Copy validity bits */
-    for (int64_t i = 0; i < arr->length; i++) {
-        if (vec_array_is_valid(arr, i))
-            b->validity[(b->length + i) / 8] |= (uint8_t)(1 << ((b->length + i) % 8));
-    }
+    /* Copy validity bits — bulk word-level operation */
+    if (vec_array_all_valid(arr))
+        vec_validity_set_bits(b->validity, b->length, arr->length);
+    else
+        vec_validity_copy_bits(b->validity, b->length,
+                               arr->validity, 0, arr->length);
 
     switch (b->type) {
     case VEC_INT64:
@@ -152,11 +159,8 @@ void vec_builder_append_na(VecArrayBuilder *b) {
 void vec_builder_append_na_n(VecArrayBuilder *b, int64_t n) {
     if (n <= 0) return;
     ensure_capacity(b, n);
-    /* Validity bits stay 0 (already zeroed by ensure_capacity) */
     /* Clear any bits that might have been set previously in this byte range */
-    for (int64_t i = 0; i < n; i++)
-        b->validity[(b->length + i) / 8] &=
-            ~(uint8_t)(1 << ((b->length + i) % 8));
+    vec_validity_clear_bits(b->validity, b->length, n);
     if (b->type == VEC_STRING) {
         for (int64_t i = 0; i <= n; i++)
             b->str_offsets[b->length + i] = b->str_data_len;
@@ -171,10 +175,8 @@ void vec_builder_append_repeat(VecArrayBuilder *b, const VecArray *arr,
     int valid = vec_array_is_valid(arr, row);
 
     if (valid) {
-        /* Set validity bits for entire run */
-        for (int64_t i = 0; i < count; i++)
-            b->validity[(b->length + i) / 8] |=
-                (uint8_t)(1 << ((b->length + i) % 8));
+        /* Set validity bits for entire run — bulk */
+        vec_validity_set_bits(b->validity, b->length, count);
 
         switch (b->type) {
         case VEC_INT64: {

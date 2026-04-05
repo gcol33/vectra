@@ -74,6 +74,22 @@ void vtr_decode_column(VecArray *col, int64_t n_rows,
                        const uint8_t *data, uint32_t data_size,
                        uint32_t uncompressed_size);
 
+/*
+ * Decompress LZ-VTR data into a caller-provided buffer.
+ * dst must be at least uncompressed_size bytes.
+ * Used by vtr1_read_rowgroup with scratch buffers to avoid per-column mallocs.
+ */
+void vtr_lz_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
+                            const uint8_t *src, uint32_t src_size);
+
+/*
+ * Decode a column chunk using pre-decompressed data.
+ * Like vtr_decode_column but skips decompression — caller already handled it.
+ */
+void vtr_decode_column_raw(VecArray *col, int64_t n_rows,
+                           uint8_t encoding,
+                           const uint8_t *data, uint32_t data_size);
+
 #endif /* VECTRA_VTR_CODEC_H */
 
 

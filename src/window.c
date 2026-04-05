@@ -16,7 +16,8 @@ static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b);
 
 /* Thread-safe merge sort for window index arrays.
    Sorts indices[0..n-1] using arr for comparison.
-   tmp must be at least n elements. */
+   tmp must be at least n elements.
+   Sequential — safe to call from within OMP parallel for (grouped path). */
 static void win_merge_sort(int64_t *indices, int64_t *tmp, int64_t n,
                            const VecArray *arr) {
     if (n <= 1) return;
@@ -48,13 +49,70 @@ static void win_merge_sort(int64_t *indices, int64_t *tmp, int64_t n,
     memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
 }
 
-/* Legacy qsort comparator for ungrouped path (single-threaded) */
-static const VecArray *qsort_arr_ctx;
+/* OMP task-parallel merge sort — only for top-level calls (ungrouped path).
+   Uses OMP tasks to parallelize the recursive sort across cores. */
+static void win_merge_sort_par(int64_t *indices, int64_t *tmp, int64_t n,
+                               const VecArray *arr) {
+    if (n <= 1) return;
+    if (n <= 32) {
+        for (int64_t i = 1; i < n; i++) {
+            int64_t key = indices[i];
+            int64_t j = i - 1;
+            while (j >= 0 && vec_compare_values(arr, indices[j], key) > 0) {
+                indices[j + 1] = indices[j];
+                j--;
+            }
+            indices[j + 1] = key;
+        }
+        return;
+    }
+    int64_t mid = n / 2;
+#ifdef _OPENMP
+    if (n > VEC_OMP_THRESHOLD) {
+        #pragma omp task shared(arr) if(n > VEC_OMP_THRESHOLD)
+        win_merge_sort_par(indices, tmp, mid, arr);
+        #pragma omp task shared(arr) if(n > VEC_OMP_THRESHOLD)
+        win_merge_sort_par(indices + mid, tmp + mid, n - mid, arr);
+        #pragma omp taskwait
+    } else {
+#endif
+        win_merge_sort_par(indices, tmp, mid, arr);
+        win_merge_sort_par(indices + mid, tmp + mid, n - mid, arr);
+#ifdef _OPENMP
+    }
+#endif
+    int64_t i = 0, j = mid, k = 0;
+    while (i < mid && j < n) {
+        if (vec_compare_values(arr, indices[i], indices[j]) <= 0)
+            tmp[k++] = indices[i++];
+        else
+            tmp[k++] = indices[j++];
+    }
+    while (i < mid) tmp[k++] = indices[i++];
+    while (j < n)   tmp[k++] = indices[j++];
+    memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
+}
 
-static int cmp_indices_asc(const void *a, const void *b) {
-    int64_t ia = *(const int64_t *)a;
-    int64_t ib = *(const int64_t *)b;
-    return vec_compare_values(qsort_arr_ctx, ia, ib);
+/* Top-level sort entry: uses parallel merge sort for large arrays,
+   sequential for small.  Thread-safe, no global state. */
+static void win_sort_indices(int64_t *indices, int64_t n,
+                             const VecArray *arr) {
+    int64_t *tmp = (int64_t *)malloc((size_t)n * sizeof(int64_t));
+    if (!tmp) vectra_error("alloc failed in win_sort_indices");
+#ifdef _OPENMP
+    if (n > VEC_OMP_THRESHOLD && !omp_in_parallel()) {
+        #pragma omp parallel
+        {
+            #pragma omp single
+            win_merge_sort_par(indices, tmp, n, arr);
+        }
+    } else {
+#endif
+        win_merge_sort(indices, tmp, n, arr);
+#ifdef _OPENMP
+    }
+#endif
+    free(tmp);
 }
 
 /* Compare two values in a VecArray. Returns <0, 0, or >0.
@@ -171,13 +229,12 @@ static void win_eval_shift(const VecArray *input, int64_t start, int64_t end,
     }
 }
 
-/* Evaluate cume_dist for a contiguous segment using qsort. */
+/* Evaluate cume_dist for a contiguous segment using thread-safe merge sort. */
 static void win_eval_cume_dist(const VecArray *input, int64_t start,
                                int64_t seg_len, VecArray *result) {
     int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
     for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
-    qsort_arr_ctx = input;
-    qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+    win_sort_indices(idx, seg_len, input);
     /* Groups of ties get cume_dist = (last position in group + 1) / n */
     int64_t i = 0;
     while (i < seg_len) {
@@ -221,11 +278,10 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         break;
 
     case WIN_RANK: {
-        /* O(n log n) min_rank via sort-then-scan */
+        /* O(n log n) min_rank via sort-then-scan (thread-safe) */
         int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
         for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
-        qsort_arr_ctx = input;
-        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        win_sort_indices(idx, seg_len, input);
         int64_t rank = 1;
         for (int64_t i = 0; i < seg_len; i++) {
             if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
@@ -237,11 +293,10 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         break;
     }
     case WIN_DENSE_RANK: {
-        /* O(n log n) dense_rank via sort-then-scan */
+        /* O(n log n) dense_rank via sort-then-scan (thread-safe) */
         int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
         for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
-        qsort_arr_ctx = input;
-        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        win_sort_indices(idx, seg_len, input);
         int64_t rank = 1;
         for (int64_t i = 0; i < seg_len; i++) {
             if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
@@ -346,8 +401,7 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
            If n == 1, result is 0. */
         int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
         for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
-        qsort_arr_ctx = input;
-        qsort(idx, (size_t)seg_len, sizeof(int64_t), cmp_indices_asc);
+        win_sort_indices(idx, seg_len, input);
         int64_t rank = 1;
         for (int64_t i = 0; i < seg_len; i++) {
             if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
@@ -818,6 +872,7 @@ WindowNode *window_node_create(VecNode *child,
     wn->base.next_batch = window_next_batch;
     wn->base.kind = "WindowNode";
     wn->base.free_node = window_free;
+    wn->base.row_count_hint = child->row_count_hint;
 
     return wn;
 }

@@ -101,6 +101,7 @@ struct VecNode {
     FreeFn        free_node;
     VecSchema     output_schema;
     const char   *kind;       /* node type name for explain() */
+    int64_t       row_count_hint; /* estimated total rows, -1 = unknown */
 };
 
 #endif /* VECTRA_TYPES_H */

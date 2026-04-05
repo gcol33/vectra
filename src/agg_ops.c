@@ -243,6 +243,19 @@ static int dbl_cmp(const void *a, const void *b) {
     return (da > db) - (da < db);
 }
 
+/* Insertion sort for small arrays — faster than qsort overhead for n < 64 */
+static void dbl_insertion_sort(double *arr, int64_t n) {
+    for (int64_t i = 1; i < n; i++) {
+        double key = arr[i];
+        int64_t j = i - 1;
+        while (j >= 0 && arr[j] > key) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
+}
+
 void agg_accum_feed(AggAccum *acc, int64_t group_id,
                     const VecArray *col, int64_t row) {
     int is_valid = col ? vec_array_is_valid(col, row) : 0;
@@ -595,7 +608,10 @@ VecArray agg_accum_finish(AggAccum *acc) {
                 vec_array_set_null(&arr, i);
             } else {
                 vec_array_set_valid(&arr, i);
-                qsort(acc->med_vals[i], (size_t)acc->med_count[i], sizeof(double), dbl_cmp);
+                if (acc->med_count[i] < 64)
+                    dbl_insertion_sort(acc->med_vals[i], acc->med_count[i]);
+                else
+                    qsort(acc->med_vals[i], (size_t)acc->med_count[i], sizeof(double), dbl_cmp);
                 int64_t m = acc->med_count[i];
                 if (m % 2 == 1)
                     arr.buf.dbl[i] = acc->med_vals[i][m / 2];

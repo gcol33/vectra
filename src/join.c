@@ -8,10 +8,15 @@
 #include "coerce.h"
 #include "project.h"
 #include "expr.h"
+#include "sort.h"
+#include "scan.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+
+/* Forward declarations */
+static int child_sorted_on_keys(VecNode *child, const int *key_idx, int n_keys);
 
 /* FNV-1a constants (must match hash.c) */
 #define FNV_OFFSET 14695981039346656037ULL
@@ -203,25 +208,37 @@ static void join_build(JoinNode *jn) {
         }
     }
 
-    /* Build hash table: pre-compute hashes in parallel, insert sequentially.
-       Hashing is the expensive part (60-80% of build cost); insertion into
-       the open-addressing table with chaining is cheap but has write conflicts. */
-    jn->jht = jht_create(r_nrows > 0 ? r_nrows : 1);
-    {
-        uint64_t *build_hashes = (uint64_t *)malloc(
-            (size_t)(r_nrows > 0 ? r_nrows : 1) * sizeof(uint64_t));
-        if (!build_hashes) vectra_error("alloc failed for build hash array");
+    /* Check if both sides are sorted on join keys — use merge join if so */
+    if (child_sorted_on_keys(jn->left, jn->lkey_idx, jn->n_keys) &&
+        child_sorted_on_keys(jn->right, jn->rkey_idx, jn->n_keys)) {
+        jn->use_merge = 1;
+    }
 
-        #pragma omp parallel for if(r_nrows > VEC_OMP_THRESHOLD) schedule(static)
-        for (int64_t r = 0; r < r_nrows; r++) {
-            build_hashes[r] = hash_join_key(jn->r_cols, jn->rkey_idx,
-                                             jn->n_keys, r);
+    if (jn->use_merge) {
+        /* Merge join: skip hash table, just store row count for cursor bounds */
+        memset(&jn->jht, 0, sizeof(JoinHT));
+        jn->jht.n_build = r_nrows;  /* reuse for row count */
+    } else {
+        /* Build hash table: pre-compute hashes in parallel, insert sequentially.
+           Hashing is the expensive part (60-80% of build cost); insertion into
+           the open-addressing table with chaining is cheap but has write conflicts. */
+        jn->jht = jht_create(r_nrows > 0 ? r_nrows : 1);
+        {
+            uint64_t *build_hashes = (uint64_t *)malloc(
+                (size_t)(r_nrows > 0 ? r_nrows : 1) * sizeof(uint64_t));
+            if (!build_hashes) vectra_error("alloc failed for build hash array");
+
+            #pragma omp parallel for if(r_nrows > VEC_OMP_THRESHOLD) schedule(static)
+            for (int64_t r = 0; r < r_nrows; r++) {
+                build_hashes[r] = hash_join_key(jn->r_cols, jn->rkey_idx,
+                                                 jn->n_keys, r);
+            }
+
+            for (int64_t r = 0; r < r_nrows; r++)
+                jht_insert(&jn->jht, build_hashes[r], r);
+
+            free(build_hashes);
         }
-
-        for (int64_t r = 0; r < r_nrows; r++)
-            jht_insert(&jn->jht, build_hashes[r], r);
-
-        free(build_hashes);
     }
 
     /* full_join: allocate build_matched bitset */
@@ -501,6 +518,333 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Merge join: sorted merge for pre-sorted inputs                     */
+/* ------------------------------------------------------------------ */
+
+#define MERGE_JOIN_BATCH_SIZE 65536
+
+/* Compare a single value from two arrays (ASC order, NAs sort last) */
+static int merge_compare_value(const VecArray *a, int64_t ra,
+                                const VecArray *b, int64_t rb) {
+    int av = vec_array_is_valid(a, ra);
+    int bv = vec_array_is_valid(b, rb);
+    if (!av && !bv) return 0;
+    if (!av) return 1;   /* NA sorts last */
+    if (!bv) return -1;
+
+    switch (a->type) {
+    case VEC_DOUBLE: {
+        double va = a->buf.dbl[ra], vb = b->buf.dbl[rb];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_INT64: {
+        int64_t va = a->buf.i64[ra], vb = b->buf.i64[rb];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_BOOL:
+        return (int)a->buf.bln[ra] - (int)b->buf.bln[rb];
+    case VEC_STRING: {
+        int64_t sa = a->buf.str.offsets[ra], ea = a->buf.str.offsets[ra + 1];
+        int64_t sb = b->buf.str.offsets[rb], eb = b->buf.str.offsets[rb + 1];
+        int64_t la = ea - sa, lb = eb - sb;
+        int64_t minlen = la < lb ? la : lb;
+        int cmp = (minlen > 0) ? memcmp(a->buf.str.data + sa,
+                                          b->buf.str.data + sb,
+                                          (size_t)minlen) : 0;
+        if (cmp == 0) cmp = (la < lb) ? -1 : (la > lb) ? 1 : 0;
+        return cmp;
+    }
+    }
+    return 0;
+}
+
+/* Compare join keys between left row and right row */
+static int merge_compare_keys(const VecArray *l_cols, const int *l_key_idx,
+                               const VecArray *r_cols, const int *r_key_idx,
+                               int n_keys, int64_t l_row, int64_t r_row) {
+    for (int k = 0; k < n_keys; k++) {
+        int cmp = merge_compare_value(&l_cols[l_key_idx[k]], l_row,
+                                       &r_cols[r_key_idx[k]], r_row);
+        if (cmp != 0) return cmp;
+    }
+    return 0;
+}
+
+/* Check if a child node produces output sorted on the given key columns (ASC).
+   Returns 1 if the child is a SortNode whose leading keys match, or a
+   ScanNode reading a VTR file with col_sorted set for single-key cases. */
+static int child_sorted_on_keys(VecNode *child, const int *key_idx,
+                                 int n_keys) {
+    if (strcmp(child->kind, "SortNode") == 0) {
+        SortNode *sn = (SortNode *)child;
+        if (sn->n_keys < n_keys) return 0;
+        for (int k = 0; k < n_keys; k++) {
+            if (sn->keys[k].col_index != key_idx[k]) return 0;
+            if (sn->keys[k].descending) return 0;
+        }
+        return 1;
+    }
+    if (n_keys == 1 && strcmp(child->kind, "ScanNode") == 0) {
+        ScanNode *sn = (ScanNode *)child;
+        if (sn->file->col_sorted &&
+            sn->file->col_sorted[key_idx[0]])
+            return 1;
+    }
+    return 0;
+}
+
+/* Advance to the next left row; pull new batch if needed.
+   Returns 0 if advanced, 1 if left side is exhausted. */
+static int merge_advance_left(JoinNode *jn) {
+    jn->merge_l_pos++;
+    int64_t logical = jn->merge_l_batch ?
+        vec_batch_logical_rows(jn->merge_l_batch) : 0;
+    if (jn->merge_l_batch && jn->merge_l_pos < logical)
+        return 0;
+    /* Need next batch */
+    if (jn->merge_l_batch) {
+        vec_batch_free(jn->merge_l_batch);
+        jn->merge_l_batch = NULL;
+    }
+    jn->merge_l_batch = jn->left->next_batch(jn->left);
+    if (!jn->merge_l_batch) {
+        jn->merge_l_done = 1;
+        return 1;
+    }
+    jn->merge_l_pos = 0;
+    return 0;
+}
+
+/* Get the physical row index for the current left position */
+static int64_t merge_left_phys(JoinNode *jn) {
+    return vec_batch_physical_row(jn->merge_l_batch, jn->merge_l_pos);
+}
+
+/* Find the end of an equal-key run in the build side starting at r_start */
+static int64_t merge_find_group_end(JoinNode *jn, int64_t r_start) {
+    int64_t r_nrows = jn->jht.n_build;
+    int64_t r_end = r_start + 1;
+    while (r_end < r_nrows) {
+        int cmp = merge_compare_keys(jn->r_cols, jn->rkey_idx,
+                                      jn->r_cols, jn->rkey_idx,
+                                      jn->n_keys, r_start, r_end);
+        if (cmp != 0) break;
+        r_end++;
+    }
+    return r_end;
+}
+
+static VecBatch *merge_join_batch(JoinNode *jn) {
+    const VecSchema *lschema = &jn->left->output_schema;
+    int l_ncols = lschema->n_cols;
+    int out_ncols = jn->base.output_schema.n_cols;
+    int64_t r_nrows = jn->jht.n_build;  /* reuse n_build for row count */
+
+    VecArrayBuilder *out = (VecArrayBuilder *)calloc(
+        (size_t)out_ncols, sizeof(VecArrayBuilder));
+    for (int c = 0; c < out_ncols; c++) {
+        out[c] = vec_builder_init(jn->base.output_schema.col_types[c]);
+        vec_builder_reserve(&out[c], MERGE_JOIN_BATCH_SIZE);
+    }
+
+    int64_t emitted = 0;
+
+    while (emitted < MERGE_JOIN_BATCH_SIZE) {
+        /* Pull first left batch if not yet loaded */
+        if (!jn->merge_l_batch && !jn->merge_l_done) {
+            jn->merge_l_batch = jn->left->next_batch(jn->left);
+            if (!jn->merge_l_batch) {
+                jn->merge_l_done = 1;
+            } else {
+                jn->merge_l_pos = 0;
+            }
+        }
+
+        /* If we're in the middle of a M:N group cross product, continue it */
+        if (jn->merge_r_sub > 0 && jn->merge_r_sub < jn->merge_r_group_end
+            && !jn->merge_l_done) {
+            int64_t pr = merge_left_phys(jn);
+            while (jn->merge_r_sub < jn->merge_r_group_end &&
+                   emitted < MERGE_JOIN_BATCH_SIZE) {
+                for (int c = 0; c < l_ncols; c++)
+                    vec_builder_append_one(&out[c],
+                        &jn->merge_l_batch->columns[c], pr);
+                for (int j = 0; j < jn->r_non_key_count; j++)
+                    vec_builder_append_one(&out[l_ncols + j],
+                        &jn->r_cols[jn->r_non_key_idx[j]],
+                        jn->merge_r_sub);
+                if (jn->kind == JOIN_FULL)
+                    jn->build_matched[jn->merge_r_sub / 8] |=
+                        (uint8_t)(1 << (jn->merge_r_sub % 8));
+                jn->merge_r_sub++;
+                emitted++;
+            }
+            if (jn->merge_r_sub >= jn->merge_r_group_end) {
+                /* Done with this left row's group; advance left */
+                jn->merge_r_sub = 0;
+                if (merge_advance_left(jn)) break;
+                /* Check if next left row also matches this group */
+                if (!jn->merge_l_done) {
+                    int64_t npr = merge_left_phys(jn);
+                    int cmp = merge_compare_keys(
+                        jn->merge_l_batch->columns, jn->lkey_idx,
+                        jn->r_cols, jn->rkey_idx,
+                        jn->n_keys, npr, jn->merge_r_group);
+                    if (cmp == 0) {
+                        jn->merge_r_sub = jn->merge_r_group;
+                        continue;  /* restart group for next left row */
+                    }
+                    /* Left row doesn't match group; reset cursor to group end */
+                    jn->merge_r_cursor = jn->merge_r_group_end;
+                }
+            }
+            continue;
+        }
+
+        /* Left exhausted */
+        if (jn->merge_l_done) {
+            /* FULL: remaining right rows handled by finalize */
+            break;
+        }
+
+        /* Right exhausted */
+        if (jn->merge_r_cursor >= r_nrows) {
+            /* Emit remaining left rows for LEFT/FULL/ANTI */
+            if (jn->kind == JOIN_LEFT || jn->kind == JOIN_FULL) {
+                while (!jn->merge_l_done &&
+                       emitted < MERGE_JOIN_BATCH_SIZE) {
+                    int64_t pr = merge_left_phys(jn);
+                    for (int c = 0; c < l_ncols; c++)
+                        vec_builder_append_one(&out[c],
+                            &jn->merge_l_batch->columns[c], pr);
+                    for (int j = 0; j < jn->r_non_key_count; j++)
+                        vec_builder_append_na(&out[l_ncols + j]);
+                    emitted++;
+                    merge_advance_left(jn);
+                }
+            } else if (jn->kind == JOIN_ANTI) {
+                while (!jn->merge_l_done &&
+                       emitted < MERGE_JOIN_BATCH_SIZE) {
+                    int64_t pr = merge_left_phys(jn);
+                    for (int c = 0; c < l_ncols; c++)
+                        vec_builder_append_one(&out[c],
+                            &jn->merge_l_batch->columns[c], pr);
+                    emitted++;
+                    merge_advance_left(jn);
+                }
+            } else {
+                /* INNER/SEMI: done */
+                jn->merge_l_done = 1;
+            }
+            break;
+        }
+
+        /* Compare current left row to current right row */
+        int64_t pr = merge_left_phys(jn);
+        int cmp = merge_compare_keys(jn->merge_l_batch->columns, jn->lkey_idx,
+                                      jn->r_cols, jn->rkey_idx,
+                                      jn->n_keys, pr, jn->merge_r_cursor);
+
+        if (cmp < 0) {
+            /* Left < right: no match for this left row */
+            if (jn->kind == JOIN_LEFT || jn->kind == JOIN_FULL) {
+                for (int c = 0; c < l_ncols; c++)
+                    vec_builder_append_one(&out[c],
+                        &jn->merge_l_batch->columns[c], pr);
+                for (int j = 0; j < jn->r_non_key_count; j++)
+                    vec_builder_append_na(&out[l_ncols + j]);
+                emitted++;
+            } else if (jn->kind == JOIN_ANTI) {
+                for (int c = 0; c < l_ncols; c++)
+                    vec_builder_append_one(&out[c],
+                        &jn->merge_l_batch->columns[c], pr);
+                emitted++;
+            }
+            merge_advance_left(jn);
+        } else if (cmp > 0) {
+            /* Left > right: advance right */
+            if (jn->kind == JOIN_FULL) {
+                /* Emit unmatched right row with NA left columns */
+                int *l_col_rkey = (int *)malloc((size_t)l_ncols * sizeof(int));
+                for (int c = 0; c < l_ncols; c++) {
+                    l_col_rkey[c] = -1;
+                    for (int k = 0; k < jn->n_keys; k++) {
+                        if (jn->lkey_idx[k] == c) {
+                            l_col_rkey[c] = jn->rkey_idx[k];
+                            break;
+                        }
+                    }
+                }
+                for (int c = 0; c < l_ncols; c++) {
+                    if (l_col_rkey[c] >= 0)
+                        vec_builder_append_one(&out[c],
+                            &jn->r_cols[l_col_rkey[c]],
+                            jn->merge_r_cursor);
+                    else
+                        vec_builder_append_na(&out[c]);
+                }
+                for (int j = 0; j < jn->r_non_key_count; j++)
+                    vec_builder_append_one(&out[l_ncols + j],
+                        &jn->r_cols[jn->r_non_key_idx[j]],
+                        jn->merge_r_cursor);
+                free(l_col_rkey);
+                emitted++;
+            }
+            jn->merge_r_cursor++;
+        } else {
+            /* Keys equal: handle match */
+            int64_t grp_start = jn->merge_r_cursor;
+            int64_t grp_end = merge_find_group_end(jn, grp_start);
+            jn->merge_r_group = grp_start;
+            jn->merge_r_group_end = grp_end;
+
+            switch (jn->kind) {
+            case JOIN_SEMI:
+                for (int c = 0; c < l_ncols; c++)
+                    vec_builder_append_one(&out[c],
+                        &jn->merge_l_batch->columns[c], pr);
+                emitted++;
+                merge_advance_left(jn);
+                break;
+
+            case JOIN_ANTI:
+                /* Skip this left row */
+                merge_advance_left(jn);
+                break;
+
+            case JOIN_INNER:
+            case JOIN_LEFT:
+            case JOIN_FULL:
+                /* Start cross product: emit left row x each right row in group */
+                jn->merge_r_sub = grp_start;
+                /* The cross product loop at the top of the while will handle it */
+                break;
+            }
+        }
+    }
+
+    /* Build result batch */
+    int64_t out_nrows = out[0].length;
+    if (out_nrows == 0) {
+        for (int c = 0; c < out_ncols; c++)
+            vec_builder_free(&out[c]);
+        free(out);
+        return NULL;
+    }
+
+    VecBatch *result = vec_batch_alloc(out_ncols, out_nrows);
+    for (int c = 0; c < out_ncols; c++) {
+        result->columns[c] = vec_builder_finish(&out[c]);
+        const char *nm = jn->base.output_schema.col_names[c];
+        size_t nm_len = strlen(nm);
+        result->col_names[c] = (char *)malloc(nm_len + 1);
+        memcpy(result->col_names[c], nm, nm_len + 1);
+    }
+    free(out);
+    return result;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Finalize phase: emit unmatched build rows (full_join only)         */
 /* ------------------------------------------------------------------ */
 
@@ -593,10 +937,19 @@ static VecBatch *join_next_batch(VecNode *self) {
 
     if (jn->state == JSTATE_BUILD) {
         join_build(jn);
-        jn->state = JSTATE_PROBE;
+        jn->state = jn->use_merge ? JSTATE_MERGE : JSTATE_PROBE;
     }
 
-    /* Probe phase: pull left batches, skip empty-output batches */
+    /* Merge join path: sorted merge */
+    while (jn->state == JSTATE_MERGE) {
+        VecBatch *result = merge_join_batch(jn);
+        if (result) return result;
+        /* merge_join_batch returned NULL: left exhausted or both done */
+        jn->state = (jn->kind == JOIN_FULL) ? JSTATE_FINALIZE
+                                             : JSTATE_DONE;
+    }
+
+    /* Hash join probe phase: pull left batches, skip empty-output batches */
     while (jn->state == JSTATE_PROBE) {
         VecBatch *pbatch = jn->left->next_batch(jn->left);
         if (!pbatch) {
@@ -642,6 +995,7 @@ static void join_free(VecNode *self) {
         free(jn->r_cols);
     }
     if (jn->jht.head) jht_free(&jn->jht);
+    if (jn->merge_l_batch) vec_batch_free(jn->merge_l_batch);
     vec_schema_free(&jn->base.output_schema);
     free(jn);
 }

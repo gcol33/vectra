@@ -415,6 +415,10 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
 
     int is_v4 = (file->header.version >= 4);
 
+    /* Scratch buffer helpers — grow but never shrink within a file handle */
+    Vtr1Scratch *se = &file->scratch_enc;
+    Vtr1Scratch *sd = &file->scratch_dec;
+
     int out_col = 0;
     for (int c = 0; c < schema->n_cols; c++) {
         VecType t = schema->col_types[c];
@@ -433,25 +437,79 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
                 if (vbytes > 0 && fread(arr.validity, 1, (size_t)vbytes, file->fp) != (size_t)vbytes)
                     vectra_error("unexpected end of file reading validity bitmap");
 
-                /* Read chunk header */
-                uint8_t encoding = read_u8(file->fp);
-                uint8_t compression = read_u8(file->fp);
-                uint32_t data_size = read_u32(file->fp);
-                uint32_t uncompressed_size = read_u32(file->fp);
+                /* Read chunk header in one fread (10 bytes) */
+                uint8_t hdr[10];
+                if (fread(hdr, 1, 10, file->fp) != 10)
+                    vectra_error("unexpected end of file reading chunk header");
+                uint8_t encoding = hdr[0];
+                uint8_t compression = hdr[1];
+                uint32_t data_size, uncompressed_size;
+                memcpy(&data_size, hdr + 2, 4);
+                memcpy(&uncompressed_size, hdr + 6, 4);
 
-                /* Read encoded data */
-                uint8_t *enc_data = NULL;
+                /* Decode column data */
                 if (data_size > 0) {
-                    enc_data = (uint8_t *)malloc((size_t)data_size);
-                    if (!enc_data) vectra_error("alloc failed");
-                    if (fread(enc_data, 1, (size_t)data_size, file->fp) != (size_t)data_size)
-                        vectra_error("unexpected end of file reading encoded column data");
-                }
+                    int is_fixed = (t == VEC_INT64 || t == VEC_DOUBLE || t == VEC_BOOL);
+                    size_t elem_size = (t == VEC_BOOL) ? 1 : 8;
 
-                /* Decode into arr */
-                vtr_decode_column(&arr, n_rows, encoding, compression,
-                                  enc_data, data_size, uncompressed_size);
-                free(enc_data);
+                    if (encoding == VTR_ENC_PLAIN && compression == VTR_COMP_NONE && is_fixed) {
+                        /* Direct fread: PLAIN+NONE fixed-width — read straight
+                           into final buffer, zero intermediate copies. */
+                        uint8_t *dst = (uint8_t *)malloc((size_t)n_rows * elem_size);
+                        if (!dst) vectra_error("alloc failed");
+                        if (fread(dst, 1, (size_t)data_size, file->fp) != (size_t)data_size)
+                            vectra_error("unexpected end of file reading column data");
+                        if (t == VEC_INT64) arr.buf.i64 = (int64_t *)dst;
+                        else if (t == VEC_DOUBLE) arr.buf.dbl = (double *)dst;
+                        else arr.buf.bln = dst;
+
+                    } else if (encoding == VTR_ENC_PLAIN && compression == VTR_COMP_LZ_VTR && is_fixed) {
+                        /* Fused decompress: PLAIN+LZ fixed-width — read compressed
+                           into scratch, decompress directly into final buffer. */
+                        if ((size_t)data_size > se->capacity) {
+                            free(se->data);
+                            se->capacity = (size_t)data_size;
+                            se->data = (uint8_t *)malloc(se->capacity);
+                            if (!se->data) vectra_error("alloc failed");
+                        }
+                        if (fread(se->data, 1, (size_t)data_size, file->fp) != (size_t)data_size)
+                            vectra_error("unexpected end of file reading encoded column data");
+                        uint8_t *dst = (uint8_t *)malloc((size_t)n_rows * elem_size);
+                        if (!dst) vectra_error("alloc failed");
+                        vtr_lz_decompress_into(dst, uncompressed_size,
+                                               se->data, data_size);
+                        if (t == VEC_INT64) arr.buf.i64 = (int64_t *)dst;
+                        else if (t == VEC_DOUBLE) arr.buf.dbl = (double *)dst;
+                        else arr.buf.bln = dst;
+
+                    } else {
+                        /* General path: read into scratch, decompress if needed, decode */
+                        if ((size_t)data_size > se->capacity) {
+                            free(se->data);
+                            se->capacity = (size_t)data_size;
+                            se->data = (uint8_t *)malloc(se->capacity);
+                            if (!se->data) vectra_error("alloc failed");
+                        }
+                        if (fread(se->data, 1, (size_t)data_size, file->fp) != (size_t)data_size)
+                            vectra_error("unexpected end of file reading encoded column data");
+
+                        if (compression == VTR_COMP_LZ_VTR) {
+                            if ((size_t)uncompressed_size > sd->capacity) {
+                                free(sd->data);
+                                sd->capacity = (size_t)uncompressed_size;
+                                sd->data = (uint8_t *)malloc(sd->capacity);
+                                if (!sd->data) vectra_error("alloc failed");
+                            }
+                            vtr_lz_decompress_into(sd->data, uncompressed_size,
+                                                   se->data, data_size);
+                            vtr_decode_column_raw(&arr, n_rows, encoding,
+                                                 sd->data, uncompressed_size);
+                        } else {
+                            vtr_decode_column_raw(&arr, n_rows, encoding,
+                                                 se->data, data_size);
+                        }
+                    }
+                }
 
                 batch->columns[out_col] = arr;
             } else {
@@ -499,11 +557,13 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
             /* Skip this column */
             fseek(file->fp, (long)vbytes, SEEK_CUR);
             if (is_v4) {
-                read_u8(file->fp);  /* encoding */
-                read_u8(file->fp);  /* compression */
-                uint32_t data_size = read_u32(file->fp);
-                read_u32(file->fp); /* uncompressed_size */
-                fseek(file->fp, (long)data_size, SEEK_CUR);
+                /* Skip chunk header (10 bytes) + data */
+                uint8_t shdr[10];
+                if (fread(shdr, 1, 10, file->fp) != 10)
+                    vectra_error("unexpected end of file skipping chunk header");
+                uint32_t skip_size;
+                memcpy(&skip_size, shdr + 2, 4);
+                fseek(file->fp, (long)skip_size, SEEK_CUR);
             } else {
                 switch (t) {
                 case VEC_INT64:  fseek(file->fp, (long)(n_rows * 8), SEEK_CUR); break;
@@ -523,6 +583,203 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
     return batch;
 }
 
+/* Read a single row group using a caller-provided FILE* and scratch buffers.
+   This is the thread-safe core used by both sequential and parallel readers. */
+static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
+                                  const int *col_mask, FILE *fp,
+                                  Vtr1Scratch *se, Vtr1Scratch *sd) {
+    const VecSchema *schema = &file->header.schema;
+    int64_t n_rows = file->rowgroups[rg_idx].n_rows;
+
+    int n_selected = 0;
+    for (int i = 0; i < schema->n_cols; i++)
+        if (col_mask[i]) n_selected++;
+
+    VecBatch *batch = vec_batch_alloc(n_selected, n_rows);
+
+    long data_offset = (long)file->rowgroups[rg_idx].file_offset + 8;
+    if (file->header.version >= 3)
+        data_offset += (long)schema->n_cols * 17;
+    fseek(fp, data_offset, SEEK_SET);
+
+    int is_v4 = (file->header.version >= 4);
+    int out_col = 0;
+
+    for (int c = 0; c < schema->n_cols; c++) {
+        VecType t = schema->col_types[c];
+        int64_t vbytes = vec_validity_bytes(n_rows);
+
+        if (col_mask[c]) {
+            if (is_v4) {
+                VecArray arr;
+                memset(&arr, 0, sizeof(arr));
+                arr.type = t;
+                arr.length = n_rows;
+                arr.owns_data = 1;
+                arr.validity = (uint8_t *)calloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+                if (!arr.validity) vectra_error("alloc failed");
+                if (vbytes > 0 && fread(arr.validity, 1, (size_t)vbytes, fp) != (size_t)vbytes)
+                    vectra_error("unexpected end of file reading validity bitmap");
+
+                uint8_t hdr[10];
+                if (fread(hdr, 1, 10, fp) != 10)
+                    vectra_error("unexpected end of file reading chunk header");
+                uint8_t encoding = hdr[0];
+                uint8_t compression = hdr[1];
+                uint32_t data_size, uncompressed_size;
+                memcpy(&data_size, hdr + 2, 4);
+                memcpy(&uncompressed_size, hdr + 6, 4);
+
+                if (data_size > 0) {
+                    int is_fixed = (t == VEC_INT64 || t == VEC_DOUBLE || t == VEC_BOOL);
+                    size_t elem_size = (t == VEC_BOOL) ? 1 : 8;
+
+                    if (encoding == VTR_ENC_PLAIN && compression == VTR_COMP_NONE && is_fixed) {
+                        uint8_t *dst = (uint8_t *)malloc((size_t)n_rows * elem_size);
+                        if (!dst) vectra_error("alloc failed");
+                        if (fread(dst, 1, (size_t)data_size, fp) != (size_t)data_size)
+                            vectra_error("unexpected end of file reading column data");
+                        if (t == VEC_INT64) arr.buf.i64 = (int64_t *)dst;
+                        else if (t == VEC_DOUBLE) arr.buf.dbl = (double *)dst;
+                        else arr.buf.bln = dst;
+                    } else if (encoding == VTR_ENC_PLAIN && compression == VTR_COMP_LZ_VTR && is_fixed) {
+                        if ((size_t)data_size > se->capacity) {
+                            free(se->data);
+                            se->capacity = (size_t)data_size;
+                            se->data = (uint8_t *)malloc(se->capacity);
+                            if (!se->data) vectra_error("alloc failed");
+                        }
+                        if (fread(se->data, 1, (size_t)data_size, fp) != (size_t)data_size)
+                            vectra_error("unexpected end of file reading encoded column data");
+                        uint8_t *dst = (uint8_t *)malloc((size_t)n_rows * elem_size);
+                        if (!dst) vectra_error("alloc failed");
+                        vtr_lz_decompress_into(dst, uncompressed_size, se->data, data_size);
+                        if (t == VEC_INT64) arr.buf.i64 = (int64_t *)dst;
+                        else if (t == VEC_DOUBLE) arr.buf.dbl = (double *)dst;
+                        else arr.buf.bln = dst;
+                    } else {
+                        if ((size_t)data_size > se->capacity) {
+                            free(se->data);
+                            se->capacity = (size_t)data_size;
+                            se->data = (uint8_t *)malloc(se->capacity);
+                            if (!se->data) vectra_error("alloc failed");
+                        }
+                        if (fread(se->data, 1, (size_t)data_size, fp) != (size_t)data_size)
+                            vectra_error("unexpected end of file reading encoded column data");
+                        if (compression == VTR_COMP_LZ_VTR) {
+                            if ((size_t)uncompressed_size > sd->capacity) {
+                                free(sd->data);
+                                sd->capacity = (size_t)uncompressed_size;
+                                sd->data = (uint8_t *)malloc(sd->capacity);
+                                if (!sd->data) vectra_error("alloc failed");
+                            }
+                            vtr_lz_decompress_into(sd->data, uncompressed_size,
+                                                   se->data, data_size);
+                            vtr_decode_column_raw(&arr, n_rows, encoding,
+                                                 sd->data, uncompressed_size);
+                        } else {
+                            vtr_decode_column_raw(&arr, n_rows, encoding,
+                                                 se->data, data_size);
+                        }
+                    }
+                }
+                batch->columns[out_col] = arr;
+            } else {
+                /* v1-v3: read raw column data */
+                VecArray arr = vec_array_alloc(t, n_rows);
+                if (fread(arr.validity, 1, (size_t)vbytes, fp) != (size_t)vbytes)
+                    vectra_error("unexpected end of file reading validity bitmap");
+                switch (t) {
+                case VEC_INT64:
+                    if (fread(arr.buf.i64, sizeof(int64_t), (size_t)n_rows, fp) != (size_t)n_rows)
+                        vectra_error("unexpected end of file reading int64 data");
+                    break;
+                case VEC_DOUBLE:
+                    if (fread(arr.buf.dbl, sizeof(double), (size_t)n_rows, fp) != (size_t)n_rows)
+                        vectra_error("unexpected end of file reading double data");
+                    break;
+                case VEC_BOOL:
+                    if (fread(arr.buf.bln, 1, (size_t)n_rows, fp) != (size_t)n_rows)
+                        vectra_error("unexpected end of file reading bool data");
+                    break;
+                case VEC_STRING: {
+                    if (fread(arr.buf.str.offsets, sizeof(int64_t),
+                          (size_t)(n_rows + 1), fp) != (size_t)(n_rows + 1))
+                        vectra_error("unexpected end of file reading string offsets");
+                    uint64_t data_len = 0;
+                    if (fread(&data_len, 8, 1, fp) != 1)
+                        vectra_error("unexpected end of file");
+                    arr.buf.str.data_len = (int64_t)data_len;
+                    free(arr.buf.str.data);
+                    arr.buf.str.data = (char *)malloc((size_t)(data_len > 0 ? data_len : 1));
+                    if (!arr.buf.str.data) vectra_error("alloc failed");
+                    if (data_len > 0 && fread(arr.buf.str.data, 1, (size_t)data_len, fp) != (size_t)data_len)
+                        vectra_error("unexpected end of file reading string data");
+                    break;
+                }
+                }
+                batch->columns[out_col] = arr;
+            }
+            batch->col_names[out_col] = (char *)malloc(strlen(schema->col_names[c]) + 1);
+            strcpy(batch->col_names[out_col], schema->col_names[c]);
+            out_col++;
+        } else {
+            fseek(fp, (long)vbytes, SEEK_CUR);
+            if (is_v4) {
+                uint8_t shdr[10];
+                if (fread(shdr, 1, 10, fp) != 10)
+                    vectra_error("unexpected end of file skipping chunk header");
+                uint32_t skip_size;
+                memcpy(&skip_size, shdr + 2, 4);
+                fseek(fp, (long)skip_size, SEEK_CUR);
+            } else {
+                switch (t) {
+                case VEC_INT64:  fseek(fp, (long)(n_rows * 8), SEEK_CUR); break;
+                case VEC_DOUBLE: fseek(fp, (long)(n_rows * 8), SEEK_CUR); break;
+                case VEC_BOOL:   fseek(fp, (long)n_rows, SEEK_CUR); break;
+                case VEC_STRING: {
+                    fseek(fp, (long)((n_rows + 1) * 8), SEEK_CUR);
+                    uint64_t data_len = 0;
+                    if (fread(&data_len, 8, 1, fp) != 1)
+                        vectra_error("unexpected end of file");
+                    fseek(fp, (long)data_len, SEEK_CUR);
+                    break;
+                }
+                }
+            }
+        }
+    }
+    return batch;
+}
+
+VecBatch **vtr1_read_parallel(Vtr1File *file, const int *col_mask,
+                              const char *path, uint32_t *out_count) {
+    uint32_t n_rgs = file->header.n_rowgroups;
+    *out_count = n_rgs;
+
+    VecBatch **batches = (VecBatch **)calloc(n_rgs, sizeof(VecBatch *));
+    if (!batches) vectra_error("alloc failed for parallel read");
+
+    #pragma omp parallel
+    {
+        /* Thread-local file handle and scratch buffers */
+        FILE *fp = fopen(path, "rb");
+        if (!fp) vectra_error("parallel read: cannot open file: %s", path);
+        Vtr1Scratch se = {0}, sd = {0};
+
+        #pragma omp for schedule(dynamic)
+        for (uint32_t rg = 0; rg < n_rgs; rg++) {
+            batches[rg] = read_rg_with_fp(file, rg, col_mask, fp, &se, &sd);
+        }
+
+        fclose(fp);
+        free(se.data);
+        free(sd.data);
+    }
+
+    return batches;
+}
+
 void vtr1_close(Vtr1File *file) {
     if (!file) return;
     if (file->fp) fclose(file->fp);
@@ -533,5 +790,7 @@ void vtr1_close(Vtr1File *file) {
         free(file->rowgroups);
     }
     free(file->col_sorted);
+    free(file->scratch_enc.data);
+    free(file->scratch_dec.data);
     free(file);
 }

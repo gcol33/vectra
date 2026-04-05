@@ -220,8 +220,14 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
             row_hashes[li] = h;
         }
 
-        /* Sequential insert + accumulate using pre-computed hashes */
+        /* Sequential insert + accumulate using pre-computed hashes.
+           Prefetch upcoming hash table slots to hide memory latency. */
+        int64_t ht_mask = ht.n_slots - 1;
         for (int64_t li = 0; li < n_logical; li++) {
+            if (li + 8 < n_logical) {
+                int64_t pf_idx = (int64_t)(row_hashes[li + 8] & (uint64_t)ht_mask);
+                __builtin_prefetch(&ht.entries[pf_idx], 1, 1);
+            }
             int64_t r = vec_batch_physical_row(batch, li);
 
             int was_new = 0;

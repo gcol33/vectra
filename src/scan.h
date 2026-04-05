@@ -30,4 +30,13 @@ typedef struct {
    n_selected: number of entries in col_indices (ignored if col_indices is NULL) */
 ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected);
 
+/* Parallel I/O eligibility: returns 1 if this is a plain scan with no
+   predicate, tombstone, index bitmap, or binary-search range narrowing. */
+int scan_node_is_parallel_safe(const VecNode *node);
+
+/* Accessors for parallel I/O integration */
+const char *scan_node_get_path(const VecNode *node);
+Vtr1File   *scan_node_get_file(const VecNode *node);
+const int  *scan_node_get_col_mask(const VecNode *node);
+
 #endif /* VECTRA_SCAN_H */

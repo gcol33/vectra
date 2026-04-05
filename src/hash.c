@@ -86,18 +86,18 @@ VecHashTable vec_ht_create(int64_t initial_cap) {
     VecHashTable ht;
     ht.n_slots = initial_cap;
     ht.n_groups = 0;
-    ht.slots = (int64_t *)malloc((size_t)initial_cap * sizeof(int64_t));
-    ht.hashes = (uint64_t *)malloc((size_t)initial_cap * sizeof(uint64_t));
-    if (!ht.slots || !ht.hashes) vectra_error("alloc failed for hash table");
-    memset(ht.slots, -1, (size_t)initial_cap * sizeof(int64_t));
+    ht.entries = (VecHTEntry *)malloc((size_t)initial_cap * sizeof(VecHTEntry));
+    if (!ht.entries) vectra_error("alloc failed for hash table");
+    for (int64_t i = 0; i < initial_cap; i++) {
+        ht.entries[i].slot = -1;
+        ht.entries[i].hash = 0;
+    }
     return ht;
 }
 
 void vec_ht_free(VecHashTable *ht) {
-    free(ht->slots);
-    free(ht->hashes);
-    ht->slots = NULL;
-    ht->hashes = NULL;
+    free(ht->entries);
+    ht->entries = NULL;
     ht->n_slots = 0;
     ht->n_groups = 0;
 }
@@ -119,15 +119,16 @@ int64_t vec_ht_find_or_insert(VecHashTable *ht, uint64_t hash,
     int64_t idx = (int64_t)(hash & (uint64_t)mask);
 
     for (;;) {
-        if (ht->slots[idx] == -1) {
+        VecHTEntry *e = &ht->entries[idx];
+        if (e->slot == -1) {
             /* Empty slot: insert */
-            ht->slots[idx] = ht->n_groups;
-            ht->hashes[idx] = hash;
+            e->slot = ht->n_groups;
+            e->hash = hash;
             *was_new = 1;
             return ht->n_groups++;
         }
-        if (ht->hashes[idx] == hash) {
-            int64_t gid = ht->slots[idx];
+        if (e->hash == hash) {
+            int64_t gid = e->slot;
             /* Compare keys: arena[gid] vs keys[row] */
             if (vec_keys_equal(key_arena, n_keys, gid, keys, row)) {
                 *was_new = 0;
@@ -140,29 +141,29 @@ int64_t vec_ht_find_or_insert(VecHashTable *ht, uint64_t hash,
 
 static void ht_resize(VecHashTable *ht, const VecArray *key_arena,
                        int n_keys, int64_t arena_len) {
-    int64_t old_slots = ht->n_slots;
-    int64_t *old_slot_data = ht->slots;
-    uint64_t *old_hash_data = ht->hashes;
+    int64_t old_n = ht->n_slots;
+    VecHTEntry *old_entries = ht->entries;
 
-    int64_t new_n = old_slots * 2;
+    int64_t new_n = old_n * 2;
     ht->n_slots = new_n;
-    ht->slots = (int64_t *)malloc((size_t)new_n * sizeof(int64_t));
-    ht->hashes = (uint64_t *)malloc((size_t)new_n * sizeof(uint64_t));
-    if (!ht->slots || !ht->hashes) vectra_error("alloc failed for hash table resize");
-    memset(ht->slots, -1, (size_t)new_n * sizeof(int64_t));
-
-    int64_t mask = new_n - 1;
-    for (int64_t i = 0; i < old_slots; i++) {
-        if (old_slot_data[i] == -1) continue;
-        uint64_t h = old_hash_data[i];
-        int64_t idx = (int64_t)(h & (uint64_t)mask);
-        while (ht->slots[idx] != -1) idx = (idx + 1) & mask;
-        ht->slots[idx] = old_slot_data[i];
-        ht->hashes[idx] = h;
+    ht->entries = (VecHTEntry *)malloc((size_t)new_n * sizeof(VecHTEntry));
+    if (!ht->entries) vectra_error("alloc failed for hash table resize");
+    for (int64_t i = 0; i < new_n; i++) {
+        ht->entries[i].slot = -1;
+        ht->entries[i].hash = 0;
     }
 
-    free(old_slot_data);
-    free(old_hash_data);
+    int64_t mask = new_n - 1;
+    for (int64_t i = 0; i < old_n; i++) {
+        if (old_entries[i].slot == -1) continue;
+        uint64_t h = old_entries[i].hash;
+        int64_t idx = (int64_t)(h & (uint64_t)mask);
+        while (ht->entries[idx].slot != -1) idx = (idx + 1) & mask;
+        ht->entries[idx].slot = old_entries[i].slot;
+        ht->entries[idx].hash = h;
+    }
+
+    free(old_entries);
 
     (void)key_arena;
     (void)n_keys;

@@ -63,6 +63,126 @@ void vec_array_set_all_valid(VecArray *arr) {
     memset(arr->validity, 0xFF, (size_t)vbytes);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Bulk validity bitmap operations                                   */
+/* ------------------------------------------------------------------ */
+
+void vec_validity_set_bits(uint8_t *bitmap, int64_t off, int64_t n) {
+    if (n <= 0 || !bitmap) return;
+
+    int64_t end = off + n;
+    int64_t first_byte = off >> 3;
+    int64_t last_byte  = (end - 1) >> 3;
+    int first_bit = (int)(off & 7);
+    int last_bit  = (int)(end & 7);  /* 0 means full last byte */
+
+    if (first_byte == last_byte) {
+        /* All bits in a single byte */
+        uint8_t mask = (uint8_t)(((1 << n) - 1) << first_bit);
+        bitmap[first_byte] |= mask;
+        return;
+    }
+
+    /* First partial byte */
+    if (first_bit != 0) {
+        bitmap[first_byte] |= (uint8_t)(0xFF << first_bit);
+        first_byte++;
+    }
+
+    /* Full bytes in the middle */
+    int64_t full_bytes = last_byte - first_byte;
+    if (last_bit == 0) full_bytes++;  /* last byte is also full */
+    if (full_bytes > 0)
+        memset(bitmap + first_byte, 0xFF, (size_t)full_bytes);
+
+    /* Last partial byte */
+    if (last_bit != 0)
+        bitmap[last_byte] |= (uint8_t)((1 << last_bit) - 1);
+}
+
+void vec_validity_clear_bits(uint8_t *bitmap, int64_t off, int64_t n) {
+    if (n <= 0 || !bitmap) return;
+
+    int64_t end = off + n;
+    int64_t first_byte = off >> 3;
+    int64_t last_byte  = (end - 1) >> 3;
+    int first_bit = (int)(off & 7);
+    int last_bit  = (int)(end & 7);
+
+    if (first_byte == last_byte) {
+        uint8_t mask = (uint8_t)(((1 << n) - 1) << first_bit);
+        bitmap[first_byte] &= ~mask;
+        return;
+    }
+
+    if (first_bit != 0) {
+        bitmap[first_byte] &= (uint8_t)((1 << first_bit) - 1);
+        first_byte++;
+    }
+
+    int64_t full_bytes = last_byte - first_byte;
+    if (last_bit == 0) full_bytes++;
+    if (full_bytes > 0)
+        memset(bitmap + first_byte, 0, (size_t)full_bytes);
+
+    if (last_bit != 0)
+        bitmap[last_byte] &= (uint8_t)(0xFF << last_bit);
+}
+
+void vec_validity_copy_bits(uint8_t *dst, int64_t dst_off,
+                            const uint8_t *src, int64_t src_off,
+                            int64_t n) {
+    if (n <= 0 || !dst || !src) return;
+
+    /* Fast path: both byte-aligned */
+    if ((dst_off & 7) == 0 && (src_off & 7) == 0) {
+        int64_t db = dst_off >> 3, sb = src_off >> 3;
+        int64_t full = n >> 3;
+        if (full > 0)
+            memcpy(dst + db, src + sb, (size_t)full);
+        int rem = (int)(n & 7);
+        if (rem > 0) {
+            uint8_t mask = (uint8_t)((1 << rem) - 1);
+            dst[db + full] = (uint8_t)((dst[db + full] & ~mask) |
+                                        (src[sb + full] & mask));
+        }
+        return;
+    }
+
+    /* General case: byte-level shift-and-combine.
+       Read source bits in 8-bit chunks, shift to destination alignment. */
+    int64_t src_bytes = (src_off + n + 7) >> 3;
+    for (int64_t i = 0; i < n; ) {
+        /* How many bits until next dst byte boundary? */
+        int64_t di = dst_off + i;
+        int64_t si = src_off + i;
+        int d_bit = (int)(di & 7);
+        int s_bit = (int)(si & 7);
+
+        /* Try to process a full byte at a time when dst is byte-aligned */
+        if (d_bit == 0 && s_bit == 0 && n - i >= 8) {
+            dst[di >> 3] = src[si >> 3];
+            i += 8;
+            continue;
+        }
+
+        /* Process up to 8 bits: extract from src, place into dst */
+        int chunk = 8 - (d_bit > s_bit ? d_bit : s_bit);
+        if (chunk > (int)(n - i)) chunk = (int)(n - i);
+        if (chunk <= 0) chunk = 1;
+
+        /* Extract chunk bits from src */
+        uint8_t sbyte = src[si >> 3];
+        uint8_t bits = (uint8_t)((sbyte >> s_bit) & ((1 << chunk) - 1));
+
+        /* Place into dst */
+        uint8_t dmask = (uint8_t)(((1 << chunk) - 1) << d_bit);
+        dst[di >> 3] = (uint8_t)((dst[di >> 3] & ~dmask) |
+                                   ((bits << d_bit) & dmask));
+        i += chunk;
+    }
+}
+
 VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n) {
     int64_t n = (int64_t)sel_n;
     VecArray dst = vec_array_alloc(src->type, n);
@@ -70,6 +190,8 @@ VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n
     switch (src->type) {
     case VEC_INT64:
         for (int32_t j = 0; j < sel_n; j++) {
+            if (j + VEC_PREFETCH_AHEAD < sel_n)
+                VEC_PREFETCH_READ(&src->buf.i64[sel[j + VEC_PREFETCH_AHEAD]]);
             int64_t pi = (int64_t)sel[j];
             if (vec_array_is_valid(src, pi)) {
                 vec_array_set_valid(&dst, j);
@@ -79,6 +201,8 @@ VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n
         break;
     case VEC_DOUBLE:
         for (int32_t j = 0; j < sel_n; j++) {
+            if (j + VEC_PREFETCH_AHEAD < sel_n)
+                VEC_PREFETCH_READ(&src->buf.dbl[sel[j + VEC_PREFETCH_AHEAD]]);
             int64_t pi = (int64_t)sel[j];
             if (vec_array_is_valid(src, pi)) {
                 vec_array_set_valid(&dst, j);

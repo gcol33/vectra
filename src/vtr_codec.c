@@ -129,9 +129,20 @@ static uint8_t *lz_vtr_decompress(const uint8_t *src, uint32_t src_size,
             uint32_t len = (tag & 0x7F) + LZ_MIN_MATCH;
             uint32_t off = (uint32_t)src[sp++] + 1;
             if (dp < off) vectra_error("lz_vtr: invalid back-reference");
-            for (uint32_t i = 0; i < len && dp < uncompressed_size; i++) {
-                dst[dp] = dst[dp - off];
-                dp++;
+            if (len > uncompressed_size - dp) len = uncompressed_size - dp;
+            if (off >= len) {
+                /* Non-overlapping: fast memcpy */
+                memcpy(dst + dp, dst + dp - off, len);
+                dp += len;
+            } else {
+                /* Overlapping: copy in offset-sized chunks */
+                uint32_t remaining = len;
+                while (remaining > 0) {
+                    uint32_t chunk = remaining < off ? remaining : off;
+                    memcpy(dst + dp, dst + dp - off, chunk);
+                    dp += chunk;
+                    remaining -= chunk;
+                }
             }
         } else {
             /* Literal run */
@@ -203,31 +214,6 @@ static uint8_t *rle_encode_u32(const uint32_t *indices, int64_t n,
 
     *out_size = buf_size;
     return buf;
-}
-
-/* RLE-decode into a flat uint32 array of exactly n_rows elements.
- * The caller must know n_rows from the row group header. */
-static uint32_t *rle_decode_u32(const uint8_t *data, int64_t n_rows,
-                                uint32_t *bytes_consumed) {
-    const uint8_t *p = data;
-    uint32_t n_runs;
-    memcpy(&n_runs, p, 4); p += 4;
-
-    uint32_t *out = (uint32_t *)malloc((size_t)n_rows * sizeof(uint32_t));
-    if (!out) vectra_error("alloc failed in rle_decode_u32");
-
-    int64_t pos = 0;
-    for (uint32_t r = 0; r < n_runs; r++) {
-        uint32_t val, len;
-        memcpy(&val, p, 4); p += 4;
-        memcpy(&len, p, 4); p += 4;
-        for (uint32_t k = 0; k < len && pos < n_rows; k++)
-            out[pos++] = val;
-    }
-
-    if (bytes_consumed)
-        *bytes_consumed = 4 + n_runs * 8;
-    return out;
 }
 
 /* ================================================================
@@ -508,21 +494,37 @@ static void dict_decode(VecArray *col, int64_t n_rows,
     memcpy(dict_offsets, p, (dict_count + 1) * 8);
     p += (dict_count + 1) * 8;
 
+    /* Precompute per-dictionary-entry string lengths */
+    int64_t *dict_lens = (int64_t *)malloc((size_t)dict_count * sizeof(int64_t));
+    if (!dict_lens) vectra_error("alloc failed in dict_decode");
+    for (uint32_t d = 0; d < dict_count; d++)
+        dict_lens[d] = dict_offsets[d + 1] - dict_offsets[d];
+
     /* dict data */
     int64_t total_dict_data = dict_offsets[dict_count];
     const char *dict_data = (const char *)p;
     p += total_dict_data;
 
-    /* RLE-decode indices */
-    uint32_t rle_consumed = 0;
-    uint32_t *indices = rle_decode_u32(p, n_rows, &rle_consumed);
+    /* Process RLE runs directly — avoid expanding to flat index array.
+       Two passes: first compute total string data size, then fill. */
+    uint32_t n_runs;
+    memcpy(&n_runs, p, 4); p += 4;
 
-    /* Rebuild string column: compute total data size */
+    /* Pass 1: compute total output string data */
     int64_t total_str_data = 0;
-    for (int64_t i = 0; i < n_rows; i++) {
-        if (!vec_array_is_valid(col, i)) continue;
-        uint32_t idx = indices[i];
-        total_str_data += dict_offsets[idx + 1] - dict_offsets[idx];
+    {
+        const uint8_t *rp = p;
+        int64_t row = 0;
+        for (uint32_t r = 0; r < n_runs && row < n_rows; r++) {
+            uint32_t val, len;
+            memcpy(&val, rp, 4); rp += 4;
+            memcpy(&len, rp, 4); rp += 4;
+            int64_t slen = dict_lens[val];
+            for (uint32_t k = 0; k < len && row < n_rows; k++, row++) {
+                if (vec_array_is_valid(col, row))
+                    total_str_data += slen;
+            }
+        }
     }
 
     col->buf.str.offsets = (int64_t *)malloc((size_t)((n_rows + 1) * 8));
@@ -531,19 +533,28 @@ static void dict_decode(VecArray *col, int64_t n_rows,
         vectra_error("alloc failed in dict_decode");
     col->buf.str.data_len = total_str_data;
 
+    /* Pass 2: fill offsets and string data, processing per-run */
     int64_t pos = 0;
-    for (int64_t i = 0; i < n_rows; i++) {
-        col->buf.str.offsets[i] = pos;
-        if (!vec_array_is_valid(col, i)) continue;
-        uint32_t idx = indices[i];
-        int64_t slen = dict_offsets[idx + 1] - dict_offsets[idx];
-        memcpy(col->buf.str.data + pos, dict_data + dict_offsets[idx],
-               (size_t)slen);
-        pos += slen;
+    int64_t row = 0;
+    for (uint32_t r = 0; r < n_runs && row < n_rows; r++) {
+        uint32_t val, len;
+        memcpy(&val, p, 4); p += 4;
+        memcpy(&len, p, 4); p += 4;
+        int64_t slen = dict_lens[val];
+        const char *sptr = dict_data + dict_offsets[val];
+
+        for (uint32_t k = 0; k < len && row < n_rows; k++, row++) {
+            col->buf.str.offsets[row] = pos;
+            if (vec_array_is_valid(col, row)) {
+                if (slen > 0)
+                    memcpy(col->buf.str.data + pos, sptr, (size_t)slen);
+                pos += slen;
+            }
+        }
     }
     col->buf.str.offsets[n_rows] = pos;
 
-    free(indices);
+    free(dict_lens);
     free(dict_offsets);
 }
 
@@ -699,4 +710,55 @@ void vtr_decode_column(VecArray *col, int64_t n_rows,
     }
 
     free(decompressed);
+}
+
+void vtr_lz_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
+                            const uint8_t *src, uint32_t src_size) {
+    uint32_t sp = 0, dp = 0;
+    while (sp < src_size && dp < uncompressed_size) {
+        uint8_t tag = src[sp++];
+        if (tag & 0x80) {
+            uint32_t len = (tag & 0x7F) + LZ_MIN_MATCH;
+            uint32_t off = (uint32_t)src[sp++] + 1;
+            if (dp < off) vectra_error("lz_vtr: invalid back-reference");
+            if (len > uncompressed_size - dp) len = uncompressed_size - dp;
+            if (off >= len) {
+                memcpy(dst + dp, dst + dp - off, len);
+                dp += len;
+            } else {
+                uint32_t remaining = len;
+                while (remaining > 0) {
+                    uint32_t chunk = remaining < off ? remaining : off;
+                    memcpy(dst + dp, dst + dp - off, chunk);
+                    dp += chunk;
+                    remaining -= chunk;
+                }
+            }
+        } else {
+            uint32_t len = (tag & 0x7F) + 1;
+            if (len > uncompressed_size - dp) len = uncompressed_size - dp;
+            memcpy(dst + dp, src + sp, len);
+            sp += len;
+            dp += len;
+        }
+    }
+}
+
+void vtr_decode_column_raw(VecArray *col, int64_t n_rows,
+                           uint8_t encoding,
+                           const uint8_t *data, uint32_t data_size) {
+    if (n_rows == 0) return;
+    switch (encoding) {
+    case VTR_ENC_PLAIN:
+        plain_decode(col, n_rows, data, data_size);
+        break;
+    case VTR_ENC_DICTIONARY:
+        dict_decode(col, n_rows, data, data_size);
+        break;
+    case VTR_ENC_DELTA:
+        delta_decode(col, n_rows, data, data_size);
+        break;
+    default:
+        vectra_error("unknown encoding tag: 0x%02x", encoding);
+    }
 }

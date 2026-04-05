@@ -1,56 +1,64 @@
-# vectra — TODO
+# vectra — C Engine Performance TODO
 
-## Incremental diff / append support
+## Quick wins
 
-**Feature request:** `append_vtr(new_rows_df, path)` — write new rows as a new row group without recompressing or rewriting existing row groups.
+### ~~1. Insertion sort for small groups in median~~ DONE
+- **Measured:** -9% on 1000 groups / 1M rows. Bigger wins expected with 100k+ small groups.
 
-### Background
+### ~~2. memcpy in decompression match loop~~ DONE
+- **Measured:** -2% on VTR round-trip. Match lengths are short in practice; bottleneck is elsewhere.
 
-`.vtr` uses per-column, per-rowgroup compression (independent blocks). This means the format is architecturally diff-friendly:
+### ~~3. Thread-local buffers for regex~~ DONE
+- **Measured:** No change on 1M rows. `regexec()` dominates; malloc overhead is negligible. Code is cleaner (no per-row alloc/free in hot loops).
 
-- **Adding rows**: a new row group can be appended to the end of the file — existing row groups are byte-identical and untouched
-- **Modifying rows**: rewrite only the affected row groups (not the full file)
-- **Deleting rows**: tombstone marker or row group rewrite
+### ~~4. Single-pass numeric-to-string coercion~~ DONE
+- **Measured:** -2% on paste0 coercion. `snprintf` is the real bottleneck, not the second loop.
 
-Currently, all updates require a full `collect() → write_vtr()` cycle, which recompresses everything even when only a small fraction of data changed.
+## High-impact structural changes
 
-### Why this matters
+### ~~5. All-valid fast path for arithmetic and comparison~~ DONE
+- **Measured:** Arithmetic 0.300→0.304 s/iter (noise), filter 0.186→0.184 s/iter (noise). Both inputs already all-valid but the bottleneck is VTR I/O and `collect()` overhead, not the arithmetic loop itself. Code is cleaner: tight auto-vectorizable loops for the common no-NA case. Skip-coercion (item 10) also applied here.
 
-**Use case: taxify unified genus register**
+### ~~6. All-valid fast path for filter mask~~ DONE
+- **Measured:** 0.186→0.184 s/iter (noise). Validity check is cheap relative to selection vector construction.
 
-taxify builds a cross-backend genus register (WFO ∪ COL ∪ GBIF genera, ~20–50k rows each) for hierarchical name matching. When a new backend is installed, only that backend's genera need to be merged in — but currently the entire register must be rebuilt from scratch.
+### ~~7. Prefetch in hash aggregation~~ DONE
+- **Measured:** 10k-group sum agg 0.290→0.274 s/iter (**-6%**). Prefetches upcoming hash table entries 8 rows ahead.
 
-With `append_vtr()`, installing a new backend = write one new row group, deduplicate on read. No full rebuild needed.
+### ~~8. Cache-friendly hash table layout~~ DONE
+- **Measured:** Combined with item 7. Merged `slots[]` + `hashes[]` into `VecHTEntry` struct for co-located access. JoinHT in `join.c` not yet updated.
 
-### Design options
+### ~~9. Robin hood hashing~~ REJECTED
+- **Measured:** Implemented Robin Hood with separate `dists[]` array for both `VecHashTable` (group_agg) and `JoinHT` (joins). Benchmarked against baseline at 1M rows.
+- **group_agg:** +12-17% regression at 10k-50k groups. Displacement cascade overhead exceeds early termination benefit. At 70% load factor, average probe length is ~1.7 — too short for Robin Hood to help. Most lookups are positive (feeding existing groups), so early termination on negative lookups rarely fires.
+- **joins:** No improvement across inner/left/semi/anti at 1-100% match rates with 500k probe × 100k build. JoinHT at 50% load factor has even shorter probes. Extra `dists[]` access on every probe step costs more than it saves.
+- **Root cause:** FNV-1a distributes well enough that probe chains are already short at these load factors. Robin Hood reduces probe variance (worst-case) but average stays similar, and the per-probe overhead of checking/maintaining displacement distances is not free.
 
-**Option A — Simple append (additive only)**
-```r
-append_vtr(df, path)  # writes df as a new row group; no dedup
-```
-Caller handles deduplication by reading + filtering before append. Covers 95% of use cases (new backends add new genera, rarely modify existing).
+### ~~10. Skip coercion when types already match~~ DONE
+- **Measured:** Combined with item 5. In `vec_arith`/`vec_cmp`, operands that already match the common type are used directly instead of being copied. Saves 2 allocations + 2 memcpys per binary op when both operands are same type (the common case).
 
-**Option B — Delta log (full diff support)**
-Immutable data files + a transaction log (like Delta Lake / Iceberg):
-```
-data/part-0001.vtr       ← immutable
-data/part-0002.vtr       ← appended rows
-_log/000001.json         ← "add part-0002, delete taxonID 5,6,7"
-```
-`tbl(path)` resolves the log transparently. Enables deletes and updates without touching compressed data. More complex but O(1) for all operations.
+### ~~11. Merge sort buffer toggling~~ DONE
+- **Measured:** No change on 1M rows (0.278→0.276 s/iter numeric, noise on all key types). The memcpy of the 8 MB index array is trivial relative to the random-access comparisons (`compare_rows_cross` chasing pointers into column data) and the gather phase. Code is cleaner: no copy-back per merge level.
 
-### Format notes (from source)
+### ~~12. Prefetch in gather/scatter~~ DONE
+- **Measured:** Sort string 0.552→0.500 s/iter (**-9%**), sort multi-key 0.806→0.744 s/iter (**-8%**), sort numeric -3% (noise). Filter gather unchanged (VTR I/O-bound). `__builtin_prefetch` 8 iterations ahead in sort gather (`sort.c`) and selection-vector gather (`array.c`) for int64/double columns.
 
-**v3** — no compression. Row groups are raw bytes. Append and physical delete are just byte writes/rewrites; no compression cost at all.
+## Algorithmic improvements
 
-**v4** (`vtr_codec.h`) — per-column per-rowgroup encoding + custom LZ77 (`LZ_VTR`, ~120 lines, zero external deps). Three encoding passes before compression:
-- `PLAIN` — raw bytes (doubles, bools)
-- `DICTIONARY` — string columns with < 50% unique values
-- `DELTA` — monotonically increasing int64 columns
+### ~~13. Merge join path for sorted data~~ DONE
+- **Measured:** inner_join 5M×1M: 1.470→0.520 s/iter (**2.8x**), left_join: 1.557→0.723 s/iter (**2.2x**). At 500k×100k: marginal (hash join already cheap at that scale). Detects SortNode children and ScanNode with `col_sorted` zone maps. Skips hash table construction entirely; O(n+m) sequential merge with M:N cross-product support. All 5 join kinds (inner/left/full/semi/anti) supported.
 
-Because each column-chunk is compressed independently, the diff boundary is one column × one row group:
-- **Append**: new row group written at end — existing compressed chunks untouched, byte-identical
-- **Logical delete** (tombstone side file): zero recompression
-- **Physical delete**: decompress + filter + re-encode + re-compress the affected row group only — cost is `O(row_group_size)`, not `O(file_size)`
+### ~~14. Predicate reordering by selectivity~~ DONE
+- **Measured:** Multi-predicate filter with grepl + selective numeric: 0.216→0.194 s/iter (**-10%**) when expensive predicate listed first (reordering learns selectivity). 0.214→0.202 (**-6%**) when already optimal order. Flattens AND chains in FilterNode, evaluates sequentially with short-circuit on all-zero masks, tracks runtime selectivity (EMA) and reorders most-selective-first.
 
-The format architecture already supports all three operations. Only the API is missing.
+### ~~15. Radix sort for numeric keys~~ DONE
+- **Measured:** 20M row single-key double: 5.657→5.530 s/iter (**-2%**). End-to-end gain is small because the gather phase (random-access column reordering) dominates arrange time, not the sort itself. LSD radix sort (8-bit, 8 passes) for single-key int64/double. Falls back to merge sort for multi-key, string, or n < 256. No regression on multi-key (9.547→9.557, noise).
+
+### ~~16. Validity bitmap bulk operations~~ DONE
+- **Measured:** No measurable end-to-end change. Bitmap copy/set is a negligible fraction of pipeline time (I/O and data memcpy dominate). Code is cleaner: `vec_validity_set_bits`, `vec_validity_clear_bits`, `vec_validity_copy_bits` with byte-aligned memcpy fast path replace bit-by-bit loops in builder. Will compound with future optimizations that reduce I/O overhead.
+
+### ~~17. Dictionary-aware batch decode~~ DONE
+- **Measured:** No change on 5M dict-encoded strings (0.270→0.272 s/iter, noise). Rewrote `dict_decode` to process RLE runs directly instead of expanding to a flat `n_rows * 4` index array. Eliminates the intermediate allocation and per-row index lookup, but the bottleneck is string memcpy, not index expansion. Code is cleaner: two-pass over RLE data (size then fill) with no intermediate buffer.
+
+### ~~18. Window function parallelization~~ DONE
+- **Measured:** No change on ungrouped 2M rank (1.320→1.327 s/iter, noise), -3% on grouped-10 large groups (1.080→1.043). Replaced thread-unsafe global `qsort` with thread-safe merge sort. OMP task parallelism for ungrouped top-level sort, sequential merge sort for grouped path (avoids nested parallelism overhead). No regression on cumsum/grouped-1k.

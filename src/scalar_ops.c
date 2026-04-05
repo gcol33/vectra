@@ -15,53 +15,98 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
     VecType common = vec_common_type(left->type, right->type);
     if (common == VEC_BOOL) common = VEC_INT64; /* promote bool for arith */
 
-    VecArray *cl = vec_coerce(left, common);
-    VecArray *cr = vec_coerce(right, common);
+    /* Skip coercion when type already matches (avoids alloc+copy) */
+    int cl_owned = (left->type != common);
+    int cr_owned = (right->type != common);
+    const VecArray *cl = cl_owned ? vec_coerce(left, common) : left;
+    const VecArray *cr = cr_owned ? vec_coerce(right, common) : right;
 
     int64_t n = left->length;
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     if (!out) vectra_error("alloc failed");
     *out = vec_array_alloc(common, n);
 
-    for (int64_t i = 0; i < n; i++) {
-        int valid = vec_array_is_valid(cl, i) && vec_array_is_valid(cr, i);
-        if (!valid) {
-            vec_array_set_null(out, i);
-            continue;
-        }
-        vec_array_set_valid(out, i);
+    /* Fast path: when both inputs have no NAs, skip per-element validity
+       checks.  The tight loops are auto-vectorizable by the compiler. */
+    int all_valid = vec_array_all_valid(cl) && vec_array_all_valid(cr);
 
+    if (all_valid) {
+        vec_array_set_all_valid(out);
         if (common == VEC_INT64) {
-            int64_t a = cl->buf.i64[i], b = cr->buf.i64[i];
+            const int64_t *a = cl->buf.i64, *b = cr->buf.i64;
+            int64_t *o = out->buf.i64;
             switch (op) {
-            case '+': out->buf.i64[i] = a + b; break;
-            case '-': out->buf.i64[i] = a - b; break;
-            case '*': out->buf.i64[i] = a * b; break;
+            case '+': for (int64_t i = 0; i < n; i++) o[i] = a[i] + b[i]; break;
+            case '-': for (int64_t i = 0; i < n; i++) o[i] = a[i] - b[i]; break;
+            case '*': for (int64_t i = 0; i < n; i++) o[i] = a[i] * b[i]; break;
             case '/':
-                if (b == 0) { vec_array_set_null(out, i); }
-                else out->buf.i64[i] = a / b;
+                for (int64_t i = 0; i < n; i++) {
+                    if (b[i] == 0) vec_array_set_null(out, i);
+                    else o[i] = a[i] / b[i];
+                }
                 break;
             case '%':
-                if (b == 0) { vec_array_set_null(out, i); }
-                else out->buf.i64[i] = a % b;
+                for (int64_t i = 0; i < n; i++) {
+                    if (b[i] == 0) vec_array_set_null(out, i);
+                    else o[i] = a[i] % b[i];
+                }
                 break;
             default: vectra_error("unknown arith op: %c", op);
             }
         } else {
-            double a = cl->buf.dbl[i], b = cr->buf.dbl[i];
+            const double *a = cl->buf.dbl, *b = cr->buf.dbl;
+            double *o = out->buf.dbl;
             switch (op) {
-            case '+': out->buf.dbl[i] = a + b; break;
-            case '-': out->buf.dbl[i] = a - b; break;
-            case '*': out->buf.dbl[i] = a * b; break;
-            case '/': out->buf.dbl[i] = a / b; break;
-            case '%': out->buf.dbl[i] = fmod(a, b); break;
+            case '+': for (int64_t i = 0; i < n; i++) o[i] = a[i] + b[i]; break;
+            case '-': for (int64_t i = 0; i < n; i++) o[i] = a[i] - b[i]; break;
+            case '*': for (int64_t i = 0; i < n; i++) o[i] = a[i] * b[i]; break;
+            case '/': for (int64_t i = 0; i < n; i++) o[i] = a[i] / b[i]; break;
+            case '%': for (int64_t i = 0; i < n; i++) o[i] = fmod(a[i], b[i]); break;
             default: vectra_error("unknown arith op: %c", op);
+            }
+        }
+    } else {
+        /* Slow path with per-element validity checks */
+        for (int64_t i = 0; i < n; i++) {
+            int valid = vec_array_is_valid(cl, i) && vec_array_is_valid(cr, i);
+            if (!valid) {
+                vec_array_set_null(out, i);
+                continue;
+            }
+            vec_array_set_valid(out, i);
+
+            if (common == VEC_INT64) {
+                int64_t a = cl->buf.i64[i], b = cr->buf.i64[i];
+                switch (op) {
+                case '+': out->buf.i64[i] = a + b; break;
+                case '-': out->buf.i64[i] = a - b; break;
+                case '*': out->buf.i64[i] = a * b; break;
+                case '/':
+                    if (b == 0) { vec_array_set_null(out, i); }
+                    else out->buf.i64[i] = a / b;
+                    break;
+                case '%':
+                    if (b == 0) { vec_array_set_null(out, i); }
+                    else out->buf.i64[i] = a % b;
+                    break;
+                default: vectra_error("unknown arith op: %c", op);
+                }
+            } else {
+                double a = cl->buf.dbl[i], b = cr->buf.dbl[i];
+                switch (op) {
+                case '+': out->buf.dbl[i] = a + b; break;
+                case '-': out->buf.dbl[i] = a - b; break;
+                case '*': out->buf.dbl[i] = a * b; break;
+                case '/': out->buf.dbl[i] = a / b; break;
+                case '%': out->buf.dbl[i] = fmod(a, b); break;
+                default: vectra_error("unknown arith op: %c", op);
+                }
             }
         }
     }
 
-    vec_array_free(cl); free(cl);
-    vec_array_free(cr); free(cr);
+    if (cl_owned) { vec_array_free((VecArray *)cl); free((VecArray *)cl); }
+    if (cr_owned) { vec_array_free((VecArray *)cr); free((VecArray *)cr); }
     return out;
 }
 
@@ -111,39 +156,68 @@ VecArray *vec_cmp(const VecArray *left, const VecArray *right, char op, char op2
     common = vec_common_type(left->type, right->type);
     if (common == VEC_BOOL) common = VEC_INT64;
 
-    VecArray *cl = vec_coerce(left, common);
-    VecArray *cr = vec_coerce(right, common);
+    /* Skip coercion when type already matches */
+    int cl_owned = (left->type != common);
+    int cr_owned = (right->type != common);
+    const VecArray *cl = cl_owned ? vec_coerce(left, common) : left;
+    const VecArray *cr = cr_owned ? vec_coerce(right, common) : right;
 
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     if (!out) vectra_error("alloc failed");
     *out = vec_array_alloc(VEC_BOOL, n);
 
-    for (int64_t i = 0; i < n; i++) {
-        int valid = vec_array_is_valid(cl, i) && vec_array_is_valid(cr, i);
-        if (!valid) { vec_array_set_null(out, i); continue; }
-        vec_array_set_valid(out, i);
+    /* Fast path: both inputs all-valid */
+    int all_valid = vec_array_all_valid(cl) && vec_array_all_valid(cr);
 
-        int cmp;
+    if (all_valid) {
+        vec_array_set_all_valid(out);
         if (common == VEC_INT64) {
-            int64_t a = cl->buf.i64[i], b = cr->buf.i64[i];
-            cmp = (a > b) - (a < b);
+            const int64_t *a = cl->buf.i64, *b = cr->buf.i64;
+            uint8_t *o = out->buf.bln;
+            if (op == '=' && op2 == '=')      { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] == b[i]); }
+            else if (op == '!' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] != b[i]); }
+            else if (op == '<' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <  b[i]); }
+            else if (op == '<' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <= b[i]); }
+            else if (op == '>' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >  b[i]); }
+            else if (op == '>' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >= b[i]); }
         } else {
-            double a = cl->buf.dbl[i], b = cr->buf.dbl[i];
-            cmp = (a > b) - (a < b);
+            const double *a = cl->buf.dbl, *b = cr->buf.dbl;
+            uint8_t *o = out->buf.bln;
+            if (op == '=' && op2 == '=')      { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] == b[i]); }
+            else if (op == '!' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] != b[i]); }
+            else if (op == '<' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <  b[i]); }
+            else if (op == '<' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <= b[i]); }
+            else if (op == '>' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >  b[i]); }
+            else if (op == '>' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >= b[i]); }
         }
+    } else {
+        for (int64_t i = 0; i < n; i++) {
+            int valid = vec_array_is_valid(cl, i) && vec_array_is_valid(cr, i);
+            if (!valid) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
 
-        int result = 0;
-        if (op == '=' && op2 == '=') result = (cmp == 0);
-        else if (op == '!' && op2 == '=') result = (cmp != 0);
-        else if (op == '<' && op2 == ' ') result = (cmp < 0);
-        else if (op == '<' && op2 == '=') result = (cmp <= 0);
-        else if (op == '>' && op2 == ' ') result = (cmp > 0);
-        else if (op == '>' && op2 == '=') result = (cmp >= 0);
-        out->buf.bln[i] = (uint8_t)result;
+            int cmp;
+            if (common == VEC_INT64) {
+                int64_t a = cl->buf.i64[i], b = cr->buf.i64[i];
+                cmp = (a > b) - (a < b);
+            } else {
+                double a = cl->buf.dbl[i], b = cr->buf.dbl[i];
+                cmp = (a > b) - (a < b);
+            }
+
+            int result = 0;
+            if (op == '=' && op2 == '=') result = (cmp == 0);
+            else if (op == '!' && op2 == '=') result = (cmp != 0);
+            else if (op == '<' && op2 == ' ') result = (cmp < 0);
+            else if (op == '<' && op2 == '=') result = (cmp <= 0);
+            else if (op == '>' && op2 == ' ') result = (cmp > 0);
+            else if (op == '>' && op2 == '=') result = (cmp >= 0);
+            out->buf.bln[i] = (uint8_t)result;
+        }
     }
 
-    vec_array_free(cl); free(cl);
-    vec_array_free(cr); free(cr);
+    if (cl_owned) { vec_array_free((VecArray *)cl); free((VecArray *)cl); }
+    if (cr_owned) { vec_array_free((VecArray *)cr); free((VecArray *)cr); }
     return out;
 }
 

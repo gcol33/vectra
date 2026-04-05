@@ -22,11 +22,16 @@ int vec_keys_equal(const VecArray *keys_a, int n_keys, int64_t row_a,
 
 /* --- Open-addressing hash table --- */
 
+/* Cache-friendly entry: slot + hash co-located in one cache line */
 typedef struct {
-    int64_t  n_slots;
-    int64_t  n_groups;
-    int64_t *slots;        /* -1 = empty, otherwise group_id */
-    uint64_t *hashes;      /* stored hash per slot */
+    int64_t  slot;         /* -1 = empty, otherwise group_id */
+    uint64_t hash;
+} VecHTEntry;
+
+typedef struct {
+    int64_t    n_slots;
+    int64_t    n_groups;
+    VecHTEntry *entries;   /* co-located slot+hash for cache efficiency */
 } VecHashTable;
 
 VecHashTable vec_ht_create(int64_t initial_cap);

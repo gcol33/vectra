@@ -177,22 +177,23 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             {
                 regex_t re_local;
                 regcomp(&re_local, pattern, REG_EXTENDED | REG_NOSUB);
+                int64_t tl_cap = 256;
+                char *tl_buf = (char *)malloc((size_t)tl_cap);
                 #pragma omp for schedule(dynamic, 64)
                 for (int64_t i = 0; i < n; i++) {
                     if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
                     vec_array_set_valid(out, i);
                     int64_t so = s->buf.str.offsets[i];
                     int64_t slen = s->buf.str.offsets[i + 1] - so;
-                    char *tmp = (char *)malloc((size_t)(slen + 1));
-                    if (!tmp) {
-                        vec_array_set_null(out, i);
-                        continue;
+                    if (slen + 1 > tl_cap) {
+                        tl_cap = slen + 1;
+                        tl_buf = (char *)realloc(tl_buf, (size_t)tl_cap);
                     }
-                    memcpy(tmp, s->buf.str.data + so, (size_t)slen);
-                    tmp[slen] = '\0';
-                    out->buf.bln[i] = (uint8_t)(regexec(&re_local, tmp, 0, NULL, 0) == 0);
-                    free(tmp);
+                    memcpy(tl_buf, s->buf.str.data + so, (size_t)slen);
+                    tl_buf[slen] = '\0';
+                    out->buf.bln[i] = (uint8_t)(regexec(&re_local, tl_buf, 0, NULL, 0) == 0);
                 }
+                free(tl_buf);
                 regfree(&re_local);
             }
         } else {
@@ -473,19 +474,21 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             if (regcomp(&re, pat, REG_EXTENDED) != 0)
                 vectra_error("gsub/sub: invalid regex: %s", pat);
 
-            /* Pass 1: compute output lengths */
+            /* Pass 1: compute output lengths (reusable buffer) */
             int64_t *out_lens = (int64_t *)malloc((size_t)n * sizeof(int64_t));
             int64_t total = 0;
+            int64_t tb_cap = 256;
+            char *tb = (char *)malloc((size_t)tb_cap);
             for (int64_t i = 0; i < n; i++) {
                 out_lens[i] = 0;
                 if (!vec_array_is_valid(s, i)) continue;
                 int64_t so = s->buf.str.offsets[i];
                 int64_t slen = s->buf.str.offsets[i+1] - so;
-                char *tmp = (char *)malloc((size_t)(slen + 1));
-                memcpy(tmp, s->buf.str.data + so, (size_t)slen);
-                tmp[slen] = '\0';
+                if (slen + 1 > tb_cap) { tb_cap = slen + 1; tb = (char *)realloc(tb, (size_t)tb_cap); }
+                memcpy(tb, s->buf.str.data + so, (size_t)slen);
+                tb[slen] = '\0';
                 regmatch_t matches[MAX_GROUPS];
-                const char *cursor = tmp;
+                const char *cursor = tb;
                 int64_t olen = 0;
                 int replaced = 0;
                 while (regexec(&re, cursor, MAX_GROUPS, matches, 0) == 0 && matches[0].rm_so != matches[0].rm_eo) {
@@ -499,26 +502,28 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 if (!replaced) olen = slen;
                 out_lens[i] = olen;
                 total += olen;
-                free(tmp);
             }
+            free(tb);
             VecArray *out = (VecArray *)malloc(sizeof(VecArray));
             *out = vec_array_alloc(VEC_STRING, n);
             free(out->buf.str.data);
             out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
             out->buf.str.data_len = total;
-            /* Pass 2: fill with backreference expansion */
+            /* Pass 2: fill with backreference expansion (reusable buffer) */
             int64_t off = 0;
+            tb_cap = 256;
+            tb = (char *)malloc((size_t)tb_cap);
             for (int64_t i = 0; i < n; i++) {
                 out->buf.str.offsets[i] = off;
                 if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
                 vec_array_set_valid(out, i);
                 int64_t so = s->buf.str.offsets[i];
                 int64_t slen = s->buf.str.offsets[i+1] - so;
-                char *tmp = (char *)malloc((size_t)(slen + 1));
-                memcpy(tmp, s->buf.str.data + so, (size_t)slen);
-                tmp[slen] = '\0';
+                if (slen + 1 > tb_cap) { tb_cap = slen + 1; tb = (char *)realloc(tb, (size_t)tb_cap); }
+                memcpy(tb, s->buf.str.data + so, (size_t)slen);
+                tb[slen] = '\0';
                 regmatch_t matches[MAX_GROUPS];
-                const char *cursor = tmp;
+                const char *cursor = tb;
                 int replaced = 0;
                 while (regexec(&re, cursor, MAX_GROUPS, matches, 0) == 0 && matches[0].rm_so != matches[0].rm_eo) {
                     if (matches[0].rm_so > 0) { memcpy(out->buf.str.data + off, cursor, (size_t)matches[0].rm_so); off += matches[0].rm_so; }
@@ -536,8 +541,8 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                     int64_t rem = (int64_t)strlen(cursor);
                     if (rem > 0) { memcpy(out->buf.str.data + off, cursor, (size_t)rem); off += rem; }
                 }
-                free(tmp);
             }
+            free(tb);
             out->buf.str.offsets[n] = off;
             free(out_lens);
             regfree(&re);
@@ -850,33 +855,37 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         int has_groups = (re.re_nsub > 0);
         int nmatch = has_groups ? 2 : 1;
         regmatch_t *matches = (regmatch_t *)malloc((size_t)nmatch * sizeof(regmatch_t));
-        /* Pass 1: compute output lengths */
+        /* Pass 1: compute output lengths (reusable buffer) */
         int64_t total = 0;
         int64_t *out_lens = (int64_t *)malloc((size_t)n * sizeof(int64_t));
+        int64_t tb_cap = 256;
+        char *tb = (char *)malloc((size_t)tb_cap);
         for (int64_t i = 0; i < n; i++) {
             out_lens[i] = -1;
             if (!vec_array_is_valid(s, i)) continue;
             int64_t so = s->buf.str.offsets[i];
             int64_t slen = s->buf.str.offsets[i+1] - so;
-            char *tmp = (char *)malloc((size_t)(slen + 1));
-            memcpy(tmp, s->buf.str.data + so, (size_t)slen);
-            tmp[slen] = '\0';
-            if (regexec(&re, tmp, (size_t)nmatch, matches, 0) == 0) {
+            if (slen + 1 > tb_cap) { tb_cap = slen + 1; tb = (char *)realloc(tb, (size_t)tb_cap); }
+            memcpy(tb, s->buf.str.data + so, (size_t)slen);
+            tb[slen] = '\0';
+            if (regexec(&re, tb, (size_t)nmatch, matches, 0) == 0) {
                 int mi = has_groups ? 1 : 0;
                 if (matches[mi].rm_so >= 0) {
                     out_lens[i] = matches[mi].rm_eo - matches[mi].rm_so;
                     total += out_lens[i];
                 }
             }
-            free(tmp);
         }
+        free(tb);
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_STRING, n);
         free(out->buf.str.data);
         out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
         out->buf.str.data_len = total;
-        /* Pass 2: fill */
+        /* Pass 2: fill (reusable buffer) */
         int64_t off = 0;
+        tb_cap = 256;
+        tb = (char *)malloc((size_t)tb_cap);
         for (int64_t i = 0; i < n; i++) {
             out->buf.str.offsets[i] = off;
             if (!vec_array_is_valid(s, i) || out_lens[i] < 0) {
@@ -885,16 +894,16 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             vec_array_set_valid(out, i);
             int64_t so = s->buf.str.offsets[i];
             int64_t slen = s->buf.str.offsets[i+1] - so;
-            char *tmp = (char *)malloc((size_t)(slen + 1));
-            memcpy(tmp, s->buf.str.data + so, (size_t)slen);
-            tmp[slen] = '\0';
-            regexec(&re, tmp, (size_t)nmatch, matches, 0);
+            if (slen + 1 > tb_cap) { tb_cap = slen + 1; tb = (char *)realloc(tb, (size_t)tb_cap); }
+            memcpy(tb, s->buf.str.data + so, (size_t)slen);
+            tb[slen] = '\0';
+            regexec(&re, tb, (size_t)nmatch, matches, 0);
             int mi = has_groups ? 1 : 0;
             int64_t mlen = matches[mi].rm_eo - matches[mi].rm_so;
-            if (mlen > 0) memcpy(out->buf.str.data + off, tmp + matches[mi].rm_so, (size_t)mlen);
+            if (mlen > 0) memcpy(out->buf.str.data + off, tb + matches[mi].rm_so, (size_t)mlen);
             off += mlen;
-            free(tmp);
         }
+        free(tb);
         out->buf.str.offsets[n] = off;
         free(out_lens); free(matches);
         regfree(&re);

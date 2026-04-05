@@ -64,8 +64,8 @@ VecArray *vec_coerce(const VecArray *arr, VecType target) {
             out->buf.dbl[i] = (double)arr->buf.i64[i];
     } else if (target == VEC_STRING) {
         /* Coerce numeric/bool to string: only valid values get converted,
-           NAs stay as NAs. For ifelse(cond, string_col, NA) where NA branch
-           needs to become VEC_STRING. */
+           NAs stay as NAs. Single-pass: format into a growth buffer, record
+           offsets as we go, then hand ownership to the output array. */
         char numbuf[64];
         /* Re-allocate as string type */
         vec_array_free(out);
@@ -73,22 +73,11 @@ VecArray *vec_coerce(const VecArray *arr, VecType target) {
         out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_STRING, arr->length);
         memcpy(out->validity, arr->validity, (size_t)vec_validity_bytes(arr->length));
-        /* For each valid value, convert to string representation */
-        int64_t total_len = 0;
-        for (int64_t i = 0; i < arr->length; i++) {
-            if (!vec_array_is_valid(arr, i)) continue;
-            int len = 0;
-            switch (arr->type) {
-            case VEC_BOOL:   len = snprintf(numbuf, sizeof(numbuf), "%s", arr->buf.bln[i] ? "TRUE" : "FALSE"); break;
-            case VEC_INT64:  len = snprintf(numbuf, sizeof(numbuf), "%lld", (long long)arr->buf.i64[i]); break;
-            case VEC_DOUBLE: len = snprintf(numbuf, sizeof(numbuf), "%g", arr->buf.dbl[i]); break;
-            default: break;
-            }
-            total_len += len;
-        }
+        /* Growth buffer — start at 16 bytes per valid value estimate */
+        int64_t buf_cap = arr->length * 16;
+        if (buf_cap < 64) buf_cap = 64;
         free(out->buf.str.data);
-        out->buf.str.data = (char *)malloc((size_t)(total_len > 0 ? total_len : 1));
-        out->buf.str.data_len = total_len;
+        char *buf = (char *)malloc((size_t)buf_cap);
         int64_t off = 0;
         for (int64_t i = 0; i < arr->length; i++) {
             out->buf.str.offsets[i] = off;
@@ -100,10 +89,16 @@ VecArray *vec_coerce(const VecArray *arr, VecType target) {
             case VEC_DOUBLE: len = snprintf(numbuf, sizeof(numbuf), "%g", arr->buf.dbl[i]); break;
             default: break;
             }
-            memcpy(out->buf.str.data + off, numbuf, (size_t)len);
+            if (off + len > buf_cap) {
+                buf_cap = (off + len) * 2;
+                buf = (char *)realloc(buf, (size_t)buf_cap);
+            }
+            memcpy(buf + off, numbuf, (size_t)len);
             off += len;
         }
         out->buf.str.offsets[arr->length] = off;
+        out->buf.str.data = buf;
+        out->buf.str.data_len = off;
     } else {
         vec_array_free(out);
         free(out);

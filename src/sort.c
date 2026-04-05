@@ -86,6 +86,125 @@ static int compare_rows_cross(const VecArray *cols_a, int64_t ra,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Radix sort for single-key numeric columns (O(n) vs O(n log n))   */
+/* ------------------------------------------------------------------ */
+
+/* Encode int64 as uint64 for radix sort: flip sign bit so that
+   negative values sort before positive.  NAs get max value (sort last). */
+static inline uint64_t radix_encode_i64(int64_t v, int valid, int desc) {
+    uint64_t u;
+    if (!valid) {
+        u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;  /* NAs last */
+    } else {
+        u = (uint64_t)v ^ 0x8000000000000000ULL;   /* flip sign bit */
+    }
+    return desc ? ~u : u;
+}
+
+/* Encode double as uint64 for radix sort: IEEE 754 bit trick.
+   Positive doubles already sort correctly as uint64 after sign flip.
+   Negative doubles need all bits flipped. */
+static inline uint64_t radix_encode_dbl(double v, int valid, int desc) {
+    uint64_t u;
+    if (!valid) {
+        u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;
+    } else {
+        uint64_t bits;
+        memcpy(&bits, &v, sizeof(bits));
+        /* If sign bit set (negative), flip all bits; else flip just sign bit */
+        if (bits & 0x8000000000000000ULL)
+            u = ~bits;
+        else
+            u = bits ^ 0x8000000000000000ULL;
+    }
+    return desc ? ~u : u;
+}
+
+/* LSD radix sort on uint64 keys.  Sorts indices[0..n-1] by keys[0..n-1].
+   Uses 8-bit radix (256 buckets, 8 passes).  tmp is scratch of size n. */
+static void radix_sort_u64(uint64_t *keys, int64_t *indices, int64_t *tmp_idx,
+                           uint64_t *tmp_keys, int64_t n) {
+    uint64_t *src_k = keys, *dst_k = tmp_keys;
+    int64_t *src_i = indices, *dst_i = tmp_idx;
+
+    for (int pass = 0; pass < 8; pass++) {
+        int shift = pass * 8;
+        int64_t count[256] = {0};
+
+        /* Histogram */
+        for (int64_t i = 0; i < n; i++)
+            count[(src_k[i] >> shift) & 0xFF]++;
+
+        /* Prefix sum */
+        int64_t offset[256];
+        offset[0] = 0;
+        for (int b = 1; b < 256; b++)
+            offset[b] = offset[b - 1] + count[b - 1];
+
+        /* Scatter */
+        for (int64_t i = 0; i < n; i++) {
+            int bucket = (int)((src_k[i] >> shift) & 0xFF);
+            int64_t pos = offset[bucket]++;
+            dst_k[pos] = src_k[i];
+            dst_i[pos] = src_i[i];
+        }
+
+        /* Swap src/dst for next pass */
+        uint64_t *tk = src_k; src_k = dst_k; dst_k = tk;
+        int64_t  *ti = src_i; src_i = dst_i; dst_i = ti;
+    }
+
+    /* After 8 passes (even number), result is back in the original arrays
+       (keys, indices).  If it ended up in tmp, copy back. */
+    if (src_k != keys) {
+        memcpy(keys, src_k, (size_t)n * sizeof(uint64_t));
+        memcpy(indices, src_i, (size_t)n * sizeof(int64_t));
+    }
+}
+
+/* Try radix sort for single-key numeric columns.
+   Returns 1 if radix sort was used, 0 if caller should fall back to merge sort. */
+static int try_radix_sort(int64_t *indices, int64_t n,
+                          const VecArray *columns, int n_keys,
+                          const SortKey *keys) {
+    /* Only for single numeric key */
+    if (n_keys != 1) return 0;
+    if (n < 256) return 0;  /* merge sort is fine for small arrays */
+
+    int ci = keys[0].col_index;
+    const VecArray *col = &columns[ci];
+    int desc = keys[0].descending;
+
+    if (col->type != VEC_INT64 && col->type != VEC_DOUBLE) return 0;
+
+    /* Encode keys */
+    uint64_t *enc = (uint64_t *)malloc((size_t)n * sizeof(uint64_t));
+    uint64_t *tmp_k = (uint64_t *)malloc((size_t)n * sizeof(uint64_t));
+    int64_t *tmp_i = (int64_t *)malloc((size_t)n * sizeof(int64_t));
+    if (!enc || !tmp_k || !tmp_i) {
+        free(enc); free(tmp_k); free(tmp_i);
+        return 0;
+    }
+
+    if (col->type == VEC_INT64) {
+        for (int64_t i = 0; i < n; i++)
+            enc[i] = radix_encode_i64(col->buf.i64[indices[i]],
+                                       vec_array_is_valid(col, indices[i]), desc);
+    } else {
+        for (int64_t i = 0; i < n; i++)
+            enc[i] = radix_encode_dbl(col->buf.dbl[indices[i]],
+                                       vec_array_is_valid(col, indices[i]), desc);
+    }
+
+    radix_sort_u64(enc, indices, tmp_i, tmp_k, n);
+
+    free(enc);
+    free(tmp_k);
+    free(tmp_i);
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Merge sort (in-memory, for sorting a single run before spill)     */
 /* ------------------------------------------------------------------ */
 
@@ -95,40 +214,51 @@ typedef struct {
     SortKey   *keys;
 } InMemCtx;
 
-static void merge_sort_impl(int64_t *indices, int64_t *tmp, int64_t n,
-                             const InMemCtx *ctx) {
-    if (n <= 1) return;
+/* Buffer-toggling merge sort.
+   If to_aux=0: sort a[0..n-1] in place, using b as scratch. Result in a.
+   If to_aux=1: sort a[0..n-1] into b[0..n-1], using a as scratch. Result in b.
+   This eliminates the O(n) memcpy per merge level — total copies drop from
+   O(n log n) to O(n) (leaf-level copies only). */
+static void merge_sort_impl(int64_t *a, int64_t *b, int64_t n,
+                             const InMemCtx *ctx, int to_aux) {
+    if (n <= 1) {
+        if (to_aux && n == 1) b[0] = a[0];
+        return;
+    }
     int64_t mid = n / 2;
 
+    /* Sort both halves into the opposite buffer so we can merge from there */
 #ifdef _OPENMP
     if (n > VEC_OMP_THRESHOLD) {
         #pragma omp task shared(ctx) if(n > VEC_OMP_THRESHOLD)
-        merge_sort_impl(indices, tmp, mid, ctx);
+        merge_sort_impl(a, b, mid, ctx, !to_aux);
         #pragma omp task shared(ctx) if(n > VEC_OMP_THRESHOLD)
-        merge_sort_impl(indices + mid, tmp + mid, n - mid, ctx);
+        merge_sort_impl(a + mid, b + mid, n - mid, ctx, !to_aux);
         #pragma omp taskwait
     } else {
 #endif
-        merge_sort_impl(indices, tmp, mid, ctx);
-        merge_sort_impl(indices + mid, tmp + mid, n - mid, ctx);
+        merge_sort_impl(a, b, mid, ctx, !to_aux);
+        merge_sort_impl(a + mid, b + mid, n - mid, ctx, !to_aux);
 #ifdef _OPENMP
     }
 #endif
 
-    /* Merge phase: merge indices[0..mid-1] and indices[mid..n-1] into tmp[0..n-1],
-       then copy back. This runs after both halves are sorted. */
+    /* After recursion, sorted halves are in the opposite buffer.
+       Merge from src into dst (the target buffer for this level). */
+    int64_t *src = to_aux ? a : b;
+    int64_t *dst = to_aux ? b : a;
+
     int64_t i = 0, j = mid, k = 0;
     while (i < mid && j < n) {
-        if (compare_rows_cross(ctx->columns, indices[i],
-                               ctx->columns, indices[j],
+        if (compare_rows_cross(ctx->columns, src[i],
+                               ctx->columns, src[j],
                                ctx->keys, ctx->n_keys) <= 0)
-            tmp[k++] = indices[i++];
+            dst[k++] = src[i++];
         else
-            tmp[k++] = indices[j++];
+            dst[k++] = src[j++];
     }
-    while (i < mid) tmp[k++] = indices[i++];
-    while (j < n)   tmp[k++] = indices[j++];
-    memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
+    while (i < mid) dst[k++] = src[i++];
+    while (j < n)   dst[k++] = src[j++];
 }
 
 /* ------------------------------------------------------------------ */
@@ -151,6 +281,8 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
         }
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
         for (int64_t i = 0; i < n; i++) {
+            if (i + VEC_PREFETCH_AHEAD < n)
+                VEC_PREFETCH_READ(&src->buf.i64[indices[i + VEC_PREFETCH_AHEAD]]);
             dst.buf.i64[i] = src->buf.i64[indices[i]];
         }
         break;
@@ -164,6 +296,8 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
         }
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
         for (int64_t i = 0; i < n; i++) {
+            if (i + VEC_PREFETCH_AHEAD < n)
+                VEC_PREFETCH_READ(&src->buf.dbl[indices[i + VEC_PREFETCH_AHEAD]]);
             dst.buf.dbl[i] = src->buf.dbl[indices[i]];
         }
         break;
@@ -273,26 +407,28 @@ static char *spill_sorted_run(VecArrayBuilder *builders, int n_cols,
         return NULL;
     }
 
-    /* Sort via indices */
+    /* Sort via indices — try radix sort first for single-key numeric */
     int64_t *indices = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
-    int64_t *tmp     = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
     for (int64_t i = 0; i < n_rows; i++) indices[i] = i;
 
-    InMemCtx ctx = { columns, n_keys, (SortKey *)keys };
+    if (!try_radix_sort(indices, n_rows, columns, n_keys, keys)) {
+        int64_t *tmp = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
+        InMemCtx ctx = { columns, n_keys, (SortKey *)keys };
 #ifdef _OPENMP
-    if (n_rows > VEC_OMP_THRESHOLD) {
-        #pragma omp parallel
-        {
-            #pragma omp single
-            merge_sort_impl(indices, tmp, n_rows, &ctx);
+        if (n_rows > VEC_OMP_THRESHOLD) {
+            #pragma omp parallel
+            {
+                #pragma omp single
+                merge_sort_impl(indices, tmp, n_rows, &ctx, 0);
+            }
+        } else {
+#endif
+            merge_sort_impl(indices, tmp, n_rows, &ctx, 0);
+#ifdef _OPENMP
         }
-    } else {
 #endif
-        merge_sort_impl(indices, tmp, n_rows, &ctx);
-#ifdef _OPENMP
+        free(tmp);
     }
-#endif
-    free(tmp);
 
     /* Write multi-rowgroup spill file */
     char *path = make_run_path(temp_dir, run_id);
@@ -539,24 +675,27 @@ static void build_memory_result(SortNode *sn, VecArray *columns,
     }
 
     int64_t *indices = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
-    int64_t *tmp     = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
     for (int64_t i = 0; i < n_rows; i++) indices[i] = i;
 
-    InMemCtx ctx = { columns, sn->n_keys, sn->keys };
+    /* Try O(n) radix sort for single-key numeric; fall back to merge sort */
+    if (!try_radix_sort(indices, n_rows, columns, sn->n_keys, sn->keys)) {
+        int64_t *tmp = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
+        InMemCtx ctx = { columns, sn->n_keys, sn->keys };
 #ifdef _OPENMP
-    if (n_rows > VEC_OMP_THRESHOLD) {
-        #pragma omp parallel
-        {
-            #pragma omp single
-            merge_sort_impl(indices, tmp, n_rows, &ctx);
+        if (n_rows > VEC_OMP_THRESHOLD) {
+            #pragma omp parallel
+            {
+                #pragma omp single
+                merge_sort_impl(indices, tmp, n_rows, &ctx, 0);
+            }
+        } else {
+#endif
+            merge_sort_impl(indices, tmp, n_rows, &ctx, 0);
+#ifdef _OPENMP
         }
-    } else {
 #endif
-        merge_sort_impl(indices, tmp, n_rows, &ctx);
-#ifdef _OPENMP
+        free(tmp);
     }
-#endif
-    free(tmp);
 
     VecBatch *result = vec_batch_alloc(n_cols, n_rows);
     for (int c = 0; c < n_cols; c++) {
@@ -753,6 +892,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->base.next_batch    = sort_next_batch;
     sn->base.free_node     = sort_free;
     sn->base.kind          = "SortNode";
+    sn->base.row_count_hint = child->row_count_hint;
 
     return sn;
 }

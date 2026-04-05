@@ -838,5 +838,42 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
     sn->base.free_node = scan_free;
     sn->base.kind = "ScanNode";
 
+    /* Compute total row count hint from row group metadata */
+    int64_t total = 0;
+    for (uint32_t rg = 0; rg < sn->file->header.n_rowgroups; rg++)
+        total += sn->file->rowgroups[rg].n_rows;
+    sn->base.row_count_hint = total;
+
     return sn;
+}
+
+/* --- Parallel I/O accessors --- */
+
+int scan_node_is_parallel_safe(const VecNode *node) {
+    if (!node || strcmp(node->kind, "ScanNode") != 0) return 0;
+    const ScanNode *sn = (const ScanNode *)node;
+    if (sn->predicate) return 0;
+    if (sn->tombstone) return 0;
+    if (sn->rg_bitmap) return 0;
+    if (sn->rg_range_set) return 0;
+    if (sn->file->header.n_rowgroups < 4) return 0; /* need enough RGs */
+    /* Only worthwhile when I/O dominates: few columns, many rows */
+    int n_selected = 0;
+    int n_file_cols = sn->file->header.schema.n_cols;
+    for (int i = 0; i < n_file_cols; i++)
+        if (sn->col_mask[i]) n_selected++;
+    if (n_selected > 2) return 0; /* R allocator dominates with many cols */
+    return 1;
+}
+
+const char *scan_node_get_path(const VecNode *node) {
+    return ((const ScanNode *)node)->vtr_path;
+}
+
+Vtr1File *scan_node_get_file(const VecNode *node) {
+    return ((const ScanNode *)node)->file;
+}
+
+const int *scan_node_get_col_mask(const VecNode *node) {
+    return ((const ScanNode *)node)->col_mask;
 }

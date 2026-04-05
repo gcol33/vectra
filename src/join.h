@@ -26,6 +26,7 @@ typedef struct {
 typedef enum {
     JSTATE_BUILD,
     JSTATE_PROBE,
+    JSTATE_MERGE,
     JSTATE_FINALIZE,
     JSTATE_DONE
 } JoinState;
@@ -71,6 +72,16 @@ typedef struct {
     int       *l_non_key_idx;  /* indices of non-key left columns */
     int        l_non_key_count;
     int64_t    finalize_cursor; /* current build row in finalize phase */
+
+    /* Merge join state (used when use_merge == 1) */
+    int        use_merge;        /* 1 = merge join, 0 = hash join */
+    int64_t    merge_r_cursor;   /* current position in sorted build side */
+    VecBatch  *merge_l_batch;    /* current left batch being consumed */
+    int64_t    merge_l_pos;      /* current logical row in merge_l_batch */
+    int        merge_l_done;     /* left side exhausted */
+    int64_t    merge_r_group;    /* start of current equal-key group in build */
+    int64_t    merge_r_group_end;/* end (exclusive) of current group */
+    int64_t    merge_r_sub;      /* current position within group (for M:N) */
 } JoinNode;
 
 JoinNode *join_node_create(VecNode *left, VecNode *right,

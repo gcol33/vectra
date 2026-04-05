@@ -322,6 +322,7 @@ ProjectNode *project_node_create(VecNode *child, int n_entries,
     pn->base.next_batch = project_next_batch;
     pn->base.free_node = project_free;
     pn->base.kind = "ProjectNode";
+    pn->base.row_count_hint = child->row_count_hint;
 
     return pn;
 }
