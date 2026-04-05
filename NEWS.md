@@ -1,3 +1,17 @@
+# vectra 0.4.1
+
+## Star schema and lookup
+
+* New `vtr_schema()`, `link()`, and `lookup()` functions for star-schema
+  workflows. Register a fact table with named dimension links once, then
+  pull columns from any dimension without writing explicit joins. Only
+  referenced dimensions are scanned.
+* `lookup()` reports unmatched keys per dimension by default, catching
+  referential integrity issues before they propagate NAs silently.
+* Supports both `"left"` (default) and `"inner"` join modes, named keys
+  for differing column names, and reusable schema objects across multiple
+  queries.
+
 # vectra 0.3.2
 
 * Fix misaligned `int64_t` memory access in `vtr_codec.c` (UBSAN).

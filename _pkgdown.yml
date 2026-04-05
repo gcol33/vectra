@@ -88,6 +88,12 @@ reference:
   - anti_join
   - cross_join
   - fuzzy_join
+- title: Star schema
+  desc: Define linked dimension tables and look up columns without explicit joins
+  contents:
+  - vtr_schema
+  - link
+  - lookup
 - title: Combining tables
   contents:
   - bind_rows

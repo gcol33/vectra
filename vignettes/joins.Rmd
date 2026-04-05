@@ -601,6 +601,103 @@ left_join(
 ```
 
 
+## Star schemas and lookup
+
+Analytical datasets often follow a star schema pattern: a central fact table
+(observations, measurements, transactions) linked to multiple dimension tables
+(species, sites, countries) through foreign keys. Without structure, each
+analysis ends up as a chain of `left_join()` calls that grow into wide flat
+tables with hundreds of columns, most of which are unused.
+
+vectra's `vtr_schema()` and `lookup()` functions address this. Register the
+schema once, then pull only the columns needed for each analysis. The join tree
+is built automatically and only the referenced dimensions are scanned.
+
+```{r schema-setup}
+# Fact table: observations with foreign keys
+obs_schema_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  sp_id   = c(1, 2, 3, 4, 2, 1),
+  site_id = c(1, 1, 2, 2, 3, 3),
+  count   = c(5, 12, 3, 8, 15, 7)
+), obs_schema_path)
+
+# Dimension: species
+sp_dim_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  sp_id  = c(1, 2, 3),
+  name   = c("Oak", "Beech", "Pine"),
+  family = c("Fagaceae", "Fagaceae", "Pinaceae")
+), sp_dim_path)
+
+# Dimension: sites
+site_dim_path <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  site_id  = c(1, 2, 3),
+  habitat  = c("Forest", "Wetland", "Urban"),
+  elev_m   = c(450, 120, 80)
+), site_dim_path)
+```
+
+Register the schema:
+
+```{r schema-create}
+s <- vtr_schema(
+  fact  = tbl(obs_schema_path),
+  sp    = link("sp_id", tbl(sp_dim_path)),
+  site  = link("site_id", tbl(site_dim_path))
+)
+s
+```
+
+Now pull columns from any combination of dimensions. Only the referenced
+dimensions are joined; unreferenced ones are never scanned.
+
+```{r schema-lookup}
+# Pull species name and site habitat alongside the count
+lookup(s, count, sp$name, site$habitat, .report = FALSE) |> collect()
+```
+
+`lookup()` reports unmatched keys by default. This catches referential
+integrity issues early --- before they silently propagate NAs through the
+analysis.
+
+```{r schema-report}
+# sp_id = 4 has no match in the species dimension
+lookup(s, count, sp$name)
+```
+
+Bare column names pull from the fact table; `dim$col` references pull from
+the named dimension. The schema can be reused across analyses --- each
+`lookup()` call opens fresh scans, so the same schema object works for
+multiple queries.
+
+```{r schema-reuse}
+# Different analysis: just habitat and elevation
+lookup(s, count, site$habitat, site$elev_m, .report = FALSE) |> collect()
+```
+
+When column names differ between fact and dimension tables, use named keys
+in `link()`, the same syntax as the `by` argument in joins:
+
+```{r schema-named-key, eval = FALSE}
+# If the fact table uses "species_id" but the dimension uses "sp_id":
+link(c("species_id" = "sp_id"), tbl(sp_dim_path))
+```
+
+The `.join` parameter controls the join type. The default `"left"` keeps all
+fact rows (with NA for unmatched dimensions). Use `"inner"` to drop
+unmatched rows:
+
+```{r schema-inner}
+lookup(s, count, sp$name, .join = "inner", .report = FALSE) |> collect()
+```
+
+```{r schema-cleanup, include = FALSE}
+unlink(c(obs_schema_path, sp_dim_path, site_dim_path))
+```
+
+
 ## Key coercion and NA handling
 
 vectra's join keys follow a type hierarchy: `bool < int64 < double`. When the

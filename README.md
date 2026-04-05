@@ -71,6 +71,21 @@ tbl("taxa.vtr") |>
   collect()
 ```
 
+Register a star schema to avoid flat-table column creep. Define the links once, then pull only what you need:
+
+```r
+s <- vtr_schema(
+  fact    = tbl("observations.vtr"),
+  species = link("sp_id", tbl("species.vtr")),
+  site    = link("site_id", tbl("sites.vtr"))
+)
+
+# Pull columns from any dimension — joins are built automatically
+lookup(s, count, species$name, site$habitat) |> collect()
+#> species: all 500 keys matched
+#> site: 3/500 unmatched keys (X1, X2, X3)
+```
+
 Use `explain()` to inspect the optimized plan:
 
 ```r
@@ -110,7 +125,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 |:---------|:------|
 | **Transform** | `filter()`, `select()`, `mutate()`, `transmute()`, `rename()`, `relocate()` |
 | **Aggregate** | `group_by()`, `summarise()` (`n`, `sum`, `mean`, `min`, `max`, `sd`, `var`, `first`, `last`, `any`, `all`, `median`, `n_distinct`), `count()`, `tally()`, `distinct()` |
-| **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `cross_join()` |
+| **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `cross_join()`, `lookup()` |
 | **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()`, `slice()` |
 | **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`, `ntile()`, `percent_rank()`, `cume_dist()` |
 | **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `as.Date()` (in `filter()`/`mutate()`) |
@@ -118,6 +133,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()` — fuzzy matching in `filter()`/`mutate()`, with optional `max_dist` early termination |
 | **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()`, `resolve()`, `propagate()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
+| **Schema** | `vtr_schema()`, `link()`, `lookup()` — star schema definition and dimension lookup with match reporting |
 | **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()`, `append_vtr()`, `delete_vtr()`, `diff_vtr()` |
 | **Inspect** | `explain()`, `glimpse()`, `print()`, `pull()` |
 
