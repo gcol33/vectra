@@ -33,6 +33,9 @@ static uint64_t hash_array_value(const VecArray *col, int64_t row, int ci) {
     switch (col->type) {
     case VEC_STRING: return hash_string(col, row, ci);
     case VEC_INT64:  return hash_int64(col->buf.i64[row]);
+    case VEC_INT32:  return hash_int64((int64_t)col->buf.i32[row]);
+    case VEC_INT16:  return hash_int64((int64_t)col->buf.i16[row]);
+    case VEC_INT8:   return hash_int64((int64_t)col->buf.i8[row]);
     case VEC_DOUBLE: return hash_double(col->buf.dbl[row]);
     case VEC_BOOL:   { uint8_t v = col->buf.bln[row]; return fnv1a(&v, 1); }
     }

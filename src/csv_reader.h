@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* Abstract byte reader for CSV scanning.
-   Implementations: plain FILE* and gzip (zlib gzFile). */
+   Implementations: plain FILE* and gzip (whole-file inflate via miniz). */
 
 typedef struct CsvReader CsvReader;
 
@@ -17,7 +17,8 @@ struct CsvReader {
 };
 
 /* Open a reader for the given path.
-   If path ends with ".gz", opens via zlib gzopen; otherwise plain fopen.
+   If path ends with ".gz", the file is decompressed entirely into memory
+   via miniz and exposed as a memory-cursor reader; otherwise plain fopen.
    Returns NULL on failure (caller should vectra_error). */
 CsvReader *csv_reader_open(const char *path);
 

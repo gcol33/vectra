@@ -53,6 +53,18 @@ static void dka_ensure(DiffKeyArena *ka, int64_t n) {
         memcpy(new_arr.buf.i64, old.buf.i64,
                (size_t)old.length * sizeof(int64_t));
         break;
+    case VEC_INT32:
+        memcpy(new_arr.buf.i32, old.buf.i32,
+               (size_t)old.length * sizeof(int32_t));
+        break;
+    case VEC_INT16:
+        memcpy(new_arr.buf.i16, old.buf.i16,
+               (size_t)old.length * sizeof(int16_t));
+        break;
+    case VEC_INT8:
+        memcpy(new_arr.buf.i8, old.buf.i8,
+               (size_t)old.length * sizeof(int8_t));
+        break;
     case VEC_DOUBLE:
         memcpy(new_arr.buf.dbl, old.buf.dbl,
                (size_t)old.length * sizeof(double));
@@ -96,6 +108,15 @@ static void dka_append(DiffKeyArena *ka, const VecArray *col, int64_t row) {
         switch (ka->key_type) {
         case VEC_INT64:
             a->buf.i64[pos] = col->buf.i64[row];
+            break;
+        case VEC_INT32:
+            a->buf.i32[pos] = col->buf.i32[row];
+            break;
+        case VEC_INT16:
+            a->buf.i16[pos] = col->buf.i16[row];
+            break;
+        case VEC_INT8:
+            a->buf.i8[pos] = col->buf.i8[row];
             break;
         case VEC_DOUBLE:
             a->buf.dbl[pos] = col->buf.dbl[row];
@@ -158,6 +179,42 @@ static SEXP array_col_to_sexp(const VecArray *arr) {
                 p[i] = NA_REAL;
             else
                 p[i] = (double)arr->buf.i64[i];
+        }
+        UNPROTECT(1);
+        return out;
+    }
+    case VEC_INT32: {
+        out = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *p = INTEGER(out);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                p[i] = NA_INTEGER;
+            else
+                p[i] = (int)arr->buf.i32[i];
+        }
+        UNPROTECT(1);
+        return out;
+    }
+    case VEC_INT16: {
+        out = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *p = INTEGER(out);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                p[i] = NA_INTEGER;
+            else
+                p[i] = (int)arr->buf.i16[i];
+        }
+        UNPROTECT(1);
+        return out;
+    }
+    case VEC_INT8: {
+        out = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *p = INTEGER(out);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                p[i] = NA_INTEGER;
+            else
+                p[i] = (int)arr->buf.i8[i];
         }
         UNPROTECT(1);
         return out;
@@ -425,7 +482,7 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
                 batch->sel_n = n_added_this_batch;
                 VecBatch *compact = vec_batch_compact(batch);
                 /* batch is now freed by compact — do not use */
-                vtr1_write_rowgroup(tmp_fp, compact);
+                vtr1_write_rowgroup(tmp_fp, compact, VTR_COMPRESS_FAST);
                 vec_batch_free(compact);
                 n_rg_written++;
             } else {

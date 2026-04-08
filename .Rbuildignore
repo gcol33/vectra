@@ -31,3 +31,4 @@
 ^\.run-build\.R$
 ^\.run-test-block\.R$
 ^\.test-phase.*\.R$
+^tools$

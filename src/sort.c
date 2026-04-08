@@ -51,6 +51,21 @@ static int compare_value(const VecArray *a, int64_t ra,
         cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
         break;
     }
+    case VEC_INT32: {
+        int32_t va = a->buf.i32[ra], vb = b->buf.i32[rb];
+        cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+        break;
+    }
+    case VEC_INT16: {
+        int16_t va = a->buf.i16[ra], vb = b->buf.i16[rb];
+        cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+        break;
+    }
+    case VEC_INT8: {
+        int8_t va = a->buf.i8[ra], vb = b->buf.i8[rb];
+        cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+        break;
+    }
     case VEC_BOOL: {
         uint8_t va = a->buf.bln[ra], vb = b->buf.bln[rb];
         cmp = (int)va - (int)vb;
@@ -286,6 +301,45 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             dst.buf.i64[i] = src->buf.i64[indices[i]];
         }
         break;
+    case VEC_INT8:
+        for (int64_t i = 0; i < n; i++) {
+            int64_t si = indices[i];
+            if (vec_array_is_valid(src, si))
+                vec_array_set_valid(&dst, i);
+            else
+                vec_array_set_null(&dst, i);
+        }
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            dst.buf.i8[i] = src->buf.i8[indices[i]];
+        }
+        break;
+    case VEC_INT16:
+        for (int64_t i = 0; i < n; i++) {
+            int64_t si = indices[i];
+            if (vec_array_is_valid(src, si))
+                vec_array_set_valid(&dst, i);
+            else
+                vec_array_set_null(&dst, i);
+        }
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            dst.buf.i16[i] = src->buf.i16[indices[i]];
+        }
+        break;
+    case VEC_INT32:
+        for (int64_t i = 0; i < n; i++) {
+            int64_t si = indices[i];
+            if (vec_array_is_valid(src, si))
+                vec_array_set_valid(&dst, i);
+            else
+                vec_array_set_null(&dst, i);
+        }
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        for (int64_t i = 0; i < n; i++) {
+            dst.buf.i32[i] = src->buf.i32[indices[i]];
+        }
+        break;
     case VEC_DOUBLE:
         for (int64_t i = 0; i < n; i++) {
             int64_t si = indices[i];
@@ -360,8 +414,11 @@ static int64_t estimate_builder_memory(const VecArrayBuilder *builders,
         const VecArrayBuilder *b = &builders[c];
         total += vec_validity_bytes(b->capacity);
         switch (b->type) {
-        case VEC_INT64:  total += b->capacity * (int64_t)sizeof(int64_t); break;
-        case VEC_DOUBLE: total += b->capacity * (int64_t)sizeof(double);  break;
+        case VEC_INT64:  total += b->capacity * 8; break;
+        case VEC_INT32:  total += b->capacity * 4; break;
+        case VEC_INT16:  total += b->capacity * 2; break;
+        case VEC_INT8:   total += b->capacity;     break;
+        case VEC_DOUBLE: total += b->capacity * 8; break;
         case VEC_BOOL:   total += b->capacity; break;
         case VEC_STRING:
             total += (b->capacity + 1) * (int64_t)sizeof(int64_t);
@@ -453,7 +510,7 @@ static char *spill_sorted_run(VecArrayBuilder *builders, int n_cols,
                 strlen(schema->col_names[c]) + 1);
             strcpy(batch->col_names[c], schema->col_names[c]);
         }
-        vtr1_write_rowgroup(fp, batch);
+        vtr1_write_rowgroup(fp, batch, VTR_COMPRESS_FAST);
         vec_batch_free(batch);
     }
 

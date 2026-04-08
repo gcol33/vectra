@@ -142,3 +142,52 @@ test_that("tbl_csv pipe to write_csv round-trips", {
   expect_equal(result$a, c(1, 2, 3))
   expect_equal(result$b, c("x", "y", "z"))
 })
+
+test_that("tbl_csv reads gzip-compressed CSV via the miniz path", {
+  f <- tempfile(fileext = ".csv.gz")
+  on.exit(unlink(f))
+
+  df <- data.frame(
+    a = 1:5,
+    b = c(1.5, 2.5, 3.5, 4.5, 5.5),
+    c = c("foo", "bar", "baz", "qux", "quux"),
+    stringsAsFactors = FALSE
+  )
+  con <- gzfile(f, "w")
+  write.csv(df, con, row.names = FALSE)
+  close(con)
+
+  result <- tbl_csv(f) |> collect()
+  expect_equal(nrow(result), 5)
+  expect_equal(names(result), c("a", "b", "c"))
+  expect_equal(result$a, c(1, 2, 3, 4, 5))
+  expect_equal(result$b, df$b)
+  expect_equal(result$c, df$c)
+})
+
+test_that("tbl_csv on a gz CSV exercises the type-inference rewind path", {
+  # csv_scan infers types from the first 1000 rows, then seeks back to the
+  # data start. For the gz path that means seeking inside the in-memory
+  # decompressed buffer. Use >1000 rows so the rewind actually fires.
+  f <- tempfile(fileext = ".csv.gz")
+  on.exit(unlink(f))
+
+  n <- 1500
+  df <- data.frame(
+    id = seq_len(n),
+    val = as.double(seq_len(n)) / 2,
+    tag = sprintf("row%04d", seq_len(n)),
+    stringsAsFactors = FALSE
+  )
+  con <- gzfile(f, "w")
+  write.csv(df, con, row.names = FALSE)
+  close(con)
+
+  result <- tbl_csv(f) |> collect()
+  expect_equal(nrow(result), n)
+  expect_equal(result$id[1], 1)
+  expect_equal(result$id[n], n)
+  expect_equal(result$val[n], n / 2)
+  expect_equal(result$tag[1], "row0001")
+  expect_equal(result$tag[n], sprintf("row%04d", n))
+})

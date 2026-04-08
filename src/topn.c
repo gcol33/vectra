@@ -60,6 +60,21 @@ static int compare_rows_topn(const TopNCtx *ctx, int64_t a, int64_t b) {
             cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
             break;
         }
+        case VEC_INT32: {
+            int32_t va = col->buf.i32[a], vb = col->buf.i32[b];
+            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+            break;
+        }
+        case VEC_INT16: {
+            int16_t va = col->buf.i16[a], vb = col->buf.i16[b];
+            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+            break;
+        }
+        case VEC_INT8: {
+            int8_t va = col->buf.i8[a], vb = col->buf.i8[b];
+            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+            break;
+        }
         case VEC_BOOL: {
             uint8_t va = col->buf.bln[a], vb = col->buf.bln[b];
             cmp = (int)va - (int)vb;
@@ -153,6 +168,33 @@ static VecArray topn_gather(const VecArray *src, const int64_t *indices,
             if (vec_array_is_valid(src, si)) {
                 vec_array_set_valid(&dst, i);
                 dst.buf.i64[i] = src->buf.i64[si];
+            }
+        }
+        break;
+    case VEC_INT32:
+        for (int64_t i = 0; i < n; i++) {
+            int64_t si = indices[i];
+            if (vec_array_is_valid(src, si)) {
+                vec_array_set_valid(&dst, i);
+                dst.buf.i32[i] = src->buf.i32[si];
+            }
+        }
+        break;
+    case VEC_INT16:
+        for (int64_t i = 0; i < n; i++) {
+            int64_t si = indices[i];
+            if (vec_array_is_valid(src, si)) {
+                vec_array_set_valid(&dst, i);
+                dst.buf.i16[i] = src->buf.i16[si];
+            }
+        }
+        break;
+    case VEC_INT8:
+        for (int64_t i = 0; i < n; i++) {
+            int64_t si = indices[i];
+            if (vec_array_is_valid(src, si)) {
+                vec_array_set_valid(&dst, i);
+                dst.buf.i8[i] = src->buf.i8[si];
             }
         }
         break;

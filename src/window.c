@@ -14,6 +14,18 @@
 /* Forward declaration */
 static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b);
 
+/* Read any numeric column value as double */
+static inline double win_get_double(const VecArray *arr, int64_t i) {
+    switch (arr->type) {
+    case VEC_DOUBLE: return arr->buf.dbl[i];
+    case VEC_INT64:  return (double)arr->buf.i64[i];
+    case VEC_INT32:  return (double)arr->buf.i32[i];
+    case VEC_INT16:  return (double)arr->buf.i16[i];
+    case VEC_INT8:   return (double)arr->buf.i8[i];
+    default:         return 0.0;
+    }
+}
+
 /* Thread-safe merge sort for window index arrays.
    Sorts indices[0..n-1] using arr for comparison.
    tmp must be at least n elements.
@@ -128,6 +140,18 @@ static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
         int64_t va = arr->buf.i64[a], vb = arr->buf.i64[b];
         return (va < vb) ? -1 : (va > vb) ? 1 : 0;
     }
+    case VEC_INT32: {
+        int32_t va = arr->buf.i32[a], vb = arr->buf.i32[b];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_INT16: {
+        int16_t va = arr->buf.i16[a], vb = arr->buf.i16[b];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_INT8: {
+        int8_t va = arr->buf.i8[a], vb = arr->buf.i8[b];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
     case VEC_DOUBLE: {
         double va = arr->buf.dbl[a], vb = arr->buf.dbl[b];
         return (va < vb) ? -1 : (va > vb) ? 1 : 0;
@@ -165,9 +189,14 @@ static void win_grp_shift(const VecArray *in_arr, const int64_t *rows,
             if (!vec_array_is_valid(in_arr, src_row)) {
                 null_flags[rows[j]] = 1;
             } else {
-                out_buf[rows[j]] = (in_arr->type == VEC_DOUBLE) ?
-                    in_arr->buf.dbl[src_row] :
-                    (double)in_arr->buf.i64[src_row];
+                switch (in_arr->type) {
+                case VEC_DOUBLE: out_buf[rows[j]] = in_arr->buf.dbl[src_row]; break;
+                case VEC_INT64:  out_buf[rows[j]] = (double)in_arr->buf.i64[src_row]; break;
+                case VEC_INT32:  out_buf[rows[j]] = (double)in_arr->buf.i32[src_row]; break;
+                case VEC_INT16:  out_buf[rows[j]] = (double)in_arr->buf.i16[src_row]; break;
+                case VEC_INT8:   out_buf[rows[j]] = (double)in_arr->buf.i8[src_row]; break;
+                default: out_buf[rows[j]] = 0.0; break;
+                }
             }
         }
     }
@@ -223,8 +252,14 @@ static void win_eval_shift(const VecArray *input, int64_t start, int64_t end,
             if (has_default)
                 result->buf.dbl[i] = default_val;
         } else if (vec_array_is_valid(result, i)) {
-            result->buf.dbl[i] = (input->type == VEC_DOUBLE) ?
-                input->buf.dbl[src_row] : (double)input->buf.i64[src_row];
+            switch (input->type) {
+            case VEC_DOUBLE: result->buf.dbl[i] = input->buf.dbl[src_row]; break;
+            case VEC_INT64:  result->buf.dbl[i] = (double)input->buf.i64[src_row]; break;
+            case VEC_INT32:  result->buf.dbl[i] = (double)input->buf.i32[src_row]; break;
+            case VEC_INT16:  result->buf.dbl[i] = (double)input->buf.i16[src_row]; break;
+            case VEC_INT8:   result->buf.dbl[i] = (double)input->buf.i8[src_row]; break;
+            default: result->buf.dbl[i] = 0.0; break;
+            }
         }
     }
 }
@@ -318,8 +353,7 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                     vec_array_set_null(result, j);
                 break;
             }
-            double v = (input->type == VEC_DOUBLE) ?
-                input->buf.dbl[i] : (double)input->buf.i64[i];
+            double v = win_get_double(input, i);
             acc += v;
             vec_array_set_valid(result, i);
             result->buf.dbl[i] = acc;
@@ -337,8 +371,7 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                     vec_array_set_null(result, j);
                 break;
             }
-            double v = (input->type == VEC_DOUBLE) ?
-                input->buf.dbl[i] : (double)input->buf.i64[i];
+            double v = win_get_double(input, i);
             acc += v;
             cnt++;
             vec_array_set_valid(result, i);
@@ -356,8 +389,7 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                     vec_array_set_null(result, j);
                 break;
             }
-            double v = (input->type == VEC_DOUBLE) ?
-                input->buf.dbl[i] : (double)input->buf.i64[i];
+            double v = win_get_double(input, i);
             if (v < cur_min) cur_min = v;
             vec_array_set_valid(result, i);
             result->buf.dbl[i] = cur_min;
@@ -374,8 +406,7 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                     vec_array_set_null(result, j);
                 break;
             }
-            double v = (input->type == VEC_DOUBLE) ?
-                input->buf.dbl[i] : (double)input->buf.i64[i];
+            double v = win_get_double(input, i);
             if (v > cur_max) cur_max = v;
             vec_array_set_valid(result, i);
             result->buf.dbl[i] = cur_max;
@@ -652,8 +683,7 @@ static VecBatch *window_next_batch(VecNode *self) {
                             null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (in_arr->type == VEC_DOUBLE) ?
-                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
+                            double v = win_get_double(in_arr, ri);
                             acc += v;
                             out.buf.dbl[ri] = acc;
                         }
@@ -671,8 +701,7 @@ static VecBatch *window_next_batch(VecNode *self) {
                             null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (in_arr->type == VEC_DOUBLE) ?
-                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
+                            double v = win_get_double(in_arr, ri);
                             acc += v;
                             cnt++;
                             out.buf.dbl[ri] = acc / (double)cnt;
@@ -690,8 +719,7 @@ static VecBatch *window_next_batch(VecNode *self) {
                             null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (in_arr->type == VEC_DOUBLE) ?
-                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
+                            double v = win_get_double(in_arr, ri);
                             if (v < cur) cur = v;
                             out.buf.dbl[ri] = cur;
                         }
@@ -708,8 +736,7 @@ static VecBatch *window_next_batch(VecNode *self) {
                             null_flags[ri] = 1;
                             poisoned = 1;
                         } else {
-                            double v = (in_arr->type == VEC_DOUBLE) ?
-                                in_arr->buf.dbl[ri] : (double)in_arr->buf.i64[ri];
+                            double v = win_get_double(in_arr, ri);
                             if (v > cur) cur = v;
                             out.buf.dbl[ri] = cur;
                         }

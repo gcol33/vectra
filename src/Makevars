@@ -1,2 +1,33 @@
-PKG_CFLAGS = $(SHLIB_OPENMP_CFLAGS)
-PKG_LIBS = -lz $(SHLIB_OPENMP_CFLAGS)
+# Makevars — vectra
+#
+# Vendored libraries:
+#   src/tdc/    typed dimensional compression engine; owns the .vtr codec
+#   src/miniz/  single-file deflate library; powers TIFF deflate strips
+#               and gzip-compressed CSV input
+#
+# Vendoring both keeps the package self-contained: no system zlib link,
+# no SystemRequirements beyond GNU make. Requires GNU make for the
+# wildcard expansion (declared in DESCRIPTION SystemRequirements).
+#
+# tdc's optional deflate backend (TDC_HAVE_ZLIB) stays undefined; tdc
+# does not link miniz, the dependency relationship is purely vectra
+# source files (tiff_format.c, csv_reader.c) -> miniz.
+
+PKG_CFLAGS = $(SHLIB_OPENMP_CFLAGS) -I./tdc/include
+PKG_LIBS = $(SHLIB_OPENMP_CFLAGS)
+
+TDC_SOURCES = \
+	$(wildcard tdc/src/api/*.c) \
+	$(wildcard tdc/src/core/*.c) \
+	$(wildcard tdc/src/entropy/*.c) \
+	$(wildcard tdc/src/format/*.c) \
+	$(wildcard tdc/src/layout/*.c) \
+	$(wildcard tdc/src/model/*.c) \
+	$(wildcard tdc/src/symbols/*.c) \
+	$(wildcard tdc/src/transform/*.c)
+
+MINIZ_SOURCES = $(wildcard miniz/*.c)
+
+VECTRA_SOURCES = $(wildcard *.c)
+
+OBJECTS = $(VECTRA_SOURCES:.c=.o) $(TDC_SOURCES:.c=.o) $(MINIZ_SOURCES:.c=.o)

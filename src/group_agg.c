@@ -58,6 +58,15 @@ static void arena_ensure(KeyArena *ka, int64_t n) {
         case VEC_INT64:
             memcpy(new_arr.buf.i64, old.buf.i64, (size_t)old.length * sizeof(int64_t));
             break;
+        case VEC_INT32:
+            memcpy(new_arr.buf.i32, old.buf.i32, (size_t)old.length * sizeof(int32_t));
+            break;
+        case VEC_INT16:
+            memcpy(new_arr.buf.i16, old.buf.i16, (size_t)old.length * sizeof(int16_t));
+            break;
+        case VEC_INT8:
+            memcpy(new_arr.buf.i8, old.buf.i8, (size_t)old.length * sizeof(int8_t));
+            break;
         case VEC_DOUBLE:
             memcpy(new_arr.buf.dbl, old.buf.dbl, (size_t)old.length * sizeof(double));
             break;
@@ -94,6 +103,9 @@ static void arena_append_row(KeyArena *ka, const VecArray *keys, int64_t row) {
             vec_array_set_valid(a, pos);
             switch (ka->key_types[k]) {
             case VEC_INT64:  a->buf.i64[pos] = keys[k].buf.i64[row]; break;
+            case VEC_INT32:  a->buf.i32[pos] = keys[k].buf.i32[row]; break;
+            case VEC_INT16:  a->buf.i16[pos] = keys[k].buf.i16[row]; break;
+            case VEC_INT8:   a->buf.i8[pos]  = keys[k].buf.i8[row];  break;
             case VEC_DOUBLE: a->buf.dbl[pos] = keys[k].buf.dbl[row]; break;
             case VEC_BOOL:   a->buf.bln[pos] = keys[k].buf.bln[row]; break;
             case VEC_STRING: {
@@ -362,6 +374,15 @@ static int snap_matches(const KeySnap *s, const VecBatch *batch,
         case VEC_INT64:
             if (col->buf.i64[row] != s->i64[k]) return 0;
             break;
+        case VEC_INT32:
+            if ((int64_t)col->buf.i32[row] != s->i64[k]) return 0;
+            break;
+        case VEC_INT16:
+            if ((int64_t)col->buf.i16[row] != s->i64[k]) return 0;
+            break;
+        case VEC_INT8:
+            if ((int64_t)col->buf.i8[row] != s->i64[k]) return 0;
+            break;
         case VEC_DOUBLE:
             if (col->buf.dbl[row] != s->dbl[k]) return 0;
             break;
@@ -398,6 +419,9 @@ static void snap_update(KeySnap *s, const VecBatch *batch,
         if (!s->valid[k]) continue;
         switch (s->types[k]) {
         case VEC_INT64:  s->i64[k] = col->buf.i64[row]; break;
+        case VEC_INT32:  s->i64[k] = (int64_t)col->buf.i32[row]; break;
+        case VEC_INT16:  s->i64[k] = (int64_t)col->buf.i16[row]; break;
+        case VEC_INT8:   s->i64[k] = (int64_t)col->buf.i8[row]; break;
         case VEC_DOUBLE: s->dbl[k] = col->buf.dbl[row]; break;
         case VEC_BOOL:   s->bln[k] = col->buf.bln[row]; break;
         case VEC_STRING: {
@@ -449,6 +473,9 @@ static void flush_group(const KeySnap *snap,
             b->validity[b->length / 8] |= (uint8_t)(1 << (b->length % 8));
             switch (snap->types[k]) {
             case VEC_INT64:  b->buf.i64[b->length] = snap->i64[k]; break;
+            case VEC_INT32:  b->buf.i32[b->length] = (int32_t)snap->i64[k]; break;
+            case VEC_INT16:  b->buf.i16[b->length] = (int16_t)snap->i64[k]; break;
+            case VEC_INT8:   b->buf.i8[b->length]  = (int8_t)snap->i64[k]; break;
             case VEC_DOUBLE: b->buf.dbl[b->length] = snap->dbl[k]; break;
             case VEC_BOOL:   b->buf.bln[b->length] = snap->bln[k]; break;
             case VEC_STRING: {

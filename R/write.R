@@ -179,6 +179,28 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path for the output .vtr file.
+#' @param compress Compression level: `"fast"` (default, byte-shuffle + LZ2)
+#'   or `"none"`. The legacy `"ratio"` (byte-shuffle + deflate) mode was
+#'   removed when vectra adopted the tdc compression backend.
+#' @param batch_size Target number of rows per row group in the output file.
+#'   Defaults to 131072 for data.frames (1 MB per double column, cache-friendly
+#'   for decompression). For nodes, defaults to `NULL` (one row group per
+#'   upstream batch).
+#' @param col_types Optional named character vector specifying narrow integer
+#'   storage types. Names must match column names; values must be `"int8"`,
+#'   `"int16"`, or `"int32"`. Only applies to integer columns.
+#'   Example: `col_types = c(age = "int8", year = "int16")`.
+#' @param quantize Optional named list for lossy quantization of `double`
+#'   columns. Each element is named after a column and is itself a named list
+#'   with `scale` (or `precision = 1/scale`), `type` (`"int8"`, `"int16"`,
+#'   `"int32"`; default `"int16"`), and optionally `offset` (default 0).
+#'   Example: `quantize = list(temp = list(precision = 0.001, type = "int16"))`.
+#' @param spatial Optional list for 2D spatial predictor encoding. Either a
+#'   global spec applied to all numeric columns (`list(nx = 2000, ny = 2000)`)
+#'   or per-column specs (`list(temp = list(nx = 2000, ny = 2000))`).
+#'   When provided, a spatial predictor removes smooth 2D trends before
+#'   compression, dramatically improving compression of raster data.
+#'   Combines with `quantize` for maximum effect.
 #' @param ... Additional arguments passed to methods.
 #'
 #' @return Invisible `NULL`.
@@ -197,24 +219,47 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #' unlink(c(f, f2, csv))
 #'
 #' @export
-write_vtr <- function(x, path, ...) {
+write_vtr <- function(x, path, compress = c("fast", "none"), batch_size = NULL,
+                      col_types = NULL, quantize = NULL, spatial = NULL,
+                      ...) {
   UseMethod("write_vtr")
 }
 
+# Internal: validate the `compress` argument. The legacy "ratio" mode was
+# removed when vectra switched to the tdc compression backend; we hard-error
+# rather than silently downgrading so old scripts surface the change.
+.check_compress <- function(compress) {
+  if (identical(compress, "ratio")) {
+    stop("compress = \"ratio\" is no longer supported. ",
+         "vectra now uses the tdc compression backend, which exposes ",
+         "\"fast\" (byte-shuffle + LZ2) and \"none\". Use compress = \"fast\".",
+         call. = FALSE)
+  }
+  match.arg(compress, c("fast", "none"))
+}
+
 #' @export
-write_vtr.vectra_node <- function(x, path, batch_size = NULL, ...) {
+write_vtr.vectra_node <- function(x, path, compress = c("fast", "none"),
+                                  batch_size = NULL, col_types = NULL,
+                                  quantize = NULL, spatial = NULL, ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
+  compress <- .check_compress(compress)
   bs <- if (!is.null(batch_size)) as.double(batch_size) else NULL
-  .Call(C_write_vtr_node, x$.node, path, bs)
+  .Call(C_write_vtr_node, x$.node, path, bs, compress, col_types, quantize,
+        spatial)
   invisible(NULL)
 }
 
 #' @export
-write_vtr.data.frame <- function(x, path, batch_size = nrow(x), ...) {
+write_vtr.data.frame <- function(x, path, compress = c("fast", "none"),
+                                 batch_size = 131072L, col_types = NULL,
+                                 quantize = NULL, spatial = NULL, ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
-  .Call(C_write_vtr, x, path, as.integer(batch_size))
+  compress <- .check_compress(compress)
+  .Call(C_write_vtr, x, path, as.integer(batch_size), compress, col_types,
+        quantize, spatial)
   invisible(NULL)
 }
 

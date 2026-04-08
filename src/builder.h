@@ -11,6 +11,9 @@ typedef struct {
     uint8_t *validity;
     union {
         int64_t *i64;
+        int32_t *i32;
+        int16_t *i16;
+        int8_t  *i8;
         double  *dbl;
         uint8_t *bln;
     } buf;

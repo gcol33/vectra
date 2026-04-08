@@ -360,6 +360,45 @@ static SEXP block_array_gather_sexp(const VecArray *arr,
         UNPROTECT(1);
         return col;
     }
+    case VEC_INT8: {
+        col = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *out = INTEGER(col);
+        for (int64_t i = 0; i < n; i++) {
+            int64_t r = rows[i];
+            if (!vec_array_is_valid(arr, r))
+                out[i] = NA_INTEGER;
+            else
+                out[i] = (int)arr->buf.i8[r];
+        }
+        UNPROTECT(1);
+        return col;
+    }
+    case VEC_INT16: {
+        col = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *out = INTEGER(col);
+        for (int64_t i = 0; i < n; i++) {
+            int64_t r = rows[i];
+            if (!vec_array_is_valid(arr, r))
+                out[i] = NA_INTEGER;
+            else
+                out[i] = (int)arr->buf.i16[r];
+        }
+        UNPROTECT(1);
+        return col;
+    }
+    case VEC_INT32: {
+        col = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *out = INTEGER(col);
+        for (int64_t i = 0; i < n; i++) {
+            int64_t r = rows[i];
+            if (!vec_array_is_valid(arr, r))
+                out[i] = NA_INTEGER;
+            else
+                out[i] = arr->buf.i32[r];
+        }
+        UNPROTECT(1);
+        return col;
+    }
     case VEC_DOUBLE: {
         col = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
         double *out = REAL(col);

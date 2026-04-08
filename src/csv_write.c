@@ -38,6 +38,15 @@ static void csv_write_cell(FILE *fp, const VecArray *col, int64_t row) {
     case VEC_INT64:
         fprintf(fp, "%" PRId64, col->buf.i64[row]);
         break;
+    case VEC_INT8:
+        fprintf(fp, "%d", (int)col->buf.i8[row]);
+        break;
+    case VEC_INT16:
+        fprintf(fp, "%d", (int)col->buf.i16[row]);
+        break;
+    case VEC_INT32:
+        fprintf(fp, "%" PRId32, col->buf.i32[row]);
+        break;
     case VEC_DOUBLE: {
         double v = col->buf.dbl[row];
         /* Use enough precision to round-trip */

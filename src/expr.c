@@ -120,6 +120,9 @@ static void copy_scalar_value(VecArray *dst, const VecArray *src,
                               int64_t i, VecType type) {
     switch (type) {
     case VEC_INT64:  dst->buf.i64[i] = src->buf.i64[i]; break;
+    case VEC_INT32:  dst->buf.i32[i] = src->buf.i32[i]; break;
+    case VEC_INT16:  dst->buf.i16[i] = src->buf.i16[i]; break;
+    case VEC_INT8:   dst->buf.i8[i]  = src->buf.i8[i];  break;
     case VEC_DOUBLE: dst->buf.dbl[i] = src->buf.dbl[i]; break;
     case VEC_BOOL:   dst->buf.bln[i] = src->buf.bln[i]; break;
     case VEC_STRING: break; /* handled by string two-pass path */
@@ -130,6 +133,9 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     switch (expr->kind) {
     case EXPR_COL_REF: {
         const VecArray *col = find_col(batch, expr->col_name);
+        /* Widen narrow ints to int64 for expression evaluation */
+        if (col->type == VEC_INT8 || col->type == VEC_INT16 || col->type == VEC_INT32)
+            return vec_coerce(col, VEC_INT64);
         return copy_col(col);
     }
     case EXPR_LIT_INT64:
@@ -191,8 +197,8 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     case EXPR_MATH_UNARY: {
         VecArray *o = vec_expr_eval(expr->operand, batch);
         /* Coerce to double if int64 */
-        VecArray *d = (o->type == VEC_INT64) ? vec_coerce(o, VEC_DOUBLE) : copy_col(o);
-        if (o->type == VEC_INT64) { vec_array_free(o); free(o); o = d; } else { free(d); d = o; }
+        VecArray *d = vec_type_is_int(o->type) ? vec_coerce(o, VEC_DOUBLE) : copy_col(o);
+        if (vec_type_is_int(o->type)) { vec_array_free(o); free(o); o = d; } else { free(d); d = o; }
         /* d is now VEC_DOUBLE */
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_DOUBLE, d->length);
@@ -380,6 +386,9 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
                         vec_array_set_valid(out, i);
                         switch (out_type) {
                         case VEC_INT64:  out->buf.i64[i] = args[c]->buf.i64[i]; break;
+                        case VEC_INT8:   out->buf.i64[i] = (int64_t)args[c]->buf.i8[i]; break;
+                        case VEC_INT16:  out->buf.i64[i] = (int64_t)args[c]->buf.i16[i]; break;
+                        case VEC_INT32:  out->buf.i64[i] = (int64_t)args[c]->buf.i32[i]; break;
                         case VEC_DOUBLE: out->buf.dbl[i] = args[c]->buf.dbl[i]; break;
                         case VEC_BOOL:   out->buf.bln[i] = args[c]->buf.bln[i]; break;
                         case VEC_STRING: break;

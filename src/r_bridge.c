@@ -41,16 +41,140 @@
 #include <string.h>
 #include <stdint.h>
 
+/* Parse col_types: named character vector, e.g. c(x = "int8", y = "int16")
+   Returns allocated array of VecType overrides indexed by column position.
+   Non-overridden columns get VEC_INT64 as sentinel (meaning "keep default").
+   Caller must free the result. Returns NULL if col_types is R_NilValue. */
+static VecType *parse_col_types(SEXP col_types, SEXP df_names, int n_cols) {
+    if (col_types == R_NilValue) return NULL;
+    if (TYPEOF(col_types) != STRSXP)
+        vectra_error("col_types must be a named character vector");
+    SEXP ct_names = Rf_getAttrib(col_types, R_NamesSymbol);
+    if (ct_names == R_NilValue)
+        vectra_error("col_types must be named");
+
+    VecType *overrides = (VecType *)malloc((size_t)n_cols * sizeof(VecType));
+    for (int i = 0; i < n_cols; i++) overrides[i] = VEC_INT64; /* sentinel: no override */
+
+    int n_ct = Rf_length(col_types);
+    for (int j = 0; j < n_ct; j++) {
+        const char *cname = CHAR(STRING_ELT(ct_names, j));
+        const char *tname = CHAR(STRING_ELT(col_types, j));
+        VecType target;
+        if (strcmp(tname, "int8") == 0) target = VEC_INT8;
+        else if (strcmp(tname, "int16") == 0) target = VEC_INT16;
+        else if (strcmp(tname, "int32") == 0) target = VEC_INT32;
+        else vectra_error("col_types value '%s' must be 'int8', 'int16', or 'int32'", tname);
+
+        /* Find matching column */
+        int found = 0;
+        for (int i = 0; i < n_cols; i++) {
+            if (strcmp(CHAR(STRING_ELT(df_names, i)), cname) == 0) {
+                overrides[i] = target;
+                found = 1;
+                break;
+            }
+        }
+        if (!found)
+            vectra_error("col_types name '%s' not found in data.frame columns", cname);
+    }
+    return overrides;
+}
+
+/* Narrow an int64 VecArray in-place to a target narrow type.
+   Allocates new buffer, copies with truncation, frees old. */
+static void narrow_int_array(VecArray *arr, VecType target) {
+    int64_t n = arr->length;
+    switch (target) {
+    case VEC_INT32: {
+        int32_t *buf = (int32_t *)calloc((size_t)n, sizeof(int32_t));
+        if (!buf) vectra_error("alloc failed for int32 narrowing");
+        for (int64_t i = 0; i < n; i++)
+            if (vec_array_is_valid(arr, i))
+                buf[i] = (int32_t)arr->buf.i64[i];
+        free(arr->buf.i64);
+        arr->buf.i32 = buf;
+        arr->type = VEC_INT32;
+        break;
+    }
+    case VEC_INT16: {
+        int16_t *buf = (int16_t *)calloc((size_t)n, sizeof(int16_t));
+        if (!buf) vectra_error("alloc failed for int16 narrowing");
+        for (int64_t i = 0; i < n; i++)
+            if (vec_array_is_valid(arr, i))
+                buf[i] = (int16_t)arr->buf.i64[i];
+        free(arr->buf.i64);
+        arr->buf.i16 = buf;
+        arr->type = VEC_INT16;
+        break;
+    }
+    case VEC_INT8: {
+        int8_t *buf = (int8_t *)calloc((size_t)n, sizeof(int8_t));
+        if (!buf) vectra_error("alloc failed for int8 narrowing");
+        for (int64_t i = 0; i < n; i++)
+            if (vec_array_is_valid(arr, i))
+                buf[i] = (int8_t)arr->buf.i64[i];
+        free(arr->buf.i64);
+        arr->buf.i8 = buf;
+        arr->type = VEC_INT8;
+        break;
+    }
+    default: break;
+    }
+}
+
+/* Build a narrow-typed array directly from R integer data */
+static VecArray r_int_to_narrow(SEXP col, VecType target, int64_t start, int64_t n) {
+    VecArray arr = vec_array_alloc(target, n);
+    vec_array_set_all_valid(&arr);
+    int *ip = INTEGER(col);
+    for (int64_t i = 0; i < n; i++) {
+        if (ip[start + i] == NA_INTEGER) {
+            vec_array_set_null(&arr, i);
+        } else {
+            switch (target) {
+            case VEC_INT32: arr.buf.i32[i] = (int32_t)ip[start + i]; break;
+            case VEC_INT16: arr.buf.i16[i] = (int16_t)ip[start + i]; break;
+            case VEC_INT8:  arr.buf.i8[i]  = (int8_t)ip[start + i]; break;
+            default: break;
+            }
+        }
+    }
+    return arr;
+}
+
 /* --- C_write_vtr --- */
 
-SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
+SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
+                 SEXP col_types_sexp, SEXP quantize_sexp, SEXP spatial_sexp) {
     if (!Rf_isNewList(df)) vectra_error("first argument must be a data.frame");
     const char *fpath = CHAR(STRING_ELT(path, 0));
     int bs = Rf_asInteger(batch_size);
 
+    /* Parse compression level. Only "fast" and "none" are accepted now;
+       the legacy "ratio" (deflate) backend was dropped when vectra adopted
+       tdc. R-side validation should catch this first, but defend the C
+       boundary too. */
+    int comp_level = 1; /* default: fast */
+    if (compress_sexp != R_NilValue && TYPEOF(compress_sexp) == STRSXP &&
+        Rf_length(compress_sexp) > 0) {
+        const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
+        if (strcmp(cstr, "fast") == 0) comp_level = 1;
+        else if (strcmp(cstr, "none") == 0) comp_level = 0;
+        else vectra_error("unknown compress level '%s' (expected \"fast\" or \"none\")", cstr);
+    }
+
     int n_cols = Rf_length(df);
     SEXP first_col = VECTOR_ELT(df, 0);
     int64_t n_rows = (int64_t)XLENGTH(first_col);
+
+    /* Parse col_types overrides */
+    SEXP df_names = Rf_getAttrib(df, R_NamesSymbol);
+    VecType *col_type_overrides = parse_col_types(col_types_sexp, df_names, n_cols);
+
+    /* Parse quantize + spatial specs */
+    VtrQuantizeSpec *qspecs = parse_quantize(quantize_sexp, df_names, n_cols);
+    VtrSpatialSpec *sspecs = parse_spatial(spatial_sexp, df_names, n_cols);
 
     /* Build annotations for all columns */
     char **annotations = (char **)calloc((size_t)n_cols, sizeof(char *));
@@ -60,6 +184,18 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
     if (bs <= 0 || (int64_t)bs >= n_rows) {
         /* Single row group */
         VecBatch *batch = df_to_batch(df);
+
+        /* Apply col_types narrowing */
+        if (col_type_overrides) {
+            for (int i = 0; i < n_cols; i++) {
+                VecType ov = col_type_overrides[i];
+                if (ov == VEC_INT8 || ov == VEC_INT16 || ov == VEC_INT32) {
+                    if (batch->columns[i].type == VEC_INT64)
+                        narrow_int_array(&batch->columns[i], ov);
+                }
+            }
+        }
+
         /* Build schema with annotations */
         VecSchema schema;
         memset(&schema, 0, sizeof(schema));
@@ -72,8 +208,9 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
 
         FILE *fp = fopen(fpath, "wb");
         if (!fp) vectra_error("cannot open file for writing: %s", fpath);
+        setvbuf(fp, NULL, _IOFBF, 256 * 1024);
         vtr1_write_header(fp, &schema, 1);
-        vtr1_write_rowgroup(fp, batch);
+        vtr1_write_rowgroup_qs(fp, batch, comp_level, qspecs, sspecs);
         fclose(fp);
 
         free(schema.col_types);
@@ -82,6 +219,7 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
         /* Multiple row groups */
         FILE *fp = fopen(fpath, "wb");
         if (!fp) vectra_error("cannot open file for writing: %s", fpath);
+        setvbuf(fp, NULL, _IOFBF, 256 * 1024);
 
         uint32_t n_rg = (uint32_t)((n_rows + bs - 1) / bs);
 
@@ -92,6 +230,12 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
         for (int i = 0; i < n_cols; i++) {
             col_names[i] = (char *)CHAR(STRING_ELT(names, i));
             col_types[i] = r_col_type(VECTOR_ELT(df, i));
+            /* Apply col_types overrides */
+            if (col_type_overrides) {
+                VecType ov = col_type_overrides[i];
+                if (ov == VEC_INT8 || ov == VEC_INT16 || ov == VEC_INT32)
+                    col_types[i] = ov;
+            }
         }
         VecSchema schema = vec_schema_create(n_cols, col_names, col_types);
         free(col_names);
@@ -153,21 +297,38 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
                     arr.buf.str.offsets[rg_rows] = offset;
                 } else
                 switch (type) {
+                case VEC_INT8:
+                case VEC_INT16:
+                case VEC_INT32: {
+                    /* Narrow int from R integer */
+                    vec_array_free(&arr);
+                    arr = r_int_to_narrow(col, type, start, rg_rows);
+                    break;
+                }
                 case VEC_INT64:
                     if (Rf_isInteger(col)) {
-                        int *ip = INTEGER(col);
+                        int *ip = INTEGER(col) + start;
+                        int has_na = 0;
                         for (int64_t i = 0; i < rg_rows; i++) {
-                            if (ip[start + i] == NA_INTEGER) {
-                                vec_array_set_null(&arr, i);
-                            } else {
-                                arr.buf.i64[i] = (int64_t)ip[start + i];
+                            if (ip[i] == NA_INTEGER) { has_na = 1; break; }
+                        }
+                        if (!has_na) {
+                            for (int64_t i = 0; i < rg_rows; i++)
+                                arr.buf.i64[i] = (int64_t)ip[i];
+                        } else {
+                            for (int64_t i = 0; i < rg_rows; i++) {
+                                if (ip[i] == NA_INTEGER) {
+                                    vec_array_set_null(&arr, i);
+                                } else {
+                                    arr.buf.i64[i] = (int64_t)ip[i];
+                                }
                             }
                         }
                     } else {
-                        double *dp = REAL(col);
+                        double *dp = REAL(col) + start;
                         for (int64_t i = 0; i < rg_rows; i++) {
                             int64_t v;
-                            memcpy(&v, &dp[start + i], sizeof(int64_t));
+                            memcpy(&v, &dp[i], sizeof(int64_t));
                             if (v == INT64_MIN) {
                                 vec_array_set_null(&arr, i);
                             } else {
@@ -177,12 +338,20 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
                     }
                     break;
                 case VEC_DOUBLE: {
-                    double *dp = REAL(col);
+                    double *dp = REAL(col) + start;
+                    int has_na = 0;
                     for (int64_t i = 0; i < rg_rows; i++) {
-                        if (ISNA(dp[start + i]) || ISNAN(dp[start + i])) {
-                            vec_array_set_null(&arr, i);
-                        } else {
-                            arr.buf.dbl[i] = dp[start + i];
+                        if (ISNAN(dp[i])) { has_na = 1; break; }
+                    }
+                    if (!has_na) {
+                        memcpy(arr.buf.dbl, dp, (size_t)rg_rows * sizeof(double));
+                    } else {
+                        for (int64_t i = 0; i < rg_rows; i++) {
+                            if (ISNA(dp[i]) || ISNAN(dp[i])) {
+                                vec_array_set_null(&arr, i);
+                            } else {
+                                arr.buf.dbl[i] = dp[i];
+                            }
                         }
                     }
                     break;
@@ -227,7 +396,7 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
                 batch->columns[c] = arr;
             }
 
-            vtr1_write_rowgroup(fp, batch);
+            vtr1_write_rowgroup_qs(fp, batch, comp_level, qspecs, sspecs);
             vec_batch_free(batch);
         }
 
@@ -239,6 +408,9 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size) {
     for (int i = 0; i < n_cols; i++)
         free(annotations[i]);
     free(annotations);
+    free(col_type_overrides);
+    free(qspecs);
+    free(sspecs);
 
     return R_NilValue;
 }
@@ -269,7 +441,8 @@ SEXP C_node_schema(SEXP node_xptr) {
     SEXP col_types = PROTECT(Rf_allocVector(STRSXP, schema->n_cols));
     SEXP col_annotations = PROTECT(Rf_allocVector(STRSXP, schema->n_cols));
 
-    const char *type_names[] = {"int64", "double", "bool", "string"};
+    const char *type_names[] = {"int64", "double", "bool", "string",
+                                "int8", "int16", "int32"};
     for (int i = 0; i < schema->n_cols; i++) {
         SET_STRING_ELT(col_names, i,
             Rf_mkCharCE(schema->col_names[i], CE_UTF8));

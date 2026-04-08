@@ -72,14 +72,21 @@ static void tiff_typed_writer(VecNode *node, const char *path, void *ctx) {
 
 typedef struct {
     int64_t batch_size;
+    int     comp_level;
+    VtrQuantizeSpec *qspecs;  /* NULL or array of n_cols entries */
+    int n_qspecs;
+    VtrSpatialSpec *sspecs;   /* NULL or array of n_cols entries */
+    int n_sspecs;
 } VtrWriteCtx;
 
 static void vtr_writer(VecNode *node, const char *path, void *ctx) {
     VtrWriteCtx *wctx = (VtrWriteCtx *)ctx;
     if (wctx->batch_size > 0)
-        vtr_write_node_batched(node, path, wctx->batch_size);
+        vtr_write_node_batched_qs(node, path, wctx->batch_size, wctx->comp_level,
+                                  wctx->qspecs, wctx->sspecs);
     else
-        vtr_write_node(node, path);
+        vtr_write_node_qs(node, path, wctx->comp_level, wctx->qspecs,
+                          wctx->sspecs);
 }
 
 /* ---- scan entry points ---- */
@@ -124,11 +131,252 @@ SEXP C_write_tiff(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
     return write_node_dispatch(node_xptr, path_sexp, tiff_writer, &use_deflate);
 }
 
-SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp, SEXP batch_size_sexp) {
+/* Parse a quantize R list into a VtrQuantizeSpec array.
+   quantize_sexp: named list, e.g. list(temp = c(scale=1000, type="int16"))
+   col_names: STRSXP of column names (from schema or data.frame)
+   n_cols: number of columns
+   Returns malloc'd array of n_cols entries (caller frees), or NULL. */
+VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols) {
+    if (quantize_sexp == R_NilValue || TYPEOF(quantize_sexp) != VECSXP)
+        return NULL;
+
+    int n_q = Rf_length(quantize_sexp);
+    if (n_q == 0) return NULL;
+
+    SEXP q_names = Rf_getAttrib(quantize_sexp, R_NamesSymbol);
+    if (q_names == R_NilValue || TYPEOF(q_names) != STRSXP)
+        return NULL;
+
+    VtrQuantizeSpec *qspecs = (VtrQuantizeSpec *)calloc((size_t)n_cols,
+                                                        sizeof(VtrQuantizeSpec));
+    if (!qspecs) return NULL;
+
+    for (int qi = 0; qi < n_q; qi++) {
+        const char *qcol = CHAR(STRING_ELT(q_names, qi));
+        SEXP spec = VECTOR_ELT(quantize_sexp, qi);
+
+        /* Find column index */
+        int ci = -1;
+        for (int c = 0; c < n_cols; c++) {
+            if (strcmp(CHAR(STRING_ELT(col_names, c)), qcol) == 0) {
+                ci = c;
+                break;
+            }
+        }
+        if (ci < 0) {
+            Rf_warning("quantize: column '%s' not found, skipping", qcol);
+            continue;
+        }
+
+        /* Parse spec: named numeric vector with scale/precision/offset/type */
+        if (TYPEOF(spec) != VECSXP && TYPEOF(spec) != REALSXP &&
+            TYPEOF(spec) != STRSXP) {
+            Rf_warning("quantize: spec for '%s' must be a named vector", qcol);
+            continue;
+        }
+
+        /* Convert to a named list for uniform access.
+           Accepted forms:
+             c(scale = 1000, type = "int16")
+             c(precision = 0.001, type = "int16")
+             list(scale = 1000, type = "int16")
+        */
+        double scale = 0, offset = 0;
+        VecType target = VEC_INT16; /* default */
+        int has_scale = 0;
+
+        SEXP snames = Rf_getAttrib(spec, R_NamesSymbol);
+        int slen = Rf_length(spec);
+
+        for (int si = 0; si < slen; si++) {
+            if (snames == R_NilValue) continue;
+            const char *sn = CHAR(STRING_ELT(snames, si));
+
+            if (strcmp(sn, "scale") == 0) {
+                if (TYPEOF(spec) == REALSXP) scale = REAL(spec)[si];
+                else if (TYPEOF(spec) == VECSXP) scale = Rf_asReal(VECTOR_ELT(spec, si));
+                has_scale = 1;
+            } else if (strcmp(sn, "precision") == 0) {
+                double prec;
+                if (TYPEOF(spec) == REALSXP) prec = REAL(spec)[si];
+                else if (TYPEOF(spec) == VECSXP) prec = Rf_asReal(VECTOR_ELT(spec, si));
+                else prec = 0;
+                if (prec > 0) { scale = 1.0 / prec; has_scale = 1; }
+            } else if (strcmp(sn, "offset") == 0) {
+                if (TYPEOF(spec) == REALSXP) offset = REAL(spec)[si];
+                else if (TYPEOF(spec) == VECSXP) offset = Rf_asReal(VECTOR_ELT(spec, si));
+            } else if (strcmp(sn, "type") == 0) {
+                const char *tstr = NULL;
+                if (TYPEOF(spec) == STRSXP) tstr = CHAR(STRING_ELT(spec, si));
+                else if (TYPEOF(spec) == VECSXP) {
+                    SEXP ts = VECTOR_ELT(spec, si);
+                    if (TYPEOF(ts) == STRSXP) tstr = CHAR(STRING_ELT(ts, 0));
+                }
+                if (tstr) {
+                    if (strcmp(tstr, "int8") == 0)       target = VEC_INT8;
+                    else if (strcmp(tstr, "int16") == 0)  target = VEC_INT16;
+                    else if (strcmp(tstr, "int32") == 0)  target = VEC_INT32;
+                }
+            }
+        }
+
+        if (!has_scale || scale <= 0) {
+            Rf_warning("quantize: column '%s' needs positive scale or precision", qcol);
+            continue;
+        }
+
+        qspecs[ci].enabled = 1;
+        qspecs[ci].scale = scale;
+        qspecs[ci].offset = offset;
+        qspecs[ci].target_type = target;
+    }
+
+    return qspecs;
+}
+
+/* Parse a spatial R list into a VtrSpatialSpec array.
+   spatial_sexp: named list with nx, ny, and optionally cols, predictor, tile_size.
+   Example: list(nx = 2000, ny = 2000)
+   Or per-column: list(temp = list(nx = 2000, ny = 2000))
+   Returns malloc'd array of n_cols entries (caller frees), or NULL. */
+VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols) {
+    if (spatial_sexp == R_NilValue || TYPEOF(spatial_sexp) != VECSXP)
+        return NULL;
+
+    SEXP s_names = Rf_getAttrib(spatial_sexp, R_NamesSymbol);
+
+    /* Check if this is a global spec (has nx/ny at top level) or per-column */
+    int is_global = 0;
+    if (s_names != R_NilValue) {
+        for (int i = 0; i < Rf_length(spatial_sexp); i++) {
+            const char *nm = CHAR(STRING_ELT(s_names, i));
+            if (strcmp(nm, "nx") == 0 || strcmp(nm, "ny") == 0) {
+                is_global = 1;
+                break;
+            }
+        }
+    }
+
+    VtrSpatialSpec *sspecs = (VtrSpatialSpec *)calloc((size_t)n_cols,
+                                                       sizeof(VtrSpatialSpec));
+    if (!sspecs) return NULL;
+
+    if (is_global) {
+        /* Apply to all numeric columns */
+        uint32_t nx = 0, ny = 0;
+        int predictor = -1; /* auto */
+        uint16_t tile_size = 32;
+
+        for (int i = 0; i < Rf_length(spatial_sexp); i++) {
+            const char *nm = CHAR(STRING_ELT(s_names, i));
+            if (strcmp(nm, "nx") == 0)
+                nx = (uint32_t)Rf_asReal(VECTOR_ELT(spatial_sexp, i));
+            else if (strcmp(nm, "ny") == 0)
+                ny = (uint32_t)Rf_asReal(VECTOR_ELT(spatial_sexp, i));
+            else if (strcmp(nm, "predictor") == 0)
+                predictor = Rf_asInteger(VECTOR_ELT(spatial_sexp, i));
+            else if (strcmp(nm, "tile_size") == 0)
+                tile_size = (uint16_t)Rf_asInteger(VECTOR_ELT(spatial_sexp, i));
+        }
+
+        if (nx == 0 || ny == 0) {
+            free(sspecs);
+            return NULL;
+        }
+
+        for (int c = 0; c < n_cols; c++) {
+            sspecs[c].enabled = 1;
+            sspecs[c].nx = nx;
+            sspecs[c].ny = ny;
+            sspecs[c].predictor = predictor;
+            sspecs[c].tile_size = tile_size;
+        }
+    } else {
+        /* Per-column specs */
+        for (int qi = 0; qi < Rf_length(spatial_sexp); qi++) {
+            if (s_names == R_NilValue) continue;
+            const char *scol = CHAR(STRING_ELT(s_names, qi));
+            SEXP spec = VECTOR_ELT(spatial_sexp, qi);
+            if (TYPEOF(spec) != VECSXP) continue;
+
+            int ci = -1;
+            for (int c = 0; c < n_cols; c++) {
+                if (strcmp(CHAR(STRING_ELT(col_names, c)), scol) == 0) {
+                    ci = c;
+                    break;
+                }
+            }
+            if (ci < 0) continue;
+
+            SEXP sn = Rf_getAttrib(spec, R_NamesSymbol);
+            uint32_t nx = 0, ny = 0;
+            int predictor = -1;
+            uint16_t tile_size = 32;
+
+            for (int si = 0; si < Rf_length(spec); si++) {
+                if (sn == R_NilValue) continue;
+                const char *nm = CHAR(STRING_ELT(sn, si));
+                if (strcmp(nm, "nx") == 0)
+                    nx = (uint32_t)Rf_asReal(VECTOR_ELT(spec, si));
+                else if (strcmp(nm, "ny") == 0)
+                    ny = (uint32_t)Rf_asReal(VECTOR_ELT(spec, si));
+                else if (strcmp(nm, "predictor") == 0)
+                    predictor = Rf_asInteger(VECTOR_ELT(spec, si));
+                else if (strcmp(nm, "tile_size") == 0)
+                    tile_size = (uint16_t)Rf_asInteger(VECTOR_ELT(spec, si));
+            }
+
+            if (nx > 0 && ny > 0) {
+                sspecs[ci].enabled = 1;
+                sspecs[ci].nx = nx;
+                sspecs[ci].ny = ny;
+                sspecs[ci].predictor = predictor;
+                sspecs[ci].tile_size = tile_size;
+            }
+        }
+    }
+
+    return sspecs;
+}
+
+SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp, SEXP batch_size_sexp,
+                      SEXP compress_sexp, SEXP col_types_sexp,
+                      SEXP quantize_sexp, SEXP spatial_sexp) {
+    (void)col_types_sexp; /* col_types narrowing not yet supported for node writes */
+    /* Parse compress level: only "fast" and "none" survive after the tdc
+       migration. Hard-error on anything else (legacy "ratio" included). */
+    int comp_level = 1; /* default: fast */
+    if (compress_sexp != R_NilValue && TYPEOF(compress_sexp) == STRSXP &&
+        Rf_length(compress_sexp) > 0) {
+        const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
+        if (strcmp(cstr, "fast") == 0) comp_level = 1;
+        else if (strcmp(cstr, "none") == 0) comp_level = 0;
+        else vectra_error("unknown compress level '%s' (expected \"fast\" or \"none\")", cstr);
+    }
+
+    /* Parse quantize + spatial specs */
+    VecNode *node = unwrap_node(node_xptr);
+    int n_cols = node->output_schema.n_cols;
+    SEXP col_names_sexp = PROTECT(Rf_allocVector(STRSXP, n_cols));
+    for (int i = 0; i < n_cols; i++)
+        SET_STRING_ELT(col_names_sexp, i,
+                       Rf_mkChar(node->output_schema.col_names[i]));
+    VtrQuantizeSpec *qspecs = parse_quantize(quantize_sexp, col_names_sexp, n_cols);
+    VtrSpatialSpec *sspecs = parse_spatial(spatial_sexp, col_names_sexp, n_cols);
+    UNPROTECT(1); /* col_names_sexp */
+
     VtrWriteCtx ctx = {
-        .batch_size = (batch_size_sexp == R_NilValue) ? 0 : (int64_t)Rf_asReal(batch_size_sexp)
+        .batch_size = (batch_size_sexp == R_NilValue) ? 0 : (int64_t)Rf_asReal(batch_size_sexp),
+        .comp_level = comp_level,
+        .qspecs = qspecs,
+        .n_qspecs = qspecs ? n_cols : 0,
+        .sspecs = sspecs,
+        .n_sspecs = sspecs ? n_cols : 0
     };
-    return write_node_dispatch(node_xptr, path_sexp, vtr_writer, &ctx);
+    SEXP result = write_node_dispatch(node_xptr, path_sexp, vtr_writer, &ctx);
+    free(qspecs);
+    free(sspecs);
+    return result;
 }
 
 /* --- C_tiff_extract_points --- */

@@ -217,7 +217,7 @@ void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
     else if (pixel_type == TIFF_PIXEL_UINT8)  nodata_val = 255.0;
     else if (pixel_type == TIFF_PIXEL_UINT16) nodata_val = 65535.0;
 
-    if (tiff_writer_open_typed(path, &writer, width, height, n_bands,
+    if (tiff_writer_open(path, &writer, width, height, n_bands,
                                 gt, nodata_val, use_deflate,
                                 pixel_type) != 0) {
         const char *msg = writer ? tiff_writer_errmsg(writer) : "unknown";

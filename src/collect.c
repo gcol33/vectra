@@ -6,9 +6,103 @@
 #include "array.h"
 #include "batch.h"
 #include "error.h"
+#include "vtr_codec.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+
+/* CHARSXP cache: avoids repeated Rf_mkCharLenCE hash lookups for columns with
+   many duplicate strings (common with dictionary encoding). Open-addressing
+   hash table keyed on string content. Shared by all string-fill paths. */
+#define STR_CACHE_BITS 13
+#define STR_CACHE_SIZE (1 << STR_CACHE_BITS)
+#define STR_CACHE_MASK (STR_CACHE_SIZE - 1)
+typedef struct { uint32_t hash; int len; const char *ptr; SEXP sexp; } StrCacheSlot;
+
+/* Fill a slice of an R STRSXP from a VecArray's string data. Three modes:
+ *   1. arr->str_dict != NULL  -> dict-defer fast path: build a CHARSXP table
+ *      from the parsed dictionary blob once, then walk RLE runs and dispatch
+ *      per row. Replaces dict_count + n_rows mkChar calls with dict_count
+ *      mkChar calls + n_rows SET_STRING_ELT.
+ *   2. str_cache != NULL      -> per-row Rf_mkCharLenCE with content-hash
+ *      cache to skip R's internal CHARSXP hash on duplicates.
+ *   3. neither                -> per-row Rf_mkCharLenCE without cache.
+ *
+ * R_alloc is safe in mode 1: callers run on the main thread after any
+ * parallel decode, and mkCharLenCE interns into R's global CHARSXP cache so
+ * the table entries stay live without PROTECT. */
+static void fill_string_col_from_batch(SEXP col, int64_t offset,
+                                       const VecArray *arr, int64_t n,
+                                       StrCacheSlot *str_cache) {
+    if (arr->str_dict) {
+        VtrDictBlob *blob = (VtrDictBlob *)arr->str_dict;
+        SEXP *cs_tab = (SEXP *)R_alloc((size_t)blob->dict_count, sizeof(SEXP));
+        for (uint32_t d = 0; d < blob->dict_count; d++) {
+            int64_t s = blob->dict_offsets[d];
+            int64_t e = blob->dict_offsets[d + 1];
+            cs_tab[d] = Rf_mkCharLenCE(blob->dict_data + s,
+                                       (int)(e - s), CE_UTF8);
+        }
+        int64_t row = 0;
+        for (uint32_t r = 0; r < blob->n_runs && row < n; r++) {
+            uint32_t v = blob->run_vals[r];
+            uint32_t len = blob->run_lens[r];
+            SEXP cs = cs_tab[v];
+            for (uint32_t k = 0; k < len && row < n; k++, row++) {
+                int64_t ri = offset + row;
+                if (!vec_array_is_valid(arr, row))
+                    SET_STRING_ELT(col, (R_xlen_t)ri, NA_STRING);
+                else
+                    SET_STRING_ELT(col, (R_xlen_t)ri, cs);
+            }
+        }
+        return;
+    }
+
+    for (int64_t j = 0; j < n; j++) {
+        int64_t ri = offset + j;
+        if (!vec_array_is_valid(arr, j)) {
+            SET_STRING_ELT(col, (R_xlen_t)ri, NA_STRING);
+            continue;
+        }
+        int64_t start = arr->buf.str.offsets[j];
+        int64_t end = arr->buf.str.offsets[j + 1];
+        int slen = (int)(end - start);
+        const char *sptr = arr->buf.str.data + start;
+
+        SEXP cs = R_NilValue;
+        if (str_cache) {
+            uint32_t h = 2166136261u;
+            for (int k = 0; k < slen; k++) {
+                h ^= (uint8_t)sptr[k];
+                h *= 16777619u;
+            }
+            h |= 1u;
+            uint32_t slot = h & STR_CACHE_MASK;
+            for (int p = 0; p < 4; p++) {
+                uint32_t si = (slot + p) & STR_CACHE_MASK;
+                if (!str_cache[si].hash) {
+                    cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
+                    str_cache[si].hash = h;
+                    str_cache[si].len = slen;
+                    str_cache[si].ptr = sptr;
+                    str_cache[si].sexp = cs;
+                    break;
+                }
+                if (str_cache[si].hash == h && str_cache[si].len == slen &&
+                    memcmp(str_cache[si].ptr, sptr, (size_t)slen) == 0) {
+                    cs = str_cache[si].sexp;
+                    break;
+                }
+            }
+            if (cs == R_NilValue)
+                cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
+        } else {
+            cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
+        }
+        SET_STRING_ELT(col, (R_xlen_t)ri, cs);
+    }
+}
 
 /* Check if bit64 int64 mode is requested */
 static int use_bit64(void) {
@@ -140,6 +234,26 @@ static SEXP array_to_sexp(const VecArray *arr, int want_bit64) {
         }
         return col;
     }
+    case VEC_INT32:
+    case VEC_INT16:
+    case VEC_INT8: {
+        col = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+        int *out = INTEGER(col);
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                out[i] = NA_INTEGER;
+            else {
+                switch (arr->type) {
+                case VEC_INT32: out[i] = (int)arr->buf.i32[i]; break;
+                case VEC_INT16: out[i] = (int)arr->buf.i16[i]; break;
+                case VEC_INT8:  out[i] = (int)arr->buf.i8[i]; break;
+                default: break;
+                }
+            }
+        }
+        UNPROTECT(1);
+        return col;
+    }
     case VEC_DOUBLE: {
         col = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
         double *out = REAL(col);
@@ -170,75 +284,66 @@ static SEXP array_to_sexp(const VecArray *arr, int want_bit64) {
     }
     case VEC_STRING: {
         col = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n));
-
-        /* CHARSXP cache: avoids repeated Rf_mkCharLenCE hash lookups for
-           columns with many duplicate strings (common with dictionary encoding).
-           Open-addressing hash table keyed on string content. */
-        #define STR_CACHE_BITS 13
-        #define STR_CACHE_SIZE (1 << STR_CACHE_BITS)
-        #define STR_CACHE_MASK (STR_CACHE_SIZE - 1)
-        typedef struct { uint32_t hash; int len; const char *ptr; SEXP sexp; } StrCacheSlot;
-        int use_cache = (n > 256);
         StrCacheSlot *cache = NULL;
-        if (use_cache) {
+        if (n > 256)
             cache = (StrCacheSlot *)calloc(STR_CACHE_SIZE, sizeof(StrCacheSlot));
-            if (!cache) use_cache = 0;
-        }
-
-        for (int64_t i = 0; i < n; i++) {
-            if (!vec_array_is_valid(arr, i)) {
-                SET_STRING_ELT(col, (R_xlen_t)i, NA_STRING);
-            } else {
-                int64_t start = arr->buf.str.offsets[i];
-                int64_t end = arr->buf.str.offsets[i + 1];
-                int slen = (int)(end - start);
-                const char *sptr = arr->buf.str.data + start;
-
-                SEXP cs = R_NilValue;
-                if (use_cache) {
-                    /* FNV-1a content hash */
-                    uint32_t h = 2166136261u;
-                    for (int j = 0; j < slen; j++) {
-                        h ^= (uint8_t)sptr[j];
-                        h *= 16777619u;
-                    }
-                    h |= 1u; /* non-zero sentinel */
-                    uint32_t slot = h & STR_CACHE_MASK;
-
-                    for (int p = 0; p < 4; p++) {
-                        uint32_t si = (slot + p) & STR_CACHE_MASK;
-                        if (!cache[si].hash) {
-                            cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                            cache[si].hash = h;
-                            cache[si].len = slen;
-                            cache[si].ptr = sptr;
-                            cache[si].sexp = cs;
-                            break;
-                        }
-                        if (cache[si].hash == h && cache[si].len == slen &&
-                            memcmp(cache[si].ptr, sptr, (size_t)slen) == 0) {
-                            cs = cache[si].sexp;
-                            break;
-                        }
-                    }
-                    if (cs == R_NilValue)
-                        cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                } else {
-                    cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                }
-                SET_STRING_ELT(col, (R_xlen_t)i, cs);
-            }
-        }
-
+        fill_string_col_from_batch(col, 0, arr, n, cache);
         free(cache);
-        #undef STR_CACHE_BITS
-        #undef STR_CACHE_SIZE
-        #undef STR_CACHE_MASK
         UNPROTECT(1);
         return col;
     }
     }
     return R_NilValue;
+}
+
+/* Patch NA sentinels into a slice of a REALSXP that the .vtr decoder filled
+ * via the direct-write fast path. The decoder writes raw element bytes only;
+ * positions whose validity bit is 0 still hold whatever was on disk and must
+ * be overwritten with the type's R-side NA value.
+ *
+ *   t == VEC_DOUBLE              : NA = NA_REAL.
+ *   t == VEC_INT64 (bit64 mode)  : NA = INT64_MIN, written via memcpy into
+ *                                  the REALSXP storage to dodge type-pun UB.
+ *
+ * No-op when the array has no NAs. */
+static void patch_na_into_direct_real(SEXP col, int64_t offset,
+                                      const VecArray *arr, VecType t) {
+    if (vec_array_all_valid(arr)) return;
+    int64_t n = arr->length;
+    double *out = REAL(col) + offset;
+    if (t == VEC_DOUBLE) {
+        for (int64_t j = 0; j < n; j++) {
+            if (!vec_array_is_valid(arr, j))
+                out[j] = NA_REAL;
+        }
+    } else {
+        const int64_t na_val = INT64_MIN;
+        for (int64_t j = 0; j < n; j++) {
+            if (!vec_array_is_valid(arr, j))
+                memcpy(&out[j], &na_val, sizeof(double));
+        }
+    }
+}
+
+/* One-shot debug warning when a column for which the caller supplied a direct
+ * write buffer came back with data_borrowed == 0 — i.e. the decoder fell
+ * through to its own allocation, forcing us to memcpy on the way out. This
+ * is correct but slow, and is the canary that fires when a new encoding is
+ * added without wiring up the direct-write path.
+ *
+ * Suppressed unless the VTR_DEBUG_DIRECT environment variable is set, so
+ * normal users never see it. Keyed by VecType so each unsupported type warns
+ * at most once per session. */
+static void warn_direct_buf_fallback_once(VecType t) {
+    static int seen[8] = {0};
+    int idx = (int)t;
+    if (idx < 0 || idx >= 8 || seen[idx]) return;
+    const char *env = getenv("VTR_DEBUG_DIRECT");
+    if (!env || env[0] == '\0') return;
+    seen[idx] = 1;
+    REprintf("[vectra] direct-write fallback for type %s: decoder allocated "
+             "its own buffer, copy required. Add direct-write support in "
+             "src/vtr1.c to recover the fast path.\n", vec_type_name(t));
 }
 
 /* Copy batch column data directly into a pre-allocated R SEXP vector at offset.
@@ -277,6 +382,36 @@ static int64_t batch_to_sexp_direct(const VecBatch *batch, int col_idx,
                         out[i] = (double)arr->buf.i64[i];
                 }
             }
+        }
+        break;
+    }
+    case VEC_INT32: {
+        int *out = INTEGER(col) + (int)offset;
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                out[i] = NA_INTEGER;
+            else
+                out[i] = (int)arr->buf.i32[i];
+        }
+        break;
+    }
+    case VEC_INT16: {
+        int *out = INTEGER(col) + (int)offset;
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                out[i] = NA_INTEGER;
+            else
+                out[i] = (int)arr->buf.i16[i];
+        }
+        break;
+    }
+    case VEC_INT8: {
+        int *out = INTEGER(col) + (int)offset;
+        for (int64_t i = 0; i < n; i++) {
+            if (!vec_array_is_valid(arr, i))
+                out[i] = NA_INTEGER;
+            else
+                out[i] = (int)arr->buf.i8[i];
         }
         break;
     }
@@ -336,17 +471,15 @@ SEXP vec_collect(VecNode *root) {
             VecType t = schema->col_types[i];
             if (t == VEC_INT64 || t == VEC_DOUBLE)
                 cols[i] = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)hint));
+            else if (t == VEC_INT32 || t == VEC_INT16 || t == VEC_INT8)
+                cols[i] = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)hint));
             else if (t == VEC_BOOL)
                 cols[i] = PROTECT(Rf_allocVector(LGLSXP, (R_xlen_t)hint));
             else /* VEC_STRING */
                 cols[i] = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)hint));
         }
 
-        /* CHARSXP cache for strings (shared across all string columns) */
-        #define STR_CACHE_BITS 13
-        #define STR_CACHE_SIZE (1 << STR_CACHE_BITS)
-        #define STR_CACHE_MASK (STR_CACHE_SIZE - 1)
-        typedef struct { uint32_t hash; int len; const char *ptr; SEXP sexp; } StrCacheSlot;
+        /* CHARSXP cache shared across all string columns in this collect. */
         StrCacheSlot *str_cache = NULL;
         int has_strings = 0;
         for (int i = 0; i < n_cols; i++) {
@@ -363,7 +496,12 @@ SEXP vec_collect(VecNode *root) {
         /* === PARALLEL I/O PATH ===
            When root is a plain ScanNode with multiple row groups and no
            predicates/tombstones, read all row groups in parallel using
-           thread-local FILE handles, then fill R vectors sequentially. */
+           thread-local FILE handles. For columns whose R storage element
+           size matches the on-disk decoded element size (DOUBLE, and INT64
+           with bit64), each thread decodes straight into the pre-allocated
+           R vector at its row offset — no intermediate malloc, no fill copy.
+           Other columns (strings, narrow ints, plain int64) fall back to
+           the per-batch sequential fill below. */
         int used_parallel = 0;
         if (scan_node_is_parallel_safe(root)) {
             const char *path = scan_node_get_path(root);
@@ -371,8 +509,37 @@ SEXP vec_collect(VecNode *root) {
             const int *col_mask = scan_node_get_col_mask(root);
             uint32_t n_batches = 0;
 
-            VecBatch **batches = vtr1_read_parallel(file, col_mask, path,
-                                                    &n_batches);
+            void **col_bases = (void **)calloc((size_t)n_cols, sizeof(void *));
+            size_t *col_elem_sizes = (size_t *)calloc((size_t)n_cols,
+                                                      sizeof(size_t));
+            if (!col_bases || !col_elem_sizes)
+                vectra_error("alloc failed for direct buffers");
+            int *col_direct = (int *)calloc((size_t)n_cols, sizeof(int));
+            if (!col_direct) vectra_error("alloc failed for col_direct");
+            for (int i = 0; i < n_cols; i++) {
+                VecType t = schema->col_types[i];
+                if (t == VEC_DOUBLE || (t == VEC_INT64 && want_bit64)) {
+                    col_bases[i] = REAL(cols[i]);
+                    col_elem_sizes[i] = sizeof(double);
+                    col_direct[i] = 1;
+                } else if (t == VEC_STRING) {
+                    /* String-defer contract: passing the sentinel tells the
+                     * decoder "if this column is DICTIONARY-encoded, parse
+                     * into arr.str_dict instead of materializing the flat
+                     * string buffer." elem_size stays 0 so the parallel
+                     * reader's offset-stride math leaves the sentinel
+                     * value untouched across all row groups. */
+                    col_bases[i] = VTR_STRING_DICT_DEFER;
+                    col_elem_sizes[i] = 0;
+                    /* col_direct stays 0: the consumer loop below checks
+                     * arr->str_dict directly, no flag needed. */
+                }
+            }
+
+            VecBatch **batches = vtr1_read_parallel_into(file, col_mask, path,
+                                                         col_bases,
+                                                         col_elem_sizes,
+                                                         n_cols, &n_batches);
             used_parallel = 1;
 
             for (uint32_t bi = 0; bi < n_batches; bi++) {
@@ -382,65 +549,122 @@ SEXP vec_collect(VecNode *root) {
 
                 for (int i = 0; i < n_cols; i++) {
                     VecType t = schema->col_types[i];
+                    if (col_direct[i]) {
+                        /* Caller asked for the direct-write fast path. The
+                           decoder honors it only for the PLAIN+fixed paths;
+                           on success the resulting VecArray has
+                           data_borrowed == 1 and we just patch NAs.
+                           Otherwise (DICT/DELTA/DIFF/QUANTIZE/SPATIAL/...)
+                           the decoder allocated its own buffer — fall back
+                           to the general copy path and warn in debug builds
+                           so a regression here is hard to miss. */
+                        const VecArray *arr = &batch->columns[i];
+                        if (arr->data_borrowed) {
+                            patch_na_into_direct_real(cols[i], offset, arr, t);
+                        } else {
+                            warn_direct_buf_fallback_once(t);
+                            batch_to_sexp_direct(batch, i, cols[i], offset,
+                                                 want_bit64, t);
+                        }
+                        continue;
+                    }
                     if (t != VEC_STRING) {
                         batch_to_sexp_direct(batch, i, cols[i], offset,
                                              want_bit64, t);
                     } else {
-                        const VecArray *arr = &batch->columns[i];
-                        for (int64_t j = 0; j < n; j++) {
-                            int64_t ri = offset + j;
-                            if (!vec_array_is_valid(arr, j)) {
-                                SET_STRING_ELT(cols[i], (R_xlen_t)ri, NA_STRING);
-                            } else {
-                                int64_t start = arr->buf.str.offsets[j];
-                                int64_t end = arr->buf.str.offsets[j + 1];
-                                int slen = (int)(end - start);
-                                const char *sptr = arr->buf.str.data + start;
-
-                                SEXP cs = R_NilValue;
-                                if (str_cache) {
-                                    uint32_t h = 2166136261u;
-                                    for (int k = 0; k < slen; k++) {
-                                        h ^= (uint8_t)sptr[k];
-                                        h *= 16777619u;
-                                    }
-                                    h |= 1u;
-                                    uint32_t slot = h & STR_CACHE_MASK;
-                                    for (int p = 0; p < 4; p++) {
-                                        uint32_t si = (slot + p) & STR_CACHE_MASK;
-                                        if (!str_cache[si].hash) {
-                                            cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                                            str_cache[si].hash = h;
-                                            str_cache[si].len = slen;
-                                            str_cache[si].ptr = sptr;
-                                            str_cache[si].sexp = cs;
-                                            break;
-                                        }
-                                        if (str_cache[si].hash == h &&
-                                            str_cache[si].len == slen &&
-                                            memcmp(str_cache[si].ptr, sptr, (size_t)slen) == 0) {
-                                            cs = str_cache[si].sexp;
-                                            break;
-                                        }
-                                    }
-                                    if (cs == R_NilValue)
-                                        cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                                } else {
-                                    cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                                }
-                                SET_STRING_ELT(cols[i], (R_xlen_t)ri, cs);
-                            }
-                        }
+                        fill_string_col_from_batch(cols[i], offset,
+                                                   &batch->columns[i], n,
+                                                   str_cache);
                     }
                 }
                 offset += n;
                 vec_batch_free(batch);
             }
             free(batches);
+            free(col_bases);
+            free(col_elem_sizes);
+            free(col_direct);
+        }
+
+        /* === DIRECT-READ PATH ===
+           When root is a plain ScanNode (no predicates/tombstones), bypass
+           the intermediate malloc+memcpy+free by reading directly into R
+           vectors via vtr1_read_rowgroup_ex with pre-allocated target
+           buffers. Numeric columns whose R element size matches the on-disk
+           decoded element size (DOUBLE, INT64+bit64) get a real direct
+           pointer; VEC_STRING columns pass the VTR_STRING_DICT_DEFER
+           sentinel so DICTIONARY-encoded strings come back as a parsed
+           VtrDictBlob (mirrors the parallel path). Other column types
+           disable the fast path entirely. */
+        int used_direct = 0;
+        if (!used_parallel && root->kind &&
+            strcmp(root->kind, "ScanNode") == 0) {
+            ScanNode *sn = (ScanNode *)root;
+            if (!sn->predicate && !sn->tombstone && !sn->rg_bitmap &&
+                sn->file->header.version >= 4) {
+                int can_direct = 1;
+                for (int i = 0; i < n_cols; i++) {
+                    VecType t = schema->col_types[i];
+                    if (t == VEC_DOUBLE || (t == VEC_INT64 && want_bit64) ||
+                        t == VEC_STRING)
+                        continue;
+                    can_direct = 0;
+                    break;
+                }
+                if (can_direct) {
+                    Vtr1File *file = sn->file;
+                    const int *col_mask = sn->col_mask;
+                    uint32_t n_rgs = file->header.n_rowgroups;
+                    void **direct_bufs = (void **)malloc(
+                        (size_t)n_cols * sizeof(void *));
+                    if (direct_bufs) {
+                        used_direct = 1;
+                        for (uint32_t rg = 0; rg < n_rgs; rg++) {
+                            int64_t rg_rows = file->rowgroups[rg].n_rows;
+                            for (int i = 0; i < n_cols; i++) {
+                                if (schema->col_types[i] == VEC_STRING)
+                                    direct_bufs[i] = VTR_STRING_DICT_DEFER;
+                                else
+                                    direct_bufs[i] = REAL(cols[i]) + offset;
+                            }
+                            batch = vtr1_read_rowgroup_ex(
+                                file, rg, col_mask, direct_bufs);
+                            /* Same direct-write contract as the parallel
+                               path: for numeric cols, data_borrowed == 1
+                               means the decoder wrote into the R vector and
+                               we only need to patch NAs; otherwise it
+                               allocated its own buffer and we copy. String
+                               cols are filled via fill_string_col_from_batch,
+                               which dispatches on str_dict (dict-defer fast
+                               path) vs flat-buffer fallback. */
+                            for (int i = 0; i < n_cols; i++) {
+                                const VecArray *arr = &batch->columns[i];
+                                VecType t = schema->col_types[i];
+                                if (t == VEC_STRING) {
+                                    fill_string_col_from_batch(
+                                        cols[i], offset, arr, rg_rows,
+                                        str_cache);
+                                } else if (arr->data_borrowed) {
+                                    patch_na_into_direct_real(cols[i], offset,
+                                                              arr, t);
+                                } else {
+                                    warn_direct_buf_fallback_once(t);
+                                    batch_to_sexp_direct(batch, i, cols[i],
+                                                         offset, want_bit64,
+                                                         t);
+                                }
+                            }
+                            offset += rg_rows;
+                            vec_batch_free(batch);
+                        }
+                        free(direct_bufs);
+                    }
+                }
+            }
         }
 
         /* === SEQUENTIAL PATH === */
-        if (!used_parallel) {
+        if (!used_parallel && !used_direct) {
         while ((batch = root->next_batch(root)) != NULL) {
             if (batch->sel) {
                 /* Selection vector present — can't do direct copy.
@@ -458,58 +682,15 @@ SEXP vec_collect(VecNode *root) {
                 if (t != VEC_STRING) {
                     batch_to_sexp_direct(batch, i, cols[i], offset, want_bit64, t);
                 } else {
-                    /* Strings: Rf_mkCharLenCE with CHARSXP cache */
-                    const VecArray *arr = &batch->columns[i];
-                    for (int64_t j = 0; j < n; j++) {
-                        int64_t ri = offset + j;
-                        if (!vec_array_is_valid(arr, j)) {
-                            SET_STRING_ELT(cols[i], (R_xlen_t)ri, NA_STRING);
-                        } else {
-                            int64_t start = arr->buf.str.offsets[j];
-                            int64_t end = arr->buf.str.offsets[j + 1];
-                            int slen = (int)(end - start);
-                            const char *sptr = arr->buf.str.data + start;
-
-                            SEXP cs = R_NilValue;
-                            if (str_cache) {
-                                uint32_t h = 2166136261u;
-                                for (int k = 0; k < slen; k++) {
-                                    h ^= (uint8_t)sptr[k];
-                                    h *= 16777619u;
-                                }
-                                h |= 1u;
-                                uint32_t slot = h & STR_CACHE_MASK;
-                                for (int p = 0; p < 4; p++) {
-                                    uint32_t si = (slot + p) & STR_CACHE_MASK;
-                                    if (!str_cache[si].hash) {
-                                        cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                                        str_cache[si].hash = h;
-                                        str_cache[si].len = slen;
-                                        str_cache[si].ptr = sptr;
-                                        str_cache[si].sexp = cs;
-                                        break;
-                                    }
-                                    if (str_cache[si].hash == h &&
-                                        str_cache[si].len == slen &&
-                                        memcmp(str_cache[si].ptr, sptr, (size_t)slen) == 0) {
-                                        cs = str_cache[si].sexp;
-                                        break;
-                                    }
-                                }
-                                if (cs == R_NilValue)
-                                    cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                            } else {
-                                cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                            }
-                            SET_STRING_ELT(cols[i], (R_xlen_t)ri, cs);
-                        }
-                    }
+                    fill_string_col_from_batch(cols[i], offset,
+                                               &batch->columns[i], n,
+                                               str_cache);
                 }
             }
             offset += n;
             vec_batch_free(batch);
         }
-        } /* end !used_parallel */
+        } /* end !used_parallel && !used_direct */
 
         free(str_cache);
 
@@ -555,9 +736,10 @@ SEXP vec_collect(VecNode *root) {
             }
 
             /* Rebuild R vectors with correct size = offset + builder length */
+            int64_t tail_n = 0;
             for (int i = 0; i < n_cols; i++) {
                 VecArray arr = vec_builder_finish(&builders[i]);
-                int64_t tail_n = arr.length;
+                tail_n = arr.length;
                 /* Append builder data into pre-allocated R vectors */
                 VecType t = schema->col_types[i];
                 if (t == VEC_DOUBLE) {
@@ -574,6 +756,20 @@ SEXP vec_collect(VecNode *root) {
                             out[j] = NA_REAL;
                         else
                             out[j] = (double)arr.buf.i64[j];
+                    }
+                } else if (t == VEC_INT32 || t == VEC_INT16 || t == VEC_INT8) {
+                    int *out = INTEGER(cols[i]) + (int)offset;
+                    for (int64_t j = 0; j < tail_n; j++) {
+                        if (!vec_array_is_valid(&arr, j))
+                            out[j] = NA_INTEGER;
+                        else {
+                            switch (t) {
+                            case VEC_INT32: out[j] = (int)arr.buf.i32[j]; break;
+                            case VEC_INT16: out[j] = (int)arr.buf.i16[j]; break;
+                            case VEC_INT8:  out[j] = (int)arr.buf.i8[j]; break;
+                            default: break;
+                            }
+                        }
                     }
                 } else if (t == VEC_BOOL) {
                     int *out = LOGICAL(cols[i]) + (int)offset;
@@ -593,9 +789,9 @@ SEXP vec_collect(VecNode *root) {
                         }
                     }
                 }
-                offset += tail_n;
                 vec_array_free(&arr);
             }
+            offset += tail_n;
             free(builders);
         }
 
@@ -610,6 +806,9 @@ SEXP vec_collect(VecNode *root) {
                 if (t == VEC_INT64 || t == VEC_DOUBLE) {
                     new_col = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)total_rows));
                     memcpy(REAL(new_col), REAL(old_col), (size_t)total_rows * sizeof(double));
+                } else if (t == VEC_INT32 || t == VEC_INT16 || t == VEC_INT8) {
+                    new_col = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)total_rows));
+                    memcpy(INTEGER(new_col), INTEGER(old_col), (size_t)total_rows * sizeof(int));
                 } else if (t == VEC_BOOL) {
                     new_col = PROTECT(Rf_allocVector(LGLSXP, (R_xlen_t)total_rows));
                     memcpy(LOGICAL(new_col), LOGICAL(old_col), (size_t)total_rows * sizeof(int));

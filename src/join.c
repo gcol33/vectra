@@ -93,6 +93,15 @@ static int join_keys_equal(const VecArray *probe_cols, const int *probe_key_idx,
         case VEC_INT64:
             if (pa->buf.i64[probe_row] != ba->buf.i64[build_row]) return 0;
             break;
+        case VEC_INT32:
+            if (pa->buf.i32[probe_row] != ba->buf.i32[build_row]) return 0;
+            break;
+        case VEC_INT16:
+            if (pa->buf.i16[probe_row] != ba->buf.i16[build_row]) return 0;
+            break;
+        case VEC_INT8:
+            if (pa->buf.i8[probe_row] != ba->buf.i8[build_row]) return 0;
+            break;
         case VEC_DOUBLE:
             if (pa->buf.dbl[probe_row] != ba->buf.dbl[build_row]) return 0;
             break;
@@ -539,6 +548,18 @@ static int merge_compare_value(const VecArray *a, int64_t ra,
     }
     case VEC_INT64: {
         int64_t va = a->buf.i64[ra], vb = b->buf.i64[rb];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_INT32: {
+        int32_t va = a->buf.i32[ra], vb = b->buf.i32[rb];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_INT16: {
+        int16_t va = a->buf.i16[ra], vb = b->buf.i16[rb];
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
+    case VEC_INT8: {
+        int8_t va = a->buf.i8[ra], vb = b->buf.i8[rb];
         return (va < vb) ? -1 : (va > vb) ? 1 : 0;
     }
     case VEC_BOOL:

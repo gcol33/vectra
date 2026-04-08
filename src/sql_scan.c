@@ -52,6 +52,9 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
         col_str_ptrs[c] = NULL; col_str_lens[c] = NULL;
         switch (sn->col_types[c]) {
         case VEC_INT64:
+        case VEC_INT8:
+        case VEC_INT16:
+        case VEC_INT32:
             col_i64[c] = (int64_t *)malloc((size_t)rows_cap * sizeof(int64_t));
             break;
         case VEC_DOUBLE:
@@ -79,6 +82,9 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
                     (size_t)(rows_cap - n_rows));
                 switch (sn->col_types[c]) {
                 case VEC_INT64:
+                case VEC_INT8:
+                case VEC_INT16:
+                case VEC_INT32:
                     col_i64[c] = (int64_t *)realloc(col_i64[c],
                         (size_t)rows_cap * sizeof(int64_t)); break;
                 case VEC_DOUBLE:
@@ -106,6 +112,9 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
             }
             switch (sn->col_types[c]) {
             case VEC_INT64:
+            case VEC_INT8:
+            case VEC_INT16:
+            case VEC_INT32:
                 col_i64[c][n_rows] = sqlfmt_reader_int64(sn->reader, c);
                 break;
             case VEC_DOUBLE:

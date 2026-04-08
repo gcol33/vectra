@@ -20,6 +20,20 @@ uint64_t vec_hash_value(const VecArray *arr, int64_t row) {
         for (int k = 0; k < 8; k++) { h ^= p[k]; h *= FNV_PRIME; }
         break;
     }
+    case VEC_INT32: {
+        const uint8_t *p = (const uint8_t *)&arr->buf.i32[row];
+        for (int k = 0; k < 4; k++) { h ^= p[k]; h *= FNV_PRIME; }
+        break;
+    }
+    case VEC_INT16: {
+        const uint8_t *p = (const uint8_t *)&arr->buf.i16[row];
+        for (int k = 0; k < 2; k++) { h ^= p[k]; h *= FNV_PRIME; }
+        break;
+    }
+    case VEC_INT8: {
+        h ^= (uint8_t)arr->buf.i8[row]; h *= FNV_PRIME;
+        break;
+    }
     case VEC_DOUBLE: {
         double v = arr->buf.dbl[row];
         /* Normalize -0 to +0 */
@@ -55,6 +69,9 @@ int vec_val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t rb) 
 
     switch (a->type) {
     case VEC_INT64:  return a->buf.i64[ra] == b->buf.i64[rb];
+    case VEC_INT32:  return a->buf.i32[ra] == b->buf.i32[rb];
+    case VEC_INT16:  return a->buf.i16[ra] == b->buf.i16[rb];
+    case VEC_INT8:   return a->buf.i8[ra]  == b->buf.i8[rb];
     case VEC_DOUBLE: return a->buf.dbl[ra] == b->buf.dbl[rb];
     case VEC_BOOL:   return a->buf.bln[ra] == b->buf.bln[rb];
     case VEC_STRING: {

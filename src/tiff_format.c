@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <zlib.h>
+#include "miniz/miniz.h"
 
 /* ================================================================== */
 /*  TIFF tag IDs and constants                                         */
@@ -888,7 +888,7 @@ static void pixel_type_props(int pixel_type,
     }
 }
 
-int tiff_writer_open_typed(const char *path, TiffWriter **out,
+int tiff_writer_open(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
                            int use_deflate, int pixel_type) {
@@ -934,13 +934,6 @@ int tiff_writer_open_typed(const char *path, TiffWriter **out,
 
     *out = w;
     return 0;
-}
-
-int tiff_writer_open(const char *path, TiffWriter **out,
-                     int64_t width, int64_t height, int n_bands,
-                     const double *gt, double nodata, int use_deflate) {
-    return tiff_writer_open_typed(path, out, width, height, n_bands,
-                                  gt, nodata, use_deflate, TIFF_PIXEL_FLOAT64);
 }
 
 void tiff_writer_set_metadata(TiffWriter *w, const char *xml) {

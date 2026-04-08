@@ -6,6 +6,7 @@
 #include "types.h"
 #include "schema.h"
 #include "expr.h"
+#include "vtr_codec.h"
 
 /* --- r_bridge_core.c: external pointer helpers --- */
 void       node_finalizer(SEXP xptr);
@@ -27,5 +28,9 @@ VecExpr    *parse_expr(SEXP lst, const VecSchema *schema);
 
 /* --- r_bridge_core.c: tempdir helper --- */
 const char *get_r_tempdir(void);
+
+/* --- r_bridge_io.c: quantize + spatial spec parsers --- */
+VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols);
+VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols);
 
 #endif /* VECTRA_R_BRIDGE_INTERNAL_H */

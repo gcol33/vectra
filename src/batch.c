@@ -59,6 +59,33 @@ VecBatch *vec_batch_compact(VecBatch *batch) {
                 }
             }
             break;
+        case VEC_INT32:
+            for (int32_t j = 0; j < n_sel; j++) {
+                int64_t pi = (int64_t)batch->sel[j];
+                if (vec_array_is_valid(src, pi)) {
+                    vec_array_set_valid(&dst, j);
+                    dst.buf.i32[j] = src->buf.i32[pi];
+                }
+            }
+            break;
+        case VEC_INT16:
+            for (int32_t j = 0; j < n_sel; j++) {
+                int64_t pi = (int64_t)batch->sel[j];
+                if (vec_array_is_valid(src, pi)) {
+                    vec_array_set_valid(&dst, j);
+                    dst.buf.i16[j] = src->buf.i16[pi];
+                }
+            }
+            break;
+        case VEC_INT8:
+            for (int32_t j = 0; j < n_sel; j++) {
+                int64_t pi = (int64_t)batch->sel[j];
+                if (vec_array_is_valid(src, pi)) {
+                    vec_array_set_valid(&dst, j);
+                    dst.buf.i8[j] = src->buf.i8[pi];
+                }
+            }
+            break;
         case VEC_DOUBLE:
             for (int32_t j = 0; j < n_sel; j++) {
                 int64_t pi = (int64_t)batch->sel[j];

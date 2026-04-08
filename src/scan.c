@@ -148,7 +148,7 @@ static int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
 
     /* Get column min/max as double */
     double col_min, col_max;
-    if (ct == VEC_INT64) {
+    if (vec_type_is_int(ct)) {
         col_min = (double)st->i64.min;
         col_max = (double)st->i64.max;
     } else if (ct == VEC_DOUBLE) {
@@ -310,7 +310,7 @@ static void binary_search_rg_range(const Vtr1File *file, int col_idx,
         while (lo < hi) {
             uint32_t mid = lo + (hi - lo) / 2;
             int max_lt_lit;
-            if (col_type == VEC_INT64) {
+            if (vec_type_is_int(col_type)) {
                 max_lt_lit = RG_MAX_I64(mid) < lit_i64;
             } else if (col_type == VEC_DOUBLE) {
                 max_lt_lit = RG_MAX_DBL(mid) < lit_dbl;
@@ -330,7 +330,7 @@ static void binary_search_rg_range(const Vtr1File *file, int col_idx,
         while (lo < hi) {
             uint32_t mid = lo + (hi - lo) / 2;
             int min_gt_lit;
-            if (col_type == VEC_INT64) {
+            if (vec_type_is_int(col_type)) {
                 min_gt_lit = RG_MIN_I64(mid) > lit_i64;
             } else if (col_type == VEC_DOUBLE) {
                 min_gt_lit = RG_MIN_DBL(mid) > lit_dbl;
@@ -349,7 +349,7 @@ static void binary_search_rg_range(const Vtr1File *file, int col_idx,
         while (lo < hi) {
             uint32_t mid = lo + (hi - lo) / 2;
             int skip;
-            if (col_type == VEC_INT64) {
+            if (vec_type_is_int(col_type)) {
                 skip = (op2 == '=') ? (RG_MAX_I64(mid) < lit_i64)
                                     : (RG_MAX_I64(mid) <= lit_i64);
             } else if (col_type == VEC_DOUBLE) {
@@ -372,7 +372,7 @@ static void binary_search_rg_range(const Vtr1File *file, int col_idx,
         while (lo < hi) {
             uint32_t mid = lo + (hi - lo) / 2;
             int skip;
-            if (col_type == VEC_INT64) {
+            if (vec_type_is_int(col_type)) {
                 skip = (op2 == '=') ? (RG_MIN_I64(mid) > lit_i64)
                                     : (RG_MIN_I64(mid) >= lit_i64);
             } else if (col_type == VEC_DOUBLE) {
@@ -448,7 +448,7 @@ static void try_hash_index(ScanNode *sn) {
             if (idx_col_type == VEC_STRING && in_pred->set_str) {
                 bm = vtri_probe_string(sn->index, in_pred->set_str[s],
                                        (int64_t)strlen(in_pred->set_str[s]), n_rgs);
-            } else if (idx_col_type == VEC_INT64 && in_pred->set_i64) {
+            } else if (vec_type_is_int(idx_col_type) && in_pred->set_i64) {
                 bm = vtri_probe_int64(sn->index, in_pred->set_i64[s], n_rgs);
             } else if (idx_col_type == VEC_DOUBLE && in_pred->set_dbl) {
                 bm = vtri_probe_double(sn->index, in_pred->set_dbl[s], n_rgs);
@@ -492,7 +492,7 @@ static void try_hash_index(ScanNode *sn) {
     if (idx_col_type == VEC_STRING && lit_expr->lit_str) {
         bitmap = vtri_probe_string(sn->index, lit_expr->lit_str,
                                    (int64_t)strlen(lit_expr->lit_str), n_rgs);
-    } else if (idx_col_type == VEC_INT64) {
+    } else if (vec_type_is_int(idx_col_type)) {
         int64_t key;
         if (lit_expr->kind == EXPR_LIT_INT64)
             key = lit_expr->lit_i64;
@@ -857,12 +857,6 @@ int scan_node_is_parallel_safe(const VecNode *node) {
     if (sn->rg_bitmap) return 0;
     if (sn->rg_range_set) return 0;
     if (sn->file->header.n_rowgroups < 4) return 0; /* need enough RGs */
-    /* Only worthwhile when I/O dominates: few columns, many rows */
-    int n_selected = 0;
-    int n_file_cols = sn->file->header.schema.n_cols;
-    for (int i = 0; i < n_file_cols; i++)
-        if (sn->col_mask[i]) n_selected++;
-    if (n_selected > 2) return 0; /* R allocator dominates with many cols */
     return 1;
 }
 

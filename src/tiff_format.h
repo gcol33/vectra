@@ -74,13 +74,9 @@ typedef struct TiffWriter TiffWriter;
    n_bands: samples per pixel
    gt: 6-element affine transform (NULL for default identity)
    nodata: nodata value (NaN = no GDAL_NODATA tag)
-   use_deflate: 1 to DEFLATE-compress strips */
+   use_deflate: 1 to DEFLATE-compress strips
+   pixel_type: one of TIFF_PIXEL_* constants */
 int tiff_writer_open(const char *path, TiffWriter **out,
-                     int64_t width, int64_t height, int n_bands,
-                     const double *gt, double nodata, int use_deflate);
-
-/* Open a writer with explicit pixel type (TIFF_PIXEL_*). */
-int tiff_writer_open_typed(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
                            int use_deflate, int pixel_type);

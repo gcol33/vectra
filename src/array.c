@@ -1,5 +1,6 @@
 #include "array.h"
 #include "error.h"
+#include "vtr_codec.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,6 +20,18 @@ VecArray vec_array_alloc(VecType type, int64_t length) {
     case VEC_INT64:
         arr.buf.i64 = (int64_t *)calloc((size_t)length, sizeof(int64_t));
         if (!arr.buf.i64 && length > 0) vectra_error("alloc failed for int64 array");
+        break;
+    case VEC_INT32:
+        arr.buf.i32 = (int32_t *)calloc((size_t)length, sizeof(int32_t));
+        if (!arr.buf.i32 && length > 0) vectra_error("alloc failed for int32 array");
+        break;
+    case VEC_INT16:
+        arr.buf.i16 = (int16_t *)calloc((size_t)length, sizeof(int16_t));
+        if (!arr.buf.i16 && length > 0) vectra_error("alloc failed for int16 array");
+        break;
+    case VEC_INT8:
+        arr.buf.i8 = (int8_t *)calloc((size_t)length, sizeof(int8_t));
+        if (!arr.buf.i8 && length > 0) vectra_error("alloc failed for int8 array");
         break;
     case VEC_DOUBLE:
         arr.buf.dbl = (double *)calloc((size_t)length, sizeof(double));
@@ -43,15 +56,22 @@ void vec_array_free(VecArray *arr) {
     free(arr->validity);
     arr->validity = NULL;
     switch (arr->type) {
-    case VEC_INT64:  free(arr->buf.i64); arr->buf.i64 = NULL; break;
-    case VEC_DOUBLE: free(arr->buf.dbl); arr->buf.dbl = NULL; break;
-    case VEC_BOOL:   free(arr->buf.bln); arr->buf.bln = NULL; break;
+    case VEC_INT64:  if (arr->owns_data) free(arr->buf.i64); arr->buf.i64 = NULL; break;
+    case VEC_INT32:  if (arr->owns_data) free(arr->buf.i32); arr->buf.i32 = NULL; break;
+    case VEC_INT16:  if (arr->owns_data) free(arr->buf.i16); arr->buf.i16 = NULL; break;
+    case VEC_INT8:   if (arr->owns_data) free(arr->buf.i8);  arr->buf.i8  = NULL; break;
+    case VEC_DOUBLE: if (arr->owns_data) free(arr->buf.dbl); arr->buf.dbl = NULL; break;
+    case VEC_BOOL:   if (arr->owns_data) free(arr->buf.bln); arr->buf.bln = NULL; break;
     case VEC_STRING:
         free(arr->buf.str.offsets); arr->buf.str.offsets = NULL;
         if (arr->owns_data) {
             free(arr->buf.str.data);
         }
         arr->buf.str.data = NULL;
+        if (arr->str_dict) {
+            vtr_dict_blob_free((VtrDictBlob *)arr->str_dict);
+            arr->str_dict = NULL;
+        }
         break;
     }
     arr->length = 0;
@@ -196,6 +216,33 @@ VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n
             if (vec_array_is_valid(src, pi)) {
                 vec_array_set_valid(&dst, j);
                 dst.buf.i64[j] = src->buf.i64[pi];
+            }
+        }
+        break;
+    case VEC_INT32:
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                dst.buf.i32[j] = src->buf.i32[pi];
+            }
+        }
+        break;
+    case VEC_INT16:
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                dst.buf.i16[j] = src->buf.i16[pi];
+            }
+        }
+        break;
+    case VEC_INT8:
+        for (int32_t j = 0; j < sel_n; j++) {
+            int64_t pi = (int64_t)sel[j];
+            if (vec_array_is_valid(src, pi)) {
+                vec_array_set_valid(&dst, j);
+                dst.buf.i8[j] = src->buf.i8[pi];
             }
         }
         break;

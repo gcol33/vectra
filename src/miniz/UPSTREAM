@@ -1,0 +1,45 @@
+miniz - single-file zlib-compatible deflate/inflate
+
+Upstream:    https://github.com/richgel999/miniz
+Version:     3.0.2
+License:     MIT (see LICENSE)
+Vendored on: 2026-04-07
+
+Why this lives in vectra/src/miniz/
+
+  vectra used to link the system zlib (-lz) for two unrelated jobs:
+    - tiff_format.c: TIFF DEFLATE strip compression (compress2/uncompress)
+    - csv_reader.c:  gzip-compressed CSV input via gzFile
+
+  Vendoring miniz drops the SystemRequirements: zlib dependency and the
+  -lz link flag, so vectra builds against nothing but the C runtime
+  (plus -lregex on Windows for the existing regex code).
+
+  miniz also provides the zlib-compatible names (uncompress, compress2,
+  compressBound, Z_OK, uLong, ...) when MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+  is left undefined, so tiff_format.c only needed its #include changed.
+
+Why miniz, not a from-scratch deflate codec inside tdc
+
+  tdc is a typed dimensional compression engine. General-purpose deflate
+  for foreign file formats (TIFF, gzip) is not in scope. A correct +
+  competitive deflate encoder is 4-6 KLOC of well-trodden territory; it
+  is not worth re-inventing in tdc when miniz is ~5 KLOC of public-
+  domain C with broad production use (stb, Bullet, Godot, ...).
+
+  tdc's optional TDC_ENTROPY_DEFLATE backend still exists and is still
+  gated behind TDC_HAVE_ZLIB; vectra does NOT define TDC_HAVE_ZLIB, so
+  that path stays dormant.
+
+Files
+
+  miniz.c       - amalgamated implementation
+  miniz.h       - amalgamated public header
+  LICENSE       - MIT license text
+  ChangeLog.md  - upstream changelog at the vendored revision
+
+How to refresh
+
+  Re-download the release zip from the upstream URL above, copy
+  miniz.c, miniz.h, LICENSE, ChangeLog.md into this directory, update
+  the Version line at the top of this file. No local patches.

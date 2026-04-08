@@ -182,12 +182,23 @@ VecBatch *df_to_batch(SEXP df) {
         case VEC_INT64:
             if (Rf_isInteger(col)) {
                 int *ip = INTEGER(col);
+                /* Fast scan for NA */
+                int has_na = 0;
                 for (int64_t i = 0; i < n_rows; i++) {
-                    if (ip[i] == NA_INTEGER) {
-                        vec_array_set_null(&arr, i);
-                        arr.buf.i64[i] = 0;
-                    } else {
+                    if (ip[i] == NA_INTEGER) { has_na = 1; break; }
+                }
+                if (!has_na) {
+                    /* Widen int32 → int64 in bulk (no NA checks) */
+                    for (int64_t i = 0; i < n_rows; i++)
                         arr.buf.i64[i] = (int64_t)ip[i];
+                } else {
+                    for (int64_t i = 0; i < n_rows; i++) {
+                        if (ip[i] == NA_INTEGER) {
+                            vec_array_set_null(&arr, i);
+                            arr.buf.i64[i] = 0;
+                        } else {
+                            arr.buf.i64[i] = (int64_t)ip[i];
+                        }
                     }
                 }
             } else {
@@ -205,14 +216,60 @@ VecBatch *df_to_batch(SEXP df) {
                 }
             }
             break;
+        case VEC_INT8: {
+            int *ip = INTEGER(col);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (ip[i] == NA_INTEGER) {
+                    vec_array_set_null(&arr, i);
+                    arr.buf.i8[i] = 0;
+                } else {
+                    arr.buf.i8[i] = (int8_t)ip[i];
+                }
+            }
+            break;
+        }
+        case VEC_INT16: {
+            int *ip = INTEGER(col);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (ip[i] == NA_INTEGER) {
+                    vec_array_set_null(&arr, i);
+                    arr.buf.i16[i] = 0;
+                } else {
+                    arr.buf.i16[i] = (int16_t)ip[i];
+                }
+            }
+            break;
+        }
+        case VEC_INT32: {
+            int *ip = INTEGER(col);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (ip[i] == NA_INTEGER) {
+                    vec_array_set_null(&arr, i);
+                    arr.buf.i32[i] = 0;
+                } else {
+                    arr.buf.i32[i] = (int32_t)ip[i];
+                }
+            }
+            break;
+        }
         case VEC_DOUBLE: {
             double *dp = REAL(col);
+            /* Fast scan: check if any NAs exist */
+            int has_na = 0;
             for (int64_t i = 0; i < n_rows; i++) {
-                if (ISNA(dp[i]) || ISNAN(dp[i])) {
-                    vec_array_set_null(&arr, i);
-                    arr.buf.dbl[i] = 0.0;
-                } else {
-                    arr.buf.dbl[i] = dp[i];
+                if (ISNAN(dp[i])) { has_na = 1; break; }
+            }
+            if (!has_na) {
+                /* Bulk copy — no NAs */
+                memcpy(arr.buf.dbl, dp, (size_t)n_rows * sizeof(double));
+            } else {
+                for (int64_t i = 0; i < n_rows; i++) {
+                    if (ISNA(dp[i]) || ISNAN(dp[i])) {
+                        vec_array_set_null(&arr, i);
+                        arr.buf.dbl[i] = 0.0;
+                    } else {
+                        arr.buf.dbl[i] = dp[i];
+                    }
                 }
             }
             break;

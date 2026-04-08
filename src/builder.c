@@ -31,6 +31,18 @@ static void ensure_capacity(VecArrayBuilder *b, int64_t extra) {
         b->buf.i64 = (int64_t *)realloc(b->buf.i64, (size_t)new_cap * sizeof(int64_t));
         if (!b->buf.i64) vectra_error("builder realloc failed (i64)");
         break;
+    case VEC_INT32:
+        b->buf.i32 = (int32_t *)realloc(b->buf.i32, (size_t)new_cap * sizeof(int32_t));
+        if (!b->buf.i32) vectra_error("builder realloc failed (i32)");
+        break;
+    case VEC_INT16:
+        b->buf.i16 = (int16_t *)realloc(b->buf.i16, (size_t)new_cap * sizeof(int16_t));
+        if (!b->buf.i16) vectra_error("builder realloc failed (i16)");
+        break;
+    case VEC_INT8:
+        b->buf.i8 = (int8_t *)realloc(b->buf.i8, (size_t)new_cap * sizeof(int8_t));
+        if (!b->buf.i8) vectra_error("builder realloc failed (i8)");
+        break;
     case VEC_DOUBLE:
         b->buf.dbl = (double *)realloc(b->buf.dbl, (size_t)new_cap * sizeof(double));
         if (!b->buf.dbl) vectra_error("builder realloc failed (dbl)");
@@ -85,6 +97,18 @@ void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
         memcpy(b->buf.i64 + b->length, arr->buf.i64,
                (size_t)arr->length * sizeof(int64_t));
         break;
+    case VEC_INT32:
+        memcpy(b->buf.i32 + b->length, arr->buf.i32,
+               (size_t)arr->length * sizeof(int32_t));
+        break;
+    case VEC_INT16:
+        memcpy(b->buf.i16 + b->length, arr->buf.i16,
+               (size_t)arr->length * sizeof(int16_t));
+        break;
+    case VEC_INT8:
+        memcpy(b->buf.i8 + b->length, arr->buf.i8,
+               (size_t)arr->length * sizeof(int8_t));
+        break;
     case VEC_DOUBLE:
         memcpy(b->buf.dbl + b->length, arr->buf.dbl,
                (size_t)arr->length * sizeof(double));
@@ -120,6 +144,9 @@ void vec_builder_append_one(VecArrayBuilder *b, const VecArray *arr, int64_t row
         b->validity[b->length / 8] |= (uint8_t)(1 << (b->length % 8));
         switch (b->type) {
         case VEC_INT64:  b->buf.i64[b->length] = arr->buf.i64[row]; break;
+        case VEC_INT32:  b->buf.i32[b->length] = arr->buf.i32[row]; break;
+        case VEC_INT16:  b->buf.i16[b->length] = arr->buf.i16[row]; break;
+        case VEC_INT8:   b->buf.i8[b->length]  = arr->buf.i8[row];  break;
         case VEC_DOUBLE: b->buf.dbl[b->length] = arr->buf.dbl[row]; break;
         case VEC_BOOL:   b->buf.bln[b->length] = arr->buf.bln[row]; break;
         case VEC_STRING: {
@@ -185,6 +212,23 @@ void vec_builder_append_repeat(VecArrayBuilder *b, const VecArray *arr,
                 b->buf.i64[b->length + i] = v;
             break;
         }
+        case VEC_INT32: {
+            int32_t v = arr->buf.i32[row];
+            for (int64_t i = 0; i < count; i++)
+                b->buf.i32[b->length + i] = v;
+            break;
+        }
+        case VEC_INT16: {
+            int16_t v = arr->buf.i16[row];
+            for (int64_t i = 0; i < count; i++)
+                b->buf.i16[b->length + i] = v;
+            break;
+        }
+        case VEC_INT8: {
+            int8_t v = arr->buf.i8[row];
+            memset(b->buf.i8 + b->length, (int)v, (size_t)count);
+            break;
+        }
         case VEC_DOUBLE: {
             double v = arr->buf.dbl[row];
             for (int64_t i = 0; i < count; i++)
@@ -232,6 +276,9 @@ VecArray vec_builder_finish(VecArrayBuilder *b) {
 
     switch (b->type) {
     case VEC_INT64:  arr.buf.i64 = b->buf.i64; break;
+    case VEC_INT32:  arr.buf.i32 = b->buf.i32; break;
+    case VEC_INT16:  arr.buf.i16 = b->buf.i16; break;
+    case VEC_INT8:   arr.buf.i8  = b->buf.i8;  break;
     case VEC_DOUBLE: arr.buf.dbl = b->buf.dbl; break;
     case VEC_BOOL:   arr.buf.bln = b->buf.bln; break;
     case VEC_STRING:
@@ -250,6 +297,9 @@ void vec_builder_free(VecArrayBuilder *b) {
     free(b->validity);
     switch (b->type) {
     case VEC_INT64:  free(b->buf.i64); break;
+    case VEC_INT32:  free(b->buf.i32); break;
+    case VEC_INT16:  free(b->buf.i16); break;
+    case VEC_INT8:   free(b->buf.i8);  break;
     case VEC_DOUBLE: free(b->buf.dbl); break;
     case VEC_BOOL:   free(b->buf.bln); break;
     case VEC_STRING:

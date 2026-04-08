@@ -76,7 +76,7 @@ void vtr_append_node(VecNode *node, const char *path) {
     VecBatch *batch;
     while ((batch = node->next_batch(node)) != NULL) {
         batch = vec_batch_compact(batch);
-        vtr1_write_rowgroup(fp, batch);
+        vtr1_write_rowgroup(fp, batch, VTR_COMPRESS_FAST);
         vec_batch_free(batch);
         new_rg++;
     }

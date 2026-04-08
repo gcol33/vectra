@@ -8,7 +8,10 @@ typedef enum {
     VEC_INT64  = 0,
     VEC_DOUBLE = 1,
     VEC_BOOL   = 2,
-    VEC_STRING = 3
+    VEC_STRING = 3,
+    VEC_INT8   = 4,   /* signed 8-bit  [-128, 127] */
+    VEC_INT16  = 5,   /* signed 16-bit [-32768, 32767] */
+    VEC_INT32  = 6    /* signed 32-bit [-2^31, 2^31-1] */
 } VecType;
 
 static inline const char *vec_type_name(VecType t) {
@@ -17,40 +20,96 @@ static inline const char *vec_type_name(VecType t) {
     case VEC_DOUBLE: return "double";
     case VEC_BOOL:   return "bool";
     case VEC_STRING: return "string";
+    case VEC_INT8:   return "int8";
+    case VEC_INT16:  return "int16";
+    case VEC_INT32:  return "int32";
     }
     return "unknown";
+}
+
+/* Element size in bytes for fixed-width types (0 for variable-length). */
+static inline uint8_t vec_type_elem_size(VecType t) {
+    switch (t) {
+    case VEC_INT8:   return 1;
+    case VEC_INT16:  return 2;
+    case VEC_INT32:  return 4;
+    case VEC_INT64:  return 8;
+    case VEC_DOUBLE: return 8;
+    case VEC_BOOL:   return 1;
+    case VEC_STRING: return 0;
+    }
+    return 0;
+}
+
+/* True for any integer type (narrow or int64). */
+static inline int vec_type_is_int(VecType t) {
+    return t == VEC_INT8 || t == VEC_INT16 || t == VEC_INT32 || t == VEC_INT64;
+}
+
+/* True for fixed-width types (everything except string). */
+static inline int vec_type_is_fixed(VecType t) {
+    return t != VEC_STRING;
 }
 
 /*
  * VecArray: columnar array for a single column of data.
  *
- * Ownership semantics for VEC_STRING arrays:
+ * Two distinct flags govern the data buffer:
+ *
+ *   owns_data — free responsibility.
+ *     1 (default): vec_array_free() releases the buffer.
+ *     0: external owner; vec_array_free() leaves it alone. Two unrelated
+ *        producers set this: (a) string arenas (KeyArena.str_data) shared
+ *        across many arrays, and (b) the direct-write decoder paths in
+ *        vtr1.c that materialize into a caller-provided buffer.
+ *
+ *   data_borrowed — provenance signal: "decoder wrote into a caller-supplied
+ *     direct buffer (vtr1_read_rowgroup_ex / vtr1_read_parallel_into)."
+ *     1 implies owns_data == 0, but the converse does NOT hold (string
+ *     arenas also set owns_data == 0). Callers that need to distinguish
+ *     "decoder honored my direct_buf" from "string data borrowed from an
+ *     arena" MUST check this flag, not !owns_data.
+ *
+ *     Only the PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ2+fixed paths in
+ *     read_rg_with_fp / vtr1_read_rowgroup_ex honor direct_bufs today.
+ *     All other encodings (DICT, DELTA, DIFF, QUANTIZE, SPATIAL, strings)
+ *     allocate their own buffer and leave data_borrowed == 0, even when
+ *     direct_bufs[i] was non-NULL. The caller is expected to fall back to
+ *     a copy in that case (and, in debug builds, will see a one-shot
+ *     warning via the VTR_DEBUG_DIRECT env var — see collect.c).
+ *
+ * Ownership notes for VEC_STRING:
  *   - offsets[] is ALWAYS owned by this array (freed by vec_array_free).
  *   - data may be owned (owns_data==1) or borrowed (owns_data==0).
- *   - When borrowed, the external owner (e.g. KeyArena.str_data) must
- *     outlive this array.  vec_array_free will skip freeing data.
- *   - For non-string types, owns_data is always 1 and has no effect.
+ *   - When borrowed, the external owner must outlive this array.
  *
  * Construction:
- *   - vec_array_alloc() and vec_builder_finish() set owns_data=1.
- *   - Code that borrows string data must explicitly set owns_data=0.
+ *   - vec_array_alloc() and vec_builder_finish() set owns_data=1,
+ *     data_borrowed=0.
+ *   - Code that borrows must explicitly set owns_data=0; the direct-write
+ *     decoder paths additionally set data_borrowed=1.
  *
  * Copying:
- *   - Struct assignment (arr2 = arr1) copies the flag.  If the original
- *     owns its data, only ONE copy may be freed; the other must have
- *     its pointers NULLed or its owns_data set to 0 before free.
+ *   - Struct assignment (arr2 = arr1) copies the flags. Only ONE copy may
+ *     be freed when owns_data==1; the other must have its pointers NULLed
+ *     or its owns_data set to 0 before free.
  *   - Prefer vec_array_alloc + memcpy for deep copies.
  */
 typedef struct {
     VecType   type;
     int64_t   length;
-    uint8_t  *validity;   /* bit-packed: bit i=1 means valid */
-    uint8_t   owns_data;  /* 1 = owns buf.str.data (default);
-                             0 = borrowed, vec_array_free skips str data.
-                             Only meaningful for VEC_STRING; always 1
-                             for fixed-width types. */
+    uint8_t  *validity;     /* bit-packed: bit i=1 means valid */
+    uint8_t   owns_data;    /* 1 = vec_array_free() releases the buffer */
+    uint8_t   data_borrowed;/* 1 = buffer was provided by the caller via the
+                               direct-write decoder API (implies !owns_data).
+                               Distinct from owns_data so callers can tell
+                               "decoder honored my direct_buf" apart from
+                               "string data borrowed from a key arena". */
     union {
         int64_t  *i64;
+        int32_t  *i32;
+        int16_t  *i16;
+        int8_t   *i8;
         double   *dbl;
         uint8_t  *bln;    /* 0/1 values */
         struct {
@@ -59,7 +118,27 @@ typedef struct {
             int64_t  data_len;
         } str;
     } buf;
+    /* Deferred dictionary view for VEC_STRING columns — set only by the
+     * .vtr direct-read fast path when the on-disk encoding is DICTIONARY and
+     * the caller asked for the string-defer contract (direct_bufs sentinel).
+     * Opaque (VtrDictBlob*); kept as void* here so types.h stays free of a
+     * vtr_codec.h dependency. When non-NULL, collect.c builds the STRSXP
+     * from the blob (CHARSXP table + RLE walk) and the flat buf.str.*
+     * fields are empty placeholders. vec_array_free releases the blob via
+     * vtr_dict_blob_free. */
+    void *str_dict;
 } VecArray;
+
+/* Read an integer value from a VecArray, widened to int64. */
+static inline int64_t vec_array_get_int(const VecArray *arr, int64_t i) {
+    switch (arr->type) {
+    case VEC_INT8:   return (int64_t)arr->buf.i8[i];
+    case VEC_INT16:  return (int64_t)arr->buf.i16[i];
+    case VEC_INT32:  return (int64_t)arr->buf.i32[i];
+    case VEC_INT64:  return arr->buf.i64[i];
+    default:         return 0;
+    }
+}
 
 typedef struct {
     int64_t    n_rows;     /* physical row count in underlying arrays */

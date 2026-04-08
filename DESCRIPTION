@@ -11,7 +11,7 @@ Description: A minimal columnar query engine with lazy execution on datasets
     pure C11 pull-based execution engine and a custom on-disk format ('.vtr').
 License: MIT + file LICENSE
 Depends: R (>= 4.1.0)
-SystemRequirements: zlib
+SystemRequirements: GNU make
 Encoding: UTF-8
 Imports:
     tidyselect,

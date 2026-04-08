@@ -4,12 +4,47 @@
 \alias{write_vtr}
 \title{Write data to a .vtr file}
 \usage{
-write_vtr(x, path, ...)
+write_vtr(
+  x,
+  path,
+  compress = "fast",
+  batch_size = NULL,
+  col_types = NULL,
+  quantize = NULL,
+  spatial = NULL,
+  ...
+)
 }
 \arguments{
 \item{x}{A \code{vectra_node} (lazy query) or a \code{data.frame}.}
 
 \item{path}{File path for the output .vtr file.}
+
+\item{compress}{Compression level: \code{"fast"} (default, byte-shuffle + LZ2),
+\code{"ratio"} (byte-shuffle + deflate, best compression), or \code{"none"}.}
+
+\item{batch_size}{Target number of rows per row group in the output file.
+Defaults to 131072 for data.frames (1 MB per double column, cache-friendly
+for decompression). For nodes, defaults to \code{NULL} (one row group per
+upstream batch).}
+
+\item{col_types}{Optional named character vector specifying narrow integer
+storage types. Names must match column names; values must be \code{"int8"},
+\code{"int16"}, or \code{"int32"}. Only applies to integer columns.
+Example: \code{col_types = c(age = "int8", year = "int16")}.}
+
+\item{quantize}{Optional named list for lossy quantization of \code{double}
+columns. Each element is named after a column and is itself a named list
+with \code{scale} (or \code{precision = 1/scale}), \code{type} (\code{"int8"}, \code{"int16"},
+\code{"int32"}; default \code{"int16"}), and optionally \code{offset} (default 0).
+Example: \code{quantize = list(temp = list(precision = 0.001, type = "int16"))}.}
+
+\item{spatial}{Optional list for 2D spatial predictor encoding. Either a
+global spec applied to all numeric columns (\code{list(nx = 2000, ny = 2000)})
+or per-column specs (\code{list(temp = list(nx = 2000, ny = 2000))}).
+When provided, a spatial predictor removes smooth 2D trends before
+compression, dramatically improving compression of raster data.
+Combines with \code{quantize} for maximum effect.}
 
 \item{...}{Additional arguments passed to methods.}
 }

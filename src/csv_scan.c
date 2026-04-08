@@ -322,7 +322,10 @@ static void csv_parse_cell(VecArray *col, int64_t i, const char *val) {
     vec_array_set_valid(col, i);
 
     switch (col->type) {
-    case VEC_INT64: {
+    case VEC_INT64:
+    case VEC_INT8:
+    case VEC_INT16:
+    case VEC_INT32: {
         int64_t v;
         if (try_parse_int64(val, &v))
             col->buf.i64[i] = v;

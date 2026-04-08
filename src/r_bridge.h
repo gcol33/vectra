@@ -5,7 +5,8 @@
 #include <Rinternals.h>
 
 /* .Call entry points */
-SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size);
+SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress, SEXP col_types,
+                 SEXP quantize, SEXP spatial);
 SEXP C_scan_node(SEXP path);
 SEXP C_collect(SEXP node_xptr);
 SEXP C_node_schema(SEXP node_xptr);
@@ -32,7 +33,8 @@ SEXP C_write_tiff(SEXP node_xptr, SEXP path, SEXP compress);
 SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path, SEXP compress,
                         SEXP pixel_type, SEXP metadata);
 SEXP C_tiff_read_metadata(SEXP path);
-SEXP C_write_vtr_node(SEXP node_xptr, SEXP path, SEXP batch_size);
+SEXP C_write_vtr_node(SEXP node_xptr, SEXP path, SEXP batch_size, SEXP compress,
+                      SEXP col_types, SEXP quantize, SEXP spatial);
 SEXP C_append_vtr(SEXP node_xptr, SEXP path);
 SEXP C_delete_vtr(SEXP path, SEXP row_indices);
 SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,

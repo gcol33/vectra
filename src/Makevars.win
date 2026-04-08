@@ -1,2 +1,24 @@
-PKG_CFLAGS = $(SHLIB_OPENMP_CFLAGS)
-PKG_LIBS = -lz -lregex $(SHLIB_OPENMP_CFLAGS)
+# Makevars.win — vectra (Windows / Rtools)
+#
+# See Makevars for the rationale. -lregex is supplied by Rtools and
+# vectra's regex support depends on it. zlib is no longer linked: TIFF
+# deflate and gzip CSV input both go through vendored miniz.
+
+PKG_CFLAGS = $(SHLIB_OPENMP_CFLAGS) -I./tdc/include
+PKG_LIBS = -lregex $(SHLIB_OPENMP_CFLAGS)
+
+TDC_SOURCES = \
+	$(wildcard tdc/src/api/*.c) \
+	$(wildcard tdc/src/core/*.c) \
+	$(wildcard tdc/src/entropy/*.c) \
+	$(wildcard tdc/src/format/*.c) \
+	$(wildcard tdc/src/layout/*.c) \
+	$(wildcard tdc/src/model/*.c) \
+	$(wildcard tdc/src/symbols/*.c) \
+	$(wildcard tdc/src/transform/*.c)
+
+MINIZ_SOURCES = $(wildcard miniz/*.c)
+
+VECTRA_SOURCES = $(wildcard *.c)
+
+OBJECTS = $(VECTRA_SOURCES:.c=.o) $(TDC_SOURCES:.c=.o) $(MINIZ_SOURCES:.c=.o)

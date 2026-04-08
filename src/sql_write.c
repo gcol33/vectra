@@ -9,6 +9,9 @@
 static const char *vectype_to_sqltype(VecType t) {
     switch (t) {
     case VEC_INT64:  return "INTEGER";
+    case VEC_INT8:   return "INTEGER";
+    case VEC_INT16:  return "INTEGER";
+    case VEC_INT32:  return "INTEGER";
     case VEC_DOUBLE: return "REAL";
     case VEC_BOOL:   return "INTEGER";
     case VEC_STRING: return "TEXT";
@@ -52,6 +55,15 @@ void sql_write_node(VecNode *node, const char *path, const char *table_name) {
                 switch (col->type) {
                 case VEC_INT64:
                     sqlfmt_writer_bind_int64(writer, c, col->buf.i64[pr]);
+                    break;
+                case VEC_INT8:
+                    sqlfmt_writer_bind_int64(writer, c, (int64_t)col->buf.i8[pr]);
+                    break;
+                case VEC_INT16:
+                    sqlfmt_writer_bind_int64(writer, c, (int64_t)col->buf.i16[pr]);
+                    break;
+                case VEC_INT32:
+                    sqlfmt_writer_bind_int64(writer, c, (int64_t)col->buf.i32[pr]);
                     break;
                 case VEC_DOUBLE:
                     sqlfmt_writer_bind_double(writer, c, col->buf.dbl[pr]);

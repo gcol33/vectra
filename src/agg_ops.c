@@ -7,6 +7,17 @@
 #include <float.h>
 #include <math.h>
 
+/* Read any integer column value as int64 (handles narrow types) */
+static inline int64_t agg_get_i64(const VecArray *col, int64_t row) {
+    switch (col->type) {
+    case VEC_INT64:  return col->buf.i64[row];
+    case VEC_INT32:  return (int64_t)col->buf.i32[row];
+    case VEC_INT16:  return (int64_t)col->buf.i16[row];
+    case VEC_INT8:   return (int64_t)col->buf.i8[row];
+    default:         return 0;
+    }
+}
+
 /*
  * NA semantics (matches R/dplyr):
  *
@@ -26,7 +37,10 @@ AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm) {
     AggAccum acc;
     memset(&acc, 0, sizeof(acc));
     acc.kind = kind;
-    acc.input_type = input_type;
+    /* Normalize narrow int types to VEC_INT64 for accumulation.
+       The feed function uses agg_get_i64() to read any int width. */
+    acc.input_type = (input_type == VEC_INT8 || input_type == VEC_INT16 ||
+                      input_type == VEC_INT32) ? VEC_INT64 : input_type;
     acc.na_rm = na_rm;
     return acc;
 }
@@ -277,7 +291,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         if (acc->input_type == VEC_DOUBLE) {
             acc->sum_dbl[group_id] += col->buf.dbl[row];
         } else if (acc->input_type == VEC_INT64) {
-            acc->sum_i64[group_id] += col->buf.i64[row];
+            acc->sum_i64[group_id] += agg_get_i64(col, row);
         } else if (acc->input_type == VEC_BOOL) {
             acc->sum_dbl[group_id] += (double)col->buf.bln[row];
         }
@@ -294,7 +308,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
                 acc->has_value[group_id] = 1;
             }
         } else if (acc->input_type == VEC_INT64) {
-            int64_t v = col->buf.i64[row];
+            int64_t v = agg_get_i64(col, row);
             if (!acc->has_value[group_id] || v < acc->min_i64[group_id]) {
                 acc->min_i64[group_id] = v;
                 acc->has_value[group_id] = 1;
@@ -313,7 +327,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
                 acc->has_value[group_id] = 1;
             }
         } else if (acc->input_type == VEC_INT64) {
-            int64_t v = col->buf.i64[row];
+            int64_t v = agg_get_i64(col, row);
             if (!acc->has_value[group_id] || v > acc->max_i64[group_id]) {
                 acc->max_i64[group_id] = v;
                 acc->has_value[group_id] = 1;
@@ -332,7 +346,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
             if (acc->input_type == VEC_DOUBLE)
                 val = col->buf.dbl[row];
             else if (acc->input_type == VEC_INT64)
-                val = (double)col->buf.i64[row];
+                val = (double)agg_get_i64(col, row);
             else
                 val = (double)col->buf.bln[row];
             /* Welford's online algorithm */
@@ -352,7 +366,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
             if (acc->input_type == VEC_DOUBLE)
                 acc->first_dbl[group_id] = col->buf.dbl[row];
             else if (acc->input_type == VEC_INT64)
-                acc->first_i64[group_id] = col->buf.i64[row];
+                acc->first_i64[group_id] = agg_get_i64(col, row);
             else if (acc->input_type == VEC_BOOL)
                 acc->first_dbl[group_id] = (double)col->buf.bln[row];
         }
@@ -366,7 +380,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         if (acc->input_type == VEC_DOUBLE)
             acc->last_dbl[group_id] = col->buf.dbl[row];
         else if (acc->input_type == VEC_INT64)
-            acc->last_i64[group_id] = col->buf.i64[row];
+            acc->last_i64[group_id] = agg_get_i64(col, row);
         else if (acc->input_type == VEC_BOOL)
             acc->last_dbl[group_id] = (double)col->buf.bln[row];
         break;
@@ -380,7 +394,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         } else if (acc->input_type == VEC_DOUBLE) {
             if (col->buf.dbl[row] != 0.0) acc->has_value[group_id] = 1;
         } else if (acc->input_type == VEC_INT64) {
-            if (col->buf.i64[row] != 0) acc->has_value[group_id] = 1;
+            if (agg_get_i64(col, row) != 0) acc->has_value[group_id] = 1;
         }
         break;
     case AGG_ALL:
@@ -393,7 +407,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         } else if (acc->input_type == VEC_DOUBLE) {
             if (col->buf.dbl[row] == 0.0) acc->has_value[group_id] = 0;
         } else if (acc->input_type == VEC_INT64) {
-            if (col->buf.i64[row] == 0) acc->has_value[group_id] = 0;
+            if (agg_get_i64(col, row) == 0) acc->has_value[group_id] = 0;
         }
         break;
     case AGG_N_DISTINCT:
@@ -401,7 +415,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         {
             uint64_t h;
             if (acc->input_type == VEC_INT64)
-                h = nd_hash_val_i64(col->buf.i64[row]);
+                h = nd_hash_val_i64(agg_get_i64(col, row));
             else if (acc->input_type == VEC_DOUBLE)
                 h = nd_hash_val_dbl(col->buf.dbl[row]);
             else if (acc->input_type == VEC_STRING) {
@@ -422,7 +436,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         {
             double val;
             if (acc->input_type == VEC_DOUBLE) val = col->buf.dbl[row];
-            else if (acc->input_type == VEC_INT64) val = (double)col->buf.i64[row];
+            else if (acc->input_type == VEC_INT64) val = (double)agg_get_i64(col, row);
             else if (acc->input_type == VEC_BOOL) val = (double)col->buf.bln[row];
             else break;
             med_append(acc, group_id, val);
