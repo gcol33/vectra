@@ -151,17 +151,14 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
     const char *fpath = CHAR(STRING_ELT(path, 0));
     int bs = Rf_asInteger(batch_size);
 
-    /* Parse compression level. Only "fast" and "none" are accepted now;
-       the legacy "ratio" (deflate) backend was dropped when vectra adopted
-       tdc. R-side validation should catch this first, but defend the C
-       boundary too. */
     int comp_level = 1; /* default: fast */
     if (compress_sexp != R_NilValue && TYPEOF(compress_sexp) == STRSXP &&
         Rf_length(compress_sexp) > 0) {
         const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
         if (strcmp(cstr, "fast") == 0) comp_level = 1;
+        else if (strcmp(cstr, "ratio") == 0) comp_level = 2;
         else if (strcmp(cstr, "none") == 0) comp_level = 0;
-        else vectra_error("unknown compress level '%s' (expected \"fast\" or \"none\")", cstr);
+        else vectra_error("unknown compress level '%s' (expected \"fast\", \"ratio\", or \"none\")", cstr);
     }
 
     int n_cols = Rf_length(df);

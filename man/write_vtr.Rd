@@ -7,7 +7,7 @@
 write_vtr(
   x,
   path,
-  compress = "fast",
+  compress = c("fast", "ratio", "none"),
   batch_size = NULL,
   col_types = NULL,
   quantize = NULL,
@@ -21,7 +21,8 @@ write_vtr(
 \item{path}{File path for the output .vtr file.}
 
 \item{compress}{Compression level: \code{"fast"} (default, byte-shuffle + LZ2),
-\code{"ratio"} (byte-shuffle + deflate, best compression), or \code{"none"}.}
+\code{"ratio"} (byte-shuffle + LZ2 + Huffman entropy coding, ~25\\% smaller
+files at the cost of slightly slower encode/decode), or \code{"none"}.}
 
 \item{batch_size}{Target number of rows per row group in the output file.
 Defaults to 131072 for data.frames (1 MB per double column, cache-friendly

@@ -258,7 +258,8 @@ static SEXP array_to_sexp(const VecArray *arr, int want_bit64) {
         col = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
         double *out = REAL(col);
         if (vec_array_all_valid(arr)) {
-            memcpy(out, arr->buf.dbl, (size_t)n * sizeof(double));
+            if (n > 0 && arr->buf.dbl != NULL)
+                memcpy(out, arr->buf.dbl, (size_t)n * sizeof(double));
         } else {
             for (int64_t i = 0; i < n; i++) {
                 if (!vec_array_is_valid(arr, i))
@@ -359,7 +360,8 @@ static int64_t batch_to_sexp_direct(const VecBatch *batch, int col_idx,
         double *out = REAL(col) + offset;
         if (want_bit64) {
             if (vec_array_all_valid(arr)) {
-                memcpy(out, arr->buf.i64, (size_t)n * sizeof(double));
+                if (n > 0 && arr->buf.i64 != NULL)
+                    memcpy(out, arr->buf.i64, (size_t)n * sizeof(double));
             } else {
                 for (int64_t i = 0; i < n; i++) {
                     if (!vec_array_is_valid(arr, i)) {
@@ -418,7 +420,8 @@ static int64_t batch_to_sexp_direct(const VecBatch *batch, int col_idx,
     case VEC_DOUBLE: {
         double *out = REAL(col) + offset;
         if (vec_array_all_valid(arr)) {
-            memcpy(out, arr->buf.dbl, (size_t)n * sizeof(double));
+            if (n > 0 && arr->buf.dbl != NULL)
+                memcpy(out, arr->buf.dbl, (size_t)n * sizeof(double));
         } else {
             for (int64_t i = 0; i < n; i++) {
                 if (!vec_array_is_valid(arr, i))

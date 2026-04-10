@@ -64,9 +64,12 @@ tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE) {
 #' @return A `vectra_node` object representing a lazy scan of the table.
 #'
 #' @examples
-#' \dontrun{
-#' node <- tbl_sqlite("data.sqlite", "measurements")
-#' node |> filter(year > 2020) |> collect()
+#' \donttest{
+#' f <- tempfile(fileext = ".sqlite")
+#' write_sqlite(mtcars, f, "cars")
+#' node <- tbl_sqlite(f, "cars")
+#' node |> filter(cyl == 6) |> collect()
+#' unlink(f)
 #' }
 #'
 #' @export
@@ -97,12 +100,14 @@ tbl_sqlite <- function(path, table, batch_size = .DEFAULT_BATCH_SIZE) {
 #' @return A `vectra_node` object representing a lazy scan of the sheet.
 #'
 #' @examples
-#' \dontrun{
-#' node <- tbl_xlsx("data.xlsx")
-#' node |> filter(score > 80) |> collect()
-#'
-#' # Read a specific sheet by name
-#' node <- tbl_xlsx("data.xlsx", sheet = "Sheet2")
+#' \donttest{
+#' if (requireNamespace("openxlsx2", quietly = TRUE)) {
+#'   f <- tempfile(fileext = ".xlsx")
+#'   openxlsx2::write_xlsx(mtcars, f)
+#'   node <- tbl_xlsx(f)
+#'   node |> filter(cyl == 6) |> collect()
+#'   unlink(f)
+#' }
 #' }
 #'
 #' @export
@@ -137,9 +142,15 @@ tbl_xlsx <- function(path, sheet = 1L, batch_size = .DEFAULT_BATCH_SIZE) {
 #' @return A `vectra_node` object representing a lazy scan of the raster.
 #'
 #' @examples
-#' \dontrun{
-#' node <- tbl_tiff("climate.tif")
-#' node |> filter(band1 > 25) |> collect()
+#' \donttest{
+#' f <- tempfile(fileext = ".tif")
+#' df <- data.frame(x = as.double(rep(1:4, 3)),
+#'                  y = as.double(rep(1:3, each = 4)),
+#'                  band1 = as.double(1:12))
+#' write_tiff(df, f)
+#' node <- tbl_tiff(f)
+#' node |> filter(band1 > 6) |> collect()
+#' unlink(f)
 #' }
 #'
 #' @export
@@ -172,13 +183,20 @@ tbl_tiff <- function(path, batch_size = .TIFF_BATCH_SIZE) {
 #'   One row per input point, in the same order as the input.
 #'
 #' @examples
-#' \dontrun{
-#' # Sample temperature at 3 locations
-#' pts <- data.frame(x = c(10.5, 11.2, 12.0), y = c(47.1, 47.3, 47.5))
-#' tiff_extract_points("climate.tif", pts)
+#' \donttest{
+#' f <- tempfile(fileext = ".tif")
+#' df <- data.frame(x = as.double(rep(1:4, 3)),
+#'                  y = as.double(rep(1:3, each = 4)),
+#'                  band1 = as.double(1:12))
+#' write_tiff(df, f)
+#'
+#' # Sample at specific locations via data.frame
+#' pts <- data.frame(x = c(2, 3), y = c(1, 2))
+#' tiff_extract_points(f, pts)
 #'
 #' # Or pass x and y separately
-#' tiff_extract_points("climate.tif", x = c(10.5, 11.2), y = c(47.1, 47.3))
+#' tiff_extract_points(f, x = c(2, 3), y = c(1, 2))
+#' unlink(f)
 #' }
 #'
 #' @export
@@ -215,8 +233,12 @@ tiff_extract_points <- function(path, x, y = NULL) {
 #' @return A single character string containing the XML, or `NA_character_`.
 #'
 #' @examples
-#' \dontrun{
-#' tiff_metadata("climate.tif")
+#' \donttest{
+#' f <- tempfile(fileext = ".tif")
+#' df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = as.double(1:4))
+#' write_tiff(df, f, metadata = "<GDALMetadata></GDALMetadata>")
+#' tiff_metadata(f)
+#' unlink(f)
 #' }
 #'
 #' @export

@@ -25,9 +25,15 @@ Returns all rows where the column value matches one of the query keys.
 Hash indices are built lazily on first use and cached for subsequent calls.
 }
 \examples{
-\dontrun{
+\donttest{
+f <- tempfile(fileext = ".vtr")
+df <- data.frame(taxonID = 1:2,
+                 canonicalName = c("Quercus robur", "Pinus sylvestris"))
+write_vtr(df, f)
+blk <- materialize(tbl(f))
 hits <- block_lookup(blk, "canonicalName", c("Quercus robur"))
 ci_hits <- block_lookup(blk, "canonicalName", c("quercus robur"), ci = TRUE)
+unlink(f)
 }
 
 }

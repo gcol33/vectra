@@ -122,10 +122,12 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #' @return Invisible `NULL`.
 #'
 #' @examples
-#' \dontrun{
+#' \donttest{
 #' # Write as int16 with DEFLATE compression
 #' df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
-#' write_tiff(df, "out.tif", compress = TRUE, pixel_type = "int16")
+#' f <- tempfile(fileext = ".tif")
+#' write_tiff(df, f, compress = TRUE, pixel_type = "int16")
+#' unlink(f)
 #' }
 #'
 #' @export
@@ -179,9 +181,9 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path for the output .vtr file.
-#' @param compress Compression level: `"fast"` (default, byte-shuffle + LZ2)
-#'   or `"none"`. The legacy `"ratio"` (byte-shuffle + deflate) mode was
-#'   removed when vectra adopted the tdc compression backend.
+#' @param compress Compression level: `"fast"` (default, byte-shuffle + LZ2),
+#'   `"ratio"` (byte-shuffle + LZ2 + Huffman entropy coding, ~25\% smaller
+#'   files at the cost of slightly slower encode/decode), or `"none"`.
 #' @param batch_size Target number of rows per row group in the output file.
 #'   Defaults to 131072 for data.frames (1 MB per double column, cache-friendly
 #'   for decompression). For nodes, defaults to `NULL` (one row group per
@@ -219,27 +221,18 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #' unlink(c(f, f2, csv))
 #'
 #' @export
-write_vtr <- function(x, path, compress = c("fast", "none"), batch_size = NULL,
+write_vtr <- function(x, path, compress = c("fast", "ratio", "none"), batch_size = NULL,
                       col_types = NULL, quantize = NULL, spatial = NULL,
                       ...) {
   UseMethod("write_vtr")
 }
 
-# Internal: validate the `compress` argument. The legacy "ratio" mode was
-# removed when vectra switched to the tdc compression backend; we hard-error
-# rather than silently downgrading so old scripts surface the change.
 .check_compress <- function(compress) {
-  if (identical(compress, "ratio")) {
-    stop("compress = \"ratio\" is no longer supported. ",
-         "vectra now uses the tdc compression backend, which exposes ",
-         "\"fast\" (byte-shuffle + LZ2) and \"none\". Use compress = \"fast\".",
-         call. = FALSE)
-  }
-  match.arg(compress, c("fast", "none"))
+  match.arg(compress, c("fast", "ratio", "none"))
 }
 
 #' @export
-write_vtr.vectra_node <- function(x, path, compress = c("fast", "none"),
+write_vtr.vectra_node <- function(x, path, compress = c("fast", "ratio", "none"),
                                   batch_size = NULL, col_types = NULL,
                                   quantize = NULL, spatial = NULL, ...) {
   check_scalar_string(path)
@@ -252,7 +245,7 @@ write_vtr.vectra_node <- function(x, path, compress = c("fast", "none"),
 }
 
 #' @export
-write_vtr.data.frame <- function(x, path, compress = c("fast", "none"),
+write_vtr.data.frame <- function(x, path, compress = c("fast", "ratio", "none"),
                                  batch_size = 131072L, col_types = NULL,
                                  quantize = NULL, spatial = NULL, ...) {
   check_scalar_string(path)

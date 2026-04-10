@@ -13,3 +13,16 @@ CLAUDE.md
 inst/benchmarks/baseline.rds
 /doc/
 /Meta/
+
+# Vendored libraries (auto-vendored by configure scripts)
+src/tdc/
+
+# Scratch / sandbox files at repo root
+.claude/
+/bench_*.R
+/test_*.R
+/debug_*.R
+/run_*.R
+/build_install.R
+/notes.md
+/todo-*.md

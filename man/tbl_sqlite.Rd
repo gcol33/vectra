@@ -23,9 +23,12 @@ and aggregation is handled by vectra's C engine --- no SQL parsing needed.
 No data is read until \code{\link[=collect]{collect()}} is called.
 }
 \examples{
-\dontrun{
-node <- tbl_sqlite("data.sqlite", "measurements")
-node |> filter(year > 2020) |> collect()
+\donttest{
+f <- tempfile(fileext = ".sqlite")
+write_sqlite(mtcars, f, "cars")
+node <- tbl_sqlite(f, "cars")
+node |> filter(cyl == 6) |> collect()
+unlink(f)
 }
 
 }

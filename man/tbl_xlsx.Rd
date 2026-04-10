@@ -24,12 +24,14 @@ execution. The sheet is read into memory via
 to vectra's internal format. Requires the \pkg{openxlsx2} package.
 }
 \examples{
-\dontrun{
-node <- tbl_xlsx("data.xlsx")
-node |> filter(score > 80) |> collect()
-
-# Read a specific sheet by name
-node <- tbl_xlsx("data.xlsx", sheet = "Sheet2")
+\donttest{
+if (requireNamespace("openxlsx2", quietly = TRUE)) {
+  f <- tempfile(fileext = ".xlsx")
+  openxlsx2::write_xlsx(mtcars, f)
+  node <- tbl_xlsx(f)
+  node |> filter(cyl == 6) |> collect()
+  unlink(f)
+}
 }
 
 }

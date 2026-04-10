@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: gcol33/tdc
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ../tdc
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+
+      - name: Vendor tdc and build tarball
+        run: |
+          bash tools/vendor_tdc.sh
+          R CMD build .
+        shell: bash
+
+      - name: R CMD check on tarball
+        run: |
+          pkg=$(ls -1 vectra_*.tar.gz)
+          R CMD check --no-manual "$pkg"
+        shell: bash
+
+      - name: Upload tarball to release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          pkg=$(ls -1 vectra_*.tar.gz)
+          gh release create "${{ github.ref_name }}" "$pkg" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash

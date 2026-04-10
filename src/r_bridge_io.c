@@ -343,15 +343,14 @@ SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp, SEXP batch_size_sexp,
                       SEXP compress_sexp, SEXP col_types_sexp,
                       SEXP quantize_sexp, SEXP spatial_sexp) {
     (void)col_types_sexp; /* col_types narrowing not yet supported for node writes */
-    /* Parse compress level: only "fast" and "none" survive after the tdc
-       migration. Hard-error on anything else (legacy "ratio" included). */
     int comp_level = 1; /* default: fast */
     if (compress_sexp != R_NilValue && TYPEOF(compress_sexp) == STRSXP &&
         Rf_length(compress_sexp) > 0) {
         const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
         if (strcmp(cstr, "fast") == 0) comp_level = 1;
+        else if (strcmp(cstr, "ratio") == 0) comp_level = 2;
         else if (strcmp(cstr, "none") == 0) comp_level = 0;
-        else vectra_error("unknown compress level '%s' (expected \"fast\" or \"none\")", cstr);
+        else vectra_error("unknown compress level '%s' (expected \"fast\", \"ratio\", or \"none\")", cstr);
     }
 
     /* Parse quantize + spatial specs */

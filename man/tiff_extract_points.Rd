@@ -29,13 +29,20 @@ Pixel assignment uses nearest-pixel rounding (i.e., the point is assigned to
 the pixel whose center is closest).
 }
 \examples{
-\dontrun{
-# Sample temperature at 3 locations
-pts <- data.frame(x = c(10.5, 11.2, 12.0), y = c(47.1, 47.3, 47.5))
-tiff_extract_points("climate.tif", pts)
+\donttest{
+f <- tempfile(fileext = ".tif")
+df <- data.frame(x = as.double(rep(1:4, 3)),
+                 y = as.double(rep(1:3, each = 4)),
+                 band1 = as.double(1:12))
+write_tiff(df, f)
+
+# Sample at specific locations via data.frame
+pts <- data.frame(x = c(2, 3), y = c(1, 2))
+tiff_extract_points(f, pts)
 
 # Or pass x and y separately
-tiff_extract_points("climate.tif", x = c(10.5, 11.2), y = c(47.1, 47.3))
+tiff_extract_points(f, x = c(2, 3), y = c(1, 2))
+unlink(f)
 }
 
 }

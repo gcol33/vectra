@@ -39,10 +39,12 @@ inferred from the x/y coordinate arrays. Missing pixels are written as NaN
 (or the type-appropriate nodata value for integer pixel types).
 }
 \examples{
-\dontrun{
+\donttest{
 # Write as int16 with DEFLATE compression
 df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
-write_tiff(df, "out.tif", compress = TRUE, pixel_type = "int16")
+f <- tempfile(fileext = ".tif")
+write_tiff(df, f, compress = TRUE, pixel_type = "int16")
+unlink(f)
 }
 
 }

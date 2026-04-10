@@ -8,9 +8,16 @@
 #' @return A `vectra_block` object (external pointer to C-level ColumnBlock).
 #'
 #' @examples
-#' \dontrun{
-#' blk <- materialize(tbl("backbone.vtr") |> select(taxonID, canonicalName))
-#' hits <- block_lookup(blk, "canonicalName", c("Quercus robur", "Pinus sylvestris"))
+#' \donttest{
+#' f <- tempfile(fileext = ".vtr")
+#' df <- data.frame(taxonID = 1:3,
+#'                  canonicalName = c("Quercus robur", "Pinus sylvestris",
+#'                                    "Fagus sylvatica"))
+#' write_vtr(df, f)
+#' blk <- materialize(tbl(f) |> select(taxonID, canonicalName))
+#' hits <- block_lookup(blk, "canonicalName",
+#'                      c("Quercus robur", "Pinus sylvestris"))
+#' unlink(f)
 #' }
 #'
 #' @export
@@ -47,9 +54,15 @@ print.vectra_block <- function(x, ...) {
 #'   plus all columns from the block, for each (query, block_row) match pair.
 #'
 #' @examples
-#' \dontrun{
+#' \donttest{
+#' f <- tempfile(fileext = ".vtr")
+#' df <- data.frame(taxonID = 1:2,
+#'                  canonicalName = c("Quercus robur", "Pinus sylvestris"))
+#' write_vtr(df, f)
+#' blk <- materialize(tbl(f))
 #' hits <- block_lookup(blk, "canonicalName", c("Quercus robur"))
 #' ci_hits <- block_lookup(blk, "canonicalName", c("quercus robur"), ci = TRUE)
+#' unlink(f)
 #' }
 #'
 #' @export

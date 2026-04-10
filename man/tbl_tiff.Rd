@@ -25,9 +25,15 @@ Use \code{filter(x >= ..., y <= ...)} for extent-based cropping and
 back to a raster with \code{terra::rast(df, type = "xyz")}.
 }
 \examples{
-\dontrun{
-node <- tbl_tiff("climate.tif")
-node |> filter(band1 > 25) |> collect()
+\donttest{
+f <- tempfile(fileext = ".tif")
+df <- data.frame(x = as.double(rep(1:4, 3)),
+                 y = as.double(rep(1:3, each = 4)),
+                 band1 = as.double(1:12))
+write_tiff(df, f)
+node <- tbl_tiff(f)
+node |> filter(band1 > 6) |> collect()
+unlink(f)
 }
 
 }

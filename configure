@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# configure — auto-vendor tdc before compilation
+#
+# If the sibling tdc repo exists (../tdc relative to package root),
+# vendor the latest snapshot into src/tdc/. Otherwise fall back to
+# a pre-vendored copy (e.g. CRAN source tarball).
+
+set -euo pipefail
+
+PKG_ROOT="$(cd "$(dirname "$0")" && pwd)"
+TDC="${TDC:-$PKG_ROOT/../tdc}"
+
+if [[ -d "$TDC/include/tdc" && -d "$TDC/src" ]]; then
+  bash "$PKG_ROOT/tools/vendor_tdc.sh"
+elif [[ -d "$PKG_ROOT/src/tdc/include/tdc" ]]; then
+  echo "configure: tdc sibling not found, using pre-vendored src/tdc/"
+else
+  echo "configure: ERROR — no tdc source found" >&2
+  echo "  expected sibling repo at $TDC" >&2
+  echo "  or pre-vendored copy at src/tdc/" >&2
+  exit 1
+fi

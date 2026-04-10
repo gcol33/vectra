@@ -10,15 +10,122 @@ test_that("compress='fast' round-trips doubles", {
   expect_equal(result$y, df$y)
 })
 
-test_that("compress='ratio' is rejected with a clear error", {
-  # The deflate-based "ratio" mode was removed when vectra adopted the tdc
-  # compression backend. Calls that still pass it must hard-error rather
-  # than silently downgrading to "fast".
-  df <- data.frame(x = rnorm(10))
+test_that("compress='ratio' round-trips doubles", {
+  df <- data.frame(x = rnorm(500), y = runif(500))
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))
-  expect_error(write_vtr(df, f, compress = "ratio"),
-               "no longer supported")
+  write_vtr(df, f, compress = "ratio")
+  result <- tbl(f) |> collect()
+  expect_equal(result$x, df$x)
+  expect_equal(result$y, df$y)
+})
+
+test_that("compress='ratio' round-trips integers", {
+  df <- data.frame(a = 1:1000, b = sample(1e6, 1000))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio")
+  result <- tbl(f) |> collect()
+  expect_equal(result$a, as.double(df$a))
+  expect_equal(result$b, as.double(df$b))
+})
+
+test_that("compress='ratio' round-trips strings", {
+  df <- data.frame(s = sample(letters, 500, replace = TRUE),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio")
+  result <- tbl(f) |> collect()
+  expect_equal(result$s, df$s)
+})
+
+test_that("compress='ratio' round-trips booleans with NA", {
+  df <- data.frame(flag = c(TRUE, FALSE, NA, TRUE, FALSE, rep(TRUE, 495)))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio")
+  result <- tbl(f) |> collect()
+  expect_equal(result$flag, df$flag)
+})
+
+test_that("compress='ratio' round-trips all types together", {
+  df <- data.frame(
+    i = c(1L, 2L, NA, 4L, seq(5L, 500L)),
+    d = c(1.1, NA, 3.3, 4.4, rnorm(496)),
+    b = c(TRUE, NA, FALSE, TRUE, sample(c(TRUE, FALSE), 496, replace = TRUE)),
+    s = c("a", NA, "c", "d", sample(letters, 496, replace = TRUE)),
+    stringsAsFactors = FALSE
+  )
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio")
+  result <- tbl(f) |> collect()
+  expect_equal(result$d, df$d)
+  expect_equal(result$b, df$b)
+  expect_equal(result$s, df$s)
+  expect_equal(result$i, as.double(df$i))
+})
+
+test_that("ratio files are no larger than fast files on structured data", {
+  df <- data.frame(x = rep(1:100, 50), y = rep(rnorm(100), 50))
+  f_fast  <- tempfile(fileext = ".vtr")
+  f_ratio <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f_fast, f_ratio)))
+  write_vtr(df, f_fast,  compress = "fast")
+  write_vtr(df, f_ratio, compress = "ratio")
+  expect_lte(file.size(f_ratio), file.size(f_fast))
+})
+
+test_that("compress='ratio' with multiple row groups", {
+  df <- data.frame(x = rnorm(1000), y = 1:1000)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio", batch_size = 200)
+  result <- tbl(f) |> collect()
+  expect_equal(nrow(result), 1000L)
+  expect_equal(result$x, df$x)
+  expect_equal(result$y, as.double(df$y))
+})
+
+test_that("ratio with quantize round-trips", {
+  set.seed(42)
+  df <- data.frame(temp = rnorm(1000, 15, 5))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio",
+            quantize = list(temp = list(precision = 0.01, type = "int16")))
+  result <- tbl(f) |> collect()
+  max_err <- max(abs(result$temp - df$temp))
+  expect_lt(max_err, 0.01 + 1e-10)
+})
+
+test_that("ratio with spatial round-trips", {
+  nx <- 50; ny <- 50
+  set.seed(1)
+  temp <- 10 + 0.05 * rep(1:nx, ny) + 0.03 * rep(1:ny, each = nx) +
+          rnorm(nx * ny, 0, 0.5)
+  df <- data.frame(temp = temp)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio",
+            quantize = list(temp = list(precision = 0.001, type = "int16")),
+            spatial = list(nx = nx, ny = ny))
+  result <- tbl(f) |> collect()
+  max_err <- max(abs(result$temp - df$temp))
+  expect_lt(max_err, 0.001 + 1e-10)
+})
+
+test_that("ratio with narrow int round-trips", {
+  df <- data.frame(a = sample(-100L:100L, 500, replace = TRUE),
+                   b = sample(-30000L:30000L, 500, replace = TRUE))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, compress = "ratio",
+            col_types = c(a = "int8", b = "int16"))
+  result <- tbl(f) |> collect()
+  expect_equal(result$a, as.double(df$a))
+  expect_equal(result$b, as.double(df$b))
 })
 
 test_that("compress='none' round-trips doubles", {

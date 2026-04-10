@@ -36,10 +36,12 @@
 /* Compression tags (1 byte on disk) */
 #define VTR_COMP_NONE            0x00
 #define VTR_COMP_SHUFFLE_LZ2     0x04
+#define VTR_COMP_SHUFFLE_LZ2_HUFF 0x05  /* byte-shuffle + LZ2 + Huffman */
 
 /* Compression levels (passed to encoder) */
 #define VTR_COMPRESS_NONE   0
 #define VTR_COMPRESS_FAST   1   /* byte-shuffle + LZ2 */
+#define VTR_COMPRESS_RATIO  2   /* byte-shuffle + LZ2 + Huffman */
 
 /* Spatial predictor tags (1 byte on disk) */
 #define VTR_PRED_LEFT    0
@@ -158,6 +160,25 @@ void vtr_codec_profile_get(uint64_t *decompress_ns, uint64_t *unshuffle_ns,
  */
 void vtr_lz2_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
                              const uint8_t *src, uint32_t src_size);
+
+/*
+ * Decompress (LZ2 or LZ2+Huffman) into a caller-provided buffer.
+ * Handles VTR_COMP_SHUFFLE_LZ2 and VTR_COMP_SHUFFLE_LZ2_HUFF.
+ * Does NOT unshuffle — caller handles that (for fused paths that
+ * unshuffle directly into the final destination).
+ */
+void vtr_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
+                         const uint8_t *src, uint32_t src_size,
+                         uint8_t compression);
+
+/*
+ * Decompress + unshuffle into a caller-provided buffer.
+ * Combines vtr_decompress_into + vtr_byte_unshuffle.
+ * If elem_size == 0, unshuffle is skipped (variable-length types).
+ */
+void vtr_decompress_unshuffle_into(uint8_t *dst, uint32_t uncompressed_size,
+                                   const uint8_t *src, uint32_t src_size,
+                                   uint8_t compression, uint8_t elem_size);
 
 /*
  * Byte-unshuffle in place (via internal temp buffer).

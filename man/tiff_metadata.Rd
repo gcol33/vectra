@@ -17,8 +17,12 @@ Returns the GDAL_METADATA XML string (TIFF tag 42112) embedded in a
 GeoTIFF file. Returns \code{NA} if the tag is not present.
 }
 \examples{
-\dontrun{
-tiff_metadata("climate.tif")
+\donttest{
+f <- tempfile(fileext = ".tif")
+df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = as.double(1:4))
+write_tiff(df, f, metadata = "<GDALMetadata></GDALMetadata>")
+tiff_metadata(f)
+unlink(f)
 }
 
 }

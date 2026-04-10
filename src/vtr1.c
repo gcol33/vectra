@@ -595,13 +595,9 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
                                 vectra_error("unexpected end of file reading spatial data");
                             raw_data = (uint8_t *)malloc((size_t)uncompressed_size);
                             if (!raw_data) vectra_error("alloc failed");
-                            if (compression == VTR_COMP_SHUFFLE_LZ2) {
-                                vtr_lz2_decompress_into(raw_data, uncompressed_size, se->data, data_size);
-                                vtr_byte_unshuffle(raw_data, uncompressed_size / 8, 8); /* int64 = 8 bytes */
-                            } else {
-                                free(raw_data); free(sp_coeffs);
-                                vectra_error("unknown compression tag: 0x%02x", compression);
-                            }
+                            vtr_decompress_unshuffle_into(raw_data, uncompressed_size,
+                                                         se->data, data_size,
+                                                         compression, 8); /* int64 = 8 bytes */
                         }
 
                         /* Residuals are stored as PLAIN int64 (no inner encoding) */
@@ -654,15 +650,10 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
                                 vectra_error("unexpected end of file reading quantized data");
                             int_buf = (uint8_t *)malloc((size_t)uncompressed_size);
                             if (!int_buf) vectra_error("alloc failed");
-                            if (compression == VTR_COMP_SHUFFLE_LZ2) {
-                                vtr_lz2_decompress_into(int_buf, uncompressed_size,
-                                                        se->data, data_size);
-                                if (q_es > 1)
-                                    vtr_byte_unshuffle(int_buf, uncompressed_size / q_es, q_es);
-                            } else {
-                                free(int_buf);
-                                vectra_error("unknown compression tag: 0x%02x", compression);
-                            }
+                            vtr_decompress_unshuffle_into(int_buf, uncompressed_size,
+                                                         se->data, data_size,
+                                                         compression,
+                                                         q_es > 1 ? q_es : 0);
                         }
 
                         /* Dequantize narrow int → float64. The output is always
@@ -710,7 +701,8 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
                         }
 
                     } else if (encoding == VTR_ENC_PLAIN && is_fixed &&
-                               compression == VTR_COMP_SHUFFLE_LZ2) {
+                               (compression == VTR_COMP_SHUFFLE_LZ2 ||
+                                compression == VTR_COMP_SHUFFLE_LZ2_HUFF)) {
                         /* Fused path: PLAIN+SHUFFLE — decompress into scratch_dec,
                            then unshuffle directly into final buffer (no temp alloc). */
                         if ((size_t)data_size > se->capacity) {
@@ -728,7 +720,8 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
                             sd->data = (uint8_t *)malloc(sd->capacity);
                             if (!sd->data) vectra_error("alloc failed");
                         }
-                        vtr_lz2_decompress_into(sd->data, uncompressed_size, se->data, data_size);
+                        vtr_decompress_into(sd->data, uncompressed_size,
+                                            se->data, data_size, compression);
                         /* Unshuffle from scratch_dec directly into final buffer.
                            If a direct buffer was supplied by the caller, unshuffle
                            straight into it (zero-copy). */
@@ -776,13 +769,11 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
                                 sd->data = (uint8_t *)malloc(sd->capacity);
                                 if (!sd->data) vectra_error("alloc failed");
                             }
-                            if (compression == VTR_COMP_SHUFFLE_LZ2) {
-                                vtr_lz2_decompress_into(sd->data, uncompressed_size,
-                                                        se->data, data_size);
+                            {
                                 uint8_t es = vtr_shuffle_elem_size(t, encoding);
-                                if (es > 0) vtr_byte_unshuffle(sd->data, uncompressed_size / es, es);
-                            } else {
-                                vectra_error("unknown compression tag: 0x%02x", compression);
+                                vtr_decompress_unshuffle_into(sd->data, uncompressed_size,
+                                                              se->data, data_size,
+                                                              compression, es);
                             }
                             decoded_src = sd->data;
                             decoded_size = uncompressed_size;
@@ -1051,13 +1042,9 @@ static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                                 vectra_error("unexpected end of file reading spatial data");
                             raw_data = (uint8_t *)malloc((size_t)uncompressed_size);
                             if (!raw_data) vectra_error("alloc failed");
-                            if (compression == VTR_COMP_SHUFFLE_LZ2) {
-                                vtr_lz2_decompress_into(raw_data, uncompressed_size, se->data, data_size);
-                                vtr_byte_unshuffle(raw_data, uncompressed_size / 8, 8);
-                            } else {
-                                free(raw_data); free(sp_coeffs2);
-                                vectra_error("unknown compression tag: 0x%02x", compression);
-                            }
+                            vtr_decompress_unshuffle_into(raw_data, uncompressed_size,
+                                                         se->data, data_size,
+                                                         compression, 8);
                         }
                         int64_t *values = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
                         if (!values) { free(raw_data); free(sp_coeffs2); vectra_error("alloc failed"); }
@@ -1097,15 +1084,10 @@ static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                                 vectra_error("unexpected end of file reading quantized data");
                             int_buf = (uint8_t *)malloc((size_t)uncompressed_size);
                             if (!int_buf) vectra_error("alloc failed");
-                            if (compression == VTR_COMP_SHUFFLE_LZ2) {
-                                vtr_lz2_decompress_into(int_buf, uncompressed_size,
-                                                        se->data, data_size);
-                                if (q_es > 1)
-                                    vtr_byte_unshuffle(int_buf, uncompressed_size / q_es, q_es);
-                            } else {
-                                free(int_buf);
-                                vectra_error("unknown compression tag: 0x%02x", compression);
-                            }
+                            vtr_decompress_unshuffle_into(int_buf, uncompressed_size,
+                                                         se->data, data_size,
+                                                         compression,
+                                                         q_es > 1 ? q_es : 0);
                         }
 
                         arr.type = VEC_DOUBLE;
@@ -1146,7 +1128,8 @@ static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                         default:         arr.buf.bln = dst;            break;
                         }
                     } else if (encoding == VTR_ENC_PLAIN && is_fixed &&
-                               compression == VTR_COMP_SHUFFLE_LZ2) {
+                               (compression == VTR_COMP_SHUFFLE_LZ2 ||
+                                compression == VTR_COMP_SHUFFLE_LZ2_HUFF)) {
                         /* Fused path: decompress into scratch, unshuffle into final.
                            If a direct buffer was provided, unshuffle straight into
                            it — the caller has already allocated the destination
@@ -1165,7 +1148,8 @@ static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                             sd->data = (uint8_t *)malloc(sd->capacity);
                             if (!sd->data) vectra_error("alloc failed");
                         }
-                        vtr_lz2_decompress_into(sd->data, uncompressed_size, se->data, data_size);
+                        vtr_decompress_into(sd->data, uncompressed_size,
+                                            se->data, data_size, compression);
                         uint8_t *dst;
                         int borrowed = (direct_bufs && direct_bufs[out_col]);
                         if (borrowed) {
@@ -1206,13 +1190,11 @@ static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                                 sd->data = (uint8_t *)malloc(sd->capacity);
                                 if (!sd->data) vectra_error("alloc failed");
                             }
-                            if (compression == VTR_COMP_SHUFFLE_LZ2) {
-                                vtr_lz2_decompress_into(sd->data, uncompressed_size,
-                                                        se->data, data_size);
+                            {
                                 uint8_t es = vtr_shuffle_elem_size(t, encoding);
-                                if (es > 0) vtr_byte_unshuffle(sd->data, uncompressed_size / es, es);
-                            } else {
-                                vectra_error("unknown compression tag: 0x%02x", compression);
+                                vtr_decompress_unshuffle_into(sd->data, uncompressed_size,
+                                                              se->data, data_size,
+                                                              compression, es);
                             }
                             decoded_src = sd->data;
                             decoded_size = uncompressed_size;

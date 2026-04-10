@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# configure.win — auto-vendor tdc before compilation (Windows / Rtools)
+#
+# Same logic as configure. Rtools provides bash via MSYS2.
+
+set -euo pipefail
+
+PKG_ROOT="$(cd "$(dirname "$0")" && pwd)"
+TDC="${TDC:-$PKG_ROOT/../tdc}"
+
+if [[ -d "$TDC/include/tdc" && -d "$TDC/src" ]]; then
+  bash "$PKG_ROOT/tools/vendor_tdc.sh"
+elif [[ -d "$PKG_ROOT/src/tdc/include/tdc" ]]; then
+  echo "configure.win: tdc sibling not found, using pre-vendored src/tdc/"
+else
+  echo "configure.win: ERROR — no tdc source found" >&2
+  echo "  expected sibling repo at $TDC" >&2
+  echo "  or pre-vendored copy at src/tdc/" >&2
+  exit 1
+fi

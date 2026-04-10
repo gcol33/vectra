@@ -218,6 +218,113 @@ static uint8_t *lz2_vtr_decompress(const uint8_t *src, uint32_t src_size,
     return dst;
 }
 
+/* ----- Huffman bridge ------------------------------------------------------ */
+
+static uint8_t *huffman_vtr_compress(const uint8_t *src, uint32_t src_size,
+                                     uint32_t *out_size) {
+    *out_size = 0;
+    if (src_size == 0) return NULL;
+
+    const tdc_entropy_vt *vt = tdc_entropy_get(TDC_ENTROPY_HUFFMAN);
+    if (!vt) vectra_error("tdc huffman vtable missing");
+
+    tdc_buffer out = {0};
+    out.realloc_fn = vtr_stdlib_realloc;
+
+    tdc_status st = vt->encode(src, src_size, NULL, &out);
+    if (st != TDC_OK) {
+        free(out.data);
+        vectra_error("tdc huffman encode failed: %d", (int)st);
+    }
+
+    if (out.size >= src_size) {
+        free(out.data);
+        return NULL;
+    }
+
+    *out_size = (uint32_t)out.size;
+    return out.data;
+}
+
+/* ----- Shared compress/decompress helpers ---------------------------------- */
+
+/* Compress pre-shuffled bytes at the requested level.
+ * Returns malloc'd buffer on success (caller owns), NULL if compression
+ * did not shrink the input. Sets *out_size and *out_tag. */
+static uint8_t *vtr_compress_shuffled(const uint8_t *shuffled, uint32_t size,
+                                      int comp_level,
+                                      uint32_t *out_size, uint8_t *out_tag) {
+    *out_size = 0;
+    *out_tag = VTR_COMP_NONE;
+
+    /* LZ2 first (both FAST and RATIO need it) */
+    uint32_t lz2_size = 0;
+    uint8_t *lz2 = lz2_vtr_compress(shuffled, size, &lz2_size);
+    if (!lz2) return NULL;  /* didn't shrink */
+
+    if (comp_level == VTR_COMPRESS_FAST) {
+        *out_size = lz2_size;
+        *out_tag = VTR_COMP_SHUFFLE_LZ2;
+        return lz2;
+    }
+
+    /* RATIO: try Huffman on top of LZ2 */
+    uint32_t huff_size = 0;
+    uint8_t *huff = huffman_vtr_compress(lz2, lz2_size, &huff_size);
+    if (huff) {
+        free(lz2);
+        *out_size = huff_size;
+        *out_tag = VTR_COMP_SHUFFLE_LZ2_HUFF;
+        return huff;
+    }
+    /* Huffman didn't help — fall back to LZ2-only */
+    *out_size = lz2_size;
+    *out_tag = VTR_COMP_SHUFFLE_LZ2;
+    return lz2;
+}
+
+/* Decompress (LZ2 or LZ2+Huffman) into caller-provided buffer.
+ * Does NOT unshuffle. */
+void vtr_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
+                         const uint8_t *src, uint32_t src_size,
+                         uint8_t compression) {
+    if (compression == VTR_COMP_SHUFFLE_LZ2) {
+        vtr_lz2_decompress_into(dst, uncompressed_size, src, src_size);
+    } else if (compression == VTR_COMP_SHUFFLE_LZ2_HUFF) {
+        /* Huffman header: first 4 bytes = u32 src_size (the LZ2 blob size) */
+        if (src_size < 4) vectra_error("truncated huffman header");
+        uint32_t lz2_size = (uint32_t)src[0] |
+                            ((uint32_t)src[1] << 8) |
+                            ((uint32_t)src[2] << 16) |
+                            ((uint32_t)src[3] << 24);
+
+        uint8_t *lz2_buf = (uint8_t *)malloc((size_t)lz2_size);
+        if (!lz2_buf) vectra_error("alloc failed in vtr_decompress_into");
+
+        const tdc_entropy_vt *hvt = tdc_entropy_get(TDC_ENTROPY_HUFFMAN);
+        if (!hvt) vectra_error("tdc huffman vtable missing");
+        tdc_status st = hvt->decode(src, src_size, lz2_buf, lz2_size);
+        if (st != TDC_OK) {
+            free(lz2_buf);
+            vectra_error("tdc huffman decode failed: %d", (int)st);
+        }
+
+        vtr_lz2_decompress_into(dst, uncompressed_size, lz2_buf, lz2_size);
+        free(lz2_buf);
+    } else {
+        vectra_error("unknown compression tag: 0x%02x", compression);
+    }
+}
+
+/* Decompress + unshuffle into caller-provided buffer. */
+void vtr_decompress_unshuffle_into(uint8_t *dst, uint32_t uncompressed_size,
+                                   const uint8_t *src, uint32_t src_size,
+                                   uint8_t compression, uint8_t elem_size) {
+    vtr_decompress_into(dst, uncompressed_size, src, src_size, compression);
+    if (elem_size > 0)
+        vtr_byte_unshuffle(dst, uncompressed_size / elem_size, elem_size);
+}
+
 
 /* ================================================================
  * RLE helpers — for dictionary indices
@@ -1355,13 +1462,8 @@ VtrEncodedCol vtr_encode_column_ex(const VecArray *col, int64_t n_rows,
     uint8_t *comp = NULL;
     uint8_t comp_tag = VTR_COMP_NONE;
 
-    int did_shuffle = (work != NULL) || shuffled_in_raw;
-
-    if (comp_level == VTR_COMPRESS_FAST) {
-        /* Shuffle + LZ2 (separated-stream, fast decode) */
-        comp = lz2_vtr_compress(to_compress, raw_size, &comp_size);
-        comp_tag = VTR_COMP_SHUFFLE_LZ2;
-    }
+    comp = vtr_compress_shuffled(to_compress, raw_size, comp_level,
+                                 &comp_size, &comp_tag);
 
     if (comp) {
         free(raw);
@@ -1446,10 +1548,8 @@ VtrEncodedCol vtr_encode_column_q(const VecArray *col, int64_t n_rows,
     uint8_t *comp = NULL;
     uint8_t comp_tag = VTR_COMP_NONE;
 
-    if (comp_level == VTR_COMPRESS_FAST) {
-        comp = lz2_vtr_compress(to_compress, raw_size, &comp_size);
-        comp_tag = VTR_COMP_SHUFFLE_LZ2;
-    }
+    comp = vtr_compress_shuffled(to_compress, raw_size, comp_level,
+                                 &comp_size, &comp_tag);
 
     if (comp) {
         free(raw);
@@ -1482,15 +1582,15 @@ void vtr_decode_column(VecArray *col, int64_t n_rows,
     const uint8_t *decoded_data = data;
     uint8_t *decompressed = NULL;
 
-    if (compression == VTR_COMP_SHUFFLE_LZ2) {
+    if (compression == VTR_COMP_SHUFFLE_LZ2 ||
+        compression == VTR_COMP_SHUFFLE_LZ2_HUFF) {
         PROF_TIME_START(t0);
-        decompressed = lz2_vtr_decompress(data, data_size, uncompressed_size);
-        PROF_TIME_MARK(t1);
+        decompressed = (uint8_t *)malloc((size_t)uncompressed_size);
+        if (!decompressed) vectra_error("alloc failed in vtr_decode_column");
         uint8_t es = vtr_shuffle_elem_size(col->type, encoding);
-        if (es > 0) vtr_byte_unshuffle(decompressed, uncompressed_size / es, es);
-        PROF_TIME_MARK(t2);
-        PROF_DIFF_ACC(g_prof_decompress_ns, t1, t0);
-        PROF_DIFF_ACC(g_prof_unshuffle_ns,  t2, t1);
+        vtr_decompress_unshuffle_into(decompressed, uncompressed_size,
+                                      data, data_size, compression, es);
+        PROF_TIME_ACC(g_prof_decompress_ns, t0);
         PROF_INC(g_prof_calls);
         decoded_data = decompressed;
         data_size = uncompressed_size;
@@ -1745,13 +1845,9 @@ VtrEncodedCol vtr_encode_column_qs(const VecArray *col, int64_t n_rows,
         byte_shuffle(work, raw, (uint32_t)n_rows, 8);
 
         uint32_t comp_size = 0;
-        uint8_t *comp = NULL;
         uint8_t comp_tag = VTR_COMP_NONE;
-
-        if (comp_level == VTR_COMPRESS_FAST) {
-            comp = lz2_vtr_compress(work, raw_size, &comp_size);
-            comp_tag = VTR_COMP_SHUFFLE_LZ2;
-        }
+        uint8_t *comp = vtr_compress_shuffled(work, raw_size, comp_level,
+                                              &comp_size, &comp_tag);
 
         if (comp) {
             free(raw); free(work);
