@@ -70,7 +70,7 @@ static inline int vec_type_is_fixed(VecType t) {
  *     "decoder honored my direct_buf" from "string data borrowed from an
  *     arena" MUST check this flag, not !owns_data.
  *
- *     Only the PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ2+fixed paths in
+ *     Only the PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ+fixed paths in
  *     read_rg_with_fp / vtr1_read_rowgroup_ex honor direct_bufs today.
  *     All other encodings (DICT, DELTA, DIFF, QUANTIZE, SPATIAL, strings)
  *     allocate their own buffer and leave data_borrowed == 0, even when

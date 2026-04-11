@@ -11,11 +11,11 @@
  *
  * Compression layer (applied after encoding):
  *   NONE        — no compression
- *   SHUFFLE_LZ2 — byte-shuffle + LZ2 (separated-stream LZ77, 64K window)
+ *   SHUFFLE_LZ — byte-shuffle + LZ (separated-stream LZ77, 64K window)
  *
- * The byte-shuffle + LZ2 implementation lives in the vendored tdc tree
+ * The byte-shuffle + LZ implementation lives in the vendored tdc tree
  * (src/tdc/). vtr_codec.c contains thin bridge wrappers that delegate to
- * tdc_xform_byte_shuffle_vt and tdc_entropy_lz2_vt. The legacy LZ_VTR
+ * tdc_xform_byte_shuffle_vt and tdc_entropy_lz_vt. The legacy LZ_VTR
  * (256-byte window) and zlib SHUFFLE_DEFLATE codecs were removed when
  * vectra adopted tdc — there is no read-side back-compat for old .vtr
  * files written with those tags.
@@ -32,16 +32,34 @@
 #define VTR_ENC_QUANTIZE   0x03  /* lossy: float64 → scaled narrow int */
 #define VTR_ENC_DIFF       0x04  /* signed differencing (any int/float type) */
 #define VTR_ENC_SPATIAL    0x05  /* 2D spatial predictor + residuals */
+#define VTR_ENC_DICT_NUM   0x06  /* numeric dictionary (int64 / double,
+                                  * < 65536 unique values) */
+#define VTR_ENC_SPARSE_ZERO 0x07 /* zero-sparse (int64 / double, bitmap +
+                                  * dense non-zero values) */
 
 /* Compression tags (1 byte on disk) */
-#define VTR_COMP_NONE            0x00
-#define VTR_COMP_SHUFFLE_LZ2     0x04
-#define VTR_COMP_SHUFFLE_LZ2_HUFF 0x05  /* byte-shuffle + LZ2 + Huffman */
+#define VTR_COMP_NONE                0x00
+#define VTR_COMP_SHUFFLE_LZ          0x04
+#define VTR_COMP_SHUFFLE_LZ_HUFF     0x05  /* byte-shuffle + LZ + Huffman */
+#define VTR_COMP_SHUFFLE_LZ_STREAMS  0x06  /* byte-shuffle + LZ parse split
+                                            * into 4 entropy-coded streams */
+#define VTR_COMP_SHUFFLE_FSE         0x07  /* byte-shuffle + FSE direct
+                                            * (tabled-ANS, no LZ stage) */
+#define VTR_COMP_SHUFFLE_HUFF        0x08  /* byte-shuffle + Huffman direct
+                                            * (canonical static, no LZ stage) */
 
-/* Compression levels (passed to encoder) */
+/* Compression levels (passed to encoder).
+ *
+ * FAST runs greedy LZ only.
+ *
+ * SMALL runs the full candidate menu — greedy LZ, separated-streams LZ,
+ * and LZ + Huffman — and writes whichever shrank the block the most. The
+ * read side dispatches on the tag each candidate emits
+ * (VTR_COMP_SHUFFLE_LZ / _STREAMS / _HUFF), so SMALL is per-block adaptive
+ * and is never worse than FAST on any single block. */
 #define VTR_COMPRESS_NONE   0
-#define VTR_COMPRESS_FAST   1   /* byte-shuffle + LZ2 */
-#define VTR_COMPRESS_RATIO  2   /* byte-shuffle + LZ2 + Huffman */
+#define VTR_COMPRESS_FAST   1
+#define VTR_COMPRESS_SMALL  2
 
 /* Spatial predictor tags (1 byte on disk) */
 #define VTR_PRED_LEFT    0
@@ -149,21 +167,21 @@ void vtr_decode_column(VecArray *col, int64_t n_rows,
                        const uint8_t *data, uint32_t data_size,
                        uint32_t uncompressed_size);
 
-/* Profiling: per-call accumulators for the LZ2 decode path. */
+/* Profiling: per-call accumulators for the LZ decode path. */
 void vtr_codec_profile_reset(void);
 void vtr_codec_profile_get(uint64_t *decompress_ns, uint64_t *unshuffle_ns,
                            uint64_t *decode_ns, uint64_t *calls);
 
 /*
- * Decompress LZ2 (separated-stream) data into a caller-provided buffer.
+ * Decompress LZ (separated-stream) data into a caller-provided buffer.
  * dst must be at least uncompressed_size bytes.
  */
-void vtr_lz2_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
+void vtr_lz_decompress_into(uint8_t *dst, uint32_t uncompressed_size,
                              const uint8_t *src, uint32_t src_size);
 
 /*
- * Decompress (LZ2 or LZ2+Huffman) into a caller-provided buffer.
- * Handles VTR_COMP_SHUFFLE_LZ2 and VTR_COMP_SHUFFLE_LZ2_HUFF.
+ * Decompress (LZ or LZ+Huffman) into a caller-provided buffer.
+ * Handles VTR_COMP_SHUFFLE_LZ and VTR_COMP_SHUFFLE_LZ_HUFF.
  * Does NOT unshuffle — caller handles that (for fused paths that
  * unshuffle directly into the final destination).
  */

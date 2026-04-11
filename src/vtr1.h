@@ -59,7 +59,7 @@ VecBatch *vtr1_read_rowgroup(Vtr1File *file, uint32_t rg_idx,
  * decoder a buffer to materialize into, eliminating an intermediate
  * malloc + memcpy. Indexed by *output* column position (post col_mask).
  *
- * Honored encodings: PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ2+fixed only.
+ * Honored encodings: PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ+fixed only.
  * For every other encoding (DICT, DELTA, DIFF, QUANTIZE, SPATIAL, strings)
  * the decoder ignores the supplied buffer and allocates its own.
  *

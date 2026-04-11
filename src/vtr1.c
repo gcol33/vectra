@@ -701,8 +701,9 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
                         }
 
                     } else if (encoding == VTR_ENC_PLAIN && is_fixed &&
-                               (compression == VTR_COMP_SHUFFLE_LZ2 ||
-                                compression == VTR_COMP_SHUFFLE_LZ2_HUFF)) {
+                               (compression == VTR_COMP_SHUFFLE_LZ ||
+                                compression == VTR_COMP_SHUFFLE_LZ_HUFF ||
+                                compression == VTR_COMP_SHUFFLE_LZ_STREAMS)) {
                         /* Fused path: PLAIN+SHUFFLE — decompress into scratch_dec,
                            then unshuffle directly into final buffer (no temp alloc). */
                         if ((size_t)data_size > se->capacity) {
@@ -933,7 +934,7 @@ VecBatch *vtr1_read_rowgroup_ex(Vtr1File *file, uint32_t rg_idx,
    This is the thread-safe core used by both sequential and parallel readers.
    If direct_bufs is non-NULL, columns whose direct_bufs[out_col] is non-NULL
    are decoded directly into the caller's buffer (zero-copy). The hot paths
-   (PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ2+fixed) honor this; other paths
+   (PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ+fixed) honor this; other paths
    ignore direct_bufs and allocate normally. */
 static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                                   const int *col_mask, FILE *fp,
@@ -1128,8 +1129,9 @@ static VecBatch *read_rg_with_fp(Vtr1File *file, uint32_t rg_idx,
                         default:         arr.buf.bln = dst;            break;
                         }
                     } else if (encoding == VTR_ENC_PLAIN && is_fixed &&
-                               (compression == VTR_COMP_SHUFFLE_LZ2 ||
-                                compression == VTR_COMP_SHUFFLE_LZ2_HUFF)) {
+                               (compression == VTR_COMP_SHUFFLE_LZ ||
+                                compression == VTR_COMP_SHUFFLE_LZ_HUFF ||
+                                compression == VTR_COMP_SHUFFLE_LZ_STREAMS)) {
                         /* Fused path: decompress into scratch, unshuffle into final.
                            If a direct buffer was provided, unshuffle straight into
                            it — the caller has already allocated the destination

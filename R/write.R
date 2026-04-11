@@ -181,9 +181,11 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path for the output .vtr file.
-#' @param compress Compression level: `"fast"` (default, byte-shuffle + LZ2),
-#'   `"ratio"` (byte-shuffle + LZ2 + Huffman entropy coding, ~25\% smaller
-#'   files at the cost of slightly slower encode/decode), or `"none"`.
+#' @param compress Compression level: `"fast"` (default, byte-shuffle + greedy
+#'   LZ), `"small"` (per-block adaptive — tries greedy LZ, separated-streams
+#'   LZ, and LZ + Huffman entropy coding, and writes whichever shrank the
+#'   block the most; never worse than `"fast"` on any block, typically
+#'   10-25\% smaller files at the cost of slower encode), or `"none"`.
 #' @param batch_size Target number of rows per row group in the output file.
 #'   Defaults to 131072 for data.frames (1 MB per double column, cache-friendly
 #'   for decompression). For nodes, defaults to `NULL` (one row group per
@@ -221,18 +223,18 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #' unlink(c(f, f2, csv))
 #'
 #' @export
-write_vtr <- function(x, path, compress = c("fast", "ratio", "none"), batch_size = NULL,
+write_vtr <- function(x, path, compress = c("fast", "small", "none"), batch_size = NULL,
                       col_types = NULL, quantize = NULL, spatial = NULL,
                       ...) {
   UseMethod("write_vtr")
 }
 
 .check_compress <- function(compress) {
-  match.arg(compress, c("fast", "ratio", "none"))
+  match.arg(compress, c("fast", "small", "none"))
 }
 
 #' @export
-write_vtr.vectra_node <- function(x, path, compress = c("fast", "ratio", "none"),
+write_vtr.vectra_node <- function(x, path, compress = c("fast", "small", "none"),
                                   batch_size = NULL, col_types = NULL,
                                   quantize = NULL, spatial = NULL, ...) {
   check_scalar_string(path)
@@ -245,7 +247,7 @@ write_vtr.vectra_node <- function(x, path, compress = c("fast", "ratio", "none")
 }
 
 #' @export
-write_vtr.data.frame <- function(x, path, compress = c("fast", "ratio", "none"),
+write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
                                  batch_size = 131072L, col_types = NULL,
                                  quantize = NULL, spatial = NULL, ...) {
   check_scalar_string(path)

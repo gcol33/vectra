@@ -3,7 +3,7 @@
  *
  * This is a clean-room, from-scratch C11 implementation of the tANS variant
  * popularised by Yann Collet's FSE / zstd. It is intended as the entropy
- * stage that sits underneath vectra's existing LZ2 (LZ77) layer and on top
+ * stage that sits underneath vectra's existing LZ (LZ77) layer and on top
  * of the byte-shuffle / dictionary / RLE encoding layer.
  *
  * Design goals (in order of priority):
@@ -62,7 +62,7 @@
  *   a prototype.
  *
  * The caller is responsible for choosing block sizes. The recommended
- * block size for vectra integration is the LZ2 literal stream of a single
+ * block size for vectra integration is the LZ literal stream of a single
  * row group (~10 KB to ~1 MB depending on row group size and column type).
  *
  * Error codes (returned negated from encode/decode):
