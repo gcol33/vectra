@@ -20,6 +20,11 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col, SEXP keys,
 SEXP C_tdc_encode_column(SEXP x_sexp, SEXP comp_level_sexp);
 SEXP C_tdc_decode_column(SEXP raw_sexp, SEXP n_sexp, SEXP r_type_sexp);
 
+/* P3 tdc-backed row-group container round-trip test entries (vtr1_tdc.c). */
+SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
+                     SEXP rowgroup_size_sexp, SEXP comp_level_sexp);
+SEXP C_read_vtr_tdc(SEXP path_sexp);
+
 /* Profiling bridge */
 static SEXP C_codec_profile_reset(void) {
     vtr_codec_profile_reset();
@@ -85,6 +90,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_codec_profile_get",   (DL_FUNC) &C_codec_profile_get,   0},
     {"C_tdc_encode_column",   (DL_FUNC) &C_tdc_encode_column,   2},
     {"C_tdc_decode_column",   (DL_FUNC) &C_tdc_decode_column,   3},
+    {"C_write_vtr_tdc",       (DL_FUNC) &C_write_vtr_tdc,       4},
+    {"C_read_vtr_tdc",        (DL_FUNC) &C_read_vtr_tdc,        1},
     {NULL, NULL, 0}
 };
 

@@ -71,6 +71,55 @@ tdc_status vtr_encode_column_tdc(const VecArray         *col,
  */
 tdc_dtype vtr_type_to_tdc_dtype(VecType t);
 
+/* ----- Encode request (shared between block-at-a-time and streaming) ----- *
+ *
+ * vtr_encode_column_tdc and the streaming row-group writer both need to:
+ *   1. build a tdc_block view over a VecArray,
+ *   2. derive a tdc_codec_spec from comp_level/qspec/sspec,
+ *   3. stack-allocate the per-stage param structs that spec.* points into,
+ *   4. potentially allocate a uint32_t string offsets buffer (cast from
+ *      vectra's int64 offsets).
+ *
+ * VtrTdcEncodeRequest packages all four together so the spec-selection
+ * logic lives in one place. Lifetime: stack-allocated by the caller and
+ * released via vtr_codec_tdc_release_request after the encode call.
+ *
+ *   VtrTdcEncodeRequest req;
+ *   tdc_status st = vtr_codec_tdc_prepare_request(&req, col, n_rows,
+ *                                                  comp_level, qspec, sspec,
+ *                                                  realloc_fn, alloc_user);
+ *   if (st == TDC_OK) {
+ *       st = tdc_encode_block(&req.block, &req.spec, out);  // or _stream_*
+ *       vtr_codec_tdc_release_request(&req, realloc_fn, alloc_user);
+ *   }
+ *
+ * spec.model_params / xform_params point into req.qp / req.pp / req.plp;
+ * the request must outlive the encode call. */
+
+typedef struct {
+    tdc_block            block;
+    tdc_codec_spec       spec;
+    tdc_quantize_params  qp;
+    tdc_pred2d_params    pp;
+    tdc_plane2d_params   plp;
+    uint32_t            *str_offsets_owned;  /* NULL unless VEC_STRING */
+} VtrTdcEncodeRequest;
+
+tdc_status vtr_codec_tdc_prepare_request(
+    VtrTdcEncodeRequest    *req,
+    const VecArray         *col,
+    int64_t                 n_rows,
+    int                     comp_level,
+    const VtrQuantizeSpec  *qspec,
+    const VtrSpatialSpec   *sspec,
+    void                  *(*realloc_fn)(void *user, void *ptr, size_t n),
+    void                   *alloc_user);
+
+void vtr_codec_tdc_release_request(
+    VtrTdcEncodeRequest *req,
+    void               *(*realloc_fn)(void *user, void *ptr, size_t n),
+    void                *alloc_user);
+
 /*
  * P2b — decode bridge.
  *

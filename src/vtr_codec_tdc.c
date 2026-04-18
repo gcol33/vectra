@@ -73,6 +73,137 @@ static void *vtr_tdc_realloc(void *user, void *ptr, size_t new_size) {
     return realloc(ptr, new_size);
 }
 
+/* ---------- encode request (shared with vtr1_tdc.c) ---------------------- */
+
+tdc_status vtr_codec_tdc_prepare_request(
+    VtrTdcEncodeRequest    *req,
+    const VecArray         *col,
+    int64_t                 n_rows,
+    int                     comp_level,
+    const VtrQuantizeSpec  *qspec,
+    const VtrSpatialSpec   *sspec,
+    void                  *(*realloc_fn)(void *user, void *ptr, size_t n),
+    void                   *alloc_user) {
+    if (!req || !col || !realloc_fn) return TDC_E_INVAL;
+    if (n_rows < 0 || n_rows != col->length) return TDC_E_INVAL;
+
+    memset(req, 0, sizeof(*req));
+    req->block.dtype    = vtr_type_to_tdc_dtype(col->type);
+    req->block.validity = col->validity;
+    req->block.layout       = TDC_LAYOUT_VECTOR_1D;
+    req->block.shape.rank   = 1;
+    req->block.shape.dim[0] = n_rows;
+    req->spec = tdc_codec_spec_raw();
+
+    /* String columns need a uint32_t offsets[] view; vectra stores int64_t.
+     * Narrow-cast with explicit overflow checks (per Q4 in VECTRA_REWIRE.md). */
+    if (col->type == VEC_STRING) {
+        if (col->buf.str.data_len < 0 ||
+            (int64_t)(uint32_t)col->buf.str.data_len != col->buf.str.data_len) {
+            return TDC_E_UNSUPPORTED;
+        }
+        req->str_offsets_owned = (uint32_t *)realloc_fn(
+            alloc_user, NULL, sizeof(uint32_t) * (size_t)(n_rows + 1));
+        if (!req->str_offsets_owned) return TDC_E_NOMEM;
+        for (int64_t i = 0; i <= n_rows; ++i) {
+            int64_t v = col->buf.str.offsets[i];
+            if (v < 0 || (int64_t)(uint32_t)v != v) {
+                realloc_fn(alloc_user, req->str_offsets_owned, 0);
+                req->str_offsets_owned = NULL;
+                return TDC_E_UNSUPPORTED;
+            }
+            req->str_offsets_owned[i] = (uint32_t)v;
+        }
+        req->block.data    = (void *)col->buf.str.data;
+        req->block.offsets = req->str_offsets_owned;
+    } else {
+        switch (col->type) {
+        case VEC_INT64:  req->block.data = (void *)col->buf.i64; break;
+        case VEC_INT32:  req->block.data = (void *)col->buf.i32; break;
+        case VEC_INT16:  req->block.data = (void *)col->buf.i16; break;
+        case VEC_INT8:   req->block.data = (void *)col->buf.i8;  break;
+        case VEC_DOUBLE: req->block.data = (void *)col->buf.dbl; break;
+        case VEC_BOOL:   req->block.data = (void *)col->buf.bln; break;
+        default:         return TDC_E_DTYPE;
+        }
+    }
+
+    const int spatial_active  = (sspec && sspec->enabled);
+    const int quantize_active = (qspec && qspec->enabled && col->type == VEC_DOUBLE);
+
+    if (comp_level == VTR_COMPRESS_NONE) {
+        /* RAW + passthrough entropy. spec already initialized to that. */
+    } else if (spatial_active) {
+        req->block.layout       = TDC_LAYOUT_RASTER_2D;
+        req->block.shape.rank   = 2;
+        req->block.shape.dim[0] = (int64_t)sspec->ny;  /* row-major: rows first */
+        req->block.shape.dim[1] = (int64_t)sspec->nx;
+
+        if (sspec->predictor == VTR_PRED_PLANE) {
+            req->spec.model        = TDC_MODEL_PLANE_2D;
+            req->plp.tile_size     = sspec->tile_size ? sspec->tile_size : 32;
+            req->spec.model_params = &req->plp;
+        } else {
+            req->spec.model        = TDC_MODEL_PRED_2D;
+            req->pp.kind           = vtr_pred_to_tdc_pred2d_kind(sspec->predictor);
+            req->spec.model_params = &req->pp;
+        }
+
+        int xi = 0;
+        if (quantize_active) {
+            req->qp.scale  = qspec->scale;
+            req->qp.offset = qspec->offset;
+            req->qp.target = vtr_quantize_target_to_tdc(qspec->target_type);
+            req->spec.xform[xi]        = TDC_XFORM_QUANTIZE;
+            req->spec.xform_params[xi] = &req->qp;
+            ++xi;
+        }
+        req->spec.xform[xi++] = TDC_XFORM_ZIGZAG;
+        req->spec.xform[xi++] = TDC_XFORM_BYTE_SHUFFLE;
+        req->spec.entropy[0]  = TDC_ENTROPY_LZ;
+    } else if (quantize_active) {
+        req->qp.scale  = qspec->scale;
+        req->qp.offset = qspec->offset;
+        req->qp.target = vtr_quantize_target_to_tdc(qspec->target_type);
+        req->spec.model           = TDC_MODEL_RAW;
+        req->spec.xform[0]        = TDC_XFORM_QUANTIZE;
+        req->spec.xform_params[0] = &req->qp;
+        req->spec.xform[1]        = TDC_XFORM_BYTE_SHUFFLE;
+        req->spec.entropy[0]      = TDC_ENTROPY_LZ;
+    } else if (col->type == VEC_STRING) {
+        req->spec.model      = TDC_MODEL_DICT_1D;
+        req->spec.entropy[0] = TDC_ENTROPY_LZ;
+    } else if (col->type == VEC_INT64 && should_delta_encode(col, n_rows)) {
+        req->spec.model      = TDC_MODEL_DELTA_1D;
+        req->spec.xform[0]   = TDC_XFORM_ZIGZAG;
+        req->spec.xform[1]   = TDC_XFORM_BYTE_SHUFFLE;
+        req->spec.entropy[0] = TDC_ENTROPY_LZ;
+    } else if (vec_type_is_fixed(col->type) && col->type != VEC_BOOL) {
+        req->spec.model      = TDC_MODEL_RAW;
+        req->spec.xform[0]   = TDC_XFORM_BYTE_SHUFFLE;
+        req->spec.entropy[0] = TDC_ENTROPY_LZ;
+    } else {
+        /* VEC_BOOL: 1-byte elements, byte-shuffle is a no-op. */
+        req->spec.model      = TDC_MODEL_RAW;
+        req->spec.entropy[0] = TDC_ENTROPY_LZ;
+    }
+
+    tdc_shape_set_contiguous(&req->block.shape);
+
+    return tdc_block_validate(&req->block);
+}
+
+void vtr_codec_tdc_release_request(
+    VtrTdcEncodeRequest *req,
+    void               *(*realloc_fn)(void *user, void *ptr, size_t n),
+    void                *alloc_user) {
+    if (!req) return;
+    if (req->str_offsets_owned && realloc_fn) {
+        realloc_fn(alloc_user, req->str_offsets_owned, 0);
+    }
+    req->str_offsets_owned = NULL;
+}
+
 /* ---------- encode bridge -------------------------------------------------- */
 
 tdc_status vtr_encode_column_tdc(const VecArray         *col,
@@ -81,129 +212,20 @@ tdc_status vtr_encode_column_tdc(const VecArray         *col,
                                  const VtrQuantizeSpec  *qspec,
                                  const VtrSpatialSpec   *sspec,
                                  tdc_buffer             *block_out) {
-    if (!col || !block_out || !block_out->realloc_fn) return TDC_E_INVAL;
-    if (n_rows < 0 || n_rows != col->length)          return TDC_E_INVAL;
+    if (!block_out || !block_out->realloc_fn) return TDC_E_INVAL;
 
-    /* ---------- block view ------------------------------------------------ */
-    tdc_block blk = {0};
-    blk.dtype    = vtr_type_to_tdc_dtype(col->type);
-    blk.validity = col->validity;
-    blk.layout       = TDC_LAYOUT_VECTOR_1D;
-    blk.shape.rank   = 1;
-    blk.shape.dim[0] = n_rows;
-
-    /* String columns need a uint32_t offsets[] view; vectra stores int64_t.
-     * Narrow-cast with explicit overflow checks (per Q4 in VECTRA_REWIRE.md). */
-    uint32_t *str_offsets = NULL;
-    if (col->type == VEC_STRING) {
-        if (col->buf.str.data_len < 0 ||
-            (int64_t)(uint32_t)col->buf.str.data_len != col->buf.str.data_len) {
-            return TDC_E_UNSUPPORTED;
-        }
-        str_offsets = (uint32_t *)block_out->realloc_fn(
-            block_out->user, NULL, sizeof(uint32_t) * (size_t)(n_rows + 1));
-        if (!str_offsets) return TDC_E_NOMEM;
-        for (int64_t i = 0; i <= n_rows; ++i) {
-            int64_t v = col->buf.str.offsets[i];
-            if (v < 0 || (int64_t)(uint32_t)v != v) {
-                block_out->realloc_fn(block_out->user, str_offsets, 0);
-                return TDC_E_UNSUPPORTED;
-            }
-            str_offsets[i] = (uint32_t)v;
-        }
-        blk.data    = (void *)col->buf.str.data;
-        blk.offsets = str_offsets;
-    } else {
-        switch (col->type) {
-        case VEC_INT64:  blk.data = (void *)col->buf.i64; break;
-        case VEC_INT32:  blk.data = (void *)col->buf.i32; break;
-        case VEC_INT16:  blk.data = (void *)col->buf.i16; break;
-        case VEC_INT8:   blk.data = (void *)col->buf.i8;  break;
-        case VEC_DOUBLE: blk.data = (void *)col->buf.dbl; break;
-        case VEC_BOOL:   blk.data = (void *)col->buf.bln; break;
-        default:         return TDC_E_DTYPE;
-        }
-    }
-
-    /* ---------- spec selection -------------------------------------------- *
-     * Param structs are referenced by `spec.*_params`; they must outlive the
-     * tdc_encode_block call. Stack-allocating here keeps lifetime obvious. */
-    tdc_codec_spec      spec = tdc_codec_spec_raw();
-    tdc_quantize_params qp   = {0};
-    tdc_pred2d_params   pp   = {0};
-    tdc_plane2d_params  plp  = {0};
-
-    const int spatial_active  = (sspec && sspec->enabled);
-    const int quantize_active = (qspec && qspec->enabled && col->type == VEC_DOUBLE);
-
-    if (comp_level == VTR_COMPRESS_NONE) {
-        /* RAW + passthrough entropy. spec already initialized to that. */
-    } else if (spatial_active) {
-        blk.layout       = TDC_LAYOUT_RASTER_2D;
-        blk.shape.rank   = 2;
-        blk.shape.dim[0] = (int64_t)sspec->ny;  /* row-major: rows first */
-        blk.shape.dim[1] = (int64_t)sspec->nx;
-
-        if (sspec->predictor == VTR_PRED_PLANE) {
-            spec.model        = TDC_MODEL_PLANE_2D;
-            plp.tile_size     = sspec->tile_size ? sspec->tile_size : 32;
-            spec.model_params = &plp;
-        } else {
-            spec.model        = TDC_MODEL_PRED_2D;
-            pp.kind           = vtr_pred_to_tdc_pred2d_kind(sspec->predictor);
-            spec.model_params = &pp;
-        }
-
-        int xi = 0;
-        if (quantize_active) {
-            qp.scale  = qspec->scale;
-            qp.offset = qspec->offset;
-            qp.target = vtr_quantize_target_to_tdc(qspec->target_type);
-            spec.xform[xi]        = TDC_XFORM_QUANTIZE;
-            spec.xform_params[xi] = &qp;
-            ++xi;
-        }
-        spec.xform[xi++] = TDC_XFORM_ZIGZAG;
-        spec.xform[xi++] = TDC_XFORM_BYTE_SHUFFLE;
-        spec.entropy[0]  = TDC_ENTROPY_LZ;
-    } else if (quantize_active) {
-        qp.scale  = qspec->scale;
-        qp.offset = qspec->offset;
-        qp.target = vtr_quantize_target_to_tdc(qspec->target_type);
-        spec.model           = TDC_MODEL_RAW;
-        spec.xform[0]        = TDC_XFORM_QUANTIZE;
-        spec.xform_params[0] = &qp;
-        spec.xform[1]        = TDC_XFORM_BYTE_SHUFFLE;
-        spec.entropy[0]      = TDC_ENTROPY_LZ;
-    } else if (col->type == VEC_STRING) {
-        spec.model      = TDC_MODEL_DICT_1D;
-        spec.entropy[0] = TDC_ENTROPY_LZ;
-    } else if (col->type == VEC_INT64 && should_delta_encode(col, n_rows)) {
-        spec.model      = TDC_MODEL_DELTA_1D;
-        spec.xform[0]   = TDC_XFORM_ZIGZAG;
-        spec.xform[1]   = TDC_XFORM_BYTE_SHUFFLE;
-        spec.entropy[0] = TDC_ENTROPY_LZ;
-    } else if (vec_type_is_fixed(col->type) && col->type != VEC_BOOL) {
-        spec.model      = TDC_MODEL_RAW;
-        spec.xform[0]   = TDC_XFORM_BYTE_SHUFFLE;
-        spec.entropy[0] = TDC_ENTROPY_LZ;
-    } else {
-        /* VEC_BOOL: 1-byte elements, byte-shuffle is a no-op. */
-        spec.model      = TDC_MODEL_RAW;
-        spec.entropy[0] = TDC_ENTROPY_LZ;
-    }
-
-    tdc_shape_set_contiguous(&blk.shape);
-
-    tdc_status st = tdc_block_validate(&blk);
+    VtrTdcEncodeRequest req;
+    tdc_status st = vtr_codec_tdc_prepare_request(&req, col, n_rows,
+                                                   comp_level, qspec, sspec,
+                                                   block_out->realloc_fn,
+                                                   block_out->user);
     if (st != TDC_OK) {
-        if (str_offsets) block_out->realloc_fn(block_out->user, str_offsets, 0);
+        vtr_codec_tdc_release_request(&req, block_out->realloc_fn, block_out->user);
         return st;
     }
 
-    st = tdc_encode_block(&blk, &spec, block_out);
-
-    if (str_offsets) block_out->realloc_fn(block_out->user, str_offsets, 0);
+    st = tdc_encode_block(&req.block, &req.spec, block_out);
+    vtr_codec_tdc_release_request(&req, block_out->realloc_fn, block_out->user);
     return st;
 }
 
