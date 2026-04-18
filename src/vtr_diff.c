@@ -1,5 +1,4 @@
 #include "vtr_diff.h"
-#include "vtr1.h"
 #include "vtr1_tdc.h"
 #include "scan.h"
 #include "schema.h"

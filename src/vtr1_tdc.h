@@ -2,12 +2,12 @@
 #define VECTRA_VTR1_TDC_H
 
 /*
- * vtr1_tdc.h — tdc-backed row-group container writer/reader (P3+P4a).
+ * vtr1_tdc.h — tdc-backed row-group container writer/reader.
  *
- * Side-by-side companion to vtr1.c. Writes a tdc heterogeneous
- * container (TDC1 magic, per-block dtype/layout, attached schema,
- * trailing row-group index). Each row group becomes one tdc row
- * group; each column becomes one self-describing tdc_block_record.
+ * Writes a tdc heterogeneous container (TDC1 magic, per-block
+ * dtype/layout, attached schema, trailing row-group index). Each row
+ * group becomes one tdc row group; each column becomes one
+ * self-describing tdc_block_record.
  *
  * Encode pipeline per column: vtr_codec_tdc_prepare_request +
  * tdc_stream_encoder_write_block. Decode pipeline per column:
@@ -15,10 +15,10 @@
  * + vtr_decode_column_tdc, which surfaces the validity bitmap that
  * tdc v0 leaves opaque.
  *
- * P4a wires per-column min/max/null_count statistics through
- * tdc_stream_encoder_set_rowgroup_stats / _decoder_get_stats and
- * propagates VecSchema.col_annotations through the schema-section
- * annotation slot. Annotation slot layout:
+ * Per-column min/max/null_count statistics ride through
+ * tdc_stream_encoder_set_rowgroup_stats / _decoder_get_stats.
+ * VecSchema.col_annotations are propagated through the schema-section
+ * annotation slot with layout:
  *
  *   [1 byte: vt_name_len] [vt_name_len bytes: vec_type_name]
  *   [remaining ann_len-1-vt_name_len bytes: user annotation]

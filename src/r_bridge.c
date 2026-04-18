@@ -20,7 +20,6 @@
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
-#include "vtr1.h"
 #include "vtr1_tdc.h"
 #include "scan.h"
 #include "collect.h"

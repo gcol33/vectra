@@ -2,7 +2,6 @@
 #define VECTRA_VTRI_H
 
 #include "types.h"
-#include "vtr1.h"
 #include <stdint.h>
 
 /*

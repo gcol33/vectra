@@ -1,5 +1,5 @@
 /*
- * vtr_codec_tdc.c — side-by-side tdc-backed encode/decode bridge (P2a + P2b).
+ * vtr_codec_tdc.c — tdc-backed encode/decode bridge (sole codec path).
  *
  * Encode:
  *   Builds a tdc_block view over a VecArray, picks a tdc_codec_spec from
@@ -11,15 +11,10 @@
  *   buffer) via tdc_decode_block_into. Validity bytes are pulled directly
  *   out of the record because tdc v0's decode does not surface them — see
  *   the comment block on validity below.
- *
- * Purely additive: nothing on the read or write path calls this yet.
- * The legacy vtr_encode_column / _ex / _q / _qs and vtr_decode_column_*
- * in vtr_codec.c remain the production entry points until P4 swaps them.
  */
 
 #include "vtr_codec_tdc.h"
-#include "vtr_codec_internal.h"   /* should_delta_encode for DELTA detection */
-#include "array.h"                /* vec_validity_bytes */
+#include "array.h"                /* vec_validity_bytes, vec_array_is_valid */
 
 #include "tdc/format.h"           /* tdc_block_record, TDC_BLOCK_HEADER_SIZE */
 
@@ -71,6 +66,23 @@ static void *vtr_tdc_realloc(void *user, void *ptr, size_t new_size) {
     (void)user;
     if (new_size == 0) { free(ptr); return NULL; }
     return realloc(ptr, new_size);
+}
+
+/* ---------- DELTA heuristic ------------------------------------------------ *
+ *
+ * Monotonically non-decreasing int64 with at least one valid element -> pick
+ * TDC_MODEL_DELTA_1D. NA rows are skipped. */
+static int vtr_should_delta_encode(const VecArray *col, int64_t n_rows) {
+    if (col->type != VEC_INT64 || n_rows < 2) return 0;
+    int64_t prev = 0;
+    int started = 0;
+    for (int64_t i = 0; i < n_rows; ++i) {
+        if (!vec_array_is_valid(col, i)) continue;
+        if (!started) { prev = col->buf.i64[i]; started = 1; continue; }
+        if (col->buf.i64[i] < prev) return 0;
+        prev = col->buf.i64[i];
+    }
+    return started;
 }
 
 /* ---------- encode request (shared with vtr1_tdc.c) ---------------------- */
@@ -199,7 +211,7 @@ tdc_status vtr_codec_tdc_prepare_request(
     } else if (col->type == VEC_STRING) {
         req->spec.model      = TDC_MODEL_DICT_1D;
         req->spec.entropy[0] = TDC_ENTROPY_LZ;
-    } else if (col->type == VEC_INT64 && should_delta_encode(col, n_rows)) {
+    } else if (col->type == VEC_INT64 && vtr_should_delta_encode(col, n_rows)) {
         req->spec.model      = TDC_MODEL_DELTA_1D;
         req->spec.xform[0]   = TDC_XFORM_ZIGZAG;
         req->spec.xform[1]   = TDC_XFORM_BYTE_SHUFFLE;
@@ -425,7 +437,7 @@ tdc_status vtr_decode_column_tdc(VecArray       *col_out,
 }
 
 /* =========================================================================
- * R bridge — round-trip entry points used by the testthat tests for P2a/P2b.
+ * R bridge — round-trip entry points used by the testthat tests.
  * NOT part of the production write/read path.
  *
  *   C_tdc_encode_column : encodes an R vector via the bridge, returns the

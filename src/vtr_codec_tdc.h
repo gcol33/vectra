@@ -2,19 +2,12 @@
 #define VECTRA_VTR_CODEC_TDC_H
 
 /*
- * vtr_codec_tdc.h — side-by-side tdc-backed encode bridge (P2a).
+ * vtr_codec_tdc.h — tdc-backed encode bridge (sole encode path).
  *
- * Replaces the (encoding, compression, side-metadata) triple from
- * VtrEncodedCol with a single self-describing tdc block record. The
- * caller hands tdc a tdc_block view over a VecArray, picks a
+ * The caller hands tdc a tdc_block view over a VecArray, picks a
  * tdc_codec_spec from comp_level / qspec / sspec, and tdc emits a
- * complete block record (header + side_meta + payload + validity).
- *
- * P2a is purely additive: nothing on the read or write path calls this
- * yet. The legacy vtr_encode_column / _ex / _q / _qs in vtr_codec.c
- * remain the production encode entry points until P4 swaps them out.
- *
- * See VECTRA_REWIRE.md (in the tdc repo) for the surrounding plan.
+ * complete self-describing block record (header + side_meta + payload +
+ * validity). The reader side mirrors this with a single decode call.
  */
 
 #include "types.h"
@@ -32,11 +25,8 @@
  *   comp_level  VTR_COMPRESS_NONE / _FAST / _SMALL.
  *               NONE  -> RAW + no entropy (passthrough).
  *               FAST  -> default model heuristic + BSHUF + LZ.
- *               SMALL -> at this stage, treated identically to FAST.
- *                       The vectra-side outer try-all-pick-smallest loop
- *                       (vtr_compress.c) stays in the legacy path; once
- *                       P4 lands, SMALL will be promoted by trying
- *                       multiple specs at the call site.
+ *               SMALL -> currently identical to FAST; try-all-pick-smallest
+ *                       over multiple tdc specs is not yet ported.
  *   qspec       Optional lossy quantization (VEC_DOUBLE only). NULL or
  *               qspec->enabled == 0 disables quantization.
  *   sspec       Optional 2D spatial predictor. NULL or sspec->enabled == 0
@@ -122,7 +112,7 @@ void vtr_codec_tdc_release_request(
     void                *alloc_user);
 
 /*
- * P2b — decode bridge.
+ * Decode bridge.
  *
  * Decode one tdc block record into a pre-allocated VecArray.
  *
@@ -153,8 +143,8 @@ tdc_status vtr_decode_column_tdc(VecArray       *col_out,
 
 /*
  * Lower-level decode-into that bypasses VecArray construction. Used by
- * the production direct-write fast path in P3 to land elements directly
- * in a memory-mapped destination buffer (e.g. an SEXP backing store).
+ * the direct-write fast path to land elements directly in a memory-mapped
+ * destination buffer (e.g. an SEXP backing store).
  *
  *   type           Expected element type. Validated against the header.
  *   n_rows         Expected element count. Validated against the header.

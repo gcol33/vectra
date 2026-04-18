@@ -1,10 +1,9 @@
 /*
- * vtr1_tdc.c — tdc-backed row-group container writer/reader (P3+P4a).
+ * vtr1_tdc.c — tdc-backed row-group container writer/reader.
  *
- * Side-by-side with vtr1.c. The on-disk format is a tdc container
- * (TDC_CONTAINER_MAGIC, HETEROGENEOUS flag, attached schema, trailing
- * row-group index) plus one self-describing tdc_block_record per
- * column per row group.
+ * The on-disk format is a tdc container (TDC_CONTAINER_MAGIC,
+ * HETEROGENEOUS flag, attached schema, trailing row-group index) plus
+ * one self-describing tdc_block_record per column per row group.
  *
  * Reader strategy: tdc_stream_decoder parses the header, schema, and
  * index at open time. We deep-copy what we need (schema -> VecSchema,
@@ -13,15 +12,14 @@
  * from our own FILE* and handed to vtr_decode_column_tdc, which
  * extracts the validity bitmap that tdc v0 leaves opaque.
  *
- * Per-column statistics (P4a) are computed during encode and attached
- * via tdc_stream_encoder_set_rowgroup_stats. The dtype-native value
- * bytes go into the leading 8 bytes of the 16-byte min/max slots
+ * Per-column statistics are computed during encode and attached via
+ * tdc_stream_encoder_set_rowgroup_stats. The dtype-native value bytes
+ * go into the leading 8 bytes of the 16-byte min/max slots
  * (little-endian). Empty row groups skip the stats call so the
  * reader sees NULL via tdc_stream_decoder_get_stats.
  *
- * VEC_STRING is rejected at write time. The annotation slot carries a
- * length-prefixed VecType discriminator followed by the verbatim user
- * annotation; see vtr1_tdc.h for the layout.
+ * The annotation slot carries a length-prefixed VecType discriminator
+ * followed by the verbatim user annotation; see vtr1_tdc.h for layout.
  */
 
 #include "vtr1_tdc.h"
@@ -976,7 +974,7 @@ void vtr1_close_tdc(Vtr1TdcFile *file) {
 }
 
 /* =========================================================================
- * R bridge — round-trip entry points used by the testthat tests for P3.
+ * R bridge — round-trip entry points used by the testthat tests.
  * NOT part of the production read/write path.
  *
  *   C_write_vtr_tdc(path, df, rowgroup_size, comp_level)
@@ -991,10 +989,10 @@ void vtr1_close_tdc(Vtr1TdcFile *file) {
  *   REALSXP <-> VEC_DOUBLE
  *   INTSXP  <-> VEC_INT32
  *   LGLSXP  <-> VEC_BOOL  (LGLSXP int <-> uint8 0/1)
- * NA handling is intentionally minimal in P3: NA_LOGICAL is folded to 0,
+ * NA handling is minimal: NA_LOGICAL is folded to 0,
  * NA_REAL / NA_INTEGER round-trip via the bit pattern stored in the
  * payload (validity bitmap is written/read but not surfaced through
- * the R bridge until P4).
+ * the R bridge).
  * ========================================================================= */
 
 #include <R.h>

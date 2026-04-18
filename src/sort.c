@@ -4,7 +4,6 @@
 #include "batch.h"
 #include "schema.h"
 #include "builder.h"
-#include "vtr1.h"
 #include "vtr1_tdc.h"
 #include "coerce.h"
 #include "error.h"

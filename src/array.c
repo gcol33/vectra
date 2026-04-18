@@ -1,6 +1,5 @@
 #include "array.h"
 #include "error.h"
-#include "vtr_codec.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,10 +67,6 @@ void vec_array_free(VecArray *arr) {
             free(arr->buf.str.data);
         }
         arr->buf.str.data = NULL;
-        if (arr->str_dict) {
-            vtr_dict_blob_free((VtrDictBlob *)arr->str_dict);
-            arr->str_dict = NULL;
-        }
         break;
     }
     arr->length = 0;

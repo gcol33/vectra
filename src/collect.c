@@ -6,7 +6,6 @@
 #include "array.h"
 #include "batch.h"
 #include "error.h"
-#include "vtr_codec.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -19,46 +18,12 @@
 #define STR_CACHE_MASK (STR_CACHE_SIZE - 1)
 typedef struct { uint32_t hash; int len; const char *ptr; SEXP sexp; } StrCacheSlot;
 
-/* Fill a slice of an R STRSXP from a VecArray's string data. Three modes:
- *   1. arr->str_dict != NULL  -> dict-defer fast path: build a CHARSXP table
- *      from the parsed dictionary blob once, then walk RLE runs and dispatch
- *      per row. Replaces dict_count + n_rows mkChar calls with dict_count
- *      mkChar calls + n_rows SET_STRING_ELT.
- *   2. str_cache != NULL      -> per-row Rf_mkCharLenCE with content-hash
- *      cache to skip R's internal CHARSXP hash on duplicates.
- *   3. neither                -> per-row Rf_mkCharLenCE without cache.
- *
- * R_alloc is safe in mode 1: callers run on the main thread after any
- * parallel decode, and mkCharLenCE interns into R's global CHARSXP cache so
- * the table entries stay live without PROTECT. */
+/* Fill a slice of an R STRSXP from a VecArray's flat string buffer. With
+ * str_cache != NULL, duplicate values skip R's CHARSXP hash via a content-hash
+ * cache; with str_cache == NULL, every row pays a plain Rf_mkCharLenCE. */
 static void fill_string_col_from_batch(SEXP col, int64_t offset,
                                        const VecArray *arr, int64_t n,
                                        StrCacheSlot *str_cache) {
-    if (arr->str_dict) {
-        VtrDictBlob *blob = (VtrDictBlob *)arr->str_dict;
-        SEXP *cs_tab = (SEXP *)R_alloc((size_t)blob->dict_count, sizeof(SEXP));
-        for (uint32_t d = 0; d < blob->dict_count; d++) {
-            int64_t s = blob->dict_offsets[d];
-            int64_t e = blob->dict_offsets[d + 1];
-            cs_tab[d] = Rf_mkCharLenCE(blob->dict_data + s,
-                                       (int)(e - s), CE_UTF8);
-        }
-        int64_t row = 0;
-        for (uint32_t r = 0; r < blob->n_runs && row < n; r++) {
-            uint32_t v = blob->run_vals[r];
-            uint32_t len = blob->run_lens[r];
-            SEXP cs = cs_tab[v];
-            for (uint32_t k = 0; k < len && row < n; k++, row++) {
-                int64_t ri = offset + row;
-                if (!vec_array_is_valid(arr, row))
-                    SET_STRING_ELT(col, (R_xlen_t)ri, NA_STRING);
-                else
-                    SET_STRING_ELT(col, (R_xlen_t)ri, cs);
-            }
-        }
-        return;
-    }
-
     for (int64_t j = 0; j < n; j++) {
         int64_t ri = offset + j;
         if (!vec_array_is_valid(arr, j)) {
@@ -526,10 +491,9 @@ SEXP vec_collect(VecNode *root) {
                     col_elem_sizes[i] = sizeof(double);
                     col_direct[i] = 1;
                 }
-                /* VEC_STRING: tdc reader doesn't yet support the
-                 * VTR_STRING_DICT_DEFER fast path; leave col_bases[i] NULL
-                 * so the decoder allocates a heap buffer and the consumer
-                 * loop falls back to fill_string_col_from_batch. */
+                /* VEC_STRING: leave col_bases[i] NULL so the decoder
+                 * allocates a heap buffer and the consumer loop walks it
+                 * via fill_string_col_from_batch. */
             }
 
             VecBatch **batches = vtr1_read_parallel_tdc_into(file, col_mask, path,
@@ -588,10 +552,10 @@ SEXP vec_collect(VecNode *root) {
            vectors via vtr1_read_rowgroup_tdc_ex with pre-allocated target
            buffers. Numeric columns whose R element size matches the on-disk
            decoded element size (DOUBLE, INT64+bit64) get a real direct
-           pointer; VEC_STRING columns pass the VTR_STRING_DICT_DEFER
-           sentinel so DICTIONARY-encoded strings come back as a parsed
-           VtrDictBlob (mirrors the parallel path). Other column types
-           disable the fast path entirely. */
+           pointer; VEC_STRING columns pass NULL so the decoder allocates
+           its own heap and the consumer loop walks it via
+           fill_string_col_from_batch. Other column types disable the fast
+           path entirely. */
         int used_direct = 0;
         if (!used_parallel && root->kind &&
             strcmp(root->kind, "ScanNode") == 0) {
@@ -618,11 +582,8 @@ SEXP vec_collect(VecNode *root) {
                             int64_t rg_rows =
                                 vtr1_tdc_rowgroup_n_rows(file, rg);
                             for (int i = 0; i < n_cols; i++) {
-                                /* Strings: leave NULL so decoder allocates
-                                 * its own heap and the consumer below falls
-                                 * back to fill_string_col_from_batch (the
-                                 * dict-defer fast path isn't wired in tdc
-                                 * yet). */
+                                /* Strings: NULL -> decoder allocates heap
+                                 * buffer consumed by fill_string_col_from_batch. */
                                 if (schema->col_types[i] == VEC_STRING)
                                     direct_bufs[i] = NULL;
                                 else
@@ -635,9 +596,8 @@ SEXP vec_collect(VecNode *root) {
                                means the decoder wrote into the R vector and
                                we only need to patch NAs; otherwise it
                                allocated its own buffer and we copy. String
-                               cols are filled via fill_string_col_from_batch,
-                               which dispatches on str_dict (dict-defer fast
-                               path) vs flat-buffer fallback. */
+                               cols are filled via fill_string_col_from_batch
+                               from the decoder's flat heap buffer. */
                             for (int i = 0; i < n_cols; i++) {
                                 const VecArray *arr = &batch->columns[i];
                                 VecType t = schema->col_types[i];

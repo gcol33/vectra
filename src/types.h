@@ -60,23 +60,22 @@ static inline int vec_type_is_fixed(VecType t) {
  *     1 (default): vec_array_free() releases the buffer.
  *     0: external owner; vec_array_free() leaves it alone. Two unrelated
  *        producers set this: (a) string arenas (KeyArena.str_data) shared
- *        across many arrays, and (b) the direct-write decoder paths in
- *        vtr1.c that materialize into a caller-provided buffer.
+ *        across many arrays, and (b) the tdc-backed direct-write decoder
+ *        path that materializes into a caller-provided buffer.
  *
  *   data_borrowed — provenance signal: "decoder wrote into a caller-supplied
- *     direct buffer (vtr1_read_rowgroup_ex / vtr1_read_parallel_into)."
+ *     direct buffer (vtr1_read_rowgroup_tdc_ex / parallel reader)."
  *     1 implies owns_data == 0, but the converse does NOT hold (string
  *     arenas also set owns_data == 0). Callers that need to distinguish
  *     "decoder honored my direct_buf" from "string data borrowed from an
  *     arena" MUST check this flag, not !owns_data.
  *
- *     Only the PLAIN+NONE+fixed and PLAIN+SHUFFLE_LZ+fixed paths in
- *     read_rg_with_fp / vtr1_read_rowgroup_ex honor direct_bufs today.
- *     All other encodings (DICT, DELTA, DIFF, QUANTIZE, SPATIAL, strings)
- *     allocate their own buffer and leave data_borrowed == 0, even when
- *     direct_bufs[i] was non-NULL. The caller is expected to fall back to
- *     a copy in that case (and, in debug builds, will see a one-shot
- *     warning via the VTR_DEBUG_DIRECT env var — see collect.c).
+ *     Fixed-width numeric columns (DOUBLE, INT64, etc.) honor direct_bufs;
+ *     variable-width strings do not — the tdc reader always allocates a
+ *     heap for offsets/data and data_borrowed stays 0 there. Callers fall
+ *     back to a copy when direct_bufs[i] was non-NULL but data_borrowed
+ *     came back 0 (one-shot warning via the VTR_DEBUG_DIRECT env var — see
+ *     collect.c).
  *
  * Ownership notes for VEC_STRING:
  *   - offsets[] is ALWAYS owned by this array (freed by vec_array_free).
@@ -118,15 +117,6 @@ typedef struct {
             int64_t  data_len;
         } str;
     } buf;
-    /* Deferred dictionary view for VEC_STRING columns — set only by the
-     * .vtr direct-read fast path when the on-disk encoding is DICTIONARY and
-     * the caller asked for the string-defer contract (direct_bufs sentinel).
-     * Opaque (VtrDictBlob*); kept as void* here so types.h stays free of a
-     * vtr_codec.h dependency. When non-NULL, collect.c builds the STRSXP
-     * from the blob (CHARSXP table + RLE walk) and the flat buf.str.*
-     * fields are empty placeholders. vec_array_free releases the blob via
-     * vtr_dict_blob_free. */
-    void *str_dict;
 } VecArray;
 
 /* Read an integer value from a VecArray, widened to int64. */
