@@ -1,5 +1,6 @@
 #include "vtr_delete.h"
 #include "error.h"
+#include "vtr_atomic_rename.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,9 +142,7 @@ void tombstone_write(const char *del_path, const int64_t *rows, int64_t n_rows) 
     fclose(fp);
     free(merged);
 
-    /* Atomic rename (Windows requires remove first) */
-    remove(del_path);
-    if (rename(tmp_path, del_path) != 0) {
+    if (vtr_atomic_replace(tmp_path, del_path) != 0) {
         remove(tmp_path);
         free(tmp_path);
         vectra_error("tombstone_write: failed to rename temp file to: %s", del_path);

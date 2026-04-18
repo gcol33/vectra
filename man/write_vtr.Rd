@@ -24,7 +24,7 @@ write_vtr(
 LZ), \code{"small"} (per-block adaptive — tries greedy LZ, separated-streams
 LZ, and LZ + Huffman entropy coding, and writes whichever shrank the
 block the most; never worse than \code{"fast"} on any block, typically
-10-25\\% smaller files at the cost of slower encode), or \code{"none"}.}
+10-25 percent smaller files at the cost of slower encode), or \code{"none"}.}
 
 \item{batch_size}{Target number of rows per row group in the output file.
 Defaults to 131072 for data.frames (1 MB per double column, cache-friendly

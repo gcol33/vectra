@@ -44,6 +44,11 @@ reference:
   - write_csv
   - write_sqlite
   - write_tiff
+- title: GeoTIFF helpers
+  desc: Metadata and point-sampling for GeoTIFF rasters
+  contents:
+  - tiff_extract_points
+  - tiff_metadata
 - title: File operations
   desc: Incremental updates to .vtr files
   contents:

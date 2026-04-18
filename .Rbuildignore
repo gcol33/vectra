@@ -32,3 +32,17 @@
 ^\.run-test-block\.R$
 ^\.test-phase.*\.R$
 ^tools$
+^bench_.*\.R$
+^test_.*\.R$
+^debug_.*\.R$
+^run_.*\.R$
+^build_install\.R$
+^notes\.md$
+^plan\.md$
+^todo-.*\.md$
+^\.cran_check\.R$
+^\.cran_check\.log$
+^src/.*\.o$
+^src/.*\.so$
+^src/.*\.dll$
+^src/.*\.a$

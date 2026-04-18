@@ -185,7 +185,7 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #'   LZ), `"small"` (per-block adaptive — tries greedy LZ, separated-streams
 #'   LZ, and LZ + Huffman entropy coding, and writes whichever shrank the
 #'   block the most; never worse than `"fast"` on any block, typically
-#'   10-25\% smaller files at the cost of slower encode), or `"none"`.
+#'   10-25 percent smaller files at the cost of slower encode), or `"none"`.
 #' @param batch_size Target number of rows per row group in the output file.
 #'   Defaults to 131072 for data.frames (1 MB per double column, cache-friendly
 #'   for decompression). For nodes, defaults to `NULL` (one row group per
@@ -293,6 +293,10 @@ append_vtr <- function(x, path, ...) {
 append_vtr.vectra_node <- function(x, path, ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = TRUE)
+  # Force GC so any lingering tbl()-owned file handles on `path` are closed
+  # before we stream-rewrite the file. On Windows the rename at the end of
+  # C_append_vtr otherwise fails with a sharing violation.
+  gc(verbose = FALSE)
   .Call(C_append_vtr, x$.node, path)
   invisible(NULL)
 }

@@ -5,6 +5,7 @@
 #include "batch.h"
 #include "builder.h"
 #include "error.h"
+#include "vtr_atomic_rename.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,8 +25,7 @@ static char *make_tmp_path(const char *path) {
 }
 
 static void atomic_swap(char *tmp_path, const char *path) {
-    remove(path);
-    if (rename(tmp_path, path) != 0) {
+    if (vtr_atomic_replace(tmp_path, path) != 0) {
         remove(tmp_path);
         free(tmp_path);
         vectra_error("failed to rename temp file to: %s", path);

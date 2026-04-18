@@ -1,3 +1,37 @@
+# vectra 0.5.0
+
+## Compression backend rewire
+
+* Replaced the bespoke v4 codec with `tdc`, a standalone typed-dimensional
+  compression library vendored into `src/tdc/`. Encode and decode go through
+  a self-describing block record (model + transform chain + entropy) rather
+  than per-column tag constants. Deleted `vtr_codec.c`, `vtr_encodings.c`,
+  `vtr_compress.c`, `vtr1.c`, and `vtr_codec_internal.h`.
+* The `.vtr` on-disk format is a deliberate breaking change: pre-0.5 files
+  are not readable. `write_vtr()` and `append_vtr()` write the new container;
+  `tbl()` reads only the new container.
+* Per-row-group column statistics (min/max) are carried in the container
+  index so the scan layer can still prune unreachable row groups.
+* Parallel row-group reads are preserved.
+* Custom vendoring via `tools/vendor_tdc.sh` and `configure` / `configure.win`
+  pull the latest upstream `tdc` on every install when the source checkout
+  is present; the pre-vendored copy is used otherwise.
+
+## Known regression
+
+* The v4 dict-defer CHARSXP fast path is gone — duplicate strings now hit R's
+  CHARSXP hash per row. Will be re-implemented on top of `tdc`'s
+  dictionary-encoded varlen output when it becomes a hot spot.
+
+## Fixes
+
+* `man/write_vtr.Rd`: replaced a literal percent sign in the `compress`
+  argument description that produced malformed Rd output on build.
+* Windows: `write_vtr()`, `append_vtr()` and `delete_vtr()` now use
+  `MoveFileEx` with a short retry loop for the final temp-to-target swap.
+  Previously, a preceding `tbl()` read could leave the target file mmap'd
+  pending GC, and the swap would fail with a sharing violation.
+
 # vectra 0.4.1
 
 ## Star schema and lookup

@@ -26,3 +26,5 @@ src/tdc/
 /build_install.R
 /notes.md
 /todo-*.md
+/.cran_check.R
+/.cran_check.log

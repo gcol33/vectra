@@ -5,6 +5,7 @@
 #include "optimize.h"
 #include "error.h"
 #include "r_bridge.h"
+#include "vtr_atomic_rename.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,9 +100,7 @@ void vtr_append_node(VecNode *node, const char *path) {
     vtr1_close_tdc_writer(w);
     vec_schema_free(&schema_copy);
 
-    /* Atomic swap: remove target first (required on Windows for rename) */
-    remove(path);
-    if (rename(tmp_path, path) != 0) {
+    if (vtr_atomic_replace(tmp_path, path) != 0) {
         remove(tmp_path);
         free(tmp_path);
         vectra_error("append_vtr: failed to rename temp file to: %s", path);
