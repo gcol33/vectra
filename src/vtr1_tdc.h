@@ -82,6 +82,26 @@ int64_t          vtr1_tdc_rowgroup_n_rows(const Vtr1TdcFile *file,
 VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
                                  const int *col_mask);
 
+/* Direct-write decoder: per output column the caller may supply a
+ * pre-allocated, dtype-correct destination buffer in direct_bufs[out_col].
+ * Indexed by output column position (post col_mask). When honored, the
+ * returned VecArray has owns_data=0 and data_borrowed=1, and its buffer
+ * pointer aliases direct_bufs[out_col]; the caller retains ownership of
+ * that buffer. Pass direct_bufs == NULL for behavior identical to
+ * vtr1_read_rowgroup_tdc.
+ *
+ * Element-size contract: the buffer must have room for n_rows elements at
+ * the on-disk dtype size (8B for double/int64, 4B for int32, 2B for int16,
+ * 1B for int8/bool). This matches REAL/INTEGER SEXP storage for
+ * VEC_DOUBLE / VEC_INT32. VEC_BOOL is honored too but the caller must
+ * supply a uint8-wide buffer (LGLSXP int storage is NOT byte-compatible).
+ *
+ * Validity bitmap is always owned by the returned VecArray (never
+ * borrowed) so callers can free it uniformly via vec_batch_free. */
+VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
+                                    const int *col_mask,
+                                    void **direct_bufs);
+
 /* Per-rowgroup column statistics, indexed by schema column. Returns
  * NULL when stats were not encoded for the row group (e.g. zero-row
  * group) or rg_idx is out of range. The returned array has n_cols

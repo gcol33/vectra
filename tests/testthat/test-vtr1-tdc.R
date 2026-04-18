@@ -229,3 +229,88 @@ test_that("bool-only-true column reports has_false=0", {
   expect_equal(v[2], 0)             # has_false
   expect_equal(v[3], 1)             # has_true
 })
+
+# ----- P4b: NA round-trip via validity bitmap --------------------------------
+
+test_that("NA values round-trip for double / int / logical, single rowgroup", {
+  df <- data.frame(
+    d = c(1.5, NA_real_, 3.5, NA_real_, 5.5),
+    i = c(NA_integer_, 20L, 30L, NA_integer_, 50L),
+    b = c(TRUE, NA, FALSE, NA, TRUE),
+    stringsAsFactors = FALSE
+  )
+  rt <- vtr_tdc_roundtrip(df, 5L, VTR_COMPRESS_FAST)
+  expect_identical(rt$d, df$d)
+  expect_identical(rt$i, df$i)
+  expect_identical(rt$b, df$b)
+})
+
+test_that("NA values round-trip across rowgroup boundaries", {
+  set.seed(42)
+  n <- 1000L
+  d <- rnorm(n)
+  d[sample.int(n, 200)] <- NA_real_
+  i <- sample.int(.Machine$integer.max, n) - 1L
+  i[sample.int(n, 150)] <- NA_integer_
+  b <- sample(c(TRUE, FALSE), n, replace = TRUE)
+  b[sample.int(n, 100)] <- NA
+  df <- data.frame(d = d, i = i, b = b, stringsAsFactors = FALSE)
+
+  for (rg in c(64L, 128L, 333L, n)) {
+    for (level in c(VTR_COMPRESS_NONE, VTR_COMPRESS_FAST,
+                    VTR_COMPRESS_SMALL)) {
+      rt <- vtr_tdc_roundtrip(df, rg, level)
+      expect_identical(rt$d, df$d, info = sprintf("rg=%d lvl=%d", rg, level))
+      expect_identical(rt$i, df$i, info = sprintf("rg=%d lvl=%d", rg, level))
+      expect_identical(rt$b, df$b, info = sprintf("rg=%d lvl=%d", rg, level))
+    }
+  }
+})
+
+test_that("all-NA column round-trips correctly", {
+  df <- data.frame(
+    d = rep(NA_real_, 256),
+    i = rep(NA_integer_, 256),
+    b = rep(NA, 256),
+    stringsAsFactors = FALSE
+  )
+  rt <- vtr_tdc_roundtrip(df, 64L, VTR_COMPRESS_FAST)
+  expect_identical(rt$d, df$d)
+  expect_identical(rt$i, df$i)
+  expect_identical(rt$b, df$b)
+})
+
+test_that("NA at rowgroup boundary positions survives", {
+  # NAs deliberately placed at first / last index of each rowgroup.
+  rg <- 32L
+  n  <- 128L
+  d <- as.double(seq_len(n))
+  edges <- c(1L, rg, rg + 1L, 2L * rg, 2L * rg + 1L, n)
+  d[edges] <- NA_real_
+  df <- data.frame(d = d, stringsAsFactors = FALSE)
+  rt <- vtr_tdc_roundtrip(df, rg, VTR_COMPRESS_FAST)
+  expect_identical(rt$d, df$d)
+})
+
+test_that("null_count stat reflects NA presence", {
+  df <- data.frame(
+    d = c(1.0, NA_real_, 3.0, NA_real_, 5.0),
+    i = c(NA_integer_, NA_integer_, 30L, 40L, 50L),
+    b = c(TRUE, NA, NA, NA, FALSE),
+    stringsAsFactors = FALSE
+  )
+  path <- tempfile(fileext = ".vtdc")
+  on.exit(unlink(path), add = TRUE)
+  .Call("C_write_vtr_tdc", path, df, 5L, VTR_COMPRESS_FAST, NULL,
+        PACKAGE = "vectra")
+  stats <- .Call("C_read_vtr_tdc_stats", path, PACKAGE = "vectra")
+  expect_equal(stats[[1]][[1]][4], 2)  # d: 2 NAs
+  expect_equal(stats[[1]][[2]][4], 2)  # i: 2 NAs
+  expect_equal(stats[[1]][[3]][4], 3)  # b: 3 NAs
+
+  # min/max ignore NAs.
+  expect_equal(stats[[1]][[1]][2], 1)
+  expect_equal(stats[[1]][[1]][3], 5)
+  expect_equal(stats[[1]][[2]][2], 30)
+  expect_equal(stats[[1]][[2]][3], 50)
+})

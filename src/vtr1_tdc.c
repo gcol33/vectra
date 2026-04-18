@@ -659,9 +659,46 @@ const Vtr1ColStat *vtr1_tdc_rowgroup_col_stats(const Vtr1TdcFile *file,
     return file->rowgroups[rg_idx].col_stats;
 }
 
+/* Build a VecArray that aliases a caller-supplied direct buffer. owns_data
+ * is set to 0 / data_borrowed to 1 so vec_array_free leaves dst alone but
+ * callers can still distinguish "decoder honored my direct_buf" from a
+ * string-arena borrow. The validity bitmap is freshly allocated and owned
+ * by the array so vec_batch_free still releases it. */
+static VecArray vtr1_tdc_make_borrowing_array(VecType t, int64_t n_rows,
+                                              void *direct_buf) {
+    VecArray arr;
+    memset(&arr, 0, sizeof(arr));
+    arr.type = t;
+    arr.length = n_rows;
+    arr.owns_data = 0;
+    arr.data_borrowed = 1;
+    int64_t vbytes = vec_validity_bytes(n_rows);
+    arr.validity = (uint8_t *)calloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+    if (!arr.validity) vectra_error("alloc failed for validity bitmap");
+    switch (t) {
+    case VEC_DOUBLE: arr.buf.dbl = (double  *)direct_buf; break;
+    case VEC_INT64:  arr.buf.i64 = (int64_t *)direct_buf; break;
+    case VEC_INT32:  arr.buf.i32 = (int32_t *)direct_buf; break;
+    case VEC_INT16:  arr.buf.i16 = (int16_t *)direct_buf; break;
+    case VEC_INT8:   arr.buf.i8  = (int8_t  *)direct_buf; break;
+    case VEC_BOOL:   arr.buf.bln = (uint8_t *)direct_buf; break;
+    default:
+        free(arr.validity);
+        vectra_error("vtr1_read_rowgroup_tdc_ex: type %d cannot direct-write",
+                     (int)t);
+    }
+    return arr;
+}
+
 VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
                                  const int *col_mask) {
-    if (!file) vectra_error("vtr1_read_rowgroup_tdc: NULL file");
+    return vtr1_read_rowgroup_tdc_ex(file, rg_idx, col_mask, NULL);
+}
+
+VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
+                                    const int *col_mask,
+                                    void **direct_bufs) {
+    if (!file) vectra_error("vtr1_read_rowgroup_tdc_ex: NULL file");
     if (rg_idx >= file->n_rowgroups) {
         vectra_error("row group index out of range: %u >= %u",
                      rg_idx, file->n_rowgroups);
@@ -733,8 +770,17 @@ VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
             vectra_error("short read for col %d in rg %u", c, rg_idx);
         }
 
-        VecArray arr = vec_array_alloc(t, n_rows);
-        tdc_status st = vtr_decode_column_tdc(&arr, scratch, (size_t)sz);
+        void *direct = (direct_bufs ? direct_bufs[out_col] : NULL);
+        VecArray arr;
+        tdc_status st;
+        if (direct) {
+            arr = vtr1_tdc_make_borrowing_array(t, n_rows, direct);
+            st = vtr_decode_column_tdc_into(t, n_rows, direct, arr.validity,
+                                            scratch, (size_t)sz);
+        } else {
+            arr = vec_array_alloc(t, n_rows);
+            st = vtr_decode_column_tdc(&arr, scratch, (size_t)sz);
+        }
         if (st != TDC_OK) {
             vec_array_free(&arr);
             free(scratch);
@@ -800,31 +846,71 @@ static SEXPTYPE vectype_to_sxp(VecType t) {
 
 /* Writer: snapshots one slice of an R column into a VecArray view that
  * borrows the SEXP backing store (or, for LGLSXP, a temporary uint8
- * buffer). The caller must ensure the SEXP outlives the VecArray. */
+ * buffer). The validity bitmap is freshly R_alloc'd from the R NA
+ * pattern: NA_REAL / NA_INTEGER / NA_LOGICAL produce a 0 bit, all other
+ * values produce a 1 bit. If the slice has no NAs, validity is left NULL
+ * (the bridge passes NULL through to tdc, which omits HAS_VALIDITY in
+ * the record header — saves ceil(n_rows/8) bytes per col).
+ *
+ * The caller must ensure the SEXP outlives the VecArray. */
 static void r_col_slice_into_vecarray(SEXP col, R_xlen_t row_offset,
                                       int64_t n_rows, VecArray *out,
                                       uint8_t **bln_tmp_out) {
     memset(out, 0, sizeof(*out));
     out->length = n_rows;
-    /* validity is left NULL: the encode bridge passes NULL through to
-     * tdc, which writes a record without HAS_VALIDITY. The decoder
-     * fills all-valid. P3 does not exercise NA-aware round-trip. */
+    int has_na = 0;
+    int64_t vbytes = vec_validity_bytes(n_rows);
+    uint8_t *validity = NULL;
     switch (TYPEOF(col)) {
-    case REALSXP:
+    case REALSXP: {
         out->type = VEC_DOUBLE;
         out->buf.dbl = REAL(col) + row_offset;
+        const double *src = REAL(col) + row_offset;
+        for (int64_t i = 0; i < n_rows; i++) {
+            if (ISNA(src[i])) { has_na = 1; break; }
+        }
+        if (has_na) {
+            validity = (uint8_t *)R_alloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+            memset(validity, 0, (size_t)vbytes);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (!ISNA(src[i])) validity[i / 8] |= (uint8_t)(1u << (i % 8));
+            }
+        }
         break;
-    case INTSXP:
+    }
+    case INTSXP: {
         out->type = VEC_INT32;
         out->buf.i32 = INTEGER(col) + row_offset;
+        const int *src = INTEGER(col) + row_offset;
+        for (int64_t i = 0; i < n_rows; i++) {
+            if (src[i] == NA_INTEGER) { has_na = 1; break; }
+        }
+        if (has_na) {
+            validity = (uint8_t *)R_alloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+            memset(validity, 0, (size_t)vbytes);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (src[i] != NA_INTEGER)
+                    validity[i / 8] |= (uint8_t)(1u << (i % 8));
+            }
+        }
         break;
+    }
     case LGLSXP: {
         out->type = VEC_BOOL;
         uint8_t *tmp = (uint8_t *)((n_rows > 0) ? R_alloc((size_t)n_rows, 1) : NULL);
         const int *src = LOGICAL(col) + row_offset;
         for (int64_t i = 0; i < n_rows; i++) {
             int v = src[i];
-            tmp[i] = (v == NA_LOGICAL) ? 0u : (v ? 1u : 0u);
+            if (v == NA_LOGICAL) { has_na = 1; tmp[i] = 0u; }
+            else                 tmp[i] = v ? 1u : 0u;
+        }
+        if (has_na) {
+            validity = (uint8_t *)R_alloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+            memset(validity, 0, (size_t)vbytes);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (src[i] != NA_LOGICAL)
+                    validity[i / 8] |= (uint8_t)(1u << (i % 8));
+            }
         }
         out->buf.bln = tmp;
         if (bln_tmp_out) *bln_tmp_out = tmp;
@@ -833,6 +919,7 @@ static void r_col_slice_into_vecarray(SEXP col, R_xlen_t row_offset,
     default:
         Rf_error("unsupported R column type: %d", (int)TYPEOF(col));
     }
+    out->validity = validity;
 }
 
 SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
@@ -931,12 +1018,13 @@ SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
 
         vtr1_write_rowgroup_tdc(w, batch, comp_level, NULL, NULL);
 
-        /* Defensive: zero the buf union pointers before free so
-         * vec_batch_free doesn't double-free borrowed storage. */
+        /* Buf pointers and validity bitmap are borrowed: SEXP storage and
+         * R_alloc transient memory respectively. Null both out before free
+         * so vec_batch_free doesn't free what it doesn't own (R_alloc is
+         * reaped at .Call return; calling free() on it is undefined). */
         for (int c = 0; c < n_cols; c++) {
             batch->columns[c].owns_data = 0;
             memset(&batch->columns[c].buf, 0, sizeof(batch->columns[c].buf));
-            free(batch->columns[c].validity);
             batch->columns[c].validity = NULL;
         }
         vec_batch_free(batch);
@@ -984,27 +1072,53 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
     int *col_mask = (int *)R_alloc((size_t)n_cols, sizeof(int));
     for (int c = 0; c < n_cols; c++) col_mask[c] = 1;
 
+    /* Direct-write buffer table reused across rowgroups. VEC_DOUBLE /
+     * VEC_INT32 are byte-compatible with REAL / INTEGER SEXP storage, so
+     * the decoder writes the row-group slice straight into the output
+     * vector. VEC_BOOL goes through an intermediate uint8 buffer because
+     * LGLSXP int storage is NOT byte-compatible with the on-disk layout. */
+    void **direct_bufs = (void **)R_alloc((size_t)n_cols, sizeof(void *));
+
     R_xlen_t cursor = 0;
     for (uint32_t r = 0; r < n_rg; r++) {
-        VecBatch *batch = vtr1_read_rowgroup_tdc(f, r, col_mask);
-        int64_t rg_rows = batch->n_rows;
+        int64_t rg_rows = vtr1_tdc_rowgroup_n_rows(f, r);
+        for (int c = 0; c < n_cols; c++) {
+            SEXP col = VECTOR_ELT(out, c);
+            switch (schema->col_types[c]) {
+            case VEC_DOUBLE: direct_bufs[c] = REAL(col) + cursor;    break;
+            case VEC_INT32:  direct_bufs[c] = INTEGER(col) + cursor; break;
+            default:         direct_bufs[c] = NULL;                  break;
+            }
+        }
+
+        VecBatch *batch = vtr1_read_rowgroup_tdc_ex(f, r, col_mask, direct_bufs);
         for (int c = 0; c < n_cols; c++) {
             SEXP col = VECTOR_ELT(out, c);
             VecArray *src = &batch->columns[c];
+            const uint8_t *vmap = src->validity;  /* always non-NULL post-decode */
             switch (schema->col_types[c]) {
-            case VEC_DOUBLE:
-                memcpy(REAL(col) + cursor, src->buf.dbl,
-                       (size_t)rg_rows * sizeof(double));
+            case VEC_DOUBLE: {
+                /* Direct-written; only NA-patch positions whose validity bit is 0. */
+                double *dst = REAL(col) + cursor;
+                for (int64_t i = 0; i < rg_rows; i++) {
+                    if (!((vmap[i / 8] >> (i % 8)) & 1u)) dst[i] = NA_REAL;
+                }
                 break;
-            case VEC_INT32:
-                memcpy(INTEGER(col) + cursor, src->buf.i32,
-                       (size_t)rg_rows * sizeof(int32_t));
+            }
+            case VEC_INT32: {
+                int *dst = INTEGER(col) + cursor;
+                for (int64_t i = 0; i < rg_rows; i++) {
+                    if (!((vmap[i / 8] >> (i % 8)) & 1u)) dst[i] = NA_INTEGER;
+                }
                 break;
+            }
             case VEC_BOOL: {
                 int *dst = LOGICAL(col) + cursor;
                 const uint8_t *s = src->buf.bln;
-                for (int64_t i = 0; i < rg_rows; i++)
-                    dst[i] = s[i] ? TRUE : FALSE;
+                for (int64_t i = 0; i < rg_rows; i++) {
+                    if (!((vmap[i / 8] >> (i % 8)) & 1u)) dst[i] = NA_LOGICAL;
+                    else                                  dst[i] = s[i] ? TRUE : FALSE;
+                }
                 break;
             }
             default:
