@@ -109,6 +109,30 @@ VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
 const Vtr1ColStat *vtr1_tdc_rowgroup_col_stats(const Vtr1TdcFile *file,
                                                uint32_t rg_idx);
 
+/* Parallel readers: each rowgroup is decoded by an OpenMP worker that
+ * holds its own FILE* (no shared seek state) and per-thread scratch.
+ * Returns a malloc'd array of length *out_count = n_rowgroups; entries
+ * must be freed by the caller via vec_batch_free.
+ *
+ * The _into variant accepts per-output-column base buffers; thread `t`
+ * decoding rowgroup `rg` writes into col_bases[i] + cum_rows[rg] *
+ * col_elem_sizes[i] using the direct-write contract from
+ * vtr1_read_rowgroup_tdc_ex (8B for double/int64, 4B int32, etc.).
+ *
+ * IMPORTANT: when col_bases entries reference R SEXP storage (REAL /
+ * INTEGER), no R API call may happen on any thread inside the call —
+ * any R-side allocation could move the underlying buffer. The decoder
+ * itself never touches R; callers must respect the same rule. */
+VecBatch **vtr1_read_parallel_tdc(Vtr1TdcFile *file, const int *col_mask,
+                                  const char *path, uint32_t *out_count);
+
+VecBatch **vtr1_read_parallel_tdc_into(Vtr1TdcFile *file, const int *col_mask,
+                                       const char *path,
+                                       void **col_bases,
+                                       const size_t *col_elem_sizes,
+                                       int n_out_cols,
+                                       uint32_t *out_count);
+
 void vtr1_close_tdc(Vtr1TdcFile *file);
 
 #endif /* VECTRA_VTR1_TDC_H */

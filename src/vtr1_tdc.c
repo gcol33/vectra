@@ -690,6 +690,102 @@ static VecArray vtr1_tdc_make_borrowing_array(VecType t, int64_t n_rows,
     return arr;
 }
 
+/* Core per-rowgroup decoder: takes an explicit FILE* and a pair of
+ * caller-owned scratch slots so the parallel reader can share scratch
+ * across rowgroups within a single thread. *scratch / *scratch_cap are
+ * grown in place; the caller frees them. */
+static VecBatch *read_rg_tdc_with_fp(Vtr1TdcFile *file, uint32_t rg_idx,
+                                     const int *col_mask, FILE *fp,
+                                     uint8_t **scratch, size_t *scratch_cap,
+                                     void **direct_bufs) {
+    const VecSchema *schema = &file->schema;
+    int n_cols = schema->n_cols;
+    int64_t n_rows = file->rowgroups[rg_idx].n_rows;
+
+    int n_selected = 0;
+    for (int c = 0; c < n_cols; c++) {
+        if (col_mask[c]) n_selected++;
+    }
+
+    VecBatch *batch = vec_batch_alloc(n_selected, n_rows);
+
+    int out_col = 0;
+    for (int c = 0; c < n_cols; c++) {
+        if (!col_mask[c]) continue;
+
+        VecType t = schema->col_types[c];
+        if (t == VEC_STRING) {
+            vec_batch_free(batch);
+            vectra_error("VEC_STRING decode not supported (P3 gap)");
+        }
+
+        uint64_t off = file->rowgroups[rg_idx].block_offset[c];
+        uint64_t sz  = file->rowgroups[rg_idx].block_total[c];
+        if (sz == 0 || sz > (uint64_t)SIZE_MAX) {
+            vec_batch_free(batch);
+            vectra_error("invalid block size %llu for col %d in rg %u",
+                         (unsigned long long)sz, c, rg_idx);
+        }
+        if (sz > *scratch_cap) {
+            uint8_t *nb = (uint8_t *)realloc(*scratch, (size_t)sz);
+            if (!nb) {
+                vec_batch_free(batch);
+                vectra_error("alloc failed for block scratch (%llu bytes)",
+                             (unsigned long long)sz);
+            }
+            *scratch = nb;
+            *scratch_cap = (size_t)sz;
+        }
+
+#if defined(_WIN32)
+        if (_fseeki64(fp, (int64_t)off, SEEK_SET) != 0) {
+            vec_batch_free(batch);
+            vectra_error("fseek failed for col %d in rg %u", c, rg_idx);
+        }
+#else
+        if (fseeko(fp, (off_t)off, SEEK_SET) != 0) {
+            vec_batch_free(batch);
+            vectra_error("fseek failed for col %d in rg %u", c, rg_idx);
+        }
+#endif
+        if (fread(*scratch, 1, (size_t)sz, fp) != (size_t)sz) {
+            vec_batch_free(batch);
+            vectra_error("short read for col %d in rg %u", c, rg_idx);
+        }
+
+        void *direct = (direct_bufs ? direct_bufs[out_col] : NULL);
+        VecArray arr;
+        tdc_status st;
+        if (direct) {
+            arr = vtr1_tdc_make_borrowing_array(t, n_rows, direct);
+            st = vtr_decode_column_tdc_into(t, n_rows, direct, arr.validity,
+                                            *scratch, (size_t)sz);
+        } else {
+            arr = vec_array_alloc(t, n_rows);
+            st = vtr_decode_column_tdc(&arr, *scratch, (size_t)sz);
+        }
+        if (st != TDC_OK) {
+            vec_array_free(&arr);
+            vec_batch_free(batch);
+            vectra_error("vtr_decode_column_tdc failed for col %d in rg %u: status=%d",
+                         c, rg_idx, (int)st);
+        }
+        batch->columns[out_col] = arr;
+
+        size_t name_len = strlen(schema->col_names[c]);
+        batch->col_names[out_col] = (char *)malloc(name_len + 1);
+        if (!batch->col_names[out_col]) {
+            vec_batch_free(batch);
+            vectra_error("alloc failed for col name");
+        }
+        memcpy(batch->col_names[out_col], schema->col_names[c], name_len + 1);
+
+        out_col++;
+    }
+
+    return batch;
+}
+
 VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
                                  const int *col_mask) {
     return vtr1_read_rowgroup_tdc_ex(file, rg_idx, col_mask, NULL);
@@ -704,106 +800,93 @@ VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
                      rg_idx, file->n_rowgroups);
     }
 
-    const VecSchema *schema = &file->schema;
-    int n_cols = schema->n_cols;
-    int64_t n_rows = file->rowgroups[rg_idx].n_rows;
-
-    int n_selected = 0;
-    for (int c = 0; c < n_cols; c++) {
-        if (col_mask[c]) n_selected++;
-    }
-
-    VecBatch *batch = vec_batch_alloc(n_selected, n_rows);
-
-    /* Reusable scratch for raw block bytes — grows but never shrinks
-     * across the rowgroup. */
     uint8_t *scratch = NULL;
     size_t   scratch_cap = 0;
-
-    int out_col = 0;
-    for (int c = 0; c < n_cols; c++) {
-        if (!col_mask[c]) continue;
-
-        VecType t = schema->col_types[c];
-        if (t == VEC_STRING) {
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("VEC_STRING decode not supported (P3 gap)");
-        }
-
-        uint64_t off = file->rowgroups[rg_idx].block_offset[c];
-        uint64_t sz  = file->rowgroups[rg_idx].block_total[c];
-        if (sz == 0 || sz > (uint64_t)SIZE_MAX) {
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("invalid block size %llu for col %d in rg %u",
-                         (unsigned long long)sz, c, rg_idx);
-        }
-        if (sz > scratch_cap) {
-            uint8_t *nb = (uint8_t *)realloc(scratch, (size_t)sz);
-            if (!nb) {
-                free(scratch);
-                vec_batch_free(batch);
-                vectra_error("alloc failed for block scratch (%llu bytes)",
-                             (unsigned long long)sz);
-            }
-            scratch = nb;
-            scratch_cap = (size_t)sz;
-        }
-
-#if defined(_WIN32)
-        if (_fseeki64(file->fp, (int64_t)off, SEEK_SET) != 0) {
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("fseek failed for col %d in rg %u", c, rg_idx);
-        }
-#else
-        if (fseeko(file->fp, (off_t)off, SEEK_SET) != 0) {
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("fseek failed for col %d in rg %u", c, rg_idx);
-        }
-#endif
-        if (fread(scratch, 1, (size_t)sz, file->fp) != (size_t)sz) {
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("short read for col %d in rg %u", c, rg_idx);
-        }
-
-        void *direct = (direct_bufs ? direct_bufs[out_col] : NULL);
-        VecArray arr;
-        tdc_status st;
-        if (direct) {
-            arr = vtr1_tdc_make_borrowing_array(t, n_rows, direct);
-            st = vtr_decode_column_tdc_into(t, n_rows, direct, arr.validity,
-                                            scratch, (size_t)sz);
-        } else {
-            arr = vec_array_alloc(t, n_rows);
-            st = vtr_decode_column_tdc(&arr, scratch, (size_t)sz);
-        }
-        if (st != TDC_OK) {
-            vec_array_free(&arr);
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("vtr_decode_column_tdc failed for col %d in rg %u: status=%d",
-                         c, rg_idx, (int)st);
-        }
-        batch->columns[out_col] = arr;
-
-        size_t name_len = strlen(schema->col_names[c]);
-        batch->col_names[out_col] = (char *)malloc(name_len + 1);
-        if (!batch->col_names[out_col]) {
-            free(scratch);
-            vec_batch_free(batch);
-            vectra_error("alloc failed for col name");
-        }
-        memcpy(batch->col_names[out_col], schema->col_names[c], name_len + 1);
-
-        out_col++;
-    }
-
+    VecBatch *batch = read_rg_tdc_with_fp(file, rg_idx, col_mask, file->fp,
+                                          &scratch, &scratch_cap, direct_bufs);
     free(scratch);
     return batch;
+}
+
+VecBatch **vtr1_read_parallel_tdc(Vtr1TdcFile *file, const int *col_mask,
+                                  const char *path, uint32_t *out_count) {
+    return vtr1_read_parallel_tdc_into(file, col_mask, path,
+                                       NULL, NULL, 0, out_count);
+}
+
+/* Parallel reader. Mirrors vtr1_read_parallel_into in vtr1.c: each thread
+ * opens its own FILE*, walks rowgroups via OpenMP for-schedule(dynamic),
+ * and writes into per-column base buffers offset by the rowgroup's
+ * cumulative row offset. col_bases entries must remain valid for the
+ * duration of the call; callers must NOT touch the R API on any thread
+ * inside this function. */
+VecBatch **vtr1_read_parallel_tdc_into(Vtr1TdcFile *file, const int *col_mask,
+                                       const char *path,
+                                       void **col_bases,
+                                       const size_t *col_elem_sizes,
+                                       int n_out_cols,
+                                       uint32_t *out_count) {
+    uint32_t n_rg = file->n_rowgroups;
+    *out_count = n_rg;
+    if (n_rg == 0) return NULL;
+
+    VecBatch **batches = (VecBatch **)calloc((size_t)n_rg, sizeof(VecBatch *));
+    if (!batches) vectra_error("alloc failed for parallel TDC read");
+
+    int64_t *rg_offsets = NULL;
+    if (col_bases) {
+        rg_offsets = (int64_t *)malloc((size_t)n_rg * sizeof(int64_t));
+        if (!rg_offsets) { free(batches);
+            vectra_error("alloc failed for rg_offsets"); }
+        int64_t cum = 0;
+        for (uint32_t r = 0; r < n_rg; r++) {
+            rg_offsets[r] = cum;
+            cum += file->rowgroups[r].n_rows;
+        }
+    }
+
+    #pragma omp parallel
+    {
+        FILE *fp = fopen(path, "rb");
+        if (!fp) vectra_error("parallel TDC read: cannot open %s", path);
+        setvbuf(fp, NULL, _IOFBF, 256 * 1024);
+
+        uint8_t *scratch = NULL;
+        size_t   scratch_cap = 0;
+
+        void **thread_bufs = NULL;
+        if (col_bases) {
+            thread_bufs = (void **)malloc((size_t)n_out_cols * sizeof(void *));
+            if (!thread_bufs)
+                vectra_error("alloc failed for thread_bufs");
+        }
+
+        #pragma omp for schedule(dynamic)
+        for (int32_t r = 0; r < (int32_t)n_rg; r++) {
+            void **bufs = NULL;
+            if (col_bases) {
+                int64_t off = rg_offsets[r];
+                for (int i = 0; i < n_out_cols; i++) {
+                    if (col_bases[i]) {
+                        thread_bufs[i] = (uint8_t *)col_bases[i]
+                                       + (size_t)off * col_elem_sizes[i];
+                    } else {
+                        thread_bufs[i] = NULL;
+                    }
+                }
+                bufs = thread_bufs;
+            }
+            batches[r] = read_rg_tdc_with_fp(file, (uint32_t)r, col_mask,
+                                             fp, &scratch, &scratch_cap, bufs);
+        }
+
+        free(thread_bufs);
+        free(scratch);
+        fclose(fp);
+    }
+
+    free(rg_offsets);
+    return batches;
 }
 
 void vtr1_close_tdc(Vtr1TdcFile *file) {
@@ -1072,33 +1155,65 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
     int *col_mask = (int *)R_alloc((size_t)n_cols, sizeof(int));
     for (int c = 0; c < n_cols; c++) col_mask[c] = 1;
 
-    /* Direct-write buffer table reused across rowgroups. VEC_DOUBLE /
-     * VEC_INT32 are byte-compatible with REAL / INTEGER SEXP storage, so
-     * the decoder writes the row-group slice straight into the output
-     * vector. VEC_BOOL goes through an intermediate uint8 buffer because
-     * LGLSXP int storage is NOT byte-compatible with the on-disk layout. */
-    void **direct_bufs = (void **)R_alloc((size_t)n_cols, sizeof(void *));
+    /* Direct-write base buffers. VEC_DOUBLE / VEC_INT32 are byte-compatible
+     * with REAL / INTEGER SEXP storage, so the parallel decoder writes
+     * each rowgroup slice straight into the output vector. VEC_BOOL stages
+     * through a contiguous uint8 buffer (LGLSXP int storage is NOT byte-
+     * compatible); a serial pass after the parallel decode converts to
+     * LOGICAL with NA patching. */
+    void  **col_bases      = (void  **)R_alloc((size_t)n_cols, sizeof(void *));
+    size_t *col_elem_sizes = (size_t *)R_alloc((size_t)n_cols, sizeof(size_t));
+    uint8_t **bool_stage   = (uint8_t **)R_alloc((size_t)n_cols, sizeof(uint8_t *));
+    for (int c = 0; c < n_cols; c++) {
+        SEXP col = VECTOR_ELT(out, c);
+        bool_stage[c] = NULL;
+        switch (schema->col_types[c]) {
+        case VEC_DOUBLE:
+            col_bases[c]      = REAL(col);
+            col_elem_sizes[c] = sizeof(double);
+            break;
+        case VEC_INT32:
+            col_bases[c]      = INTEGER(col);
+            col_elem_sizes[c] = sizeof(int32_t);
+            break;
+        case VEC_BOOL:
+            bool_stage[c] = (uint8_t *)((total_rows > 0)
+                                        ? R_alloc((size_t)total_rows, 1) : NULL);
+            col_bases[c]      = bool_stage[c];
+            col_elem_sizes[c] = 1;
+            break;
+        default:
+            col_bases[c]      = NULL;
+            col_elem_sizes[c] = 0;
+            break;
+        }
+    }
 
+    /* Parallel decode. No R API may run on threads — only memory writes
+     * into col_bases (REAL / INTEGER / R_alloc'd uint8). */
+    uint32_t got = 0;
+    VecBatch **batches = vtr1_read_parallel_tdc_into(f, col_mask, path,
+                                                     col_bases, col_elem_sizes,
+                                                     n_cols, &got);
+    if (got != n_rg) {
+        for (uint32_t r = 0; r < got; r++) vec_batch_free(batches[r]);
+        free(batches);
+        vtr1_close_tdc(f);
+        UNPROTECT(2);
+        Rf_error("parallel TDC read returned %u != %u rowgroups", got, n_rg);
+    }
+
+    /* Serial post-pass: NA-patch from each rowgroup's validity bitmap and
+     * convert the staged uint8 bool slice into LGLSXP int storage. */
     R_xlen_t cursor = 0;
     for (uint32_t r = 0; r < n_rg; r++) {
-        int64_t rg_rows = vtr1_tdc_rowgroup_n_rows(f, r);
+        VecBatch *batch = batches[r];
+        int64_t rg_rows = batch->n_rows;
         for (int c = 0; c < n_cols; c++) {
             SEXP col = VECTOR_ELT(out, c);
-            switch (schema->col_types[c]) {
-            case VEC_DOUBLE: direct_bufs[c] = REAL(col) + cursor;    break;
-            case VEC_INT32:  direct_bufs[c] = INTEGER(col) + cursor; break;
-            default:         direct_bufs[c] = NULL;                  break;
-            }
-        }
-
-        VecBatch *batch = vtr1_read_rowgroup_tdc_ex(f, r, col_mask, direct_bufs);
-        for (int c = 0; c < n_cols; c++) {
-            SEXP col = VECTOR_ELT(out, c);
-            VecArray *src = &batch->columns[c];
-            const uint8_t *vmap = src->validity;  /* always non-NULL post-decode */
+            const uint8_t *vmap = batch->columns[c].validity;
             switch (schema->col_types[c]) {
             case VEC_DOUBLE: {
-                /* Direct-written; only NA-patch positions whose validity bit is 0. */
                 double *dst = REAL(col) + cursor;
                 for (int64_t i = 0; i < rg_rows; i++) {
                     if (!((vmap[i / 8] >> (i % 8)) & 1u)) dst[i] = NA_REAL;
@@ -1114,7 +1229,7 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
             }
             case VEC_BOOL: {
                 int *dst = LOGICAL(col) + cursor;
-                const uint8_t *s = src->buf.bln;
+                const uint8_t *s = bool_stage[c] + cursor;
                 for (int64_t i = 0; i < rg_rows; i++) {
                     if (!((vmap[i / 8] >> (i % 8)) & 1u)) dst[i] = NA_LOGICAL;
                     else                                  dst[i] = s[i] ? TRUE : FALSE;
@@ -1122,7 +1237,8 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
                 break;
             }
             default:
-                vec_batch_free(batch);
+                for (uint32_t k = r; k < n_rg; k++) vec_batch_free(batches[k]);
+                free(batches);
                 vtr1_close_tdc(f);
                 UNPROTECT(2);
                 Rf_error("unhandled VecType in C_read_vtr_tdc");
@@ -1131,6 +1247,7 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
         vec_batch_free(batch);
         cursor += rg_rows;
     }
+    free(batches);
 
     vtr1_close_tdc(f);
     UNPROTECT(2);

@@ -292,6 +292,30 @@ test_that("NA at rowgroup boundary positions survives", {
   expect_identical(rt$d, df$d)
 })
 
+# ----- P4c: parallel reader correctness --------------------------------------
+
+test_that("many-rowgroup file decodes correctly under parallel reader", {
+  # 200 rowgroups exercises OpenMP scheduling and per-thread FILE* handling.
+  set.seed(7)
+  n <- 20000L
+  df <- data.frame(
+    d = rnorm(n),
+    i = sample.int(.Machine$integer.max, n) - 1L,
+    b = sample(c(TRUE, FALSE), n, replace = TRUE),
+    stringsAsFactors = FALSE
+  )
+  # Salt with NAs every 73rd row across all three types.
+  na_idx <- seq.int(1L, n, by = 73L)
+  df$d[na_idx] <- NA_real_
+  df$i[na_idx] <- NA_integer_
+  df$b[na_idx] <- NA
+
+  rt <- vtr_tdc_roundtrip(df, 100L, VTR_COMPRESS_FAST)  # 200 rowgroups
+  expect_identical(rt$d, df$d)
+  expect_identical(rt$i, df$i)
+  expect_identical(rt$b, df$b)
+})
+
 test_that("null_count stat reflects NA presence", {
   df <- data.frame(
     d = c(1.0, NA_real_, 3.0, NA_real_, 5.0),
