@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -51,6 +51,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -81,7 +82,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-04</h4>
+            <h4 data-toc-skip class="date">2026-04-18</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/engine.Rmd" class="external-link"><code>vignettes/engine.Rmd</code></a></small>
       <div class="d-none name"><code>engine.Rmd</code></div>
@@ -190,6 +191,11 @@ query engine does not know or care which source is upstream.</p>
 <h3 id="output-sinks">Output sinks<a class="anchor" aria-label="anchor" href="#output-sinks"></a>
 </h3>
 <table class="table">
+<colgroup>
+<col width="34%">
+<col width="27%">
+<col width="37%">
+</colgroup>
 <thead><tr class="header">
 <th align="left">Function</th>
 <th align="left">Format</th>
@@ -217,9 +223,10 @@ query engine does not know or care which source is upstream.</p>
 <td align="left">streams batch-by-batch</td>
 </tr>
 <tr class="odd">
-<td align="left"><code>write_tiff(x, path)</code></td>
+<td align="left"><code>write_tiff(x, path, pixel_type)</code></td>
 <td align="left">GeoTIFF</td>
-<td align="left">streams batch-by-batch</td>
+<td align="left">streams batch-by-batch; <code>pixel_type</code>:
+float64/float32/int16/int32/uint8/uint16</td>
 </tr>
 </tbody>
 </table>

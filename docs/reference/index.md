@@ -28,6 +28,15 @@ Write query results or data.frames to disk
 - [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md)
   : Write query results to a GeoTIFF file
 
+## GeoTIFF helpers
+
+Metadata and point-sampling for GeoTIFF rasters
+
+- [`tiff_extract_points()`](https://gillescolling.com/vectra/reference/tiff_extract_points.md)
+  : Extract raster values at point coordinates
+- [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md)
+  : Read GDAL_METADATA from a GeoTIFF
+
 ## File operations
 
 Incremental updates to .vtr files
@@ -107,6 +116,18 @@ Transform, filter, and reshape
   : Cross join two vectra tables
 - [`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)
   : Fuzzy join two vectra tables by string distance
+
+## Star schema
+
+Define linked dimension tables and look up columns without explicit
+joins
+
+- [`vtr_schema()`](https://gillescolling.com/vectra/reference/vtr_schema.md)
+  : Create a star schema over linked vectra tables
+- [`link()`](https://gillescolling.com/vectra/reference/link.md) :
+  Define a link between a fact table and a dimension table
+- [`lookup()`](https://gillescolling.com/vectra/reference/lookup.md) :
+  Look up columns from linked dimension tables
 
 ## Combining tables
 

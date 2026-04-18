@@ -39,6 +39,10 @@ tbl_tiff("worldclim_bio1.tif") |>
   mutate(temp_c = band1 / 10) |>
   collect()
 
+# Point extraction — sample raster values at coordinates, no terra needed
+tiff_extract_points("worldclim_bio1.tif",
+                    x = c(10.5, 11.2), y = c(47.1, 47.3))
+
 # SQLite — zero-dependency, no DBI required
 tbl_sqlite("survey.db", "responses") |>
   filter(year == 2025) |>
@@ -85,6 +89,23 @@ tbl("taxa.vtr") |>
   collect()
 ```
 
+Register a star schema to avoid flat-table column creep. Define the
+links once, then pull only what you need:
+
+``` r
+
+s <- vtr_schema(
+  fact    = tbl("observations.vtr"),
+  species = link("sp_id", tbl("species.vtr")),
+  site    = link("site_id", tbl("sites.vtr"))
+)
+
+# Pull columns from any dimension — joins are built automatically
+lookup(s, count, species$name, site$habitat) |> collect()
+#> species: all 500 keys matched
+#> site: 3/500 unmatched keys (X1, X2, X3)
+```
+
 Use [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
 to inspect the optimized plan:
 
@@ -112,8 +133,8 @@ binaries matching your platform), DuckDB (links a 30 MB bundled
 library), or Spark (requires a JVM and cluster configuration).
 
 vectra is a self-contained C11 engine compiled as a standard R
-extension. No external libraries beyond zlib, no JVM, no runtime
-configuration. It provides:
+extension. No external libraries, no JVM, no runtime configuration. It
+provides:
 
 - **Streaming execution**: data flows one row group at a time, never
   fully in memory
@@ -137,6 +158,9 @@ configuration. It provides:
   without round-tripping to R
 - **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF — all produce
   the same lazy query nodes
+- **Integer TIFF output**: write rasters as
+  `int16`/`int32`/`uint8`/`uint16`/`float32` with embedded GDAL metadata
+  for 5-10x smaller files
 
 ## Features
 
@@ -144,7 +168,7 @@ configuration. It provides:
 |:---|:---|
 | **Transform** | [`filter()`](https://gillescolling.com/vectra/reference/filter.md), [`select()`](https://gillescolling.com/vectra/reference/select.md), [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md), [`transmute()`](https://gillescolling.com/vectra/reference/transmute.md), [`rename()`](https://gillescolling.com/vectra/reference/rename.md), [`relocate()`](https://gillescolling.com/vectra/reference/relocate.md) |
 | **Aggregate** | [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md), [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md) (`n`, `sum`, `mean`, `min`, `max`, `sd`, `var`, `first`, `last`, `any`, `all`, `median`, `n_distinct`), [`count()`](https://gillescolling.com/vectra/reference/count.md), [`tally()`](https://gillescolling.com/vectra/reference/count.md), [`distinct()`](https://gillescolling.com/vectra/reference/distinct.md) |
-| **Join** | [`left_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`inner_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`right_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`full_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`semi_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`anti_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`cross_join()`](https://gillescolling.com/vectra/reference/cross_join.md) |
+| **Join** | [`left_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`inner_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`right_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`full_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`semi_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`anti_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`cross_join()`](https://gillescolling.com/vectra/reference/cross_join.md), [`lookup()`](https://gillescolling.com/vectra/reference/lookup.md) |
 | **Order** | [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md), [`slice_head()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice_tail()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice()`](https://gillescolling.com/vectra/reference/slice.md) |
 | **Window** | `row_number()`, [`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`, [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`, [`cumsum()`](https://rdrr.io/r/base/cumsum.html), `cummean()`, [`cummin()`](https://rdrr.io/r/base/cumsum.html), [`cummax()`](https://rdrr.io/r/base/cumsum.html), `ntile()`, `percent_rank()`, `cume_dist()` |
 | **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, [`as.Date()`](https://rdrr.io/r/base/as.Date.html) (in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)) |
@@ -152,7 +176,8 @@ configuration. It provides:
 | **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()` — fuzzy matching in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md), with optional `max_dist` early termination |
 | **Expression** | [`abs()`](https://rdrr.io/r/base/MathFun.html), [`sqrt()`](https://rdrr.io/r/base/MathFun.html), [`log()`](https://rdrr.io/r/base/Log.html), [`exp()`](https://rdrr.io/r/base/Log.html), [`floor()`](https://rdrr.io/r/base/Round.html), [`ceiling()`](https://rdrr.io/r/base/Round.html), [`round()`](https://rdrr.io/r/base/Round.html), [`log2()`](https://rdrr.io/r/base/Log.html), [`log10()`](https://rdrr.io/r/base/Log.html), [`sign()`](https://rdrr.io/r/base/sign.html), [`trunc()`](https://rdrr.io/r/base/Round.html), `if_else()`, `between()`, `%in%`, [`as.numeric()`](https://rdrr.io/r/base/numeric.html), [`pmin()`](https://rdrr.io/r/base/Extremes.html), [`pmax()`](https://rdrr.io/r/base/Extremes.html), `resolve()`, `propagate()` (in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)) |
 | **Combine** | [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md), [`bind_cols()`](https://gillescolling.com/vectra/reference/bind_rows.md), [`across()`](https://gillescolling.com/vectra/reference/across.md) |
-| **I/O** | [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md), [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md), [`tbl_sqlite()`](https://gillescolling.com/vectra/reference/tbl_sqlite.md), [`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md), [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md), [`write_csv()`](https://gillescolling.com/vectra/reference/write_csv.md), [`write_sqlite()`](https://gillescolling.com/vectra/reference/write_sqlite.md), [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md), [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md), [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md), [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md) |
+| **Schema** | [`vtr_schema()`](https://gillescolling.com/vectra/reference/vtr_schema.md), [`link()`](https://gillescolling.com/vectra/reference/link.md), [`lookup()`](https://gillescolling.com/vectra/reference/lookup.md) — star schema definition and dimension lookup with match reporting |
+| **I/O** | [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md), [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md), [`tbl_sqlite()`](https://gillescolling.com/vectra/reference/tbl_sqlite.md), [`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md), [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md), [`write_csv()`](https://gillescolling.com/vectra/reference/write_csv.md), [`write_sqlite()`](https://gillescolling.com/vectra/reference/write_sqlite.md), [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md), [`tiff_extract_points()`](https://gillescolling.com/vectra/reference/tiff_extract_points.md), [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md), [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md), [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md), [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md) |
 | **Inspect** | [`explain()`](https://gillescolling.com/vectra/reference/explain.md), [`glimpse()`](https://gillescolling.com/vectra/reference/glimpse.md), [`print()`](https://rdrr.io/r/base/print.html), [`pull()`](https://gillescolling.com/vectra/reference/pull.md) |
 
 Full tidyselect support in
@@ -184,6 +209,9 @@ pak::pak("gcol33/vectra")
   CSV, SQLite, Excel, GeoTIFF, and streaming conversion pipelines
 - [Joins](https://gillescolling.com/vectra/articles/joins.html) — All
   join types, fuzzy joins, key coercion, and memory model
+- [Star Schemas](https://gillescolling.com/vectra/articles/schema.html)
+  — Dimension lookups, match reporting, and avoiding flat-table column
+  creep
 - [String
   Operations](https://gillescolling.com/vectra/articles/string-ops.html)
   — Pattern matching, fuzzy matching, and block lookups

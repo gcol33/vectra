@@ -37,13 +37,13 @@ data.table are mature, fast, and well-supported. Arrow’s
 and interoperates with the broader Arrow ecosystem (Spark, DuckDB,
 Flight). vectra fills a different niche: dplyr syntax on single-file
 storage with memory-bounded execution and no heavy compiled
-dependencies. The entire C codebase compiles from C11 source, linking
-only zlib and zstd (both bundled with Rtools on Windows and available as
-system packages on Linux and macOS). There is no C++ compiler
-requirement, no Boost, no protobuf. A 20 GB `.vtr` file processes on a
-laptop with 8 GB of RAM because the scan node reads one row group at a
-time and the downstream pipeline never holds more than two batches in
-memory simultaneously.
+dependencies. The entire C codebase compiles from C11 source with no
+external library dependencies — compression and deflate support are
+vendored in the package itself. There is no C++ compiler requirement, no
+Boost, no protobuf. A 20 GB `.vtr` file processes on a laptop with 8 GB
+of RAM because the scan node reads one row group at a time and the
+downstream pipeline never holds more than two batches in memory
+simultaneously.
 
 The on-disk format uses dictionary encoding for low-cardinality string
 columns, delta encoding for monotonic integer sequences, and Zstandard
@@ -299,7 +299,7 @@ tbl(f) |>
 #> 
 #> ProjectNode [streaming] 
 #>   FilterNode [streaming] 
-#>     ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, v3 stats] 
+#>     ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (3):
 #>   mpg <double>
@@ -1981,7 +1981,7 @@ tbl(f) |>
 #> SortNode [materializes] 
 #>   ProjectNode [streaming] 
 #>     FilterNode [streaming] 
-#>       ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, v3 stats] 
+#>       ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (3):
 #>   mpg <double>

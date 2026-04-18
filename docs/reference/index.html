@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -34,6 +34,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -135,6 +136,29 @@
 
         </dt>
         <dd>Write query results to a GeoTIFF file</dd>
+      </dl></div><div class="section level2">
+      <h2 id="geotiff-helpers">GeoTIFF helpers<a class="anchor" aria-label="anchor" href="#geotiff-helpers"></a></h2>
+
+      <div class="section-desc"><p>Metadata and point-sampling for GeoTIFF rasters</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="tiff_extract_points.html">tiff_extract_points()</a></code>
+
+        </dt>
+        <dd>Extract raster values at point coordinates</dd>
+
+        <dt>
+
+          <code><a href="tiff_metadata.html">tiff_metadata()</a></code>
+
+        </dt>
+        <dd>Read GDAL_METADATA from a GeoTIFF</dd>
       </dl></div><div class="section level2">
       <h2 id="file-operations">File operations<a class="anchor" aria-label="anchor" href="#file-operations"></a></h2>
 
@@ -360,6 +384,36 @@
 
         </dt>
         <dd>Fuzzy join two vectra tables by string distance</dd>
+      </dl></div><div class="section level2">
+      <h2 id="star-schema">Star schema<a class="anchor" aria-label="anchor" href="#star-schema"></a></h2>
+
+      <div class="section-desc"><p>Define linked dimension tables and look up columns without explicit joins</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="vtr_schema.html">vtr_schema()</a></code>
+
+        </dt>
+        <dd>Create a star schema over linked vectra tables</dd>
+
+        <dt>
+
+          <code><a href="link.html">link()</a></code>
+
+        </dt>
+        <dd>Define a link between a fact table and a dimension table</dd>
+
+        <dt>
+
+          <code><a href="lookup.html">lookup()</a></code>
+
+        </dt>
+        <dd>Look up columns from linked dimension tables</dd>
       </dl></div><div class="section level2">
       <h2 id="combining-tables">Combining tables<a class="anchor" aria-label="anchor" href="#combining-tables"></a></h2>
 

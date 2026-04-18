@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -34,6 +34,7 @@
     <li><a class="dropdown-item" href="articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="articles/large-data.html">Working with Large Data</a></li>
@@ -86,20 +87,26 @@
 <p>All user-facing verbs (<code>filter</code>, <code>select</code>, <code>mutate</code>, etc.) build a tree of <code>vectra_node</code> objects in R. Each node wraps a C-level <code>VecNode</code> external pointer. No data moves until <code><a href="reference/collect.html">collect()</a></code> calls <code>C_collect</code>, which pulls <code>VecBatch</code> structs through the node tree one row group at a time.</p>
 </div>
 <div class="section level3">
-<h3 id="on-disk-format-vtr--vtr1">On-disk format (.vtr / vtr1)<a class="anchor" aria-label="anchor" href="#on-disk-format-vtr--vtr1"></a></h3>
-<p>Custom binary columnar format defined in <code>src/vtr1.h</code>. Current version: <strong>v4</strong> (encoded + compressed). A file contains: header (version + schema + row group count), row group index, then column data per row group. Columns are stored as typed arrays with validity bitmaps for NA support. <code><a href="reference/write_vtr.html">write_vtr()</a></code> writes from R data.frames; <code><a href="reference/tbl.html">tbl()</a></code> opens for lazy reading. Reads v1-v4 files; always writes v4.</p>
-<p><strong>v4 encoding stack</strong> (per column, per row group — see <code>src/vtr_codec.h</code>): 1. <strong>Encoding</strong> (logical transformation): - PLAIN — raw bytes - DICTIONARY — for string columns with &lt; 50% unique values; indices are RLE-encoded for runs of repeated values - DELTA — for int64 columns with monotonically increasing values 2. <strong>Compression</strong> (byte-level): - NONE — skip if &lt; 64 bytes or compression doesn’t shrink - ZSTD — Zstandard (linked via <code>-lzstd</code> from rtools45/system)</p>
+<h3 id="on-disk-format-vtr-tdc-container">On-disk format (.vtr, tdc container)<a class="anchor" aria-label="anchor" href="#on-disk-format-vtr-tdc-container"></a></h3>
+<p>Binary columnar format produced by <code>src/vtr1_tdc.c</code>. A file is a tdc heterogeneous container (TDC1 magic + attached schema + trailing row-group index) holding one self-describing <code>tdc_block_record</code> per column per row group. Columns are stored as typed arrays with validity bitmaps for NA support.</p>
+<ul><li>
+<code><a href="reference/write_vtr.html">write_vtr()</a></code> writes from R data.frames via <code>Vtr1TdcWriter</code> (<code>vtr1_open_tdc_writer</code> → <code>append_rowgroup</code> → close).</li>
+<li>
+<code><a href="reference/tbl.html">tbl()</a></code> opens for lazy reading via <code>Vtr1TdcFile</code> (<code>vtr1_open_tdc</code>); the scan node fseek/freads raw block bytes recorded in the row-group index and hands them to <code>vtr_decode_column_tdc</code>.</li>
+<li>The legacy v4 codec (custom encoding tags, shuffle+LZ/deflate packaged in-tree) was ripped out in April 2026; tdc is the sole codec path. The <code>.vtr</code> format is no longer backwards-compatible with pre-rewire files.</li>
+</ul><p><strong>Encode pipeline</strong> (<code>src/vtr_codec_tdc.c</code>, driven by <code>comp_level</code> + optional quantize/spatial specs): 1. <code>vtr_codec_tdc_prepare_request</code> builds a <code>tdc_block</code> view over a <code>VecArray</code> and derives a <code>tdc_codec_spec</code> (model / transform chain / entropy). 2. <code>tdc_encode_block</code> emits a single self-describing <code>tdc_block_record</code> (header + side-meta + payload + validity). 3. <code>tdc_stream_encoder_write_block</code> records the record into the container’s row-group index and attaches per-column min/max/null_count stats (<code>Vtr1ColStat</code>) for scan-side predicate pruning.</p>
+<p><code>comp_level</code> values: <code>VTR_COMPRESS_NONE</code> (passthrough), <code>VTR_COMPRESS_FAST</code> (default heuristic: BSHUF + LZ), <code>VTR_COMPRESS_SMALL</code> (currently identical to FAST — try-all-pick-smallest over multiple tdc specs is not yet ported).</p>
 </div>
 <div class="section level3">
 <h3 id="c-engine-src">C engine (<code>src/</code>)<a class="anchor" aria-label="anchor" href="#c-engine-src"></a></h3>
-<p>Pure C11, links zlib (TIFF deflate) and zstd (vtr compression). Key types in <code>src/types.h</code>: - <code>VecType</code>: int64, double, bool, string - <code>VecArray</code>: single column with validity bitmap and type-punned data union - <code>VecBatch</code>: row group (n columns + optional selection vector for zero-copy filtering) - <code>VecNode</code>: pull-based plan node with <code>next_batch()</code> and <code>free_node()</code> vtable</p>
+<p>Pure C11. Compression goes through vendored tdc (<code>src/tdc/</code>); TIFF deflate and gzipped CSV input go through vendored miniz (<code>src/miniz/</code>). No external zlib link. Key types in <code>src/types.h</code>: - <code>VecType</code>: int64, double, bool, string - <code>VecArray</code>: single column with validity bitmap and type-punned data union - <code>VecBatch</code>: row group (n columns + optional selection vector for zero-copy filtering) - <code>VecNode</code>: pull-based plan node with <code>next_batch()</code> and <code>free_node()</code> vtable</p>
 <p>Plan nodes (each in its own <code>.h</code>/<code>.c</code> pair): - <code>scan</code> (vtr file reader with zone-map pruning, binary search, and hash index pushdown) -&gt; <code>filter</code> -&gt; <code>project</code> (select/mutate/rename) -&gt; <code>sort</code> -&gt; <code>limit</code> - <code>topn</code> (combined sort+limit optimization) - <code>group_agg</code> (hash-based grouping + aggregation: n, sum, mean, min, max, n_distinct, median) - <code>join</code> (hash join: left, inner, right, full, semi, anti) - <code>fuzzy_join</code> (levenshtein/DL/Jaro-Winkler distance joins) - <code>window</code> (row_number, rank, dense_rank, lag, lead, cumsum, cummean, cummin, cummax) - <code>concat</code> (union / bind_rows) - <code>block</code> (block-nested-loop join helper)</p>
 <p>Expression evaluation (<code>src/expr.h</code>, <code>src/expr.c</code>, <code>src/expr_string.c</code>): - Variable-arity children array on <code>VecExpr</code> supports N-arg functions - String ops: <code>paste</code>/<code>paste0</code> (N-ary), <code>grepl</code>/<code>gsub</code>/<code>sub</code> (fixed + POSIX regex with backreferences), <code>str_extract</code> (regex capture groups), <code>toupper</code>/<code>tolower</code>/<code>trimws</code>/<code>nchar</code>/<code>substr</code>/<code>startsWith</code>/<code>endsWith</code> - Fuzzy matching: <code>levenshtein</code>, <code>dl_dist</code>, <code>jaro_winkler</code> (OpenMP parallelized) - Control flow: <code>case_when</code>, <code>coalesce</code>, <code>ifelse</code> - Set ops: <code>%in%</code> with hash set acceleration for large sets</p>
 <p>Aggregation (<code>src/agg_ops.h</code>, <code>src/agg_ops.c</code>): - <code>n_distinct</code>: per-group open-addressing hash set (FNV-1a, 70% load factor) - <code>median</code>: per-group dynamic array + qsort</p>
 <p>Hash indexes (<code>src/vtri.h</code>, <code>src/vtri.c</code>): - <code>.vtri</code> sidecar files for O(1) row group pruning on equality predicates - v1 format: single-column indexes - v2 format: composite multi-column indexes (FNV-1a hash combining) - Case-insensitive index option - Accelerates <code>==</code> and <code>%in%</code> predicates; composites accelerate AND-combined equality predicates - <code>scan.c</code> detects index-eligible predicates and prunes row groups via bitmap</p>
 <p>OpenMP parallelization (<code>src/vec_omp.h</code>): - CPU-bound string ops (<code>grepl</code> regex, <code>levenshtein</code>, <code>dl_dist</code>, <code>jaro_winkler</code>) use <code>#pragma omp parallel for schedule(dynamic, 64)</code> with threshold <code>n &gt; 1000</code> - Per-thread regex compilation for thread safety - OpenMP flags already in <code>Makevars</code>/<code>Makevars.win</code></p>
 <p>Format backends (scan + write, each in own <code>.h</code>/<code>.c</code> pair): - <code>csv_scan</code> / <code>csv_write</code>: streaming CSV with type inference from first 1000 rows - <code>sql_scan</code> / <code>sql_write</code>: SQLite read/write via embedded sqlite3 (<code>sqlite_format.c</code>) - <code>tiff_scan</code> / <code>tiff_write</code>: GeoTIFF raster read/write (pixels → rows with x, y, band columns)</p>
-<p>Write control (<code>src/vtr_write.h</code>, <code>src/vtr_write.c</code>): - <code>vtr_write_node_batched()</code>: accumulates rows from upstream batches using <code>VecArrayBuilder</code>, flushes when buffer reaches target <code>batch_size</code> - Exposed via <code>write_vtr(node, path, batch_size = NULL)</code></p>
+<p>Write control (<code>src/vtr_write.h</code>, <code>src/vtr_write.c</code>): - <code>vtr_write_node_batched()</code>: accumulates rows from upstream batches using <code>VecArrayBuilder</code>, flushes when buffer reaches target <code>batch_size</code> - Exposed via <code>write_vtr(node, path, batch_size = NULL)</code>. Default for data.frames: 131072 rows (cache-friendly for decompression). For nodes: NULL (one row group per upstream batch).</p>
 <p>R-to-C bridge split across multiple files registered in <code>src/init.c</code>: - <code>src/r_bridge.c</code>: core entry points (tbl, collect, explain) - <code>src/r_bridge_core.c</code>: expression parsing (R list → VecExpr) - <code>src/r_bridge_nodes.c</code>: verb node creation (filter, project, sort, group_agg, window, join, etc.) - <code>src/r_bridge_io.c</code>: format read/write entry points - <code>src/r_bridge_index.c</code>: index creation/querying entry points</p>
 </div>
 <div class="section level3">
@@ -143,7 +150,7 @@
 <li>
 <strong>Selection vectors</strong>: <code>VecBatch.sel</code> enables zero-copy filtering (filter node sets a selection vector rather than copying rows).</li>
 <li>
-<strong>String ownership</strong>: <code>VecArray.owns_data</code> flag distinguishes owned vs borrowed string buffers to avoid double-free in hash join arenas.</li>
+<strong>String ownership</strong>: <code>VecArray.owns_data</code> flag distinguishes owned vs borrowed string buffers to avoid double-free in hash join arenas. The orthogonal <code>data_borrowed</code> flag marks buffers that the direct-write tdc decoder landed straight into a caller-supplied SEXP backing store (fixed-width numerics only — strings always allocate).</li>
 <li>
 <strong>Grouping is metadata-only</strong>: <code><a href="reference/group_by.html">group_by()</a></code> just attaches <code>.groups</code> to the R list; the C-level <code>group_agg</code> node receives key names when <code><a href="reference/summarise.html">summarise()</a></code> is called.</li>
 <li>
@@ -152,7 +159,61 @@
 <strong>Variable-arity VecExpr</strong>: <code>case_when</code>, <code>coalesce</code>, and N-ary <code>paste</code> use a <code>children</code> array on <code>VecExpr</code> rather than fixed left/right operands.</li>
 <li>
 <strong>Hash index pushdown</strong>: <code>scan.c</code> detects equality predicates (single or AND-combined composite) and probes <code>.vtri</code> sidecar indexes to prune row groups before reading data. Composes with zone-map pruning and binary search on sorted columns.</li>
+<li>
+<strong>No Robin Hood hashing</strong>: Benchmarked Robin Hood with displacement cascades and early termination on both <code>VecHashTable</code> (group_agg, 70% load) and <code>JoinHT</code> (joins, 50% load). Result: 12-29% regressions. FNV-1a already distributes well enough that average probe length is ~1.3-1.7 at these load factors — too short for Robin Hood’s variance reduction to outweigh the per-probe overhead of maintaining and checking displacement distances. Don’t re-attempt without evidence of long probe chains in production workloads.</li>
+<li>
+<strong>Default batch_size = 131072</strong>: 131072 rows per row group (~1 MB per double column). Keeps the decode working set in L2/L3 cache. Benchmarked ~21% faster reads vs one-giant-row-group at no file-size cost. Sweet spot is 100K–500K rows.</li>
+<li>
+<strong>Compression internals live in tdc</strong>: The LZ matcher, wildcopy fast/safe decode split, byte-shuffle SIMD kernels, spatial predictor kernels, and the “don’t batch parse-then-copy” benchmark result all live in <code>tdc/CLAUDE.md</code> now. Don’t re-tune any of that here — treat tdc as the compression authority and consult its CLAUDE.md before attempting optimization.</li>
+<li>
+<strong>Known regression — string dict-defer</strong>: The v4 reader exposed DICTIONARY-encoded string columns as a <code>VtrDictBlob</code> (indices + dictionary strings) so <code><a href="reference/collect.html">collect()</a></code> could intern CHARSXPs by unique value instead of per-row. The tdc reader currently rematerializes strings into a flat offsets+data buffer with no dict side channel, so duplicate strings go through R’s CHARSXP hash once per row. Not yet re-implemented; expect a measurable slowdown on heavily-duplicated wide-string columns until a dict-defer fast path is restored on top of tdc’s dictionary-encoded varlen output.</li>
 </ul></div>
+<div class="section level2">
+<h2 id="vendored-libraries-and-release-workflow">Vendored libraries and release workflow<a class="anchor" aria-label="anchor" href="#vendored-libraries-and-release-workflow"></a></h2>
+<div class="section level3">
+<h3 id="tdc-typed-dimensional-compression">tdc (typed dimensional compression)<a class="anchor" aria-label="anchor" href="#tdc-typed-dimensional-compression"></a></h3>
+<p>Source of truth: <code>gcol33/tdc</code> (private GitHub repo), lives locally at <code>../tdc/</code> as a sibling directory. Vectra vendors a snapshot of tdc’s <code>include/</code> and <code>src/</code> into <code>src/tdc/</code> at build time.</p>
+<ul><li>
+<strong><code>src/tdc/</code> is gitignored</strong> — not tracked in vectra’s git history</li>
+<li>
+<strong><code>configure</code> / <code>configure.win</code></strong> auto-vendor from <code>../tdc/</code> on every <code>R CMD INSTALL</code> / <code><a href="https://devtools.r-lib.org/reference/load_all.html" class="external-link">devtools::load_all()</a></code>. Falls back to a pre-vendored copy if the sibling repo is absent (CRAN tarball install).</li>
+<li>
+<strong><code>tools/vendor_tdc.sh</code></strong> is the vendoring script (called by configure, can also run manually). Stamps <code>src/tdc/VENDORED_FROM</code> with the source commit hash.</li>
+<li>
+<strong>CI workflows</strong> all check out <code>gcol33/tdc</code> as a sibling via <code>actions/checkout@v4</code> before building.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="miniz">miniz<a class="anchor" aria-label="anchor" href="#miniz"></a></h3>
+<p>Single-file deflate library at <code>src/miniz/</code>. Powers TIFF deflate strips and gzip CSV input. Tracked in git (rarely changes).</p>
+</div>
+<div class="section level3">
+<h3 id="releasing">Releasing<a class="anchor" aria-label="anchor" href="#releasing"></a></h3>
+<p>Tag-driven via <code>.github/workflows/release.yml</code>:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="fu">git</span> tag v0.4.3</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a><span class="fu">git</span> push origin v0.4.3</span></code></pre></div>
+<p>The workflow: checks out vectra + tdc → vendors tdc → <code>R CMD build</code> → <code>R CMD check</code> → creates GitHub Release with the self-contained <code>.tar.gz</code>. That tarball is what goes to CRAN (includes <code>src/tdc/</code> so no external dependency needed at install time).</p>
+</div>
+</div>
+<div class="section level2">
+<h2 id="bench-scripts-bench_r">Bench scripts (<code>bench_*.R</code>)<a class="anchor" aria-label="anchor" href="#bench-scripts-bench_r"></a></h2>
+<p>The repo root contains a pile of one-off <code>bench_*.R</code> scripts left over from the LZ/decode-tuning era. They are not part of the package build, just sandbox scripts for ad-hoc throughput measurements. Status as of 2026-04-07:</p>
+<ul><li>
+<strong>Still useful</strong> (rewired to current <code>compress = c("fast", "none")</code> API):
+<ul><li>
+<code>bench_refresh.R</code> — read/write matrix vs fst/parquet on 5M×8 doubles</li>
+<li>
+<code>bench_zstd.R</code> — vectra fast vs fst zstd levels vs saveRDS</li>
+<li>
+<code>bench_vs_zstd.R</code> — same but also runs <code>zstd</code> CLI on the raw byte stream</li>
+<li>
+<code>bench_compress_final.R</code> — 2000² f64 raster vs terra DEFLATE (kept fresh, feeds the vectra row in <code>tdc/bench/RESULTS.md</code>)</li>
+</ul></li>
+<li>
+<strong>Obsolete <code>compress = "ratio"</code> removed</strong> — <code>"ratio"</code> was the shuffle+deflate path; deflate is gone now that the codec is tdc. The three scripts above had their <code>"ratio"</code> cases dropped (not patched to <code>"fast"</code>, because <code>"fast"</code> was already a separate row in each script).</li>
+<li>
+<strong>Other <code>bench_*.R</code> scripts</strong> in the root are even older (joins, sort, IO, TIFF, parallel, profiling helpers). They predate the codec rewire and don’t reference codec internals — they should still run, but no one has touched them in a while. Treat them as scratch, not as a regression suite.</li>
+</ul><p>If you add a new throughput measurement, prefer extending <code>bench_refresh.R</code> over creating yet another <code>bench_*.R</code> file.</p>
+</div>
 </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

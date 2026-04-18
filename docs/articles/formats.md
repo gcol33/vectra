@@ -327,6 +327,65 @@ writes query results back to a GeoTIFF. The data must contain `x` and
 the geotransform are inferred from the coordinate arrays. The `compress`
 parameter enables DEFLATE compression.
 
+### Integer pixel types
+
+By default,
+[`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md)
+writes 64-bit float pixels. The `pixel_type` parameter selects a smaller
+representation: `"int16"`, `"int32"`, `"uint8"`, `"uint16"`, or
+`"float32"`. Smaller types compress better and produce much smaller
+files — a global climate raster stored as `int16` + DEFLATE can be 5-10x
+smaller than the equivalent `float64`.
+
+``` r
+
+# Scale temperature to integer: value * 100, stored as int16
+df |>
+  mutate(band1 = round(band1 * 100)) |>
+  write_tiff("temperature_int16.tif", compress = TRUE, pixel_type = "int16")
+```
+
+`NA` values in the input are automatically mapped to the integer nodata
+value (-32768 for `int16`, 65535 for `uint16`, etc.) and tagged in the
+GDAL_NODATA header. The reader converts them back to `NA` on read.
+
+### Embedded metadata
+
+The `metadata` parameter writes a GDAL_METADATA XML string into TIFF tag
+42112. This is useful for recording scale factors, offsets, variable
+names, or provenance without a sidecar file.
+
+``` r
+
+xml <- '<GDALMetadata>
+  <Item name="scale">0.01</Item>
+  <Item name="offset">0</Item>
+  <Item name="variable">bio1</Item>
+</GDALMetadata>'
+
+write_tiff(df, "bio1.tif", pixel_type = "int16", metadata = xml)
+
+# Read the metadata back
+tiff_metadata("bio1.tif")
+```
+
+[`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md)
+returns the XML string, or `NA` if the tag is absent.
+
+### Point extraction
+
+[`tiff_extract_points()`](https://gillescolling.com/vectra/reference/tiff_extract_points.md)
+samples band values at specific `(x, y)` coordinates directly from the
+TIFF file. Only the strips containing query points are read, making it
+efficient for sparse lookups on large rasters. No spatial package is
+needed at runtime.
+
+``` r
+
+pts <- data.frame(x = c(10.5, 11.2), y = c(47.1, 47.3))
+tiff_extract_points("temperature.tif", pts)
+```
+
 This round-trip capability makes vectra useful for raster ETL: read a
 TIFF, filter or transform it with standard verbs, write a new TIFF. No
 dependency on spatial packages is needed for the read-process-write loop
@@ -511,9 +570,9 @@ f_default <- tempfile(fileext = ".vtr")
 tbl_csv(csv) |> write_vtr(f_default)
 
 cat("Small batches:", file.size(f_small), "bytes\n")
-#> Small batches: 8580 bytes
+#> Small batches: 8251 bytes
 cat("Default:      ", file.size(f_default), "bytes\n")
-#> Default:       8580 bytes
+#> Default:       8251 bytes
 ```
 
 For `tbl_tiff`, the default batch size is 256 raster rows, reflecting

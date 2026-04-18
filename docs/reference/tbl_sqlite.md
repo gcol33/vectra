@@ -34,8 +34,11 @@ A `vectra_node` object representing a lazy scan of the table.
 ## Examples
 
 ``` r
-if (FALSE) { # \dontrun{
-node <- tbl_sqlite("data.sqlite", "measurements")
-node |> filter(year > 2020) |> collect()
-} # }
+# \donttest{
+f <- tempfile(fileext = ".sqlite")
+write_sqlite(mtcars, f, "cars")
+node <- tbl_sqlite(f, "cars")
+node |> filter(cyl == 6) |> collect()
+unlink(f)
+# }
 ```

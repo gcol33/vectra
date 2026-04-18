@@ -309,7 +309,7 @@ tbl(small_groups) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 7 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 7 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (7):
 #>   obs_id <int64>

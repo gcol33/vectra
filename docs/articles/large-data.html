@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -51,6 +51,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -81,7 +82,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-04</h4>
+            <h4 data-toc-skip class="date">2026-04-18</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/large-data.Rmd" class="external-link"><code>vignettes/large-data.Rmd</code></a></small>
       <div class="d-none name"><code>large-data.Rmd</code></div>
@@ -342,7 +343,7 @@ small-batch file can prune most groups using zone maps:</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 7 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 7 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (7):</span></span>
 <span><span class="co">#&gt;   obs_id &lt;int64&gt;</span></span>

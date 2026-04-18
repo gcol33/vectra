@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -51,6 +51,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -81,7 +82,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-04</h4>
+            <h4 data-toc-skip class="date">2026-04-18</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/formats.Rmd" class="external-link"><code>vignettes/formats.Rmd</code></a></small>
       <div class="d-none name"><code>formats.Rmd</code></div>
@@ -365,12 +366,63 @@ data must contain <code>x</code> and <code>y</code> columns and one or
 more numeric band columns. Grid dimensions and the geotransform are
 inferred from the coordinate arrays. The <code>compress</code> parameter
 enables DEFLATE compression.</p>
+<div class="section level3">
+<h3 id="integer-pixel-types">Integer pixel types<a class="anchor" aria-label="anchor" href="#integer-pixel-types"></a>
+</h3>
+<p>By default, <code><a href="../reference/write_tiff.html">write_tiff()</a></code> writes 64-bit float pixels. The
+<code>pixel_type</code> parameter selects a smaller representation:
+<code>"int16"</code>, <code>"int32"</code>, <code>"uint8"</code>,
+<code>"uint16"</code>, or <code>"float32"</code>. Smaller types compress
+better and produce much smaller files — a global climate raster stored
+as <code>int16</code> + DEFLATE can be 5-10x smaller than the equivalent
+<code>float64</code>.</p>
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Scale temperature to integer: value * 100, stored as int16</span></span>
+<span><span class="va">df</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>band1 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/Round.html" class="external-link">round</a></span><span class="op">(</span><span class="va">band1</span> <span class="op">*</span> <span class="fl">100</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/write_tiff.html">write_tiff</a></span><span class="op">(</span><span class="st">"temperature_int16.tif"</span>, compress <span class="op">=</span> <span class="cn">TRUE</span>, pixel_type <span class="op">=</span> <span class="st">"int16"</span><span class="op">)</span></span></code></pre></div>
+<p><code>NA</code> values in the input are automatically mapped to the
+integer nodata value (-32768 for <code>int16</code>, 65535 for
+<code>uint16</code>, etc.) and tagged in the GDAL_NODATA header. The
+reader converts them back to <code>NA</code> on read.</p>
+</div>
+<div class="section level3">
+<h3 id="embedded-metadata">Embedded metadata<a class="anchor" aria-label="anchor" href="#embedded-metadata"></a>
+</h3>
+<p>The <code>metadata</code> parameter writes a GDAL_METADATA XML string
+into TIFF tag 42112. This is useful for recording scale factors,
+offsets, variable names, or provenance without a sidecar file.</p>
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">xml</span> <span class="op">&lt;-</span> <span class="st">'&lt;GDALMetadata&gt;</span></span>
+<span><span class="st">  &lt;Item name="scale"&gt;0.01&lt;/Item&gt;</span></span>
+<span><span class="st">  &lt;Item name="offset"&gt;0&lt;/Item&gt;</span></span>
+<span><span class="st">  &lt;Item name="variable"&gt;bio1&lt;/Item&gt;</span></span>
+<span><span class="st">&lt;/GDALMetadata&gt;'</span></span>
+<span></span>
+<span><span class="fu"><a href="../reference/write_tiff.html">write_tiff</a></span><span class="op">(</span><span class="va">df</span>, <span class="st">"bio1.tif"</span>, pixel_type <span class="op">=</span> <span class="st">"int16"</span>, metadata <span class="op">=</span> <span class="va">xml</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Read the metadata back</span></span>
+<span><span class="fu"><a href="../reference/tiff_metadata.html">tiff_metadata</a></span><span class="op">(</span><span class="st">"bio1.tif"</span><span class="op">)</span></span></code></pre></div>
+<p><code><a href="../reference/tiff_metadata.html">tiff_metadata()</a></code> returns the XML string, or
+<code>NA</code> if the tag is absent.</p>
+</div>
+<div class="section level3">
+<h3 id="point-extraction">Point extraction<a class="anchor" aria-label="anchor" href="#point-extraction"></a>
+</h3>
+<p><code><a href="../reference/tiff_extract_points.html">tiff_extract_points()</a></code> samples band values at specific
+<code>(x, y)</code> coordinates directly from the TIFF file. Only the
+strips containing query points are read, making it efficient for sparse
+lookups on large rasters. No spatial package is needed at runtime.</p>
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">pts</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>x <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">10.5</span>, <span class="fl">11.2</span><span class="op">)</span>, y <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">47.1</span>, <span class="fl">47.3</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/tiff_extract_points.html">tiff_extract_points</a></span><span class="op">(</span><span class="st">"temperature.tif"</span>, <span class="va">pts</span><span class="op">)</span></span></code></pre></div>
 <p>This round-trip capability makes vectra useful for raster ETL: read a
 TIFF, filter or transform it with standard verbs, write a new TIFF. No
 dependency on spatial packages is needed for the read-process-write loop
 itself, though <code>terra::rast(df, type = "xyz")</code> can convert
 results to <code>SpatRaster</code> objects when spatial operations are
 needed.</p>
+</div>
 </div>
 <div class="section level2">
 <h2 id="streaming-conversion-pipelines">Streaming conversion pipelines<a class="anchor" aria-label="anchor" href="#streaming-conversion-pipelines"></a>
@@ -380,7 +432,7 @@ zero full-dataset materialization. We pipe a reader into a writer, and
 data flows from source to target one batch at a time. Memory use stays
 proportional to one batch, not the full dataset.</p>
 <p>The simplest case: convert CSV to <code>.vtr</code>.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">csv</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
@@ -397,7 +449,7 @@ proportional to one batch, not the full dataset.</p>
 <span><span class="co">#&gt; 6 18.1   6  225 105 2.76 3.460 20.22  1  0    3    1</span></span></code></pre></div>
 <p>We can filter during conversion. Only rows passing the predicate are
 written.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">csv</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
@@ -425,7 +477,7 @@ written.</p>
 <span><span class="co">#&gt; 14 21.4   4 121.0 109 4.11 2.780 18.60  1  1    4    2  9.098082</span></span></code></pre></div>
 <p>Multi-step ETL works the same way. Read from one format, transform,
 write to another.</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># CSV -&gt; filter + transform -&gt; SQLite</span></span>
 <span><span class="va">csv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">csv</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
@@ -472,7 +524,7 @@ datasets that dwarf available RAM, this is the only way these
 conversions can work.</p>
 <p>Conversion pipelines also compose with joins. We can read two sources
 in different formats and join them.</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f1</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">f2</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span></span>
@@ -514,7 +566,7 @@ zone-map statistics (min and max per column), so more row groups mean
 finer-grained predicate pushdown. Fewer row groups mean less metadata
 overhead and better compression ratios, because the compressor sees more
 data per block.</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="va">big</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  id <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fl">1000</span><span class="op">)</span>,</span>
@@ -531,9 +583,9 @@ data per block.</p>
 <span><span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">f_default</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Small batches:"</span>, <span class="fu"><a href="https://rdrr.io/r/base/file.info.html" class="external-link">file.size</a></span><span class="op">(</span><span class="va">f_small</span><span class="op">)</span>, <span class="st">"bytes\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Small batches: 8580 bytes</span></span>
+<span><span class="co">#&gt; Small batches: 8251 bytes</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Default:      "</span>, <span class="fu"><a href="https://rdrr.io/r/base/file.info.html" class="external-link">file.size</a></span><span class="op">(</span><span class="va">f_default</span><span class="op">)</span>, <span class="st">"bytes\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Default:       8580 bytes</span></span></code></pre></div>
+<span><span class="co">#&gt; Default:       8251 bytes</span></span></code></pre></div>
 <p>For <code>tbl_tiff</code>, the default batch size is 256 raster rows,
 reflecting the high per-row density of raster data. Increasing it speeds
 up reads on files with few bands. Decreasing it helps when many bands

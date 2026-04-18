@@ -86,7 +86,7 @@ not know or care which source is upstream.
 | `write_vtr(df, path)` | `.vtr` | writes from data.frame |
 | `write_csv(x, path)` | CSV | streams batch-by-batch |
 | `write_sqlite(x, path, table)` | SQLite | streams batch-by-batch |
-| `write_tiff(x, path)` | GeoTIFF | streams batch-by-batch |
+| `write_tiff(x, path, pixel_type)` | GeoTIFF | streams batch-by-batch; `pixel_type`: float64/float32/int16/int32/uint8/uint16 |
 
 ## Supported verbs
 

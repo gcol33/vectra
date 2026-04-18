@@ -38,8 +38,14 @@ all columns from the block, for each (query, block_row) match pair.
 ## Examples
 
 ``` r
-if (FALSE) { # \dontrun{
+# \donttest{
+f <- tempfile(fileext = ".vtr")
+df <- data.frame(taxonID = 1:2,
+                 canonicalName = c("Quercus robur", "Pinus sylvestris"))
+write_vtr(df, f)
+blk <- materialize(tbl(f))
 hits <- block_lookup(blk, "canonicalName", c("Quercus robur"))
 ci_hits <- block_lookup(blk, "canonicalName", c("quercus robur"), ci = TRUE)
-} # }
+unlink(f)
+# }
 ```

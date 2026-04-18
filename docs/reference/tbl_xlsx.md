@@ -34,11 +34,13 @@ A `vectra_node` object representing a lazy scan of the sheet.
 ## Examples
 
 ``` r
-if (FALSE) { # \dontrun{
-node <- tbl_xlsx("data.xlsx")
-node |> filter(score > 80) |> collect()
-
-# Read a specific sheet by name
-node <- tbl_xlsx("data.xlsx", sheet = "Sheet2")
-} # }
+# \donttest{
+if (requireNamespace("openxlsx2", quietly = TRUE)) {
+  f <- tempfile(fileext = ".xlsx")
+  openxlsx2::write_xlsx(mtcars, f)
+  node <- tbl_xlsx(f)
+  node |> filter(cyl == 6) |> collect()
+  unlink(f)
+}
+# }
 ```

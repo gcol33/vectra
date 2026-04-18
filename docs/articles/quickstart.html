@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -51,6 +51,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -81,7 +82,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-04</h4>
+            <h4 data-toc-skip class="date">2026-04-18</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/quickstart.Rmd" class="external-link"><code>vignettes/quickstart.Rmd</code></a></small>
       <div class="d-none name"><code>quickstart.Rmd</code></div>
@@ -120,13 +121,13 @@ dplyr and data.table are mature, fast, and well-supported. Arrow’s
 scans well and interoperates with the broader Arrow ecosystem (Spark,
 DuckDB, Flight). vectra fills a different niche: dplyr syntax on
 single-file storage with memory-bounded execution and no heavy compiled
-dependencies. The entire C codebase compiles from C11 source, linking
-only zlib and zstd (both bundled with Rtools on Windows and available as
-system packages on Linux and macOS). There is no C++ compiler
-requirement, no Boost, no protobuf. A 20 GB <code>.vtr</code> file
-processes on a laptop with 8 GB of RAM because the scan node reads one
-row group at a time and the downstream pipeline never holds more than
-two batches in memory simultaneously.</p>
+dependencies. The entire C codebase compiles from C11 source with no
+external library dependencies — compression and deflate support are
+vendored in the package itself. There is no C++ compiler requirement, no
+Boost, no protobuf. A 20 GB <code>.vtr</code> file processes on a laptop
+with 8 GB of RAM because the scan node reads one row group at a time and
+the downstream pipeline never holds more than two batches in memory
+simultaneously.</p>
 <p>The on-disk format uses dictionary encoding for low-cardinality
 string columns, delta encoding for monotonic integer sequences, and
 Zstandard compression at the byte level. File sizes are competitive with
@@ -338,7 +339,7 @@ where predicate pushdown applies.</p>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   mpg &lt;double&gt;</span></span>
@@ -1714,7 +1715,7 @@ output column schema at each level.</p>
 <span><span class="co">#&gt; SortNode [materializes] </span></span>
 <span><span class="co">#&gt;   ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;     FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;       ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;       ScanNode [streaming, 3/11 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   mpg &lt;double&gt;</span></span>

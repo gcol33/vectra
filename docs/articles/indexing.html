@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -51,6 +51,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -81,7 +82,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-04</h4>
+            <h4 data-toc-skip class="date">2026-04-18</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/indexing.Rmd" class="external-link"><code>vignettes/indexing.Rmd</code></a></small>
       <div class="d-none name"><code>indexing.Rmd</code></div>
@@ -183,7 +184,7 @@ min/max bounds meaningful.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -217,7 +218,7 @@ a contiguous slice of the value range. A filter for
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -292,7 +293,7 @@ constant time, skipping all others without reading their data.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -315,7 +316,7 @@ engine reads every row group and filters in-memory.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -353,9 +354,9 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Without index: 0.32 s</span></span>
+<span><span class="co">#&gt; Without index: 0.06 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.58 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.35 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a
@@ -387,7 +388,7 @@ columns at once.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -465,7 +466,7 @@ the union of matching row groups.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -496,7 +497,7 @@ site, or sample ID.</p>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index, %in% filter:"</span>, <span class="va">t_in_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index, %in% filter: 0.61 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index, %in% filter: 0.36 s</span></span></code></pre></div>
 <p>Without an index, the same query reads all row groups and filters in
 memory. The difference grows with file size.</p>
 </div>
@@ -517,7 +518,7 @@ entirely.</p>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (2):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -547,7 +548,7 @@ range on disk.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 3/21 cols (pruned), v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 3/21 cols (pruned), tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   id &lt;int64&gt;</span></span>
@@ -571,7 +572,7 @@ materialized.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -599,7 +600,7 @@ creates.</p>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
 <span><span class="co">#&gt;   ProjectNode [streaming] </span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 5 cols, v3 stats] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 5 cols, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (6):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -622,7 +623,7 @@ in this situation, restructure the query so the filter on
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (6):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -652,7 +653,7 @@ understand what the engine will do.</p>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;     FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (4):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -744,7 +745,7 @@ stale state to worry about.</p>
 <span><span class="co">#&gt; GroupAggNode [materializes, 1 keys] </span></span>
 <span><span class="co">#&gt;   SortNode [materializes] </span></span>
 <span><span class="co">#&gt;     FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -924,7 +925,7 @@ filter on one of these.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -988,7 +989,7 @@ technique automatically. The only manual step is creating indexes.</p>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, v3 stats] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>

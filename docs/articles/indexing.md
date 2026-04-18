@@ -109,7 +109,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -151,7 +151,7 @@ tbl(f_sorted) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -234,7 +234,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -265,7 +265,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -307,9 +307,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.32 s
+#> Without index: 0.06 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.58 s
+#> With index:    0.35 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -349,7 +349,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -432,7 +432,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -468,7 +468,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.61 s
+#> With index, %in% filter: 0.36 s
 ```
 
 Without an index, the same query reads all row groups and filters in
@@ -492,7 +492,7 @@ tbl(f) |>
 #> 
 #> ProjectNode [streaming] 
 #>   FilterNode [streaming] 
-#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats] 
+#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (2):
 #>   site <string>
@@ -525,7 +525,7 @@ tbl(f_wide) |>
 #> vectra execution plan
 #> 
 #> ProjectNode [streaming] 
-#>   ScanNode [streaming, 3/21 cols (pruned), v3 stats] 
+#>   ScanNode [streaming, 3/21 cols (pruned), tdc stats] 
 #> 
 #> Output columns (3):
 #>   id <int64>
@@ -553,7 +553,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -585,7 +585,7 @@ tbl(f) |>
 #> 
 #> FilterNode [streaming] 
 #>   ProjectNode [streaming] 
-#>     ScanNode [streaming, 5 cols, v3 stats] 
+#>     ScanNode [streaming, 5 cols, tdc stats] 
 #> 
 #> Output columns (6):
 #>   site <string>
@@ -612,7 +612,7 @@ tbl(f) |>
 #> 
 #> ProjectNode [streaming] 
 #>   FilterNode [streaming] 
-#>     ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>     ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (6):
 #>   site <string>
@@ -645,7 +645,7 @@ tbl(f) |>
 #> ProjectNode [streaming] 
 #>   ProjectNode [streaming] 
 #>     FilterNode [streaming] 
-#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, v3 stats] 
+#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (4):
 #>   site <string>
@@ -760,7 +760,7 @@ tbl(f) |>
 #> GroupAggNode [materializes, 1 keys] 
 #>   SortNode [materializes] 
 #>     FilterNode [streaming] 
-#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, v3 stats] 
+#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (3):
 #>   site <string>
@@ -970,7 +970,7 @@ tbl(f_by_site) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, v3 stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -1049,7 +1049,7 @@ tbl(f) |>
 #> 
 #> ProjectNode [streaming] 
 #>   FilterNode [streaming] 
-#>     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, v3 stats] 
+#>     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (3):
 #>   site <string>

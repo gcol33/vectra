@@ -9,6 +9,8 @@
 - [Format
   Backends](https://gillescolling.com/vectra/articles/formats.md):
 - [Joins](https://gillescolling.com/vectra/articles/joins.md):
+- [Star Schemas and
+  Lookup](https://gillescolling.com/vectra/articles/schema.md):
 - [String Operations and Fuzzy
   Matching](https://gillescolling.com/vectra/articles/string-ops.md):
 - [Indexing and Query

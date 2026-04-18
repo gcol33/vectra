@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -34,6 +34,7 @@
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
+    <li><a class="dropdown-item" href="../articles/schema.html">Star Schemas and Lookup</a></li>
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
@@ -55,6 +56,37 @@
       <small>Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.5.0" id="vectra-050">vectra 0.5.0<a class="anchor" aria-label="anchor" href="#vectra-050"></a></h2>
+<div class="section level3">
+<h3 id="compression-backend-rewire-0-5-0">Compression backend rewire<a class="anchor" aria-label="anchor" href="#compression-backend-rewire-0-5-0"></a></h3>
+<ul><li>Replaced the bespoke v4 codec with <code>tdc</code>, a standalone typed-dimensional compression library vendored into <code>src/tdc/</code>. Encode and decode go through a self-describing block record (model + transform chain + entropy) rather than per-column tag constants. Deleted <code>vtr_codec.c</code>, <code>vtr_encodings.c</code>, <code>vtr_compress.c</code>, <code>vtr1.c</code>, and <code>vtr_codec_internal.h</code>.</li>
+<li>The <code>.vtr</code> on-disk format is a deliberate breaking change: pre-0.5 files are not readable. <code><a href="../reference/write_vtr.html">write_vtr()</a></code> and <code><a href="../reference/append_vtr.html">append_vtr()</a></code> write the new container; <code><a href="../reference/tbl.html">tbl()</a></code> reads only the new container.</li>
+<li>Per-row-group column statistics (min/max) are carried in the container index so the scan layer can still prune unreachable row groups.</li>
+<li>Parallel row-group reads are preserved.</li>
+<li>Custom vendoring via <code>tools/vendor_tdc.sh</code> and <code>configure</code> / <code>configure.win</code> pull the latest upstream <code>tdc</code> on every install when the source checkout is present; the pre-vendored copy is used otherwise.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="known-regression-0-5-0">Known regression<a class="anchor" aria-label="anchor" href="#known-regression-0-5-0"></a></h3>
+<ul><li>The v4 dict-defer CHARSXP fast path is gone — duplicate strings now hit R’s CHARSXP hash per row. Will be re-implemented on top of <code>tdc</code>’s dictionary-encoded varlen output when it becomes a hot spot.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="fixes-0-5-0">Fixes<a class="anchor" aria-label="anchor" href="#fixes-0-5-0"></a></h3>
+<ul><li>
+<code>man/write_vtr.Rd</code>: replaced a literal percent sign in the <code>compress</code> argument description that produced malformed Rd output on build.</li>
+<li>Windows: <code><a href="../reference/write_vtr.html">write_vtr()</a></code>, <code><a href="../reference/append_vtr.html">append_vtr()</a></code> and <code><a href="../reference/delete_vtr.html">delete_vtr()</a></code> now use <code>MoveFileEx</code> with a short retry loop for the final temp-to-target swap. Previously, a preceding <code><a href="../reference/tbl.html">tbl()</a></code> read could leave the target file mmap’d pending GC, and the swap would fail with a sharing violation.</li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.4.1" id="vectra-041">vectra 0.4.1<a class="anchor" aria-label="anchor" href="#vectra-041"></a></h2>
+<div class="section level3">
+<h3 id="star-schema-and-lookup-0-4-1">Star schema and lookup<a class="anchor" aria-label="anchor" href="#star-schema-and-lookup-0-4-1"></a></h3>
+<ul><li>New <code><a href="../reference/vtr_schema.html">vtr_schema()</a></code>, <code><a href="../reference/link.html">link()</a></code>, and <code><a href="../reference/lookup.html">lookup()</a></code> functions for star-schema workflows. Register a fact table with named dimension links once, then pull columns from any dimension without writing explicit joins. Only referenced dimensions are scanned.</li>
+<li>
+<code><a href="../reference/lookup.html">lookup()</a></code> reports unmatched keys per dimension by default, catching referential integrity issues before they propagate NAs silently.</li>
+<li>Supports both <code>"left"</code> (default) and <code>"inner"</code> join modes, named keys for differing column names, and reusable schema objects across multiple queries.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.3.2" id="vectra-032">vectra 0.3.2<a class="anchor" aria-label="anchor" href="#vectra-032"></a></h2>
 <ul><li>Fix misaligned <code>int64_t</code> memory access in <code>vtr_codec.c</code> (UBSAN). Dictionary encoding wrote and read 8-byte offsets through an unaligned pointer; delta decoding had the same issue. All fixed with <code>memcpy</code>.</li>

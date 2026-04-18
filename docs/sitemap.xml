@@ -7,6 +7,7 @@
 <url><loc>https://gillescolling.com/vectra/articles/joins.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/large-data.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/quickstart.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/articles/schema.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/string-ops.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/authors.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/CLAUDE.html</loc></url>
@@ -15,6 +16,8 @@
 <url><loc>https://gillescolling.com/vectra/LICENSE-text.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/LICENSE.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/news/index.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/notes.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/plan.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/across.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/append_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/arrange.html</loc></url>
@@ -38,6 +41,8 @@
 <url><loc>https://gillescolling.com/vectra/reference/head.vectra_node.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/index.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/left_join.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/link.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/lookup.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/materialize.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/mutate.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/print.vectra_node.html</loc></url>
@@ -54,13 +59,18 @@
 <url><loc>https://gillescolling.com/vectra/reference/tbl_sqlite.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_tiff.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_xlsx.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tiff_extract_points.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tiff_metadata.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/transmute.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/ungroup.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/vtr_schema.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/write_csv.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/write_sqlite.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/write_tiff.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/write_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/RELEASE.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/todo-compression.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/todo-speed.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/todo.html</loc></url>
 </urlset>
 

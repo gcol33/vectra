@@ -25,8 +25,15 @@ A `vectra_block` object (external pointer to C-level ColumnBlock).
 ## Examples
 
 ``` r
-if (FALSE) { # \dontrun{
-blk <- materialize(tbl("backbone.vtr") |> select(taxonID, canonicalName))
-hits <- block_lookup(blk, "canonicalName", c("Quercus robur", "Pinus sylvestris"))
-} # }
+# \donttest{
+f <- tempfile(fileext = ".vtr")
+df <- data.frame(taxonID = 1:3,
+                 canonicalName = c("Quercus robur", "Pinus sylvestris",
+                                   "Fagus sylvatica"))
+write_vtr(df, f)
+blk <- materialize(tbl(f) |> select(taxonID, canonicalName))
+hits <- block_lookup(blk, "canonicalName",
+                     c("Quercus robur", "Pinus sylvestris"))
+unlink(f)
+# }
 ```
