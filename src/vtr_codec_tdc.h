@@ -71,4 +71,57 @@ tdc_status vtr_encode_column_tdc(const VecArray         *col,
  */
 tdc_dtype vtr_type_to_tdc_dtype(VecType t);
 
+/*
+ * P2b — decode bridge.
+ *
+ * Decode one tdc block record into a pre-allocated VecArray.
+ *
+ *   col_out      Caller-allocated array (from vec_array_alloc). On entry:
+ *                  - col_out->type    : expected VecType
+ *                  - col_out->length  : expected element count
+ *                  - col_out->buf.<typed pointer> : destination buffer
+ *                  - col_out->validity : validity bitmap (vec_array_alloc
+ *                    zeroes it; the bridge overwrites if HAS_VALIDITY).
+ *                Type/length are validated against the record header
+ *                (TDC_E_DTYPE / TDC_E_SHAPE on mismatch).
+ *   src          Pointer to the start of a tdc_block_record.
+ *   src_size     Bytes available at src.
+ *
+ * On TDC_OK, col_out->buf.* holds the decoded values and col_out->validity
+ * has been overwritten from the record (or set all-valid if the record has
+ * no validity bitmap).
+ *
+ * VEC_STRING is currently TDC_E_UNSUPPORTED: the tdc dict-1d decode
+ * requires a pre-sized heap, and tdc has no public size-query for variable-
+ * width payloads in v0. The string decode bridge will land alongside the
+ * tdc API extension (see VECTRA_REWIRE.md follow-ups).
+ */
+tdc_status vtr_decode_column_tdc(VecArray       *col_out,
+                                 const uint8_t  *src,
+                                 size_t          src_size);
+
+/*
+ * Lower-level decode-into that bypasses VecArray construction. Used by
+ * the production direct-write fast path in P3 to land elements directly
+ * in a memory-mapped destination buffer (e.g. an SEXP backing store).
+ *
+ *   type           Expected element type. Validated against the header.
+ *   n_rows         Expected element count. Validated against the header.
+ *   dst_data       Caller-owned, n_rows-sized, dtype-correct buffer.
+ *   dst_validity   Optional. If non-NULL and the record carries validity,
+ *                  receives ceil(n_rows/8) bytes. If NULL, validity bytes
+ *                  in the record are dropped (caller doesn't care). If
+ *                  non-NULL and the record carries no validity, the
+ *                  bitmap is filled with all-ones (all valid).
+ *
+ * Returns TDC_OK / TDC_E_DTYPE / TDC_E_SHAPE / TDC_E_UNSUPPORTED (string)
+ * / other TDC_E_*.
+ */
+tdc_status vtr_decode_column_tdc_into(VecType         type,
+                                      int64_t         n_rows,
+                                      void           *dst_data,
+                                      uint8_t        *dst_validity,
+                                      const uint8_t  *src,
+                                      size_t          src_size);
+
 #endif /* VECTRA_VTR_CODEC_TDC_H */

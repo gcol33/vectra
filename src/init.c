@@ -16,9 +16,9 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col, SEXP keys,
 #include "vtr_diff.h"
 #include "vtr_codec.h"
 
-/* P2a tdc encode-bridge round-trip test entries (vtr_codec_tdc.c). */
-SEXP C_tdc_encode_double(SEXP x_sexp, SEXP comp_level_sexp);
-SEXP C_tdc_decode_double(SEXP raw_sexp, SEXP n_sexp);
+/* P2a/P2b tdc encode/decode bridge round-trip test entries (vtr_codec_tdc.c). */
+SEXP C_tdc_encode_column(SEXP x_sexp, SEXP comp_level_sexp);
+SEXP C_tdc_decode_column(SEXP raw_sexp, SEXP n_sexp, SEXP r_type_sexp);
 
 /* Profiling bridge */
 static SEXP C_codec_profile_reset(void) {
@@ -83,8 +83,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_has_index",         (DL_FUNC) &C_has_index,         2},
     {"C_codec_profile_reset", (DL_FUNC) &C_codec_profile_reset, 0},
     {"C_codec_profile_get",   (DL_FUNC) &C_codec_profile_get,   0},
-    {"C_tdc_encode_double",   (DL_FUNC) &C_tdc_encode_double,   2},
-    {"C_tdc_decode_double",   (DL_FUNC) &C_tdc_decode_double,   2},
+    {"C_tdc_encode_column",   (DL_FUNC) &C_tdc_encode_column,   2},
+    {"C_tdc_decode_column",   (DL_FUNC) &C_tdc_decode_column,   3},
     {NULL, NULL, 0}
 };
 
