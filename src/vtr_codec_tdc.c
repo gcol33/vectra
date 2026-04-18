@@ -236,10 +236,38 @@ tdc_status vtr_encode_column_tdc(const VecArray         *col,
  * surface it back to the caller. The bytes still live in the record, at
  * offset = 80 + side_meta_size + xform_params_size + payload_size, with
  * length validity_size. We re-parse the record header here and copy the
- * bitmap into the destination ourselves. This exists outside the model
- * dispatch on purpose: when tdc grows native validity decode, deleting
- * this block is a single function call replacement.
+ * bitmap into the destination ourselves. Shared between the fixed-width
+ * (_into) and string (_tdc) entry points so they can't drift.
+ *
+ * When tdc grows native validity decode, deleting this block + every call
+ * site reduces to a no-op.
  */
+static tdc_status vtr_extract_validity_from_record(const tdc_block_record *hdr,
+                                                   const uint8_t          *src,
+                                                   size_t                  src_size,
+                                                   int64_t                 n_rows,
+                                                   uint8_t                *dst_validity) {
+    if (dst_validity == NULL) return TDC_OK;
+    size_t vbytes = (size_t)vec_validity_bytes(n_rows);
+    if (hdr->flags & TDC_BLOCK_FLAG_HAS_VALIDITY) {
+        if (hdr->validity_size != (uint32_t)vbytes) return TDC_E_CORRUPT;
+        size_t v_off = (size_t)TDC_BLOCK_HEADER_SIZE
+                     + hdr->side_meta_size
+                     + hdr->xform_params_size
+                     + hdr->payload_size;
+        if (v_off + vbytes > src_size) return TDC_E_CORRUPT;
+        if (vbytes > 0) memcpy(dst_validity, src + v_off, vbytes);
+    } else {
+        /* No bitmap on disk -> all valid. */
+        if (vbytes > 0) memset(dst_validity, 0xFF, vbytes);
+        /* Trim trailing bits beyond n_rows so vec_array_all_valid stays accurate. */
+        int rem = (int)(n_rows % 8);
+        if (rem > 0 && vbytes > 0) {
+            dst_validity[vbytes - 1] = (uint8_t)((1u << rem) - 1u);
+        }
+    }
+    return TDC_OK;
+}
 
 tdc_status vtr_decode_column_tdc_into(VecType         type,
                                       int64_t         n_rows,
@@ -279,36 +307,80 @@ tdc_status vtr_decode_column_tdc_into(VecType         type,
     tdc_status st = tdc_decode_block_into(src, src_size, &dst);
     if (st != TDC_OK) return st;
 
-    /* Hand back validity if the caller asked for it. */
-    if (dst_validity != NULL) {
-        size_t vbytes = (size_t)vec_validity_bytes(n_rows);
-        if (hdr.flags & TDC_BLOCK_FLAG_HAS_VALIDITY) {
-            if (hdr.validity_size != (uint32_t)vbytes) return TDC_E_CORRUPT;
-            size_t v_off = (size_t)TDC_BLOCK_HEADER_SIZE
-                         + hdr.side_meta_size
-                         + hdr.xform_params_size
-                         + hdr.payload_size;
-            if (v_off + vbytes > src_size) return TDC_E_CORRUPT;
-            if (vbytes > 0) memcpy(dst_validity, src + v_off, vbytes);
-        } else {
-            /* No bitmap on disk -> all valid. */
-            if (vbytes > 0) memset(dst_validity, 0xFF, vbytes);
-            /* Trim trailing bits beyond n_rows so vec_array_all_valid stays accurate. */
-            int rem = (int)(n_rows % 8);
-            if (rem > 0 && vbytes > 0) {
-                dst_validity[vbytes - 1] = (uint8_t)((1u << rem) - 1u);
-            }
-        }
-    }
+    return vtr_extract_validity_from_record(&hdr, src, src_size, n_rows, dst_validity);
+}
 
-    return TDC_OK;
+/*
+ * Variable-width (VEC_STRING) decode. Replaces the placeholder
+ * offsets/data buffers that vec_array_alloc(VEC_STRING, n) installed
+ * with freshly malloc'd buffers sized from the record. tdc returns
+ * uint32_t offsets; vectra stores int64_t — we widen on the way out.
+ */
+static tdc_status vtr_decode_string_column_tdc(VecArray       *col_out,
+                                               const uint8_t  *src,
+                                               size_t          src_size) {
+    if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
+
+    tdc_block_record hdr;
+    memcpy(&hdr, src, TDC_BLOCK_HEADER_SIZE);
+
+    int64_t n_rows = col_out->length;
+    int64_t header_n_elems = 1;
+    for (uint8_t i = 0; i < hdr.rank; ++i) header_n_elems *= hdr.dim[i];
+    if (header_n_elems != n_rows) return TDC_E_SHAPE;
+    if ((tdc_dtype)hdr.dtype != TDC_DT_STRING) return TDC_E_DTYPE;
+
+    /* Fresh dst with NULL data/offsets — tdc_decode_block_varlen
+     * insists the caller hasn't pre-populated them. */
+    tdc_block dst = {0};
+    dst.dtype      = TDC_DT_STRING;
+    dst.layout     = (tdc_layout)hdr.layout;
+    dst.shape.rank = hdr.rank;
+    for (uint8_t i = 0; i < hdr.rank && i < TDC_MAX_RANK; ++i) {
+        dst.shape.dim[i] = hdr.dim[i];
+    }
+    tdc_shape_set_contiguous(&dst.shape);
+
+    tdc_buffer alloc = {0};
+    alloc.realloc_fn = vtr_tdc_realloc;
+
+    tdc_status st = tdc_decode_block_varlen(src, src_size, &dst, &alloc);
+    if (st != TDC_OK) return st;
+
+    /* Widen uint32 offsets -> int64 (vectra's storage type). */
+    uint32_t *u32_offs = (uint32_t *)dst.offsets;
+    size_t off_n = (size_t)(n_rows + 1);
+    int64_t *new_offs = (int64_t *)malloc(sizeof(int64_t) * off_n);
+    if (!new_offs) {
+        if (dst.data)    vtr_tdc_realloc(NULL, dst.data,    0);
+        if (dst.offsets) vtr_tdc_realloc(NULL, dst.offsets, 0);
+        return TDC_E_NOMEM;
+    }
+    for (size_t i = 0; i < off_n; ++i) new_offs[i] = (int64_t)u32_offs[i];
+    int64_t heap_bytes = new_offs[n_rows];
+    vtr_tdc_realloc(NULL, dst.offsets, 0);
+
+    /* Free the placeholder allocations vec_array_alloc(VEC_STRING, n)
+     * installed (1-byte malloc'd data + calloc'd int64 offsets). */
+    free(col_out->buf.str.offsets);
+    if (col_out->owns_data) free(col_out->buf.str.data);
+
+    col_out->buf.str.offsets  = new_offs;
+    col_out->buf.str.data     = (char *)dst.data;  /* may be NULL when n==0 */
+    col_out->buf.str.data_len = heap_bytes;
+    col_out->owns_data        = 1;  /* offsets + data both came via malloc */
+
+    return vtr_extract_validity_from_record(&hdr, src, src_size, n_rows,
+                                            col_out->validity);
 }
 
 tdc_status vtr_decode_column_tdc(VecArray       *col_out,
                                  const uint8_t  *src,
                                  size_t          src_size) {
     if (!col_out) return TDC_E_INVAL;
-    if (col_out->type == VEC_STRING) return TDC_E_UNSUPPORTED;
+    if (col_out->type == VEC_STRING) {
+        return vtr_decode_string_column_tdc(col_out, src, src_size);
+    }
 
     void *dst_data = NULL;
     switch (col_out->type) {

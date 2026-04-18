@@ -253,8 +253,14 @@ static int vtr1_tdc_compute_rowgroup_stats(const VecBatch *batch,
                 out[c].has_stats = 1;
                 any = 1;
             }
+        } else if (col->type == VEC_STRING) {
+            /* String min/max would need a packed-prefix or dictionary
+             * scan; for now we surface only null_count. has_stats=1 lets
+             * the reader return a stat vector with NA min/max so the
+             * null count is observable in user code. */
+            out[c].has_stats = 1;
+            any = 1;
         }
-        /* VEC_STRING is rejected at write time (P3 gap); P4d will add it. */
     }
     return any;
 }
@@ -359,9 +365,6 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         if (col->type != w->schema.col_types[c]) {
             vectra_error("rowgroup col %d type=%d mismatches schema type=%d",
                          c, (int)col->type, (int)w->schema.col_types[c]);
-        }
-        if (col->type == VEC_STRING) {
-            vectra_error("VEC_STRING not yet supported in vtr1_tdc (P3 gap)");
         }
 
         const VtrQuantizeSpec *qs = (qspecs && qspecs[c].enabled) ? &qspecs[c] : NULL;
@@ -489,6 +492,9 @@ static void vtr1_tdc_decode_stat(const tdc_column_stats *src, VecType t,
     } else if (t == VEC_BOOL) {
         dst->bln.min = (uint8_t)get_le_u64(src->min);
         dst->bln.max = (uint8_t)get_le_u64(src->max);
+    } else if (t == VEC_STRING) {
+        /* String columns carry only null_count today; min/max stay zero
+         * and the R-side reader maps them to NA. */
     } else {
         /* Unsupported type — degrade silently to no-stats. */
         dst->has_stats = 0;
@@ -714,10 +720,6 @@ static VecBatch *read_rg_tdc_with_fp(Vtr1TdcFile *file, uint32_t rg_idx,
         if (!col_mask[c]) continue;
 
         VecType t = schema->col_types[c];
-        if (t == VEC_STRING) {
-            vec_batch_free(batch);
-            vectra_error("VEC_STRING decode not supported (P3 gap)");
-        }
 
         uint64_t off = file->rowgroups[rg_idx].block_offset[c];
         uint64_t sz  = file->rowgroups[rg_idx].block_total[c];
@@ -923,6 +925,7 @@ static SEXPTYPE vectype_to_sxp(VecType t) {
     case VEC_DOUBLE: return REALSXP;
     case VEC_INT32:  return INTSXP;
     case VEC_BOOL:   return LGLSXP;
+    case VEC_STRING: return STRSXP;
     default:         return NILSXP;
     }
 }
@@ -999,6 +1002,44 @@ static void r_col_slice_into_vecarray(SEXP col, R_xlen_t row_offset,
         if (bln_tmp_out) *bln_tmp_out = tmp;
         break;
     }
+    case STRSXP: {
+        out->type = VEC_STRING;
+        /* Pack the slice into flat (offsets, data) buffers. NA_STRING entries
+         * contribute zero bytes to the heap and a 0 bit in the validity map.
+         * Both buffers come from R_alloc — transient, reaped at .Call return.
+         * The caller marks owns_data=0 and nulls pointers before vec_batch_free
+         * so libc free() never touches R-managed memory. */
+        int64_t total_bytes = 0;
+        for (int64_t i = 0; i < n_rows; i++) {
+            SEXP s = STRING_ELT(col, row_offset + i);
+            if (s == NA_STRING) { has_na = 1; continue; }
+            total_bytes += (int64_t)LENGTH(s);
+        }
+        int64_t *offs = (int64_t *)R_alloc((size_t)(n_rows + 1), sizeof(int64_t));
+        char    *data = (char *)R_alloc((size_t)(total_bytes > 0 ? total_bytes : 1), 1);
+        int64_t pos = 0;
+        for (int64_t i = 0; i < n_rows; i++) {
+            offs[i] = pos;
+            SEXP s = STRING_ELT(col, row_offset + i);
+            if (s == NA_STRING) continue;
+            int len = LENGTH(s);
+            if (len > 0) memcpy(data + pos, CHAR(s), (size_t)len);
+            pos += len;
+        }
+        offs[n_rows] = pos;
+        out->buf.str.offsets  = offs;
+        out->buf.str.data     = data;
+        out->buf.str.data_len = pos;
+        if (has_na) {
+            validity = (uint8_t *)R_alloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
+            memset(validity, 0, (size_t)vbytes);
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (STRING_ELT(col, row_offset + i) != NA_STRING)
+                    validity[i / 8] |= (uint8_t)(1u << (i % 8));
+            }
+        }
+        break;
+    }
     default:
         Rf_error("unsupported R column type: %d", (int)TYPEOF(col));
     }
@@ -1053,6 +1094,7 @@ SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
         case REALSXP: col_types[c] = VEC_DOUBLE; break;
         case INTSXP:  col_types[c] = VEC_INT32;  break;
         case LGLSXP:  col_types[c] = VEC_BOOL;   break;
+        case STRSXP:  col_types[c] = VEC_STRING; break;
         default:
             Rf_error("column %d has unsupported R type %d",
                      c + 1, (int)TYPEOF(col));
@@ -1182,6 +1224,15 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
             col_bases[c]      = bool_stage[c];
             col_elem_sizes[c] = 1;
             break;
+        case VEC_STRING:
+            /* No direct-write path: strings need allocated offsets+heap that
+             * the per-rg decoder sizes from the record. The parallel reader
+             * sees col_bases[c]==NULL and falls through to
+             * vec_array_alloc + vtr_decode_column_tdc, which handles strings.
+             * The serial post-pass below moves bytes into the STRSXP. */
+            col_bases[c]      = NULL;
+            col_elem_sizes[c] = 0;
+            break;
         default:
             col_bases[c]      = NULL;
             col_elem_sizes[c] = 0;
@@ -1233,6 +1284,23 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
                 for (int64_t i = 0; i < rg_rows; i++) {
                     if (!((vmap[i / 8] >> (i % 8)) & 1u)) dst[i] = NA_LOGICAL;
                     else                                  dst[i] = s[i] ? TRUE : FALSE;
+                }
+                break;
+            }
+            case VEC_STRING: {
+                const VecArray *arr  = &batch->columns[c];
+                const int64_t  *offs = arr->buf.str.offsets;
+                const char     *data = arr->buf.str.data;
+                for (int64_t i = 0; i < rg_rows; i++) {
+                    if (!((vmap[i / 8] >> (i % 8)) & 1u)) {
+                        SET_STRING_ELT(col, cursor + i, NA_STRING);
+                    } else {
+                        int64_t a = offs[i], b = offs[i + 1];
+                        int64_t L = b - a;
+                        SET_STRING_ELT(col, cursor + i,
+                                       (L == 0) ? R_BlankString
+                                                : Rf_mkCharLen(data + a, (int)L));
+                    }
                 }
                 break;
             }

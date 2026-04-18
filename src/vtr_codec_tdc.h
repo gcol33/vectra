@@ -140,10 +140,11 @@ void vtr_codec_tdc_release_request(
  * has been overwritten from the record (or set all-valid if the record has
  * no validity bitmap).
  *
- * VEC_STRING is currently TDC_E_UNSUPPORTED: the tdc dict-1d decode
- * requires a pre-sized heap, and tdc has no public size-query for variable-
- * width payloads in v0. The string decode bridge will land alongside the
- * tdc API extension (see VECTRA_REWIRE.md follow-ups).
+ * VEC_STRING goes through tdc_decode_block_varlen, which sizes the output
+ * heap from the encoded residual + dictionary side-meta and allocates
+ * dst->offsets and dst->data via libc realloc. The placeholder offsets/data
+ * installed by vec_array_alloc(VEC_STRING, n) are released and replaced
+ * with malloc'd buffers; col_out retains owns_data=1.
  */
 tdc_status vtr_decode_column_tdc(VecArray       *col_out,
                                  const uint8_t  *src,

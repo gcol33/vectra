@@ -1,14 +1,13 @@
-# P3: tdc-backed row-group container — round-trip via vtr1_tdc.
+# P3 + P4: tdc-backed row-group container — round-trip via vtr1_tdc.
 #
 # Exercises src/vtr1_tdc.c. Builds a multi-column data.frame, splits
 # it into row groups via the writer, opens the resulting tdc container
 # and reads it back, then verifies bit-identical equality column by
 # column.
 #
-# String columns and per-column statistics are intentionally absent in
-# P3 (gap tracked in VECTRA_REWIRE.md). VEC_STRING decode requires a
-# tdc API extension; stats are a read-side filter-pushdown optimization
-# that P4 may add.
+# String columns land in P4d via tdc_decode_block_varlen; the dedicated
+# round-trip cases live at the bottom of this file (basic, NA, multi-
+# rowgroup, unicode, varied length).
 
 VTR_COMPRESS_NONE  <- 0L
 VTR_COMPRESS_FAST  <- 1L
@@ -337,4 +336,65 @@ test_that("null_count stat reflects NA presence", {
   expect_equal(stats[[1]][[1]][3], 5)
   expect_equal(stats[[1]][[2]][2], 30)
   expect_equal(stats[[1]][[2]][3], 50)
+})
+
+# ---------------------------------------------------------------------------
+# P4d — VEC_STRING round-trip
+# ---------------------------------------------------------------------------
+
+test_that("string column round-trips byte-exactly across rowgroup sizes", {
+  s <- c("alpha", "beta", "", "gamma", "delta", "epsilon", "zeta", "eta")
+  df <- data.frame(s = s, stringsAsFactors = FALSE)
+  for (rg in c(1L, 2L, 3L, 8L, 64L)) {
+    rt <- vtr_tdc_roundtrip(df, rg, VTR_COMPRESS_FAST)
+    expect_identical(rt$s, df$s, info = sprintf("rg=%d", rg))
+  }
+})
+
+test_that("string column with NA_character_ round-trips and counts nulls", {
+  df <- data.frame(
+    s = c("a", NA_character_, "", "longer string", NA_character_, "z"),
+    stringsAsFactors = FALSE
+  )
+  path <- tempfile(fileext = ".vtdc")
+  on.exit(unlink(path), add = TRUE)
+  .Call("C_write_vtr_tdc", path, df, 6L, VTR_COMPRESS_FAST, NULL,
+        PACKAGE = "vectra")
+  out <- .Call("C_read_vtr_tdc", path, PACKAGE = "vectra")
+  expect_identical(out$s, df$s)
+
+  stats <- .Call("C_read_vtr_tdc_stats", path, PACKAGE = "vectra")
+  expect_equal(stats[[1]][[1]][4], 2)  # 2 NA strings
+})
+
+test_that("string column survives many rowgroups (boundary stress)", {
+  s <- sprintf("row-%05d", 0:999)
+  df <- data.frame(s = s, stringsAsFactors = FALSE)
+  rt <- vtr_tdc_roundtrip(df, 137L, VTR_COMPRESS_FAST)  # 8 rowgroups
+  expect_identical(rt$s, df$s)
+})
+
+test_that("unicode and varied-length strings round-trip", {
+  df <- data.frame(
+    s = c("café", "naïve", "日本語", "emoji \U1F600",
+          strrep("x", 1000), "", "single"),
+    stringsAsFactors = FALSE
+  )
+  rt <- vtr_tdc_roundtrip(df, 3L, VTR_COMPRESS_FAST)
+  expect_identical(rt$s, df$s)
+})
+
+test_that("string columns mix with numeric/logical columns in one container", {
+  set.seed(7)
+  n <- 500L
+  df <- data.frame(
+    name  = sprintf("item-%03d", seq_len(n)),
+    value = rnorm(n),
+    flag  = sample(c(TRUE, FALSE), n, replace = TRUE),
+    stringsAsFactors = FALSE
+  )
+  rt <- vtr_tdc_roundtrip(df, 73L, VTR_COMPRESS_FAST)
+  expect_identical(rt$name,  df$name)
+  expect_identical(rt$value, df$value)
+  expect_identical(rt$flag,  df$flag)
 })
