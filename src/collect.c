@@ -508,7 +508,7 @@ SEXP vec_collect(VecNode *root) {
         int used_parallel = 0;
         if (scan_node_is_parallel_safe(root)) {
             const char *path = scan_node_get_path(root);
-            Vtr1File *file = scan_node_get_file(root);
+            Vtr1TdcFile *file = scan_node_get_file(root);
             const int *col_mask = scan_node_get_col_mask(root);
             uint32_t n_batches = 0;
 
@@ -525,24 +525,17 @@ SEXP vec_collect(VecNode *root) {
                     col_bases[i] = REAL(cols[i]);
                     col_elem_sizes[i] = sizeof(double);
                     col_direct[i] = 1;
-                } else if (t == VEC_STRING) {
-                    /* String-defer contract: passing the sentinel tells the
-                     * decoder "if this column is DICTIONARY-encoded, parse
-                     * into arr.str_dict instead of materializing the flat
-                     * string buffer." elem_size stays 0 so the parallel
-                     * reader's offset-stride math leaves the sentinel
-                     * value untouched across all row groups. */
-                    col_bases[i] = VTR_STRING_DICT_DEFER;
-                    col_elem_sizes[i] = 0;
-                    /* col_direct stays 0: the consumer loop below checks
-                     * arr->str_dict directly, no flag needed. */
                 }
+                /* VEC_STRING: tdc reader doesn't yet support the
+                 * VTR_STRING_DICT_DEFER fast path; leave col_bases[i] NULL
+                 * so the decoder allocates a heap buffer and the consumer
+                 * loop falls back to fill_string_col_from_batch. */
             }
 
-            VecBatch **batches = vtr1_read_parallel_into(file, col_mask, path,
-                                                         col_bases,
-                                                         col_elem_sizes,
-                                                         n_cols, &n_batches);
+            VecBatch **batches = vtr1_read_parallel_tdc_into(file, col_mask, path,
+                                                             col_bases,
+                                                             col_elem_sizes,
+                                                             n_cols, &n_batches);
             used_parallel = 1;
 
             for (uint32_t bi = 0; bi < n_batches; bi++) {
@@ -592,7 +585,7 @@ SEXP vec_collect(VecNode *root) {
         /* === DIRECT-READ PATH ===
            When root is a plain ScanNode (no predicates/tombstones), bypass
            the intermediate malloc+memcpy+free by reading directly into R
-           vectors via vtr1_read_rowgroup_ex with pre-allocated target
+           vectors via vtr1_read_rowgroup_tdc_ex with pre-allocated target
            buffers. Numeric columns whose R element size matches the on-disk
            decoded element size (DOUBLE, INT64+bit64) get a real direct
            pointer; VEC_STRING columns pass the VTR_STRING_DICT_DEFER
@@ -603,8 +596,7 @@ SEXP vec_collect(VecNode *root) {
         if (!used_parallel && root->kind &&
             strcmp(root->kind, "ScanNode") == 0) {
             ScanNode *sn = (ScanNode *)root;
-            if (!sn->predicate && !sn->tombstone && !sn->rg_bitmap &&
-                sn->file->header.version >= 4) {
+            if (!sn->predicate && !sn->tombstone && !sn->rg_bitmap) {
                 int can_direct = 1;
                 for (int i = 0; i < n_cols; i++) {
                     VecType t = schema->col_types[i];
@@ -615,22 +607,28 @@ SEXP vec_collect(VecNode *root) {
                     break;
                 }
                 if (can_direct) {
-                    Vtr1File *file = sn->file;
+                    Vtr1TdcFile *file = sn->file;
                     const int *col_mask = sn->col_mask;
-                    uint32_t n_rgs = file->header.n_rowgroups;
+                    uint32_t n_rgs = vtr1_tdc_n_rowgroups(file);
                     void **direct_bufs = (void **)malloc(
                         (size_t)n_cols * sizeof(void *));
                     if (direct_bufs) {
                         used_direct = 1;
                         for (uint32_t rg = 0; rg < n_rgs; rg++) {
-                            int64_t rg_rows = file->rowgroups[rg].n_rows;
+                            int64_t rg_rows =
+                                vtr1_tdc_rowgroup_n_rows(file, rg);
                             for (int i = 0; i < n_cols; i++) {
+                                /* Strings: leave NULL so decoder allocates
+                                 * its own heap and the consumer below falls
+                                 * back to fill_string_col_from_batch (the
+                                 * dict-defer fast path isn't wired in tdc
+                                 * yet). */
                                 if (schema->col_types[i] == VEC_STRING)
-                                    direct_bufs[i] = VTR_STRING_DICT_DEFER;
+                                    direct_bufs[i] = NULL;
                                 else
                                     direct_bufs[i] = REAL(cols[i]) + offset;
                             }
-                            batch = vtr1_read_rowgroup_ex(
+                            batch = vtr1_read_rowgroup_tdc_ex(
                                 file, rg, col_mask, direct_bufs);
                             /* Same direct-write contract as the parallel
                                path: for numeric cols, data_borrowed == 1

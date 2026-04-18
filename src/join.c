@@ -607,8 +607,8 @@ static int child_sorted_on_keys(VecNode *child, const int *key_idx,
     }
     if (n_keys == 1 && strcmp(child->kind, "ScanNode") == 0) {
         ScanNode *sn = (ScanNode *)child;
-        if (sn->file->col_sorted &&
-            sn->file->col_sorted[key_idx[0]])
+        const uint8_t *cs = vtr1_tdc_col_sorted(sn->file);
+        if (cs && cs[key_idx[0]])
             return 1;
     }
     return 0;

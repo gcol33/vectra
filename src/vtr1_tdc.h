@@ -28,12 +28,9 @@
  * the rest is the verbatim user annotation (factor levels, quantize
  * spec, etc.).
  *
- * VEC_STRING is rejected at write time (TDC_E_UNSUPPORTED via R-side
- * Rf_error), since vtr_decode_column_tdc cannot round-trip strings
- * until tdc grows a public size query for variable-width payloads.
- *
- * Production read/write entry points (C_write_vtr / C_scan_node) are
- * NOT yet routed through this code — that swap is P4e.
+ * VEC_STRING round-trips end-to-end through the tdc varlen decode hook;
+ * stats currently surface only null_count (min/max remain zero, mapped
+ * to NA on the R side) since packed-prefix string min/max isn't wired.
  */
 
 #include "types.h"
@@ -108,6 +105,14 @@ VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
  * entries and is owned by the file. */
 const Vtr1ColStat *vtr1_tdc_rowgroup_col_stats(const Vtr1TdcFile *file,
                                                uint32_t rg_idx);
+
+/* Per-column "is sorted across row groups" flag, length n_schema_cols.
+ * Bit c is 1 iff every consecutive rowgroup pair has stats[c] with
+ * sa.max <= sb.min for the column's dtype. Used by scan.c to narrow
+ * the rowgroup range under range/equality predicates via binary search.
+ * Returns NULL when the file has <2 row groups (in which case the
+ * concept is vacuous); the array is owned by the file. */
+const uint8_t *vtr1_tdc_col_sorted(const Vtr1TdcFile *file);
 
 /* Parallel readers: each rowgroup is decoded by an OpenMP worker that
  * holds its own FILE* (no shared seek state) and per-thread scratch.

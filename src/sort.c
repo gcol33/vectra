@@ -5,6 +5,7 @@
 #include "schema.h"
 #include "builder.h"
 #include "vtr1.h"
+#include "vtr1_tdc.h"
 #include "coerce.h"
 #include "error.h"
 #include <stdlib.h>
@@ -487,14 +488,12 @@ static char *spill_sorted_run(VecArrayBuilder *builders, int n_cols,
         free(tmp);
     }
 
-    /* Write multi-rowgroup spill file */
+    /* Write multi-rowgroup spill file via the tdc writer; the writer
+     * self-finalizes the trailing rowgroup index in close. */
     char *path = make_run_path(temp_dir, run_id);
     uint32_t n_rgs = (uint32_t)((n_rows + SPILL_RG_SIZE - 1) / SPILL_RG_SIZE);
 
-    FILE *fp = fopen(path, "wb");
-    if (!fp) vectra_error("cannot create spill file: %s", path);
-
-    vtr1_write_header(fp, schema, n_rgs);
+    Vtr1TdcWriter *w = vtr1_open_tdc_writer(path, schema);
 
     for (uint32_t rg = 0; rg < n_rgs; rg++) {
         int64_t start = (int64_t)rg * SPILL_RG_SIZE;
@@ -510,11 +509,11 @@ static char *spill_sorted_run(VecArrayBuilder *builders, int n_cols,
                 strlen(schema->col_names[c]) + 1);
             strcpy(batch->col_names[c], schema->col_names[c]);
         }
-        vtr1_write_rowgroup(fp, batch, VTR_COMPRESS_FAST);
+        vtr1_write_rowgroup_tdc(w, batch, VTR_COMPRESS_FAST, NULL, NULL);
         vec_batch_free(batch);
     }
 
-    fclose(fp);
+    vtr1_close_tdc_writer(w);
     free(indices);
     for (int c = 0; c < n_cols; c++)
         vec_array_free(&columns[c]);
@@ -528,13 +527,13 @@ static char *spill_sorted_run(VecArrayBuilder *builders, int n_cols,
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    Vtr1File *file;
-    int      *col_mask;
-    uint32_t  n_rgs;
-    uint32_t  next_rg;
-    VecBatch *batch;      /* currently loaded rowgroup */
-    int64_t   cursor;     /* current row within batch */
-    int       exhausted;
+    Vtr1TdcFile *file;
+    int         *col_mask;
+    uint32_t     n_rgs;
+    uint32_t     next_rg;
+    VecBatch    *batch;      /* currently loaded rowgroup */
+    int64_t      cursor;     /* current row within batch */
+    int          exhausted;
 } MergeRun;
 
 typedef struct {
@@ -555,8 +554,8 @@ static void merge_run_load_next(MergeRun *run) {
         run->batch = NULL;
     }
     if (run->next_rg < run->n_rgs) {
-        run->batch = vtr1_read_rowgroup(run->file, run->next_rg,
-                                         run->col_mask);
+        run->batch = vtr1_read_rowgroup_tdc(run->file, run->next_rg,
+                                             run->col_mask);
         run->next_rg++;
         run->cursor = 0;
     } else {
@@ -636,7 +635,7 @@ static void merge_state_free(MergeState *ms) {
     for (int r = 0; r < ms->n_runs; r++) {
         MergeRun *run = &ms->runs[r];
         if (run->batch)   vec_batch_free(run->batch);
-        if (run->file)    vtr1_close(run->file);
+        if (run->file)    vtr1_close_tdc(run->file);
         free(run->col_mask);
     }
     free(ms->runs);
@@ -788,8 +787,11 @@ static void init_merge(SortNode *sn) {
 
     for (int r = 0; r < sn->n_runs; r++) {
         MergeRun *run = &ms->runs[r];
-        run->file    = vtr1_open(sn->run_paths[r]);
-        run->n_rgs   = run->file->header.n_rowgroups;
+        run->file    = vtr1_open_tdc(sn->run_paths[r]);
+        if (!run->file)
+            vectra_error("vtr1_open_tdc failed for spill run %s",
+                         sn->run_paths[r]);
+        run->n_rgs   = vtr1_tdc_n_rowgroups(run->file);
         run->next_rg = 0;
         run->col_mask = (int *)malloc((size_t)n_cols * sizeof(int));
         for (int c = 0; c < n_cols; c++)

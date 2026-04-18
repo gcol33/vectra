@@ -2,7 +2,8 @@
 #define VECTRA_SCAN_H
 
 #include "types.h"
-#include "vtr1.h"
+#include "vtr1.h"           /* Vtr1ColStat, vec_type_is_int helpers reused */
+#include "vtr1_tdc.h"
 #include "vtr_delete.h"
 
 typedef struct VecExpr VecExpr;  /* forward decl */
@@ -11,7 +12,7 @@ typedef struct VtrIndex VtrIndex;  /* forward decl */
 
 typedef struct {
     VecNode        base;
-    Vtr1File      *file;
+    Vtr1TdcFile   *file;
     int           *col_mask;       /* which columns to read */
     uint32_t       next_rg;        /* next row group to read */
     uint32_t       last_rg;        /* exclusive upper bound (0 = use n_rowgroups) */
@@ -35,8 +36,8 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected);
 int scan_node_is_parallel_safe(const VecNode *node);
 
 /* Accessors for parallel I/O integration */
-const char *scan_node_get_path(const VecNode *node);
-Vtr1File   *scan_node_get_file(const VecNode *node);
-const int  *scan_node_get_col_mask(const VecNode *node);
+const char   *scan_node_get_path(const VecNode *node);
+Vtr1TdcFile  *scan_node_get_file(const VecNode *node);
+const int    *scan_node_get_col_mask(const VecNode *node);
 
 #endif /* VECTRA_SCAN_H */

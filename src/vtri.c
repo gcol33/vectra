@@ -1,4 +1,5 @@
 #include "vtri.h"
+#include "vtr1_tdc.h"
 #include "batch.h"
 #include "schema.h"
 #include "array.h"
@@ -142,19 +143,21 @@ static int64_t read_i64_f(FILE *fp) {
 /* ------------------------------------------------------------------ */
 
 void vtri_build(const char *vtr_path, const char *col_name, int ci) {
-    Vtr1File *file = vtr1_open(vtr_path);
-    const VecSchema *schema = &file->header.schema;
+    Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
+    if (!file) vectra_error("vtr1_open_tdc failed for %s", vtr_path);
+    const VecSchema *schema = vtr1_tdc_schema(file);
 
     int col_idx = vec_schema_find_col(schema, col_name);
     if (col_idx < 0) {
-        vtr1_close(file);
+        vtr1_close_tdc(file);
         vectra_error("column '%s' not found in schema", col_name);
     }
 
     /* Count total rows across all row groups */
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(file);
     int64_t total_rows = 0;
-    for (uint32_t rg = 0; rg < file->header.n_rowgroups; rg++)
-        total_rows += file->rowgroups[rg].n_rows;
+    for (uint32_t rg = 0; rg < n_rg; rg++)
+        total_rows += vtr1_tdc_rowgroup_n_rows(file, rg);
 
     /* Allocate entry arrays */
     int64_t n_entries = total_rows;
@@ -165,7 +168,7 @@ void vtri_build(const char *vtr_path, const char *col_name, int ci) {
     int64_t  *heads      = (int64_t *)malloc((size_t)n_slots * sizeof(int64_t));
     int64_t  *entry_next = (int64_t *)malloc((size_t)n_entries * sizeof(int64_t));
     if (!entry_hash || !entry_rg || !heads || !entry_next) {
-        vtr1_close(file);
+        vtr1_close_tdc(file);
         vectra_error("alloc failed building vtri index");
     }
 
@@ -174,7 +177,7 @@ void vtri_build(const char *vtr_path, const char *col_name, int ci) {
 
     /* Build a column mask that reads only the indexed column */
     int *col_mask = (int *)calloc((size_t)schema->n_cols, sizeof(int));
-    if (!col_mask) { vtr1_close(file); vectra_error("alloc failed"); }
+    if (!col_mask) { vtr1_close_tdc(file); vectra_error("alloc failed"); }
     col_mask[col_idx] = 1;
 
     /* Find the output column index (position of col_idx among selected cols) */
@@ -185,8 +188,8 @@ void vtri_build(const char *vtr_path, const char *col_name, int ci) {
     int64_t entry_pos = 0;
     int64_t mask = n_slots - 1;
 
-    for (uint32_t rg = 0; rg < file->header.n_rowgroups; rg++) {
-        VecBatch *batch = vtr1_read_rowgroup(file, rg, col_mask);
+    for (uint32_t rg = 0; rg < n_rg; rg++) {
+        VecBatch *batch = vtr1_read_rowgroup_tdc(file, rg, col_mask);
         const VecArray *col = &batch->columns[out_col];
 
         for (int64_t r = 0; r < batch->n_rows; r++) {
@@ -207,7 +210,7 @@ void vtri_build(const char *vtr_path, const char *col_name, int ci) {
 
     /* Write .vtri file */
     char *vtri_path = vtri_make_path(vtr_path, col_name);
-    if (!vtri_path) { vtr1_close(file); vectra_error("alloc failed for vtri path"); }
+    if (!vtri_path) { vtr1_close_tdc(file); vectra_error("alloc failed for vtri path"); }
 
     FILE *fp = fopen(vtri_path, "wb");
     if (!fp) {
@@ -216,7 +219,7 @@ void vtri_build(const char *vtr_path, const char *col_name, int ci) {
         free(entry_rg);
         free(heads);
         free(entry_next);
-        vtr1_close(file);
+        vtr1_close_tdc(file);
         vectra_error("cannot create vtri index file");
     }
 
@@ -244,7 +247,7 @@ void vtri_build(const char *vtr_path, const char *col_name, int ci) {
     free(entry_rg);
     free(heads);
     free(entry_next);
-    vtr1_close(file);
+    vtr1_close_tdc(file);
 }
 
 /* ------------------------------------------------------------------ */
@@ -258,24 +261,26 @@ void vtri_build_composite(const char *vtr_path, const char **col_names,
         return;
     }
 
-    Vtr1File *file = vtr1_open(vtr_path);
-    const VecSchema *schema = &file->header.schema;
+    Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
+    if (!file) vectra_error("vtr1_open_tdc failed for %s", vtr_path);
+    const VecSchema *schema = vtr1_tdc_schema(file);
 
     /* Resolve column indices */
     int *col_idx = (int *)malloc((size_t)n_cols * sizeof(int));
-    if (!col_idx) { vtr1_close(file); vectra_error("alloc failed"); }
+    if (!col_idx) { vtr1_close_tdc(file); vectra_error("alloc failed"); }
     for (int c = 0; c < n_cols; c++) {
         col_idx[c] = vec_schema_find_col(schema, col_names[c]);
         if (col_idx[c] < 0) {
-            free(col_idx); vtr1_close(file);
+            free(col_idx); vtr1_close_tdc(file);
             vectra_error("column '%s' not found in schema", col_names[c]);
         }
     }
 
     /* Count total rows */
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(file);
     int64_t total_rows = 0;
-    for (uint32_t rg = 0; rg < file->header.n_rowgroups; rg++)
-        total_rows += file->rowgroups[rg].n_rows;
+    for (uint32_t rg = 0; rg < n_rg; rg++)
+        total_rows += vtr1_tdc_rowgroup_n_rows(file, rg);
 
     int64_t n_entries = total_rows;
     int64_t n_slots = next_pow2(n_entries * 2);
@@ -285,7 +290,7 @@ void vtri_build_composite(const char *vtr_path, const char **col_names,
     int64_t  *heads      = (int64_t *)malloc((size_t)n_slots * sizeof(int64_t));
     int64_t  *entry_next = (int64_t *)malloc((size_t)n_entries * sizeof(int64_t));
     if (!entry_hash || !entry_rg || !heads || !entry_next) {
-        free(col_idx); vtr1_close(file);
+        free(col_idx); vtr1_close_tdc(file);
         vectra_error("alloc failed building composite vtri index");
     }
 
@@ -293,12 +298,12 @@ void vtri_build_composite(const char *vtr_path, const char **col_names,
 
     /* Build col_mask for the indexed columns */
     int *col_mask = (int *)calloc((size_t)schema->n_cols, sizeof(int));
-    if (!col_mask) { free(col_idx); vtr1_close(file); vectra_error("alloc failed"); }
+    if (!col_mask) { free(col_idx); vtr1_close_tdc(file); vectra_error("alloc failed"); }
     for (int c = 0; c < n_cols; c++) col_mask[col_idx[c]] = 1;
 
     /* Map col_idx[c] -> output column index in the masked read */
     int *out_col = (int *)malloc((size_t)n_cols * sizeof(int));
-    if (!out_col) { free(col_idx); free(col_mask); vtr1_close(file); vectra_error("alloc failed"); }
+    if (!out_col) { free(col_idx); free(col_mask); vtr1_close_tdc(file); vectra_error("alloc failed"); }
     for (int c = 0; c < n_cols; c++) {
         out_col[c] = 0;
         for (int j = 0; j < col_idx[c]; j++)
@@ -310,8 +315,8 @@ void vtri_build_composite(const char *vtr_path, const char **col_names,
     int64_t entry_pos = 0;
     int64_t mask = n_slots - 1;
 
-    for (uint32_t rg = 0; rg < file->header.n_rowgroups; rg++) {
-        VecBatch *batch = vtr1_read_rowgroup(file, rg, col_mask);
+    for (uint32_t rg = 0; rg < n_rg; rg++) {
+        VecBatch *batch = vtr1_read_rowgroup_tdc(file, rg, col_mask);
         for (int64_t r = 0; r < batch->n_rows; r++) {
             for (int c = 0; c < n_cols; c++)
                 per_col_hash[c] = hash_array_value(&batch->columns[out_col[c]], r, ci);
@@ -333,13 +338,13 @@ void vtri_build_composite(const char *vtr_path, const char **col_names,
 
     /* Write v2 .vtri file */
     char *vtri_path = vtri_make_path_composite(vtr_path, col_names, n_cols);
-    if (!vtri_path) { free(col_idx); vtr1_close(file); vectra_error("alloc failed"); }
+    if (!vtri_path) { free(col_idx); vtr1_close_tdc(file); vectra_error("alloc failed"); }
 
     FILE *fp = fopen(vtri_path, "wb");
     if (!fp) {
         free(vtri_path); free(col_idx);
         free(entry_hash); free(entry_rg); free(heads); free(entry_next);
-        vtr1_close(file);
+        vtr1_close_tdc(file);
         vectra_error("cannot create vtri index file");
     }
 
@@ -366,7 +371,7 @@ void vtri_build_composite(const char *vtr_path, const char **col_names,
     free(entry_rg);
     free(heads);
     free(entry_next);
-    vtr1_close(file);
+    vtr1_close_tdc(file);
 }
 
 /* ------------------------------------------------------------------ */

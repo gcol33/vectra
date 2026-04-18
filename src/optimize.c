@@ -37,7 +37,7 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
 
 static void prune_scan(ScanNode *sn, const uint8_t *parent_needed,
                         int parent_ncols) {
-    const VecSchema *file_schema = &sn->file->header.schema;
+    const VecSchema *file_schema = vtr1_tdc_schema(sn->file);
     int n_file_cols = file_schema->n_cols;
 
     /* Map parent_needed (in output-schema order) to file col_mask */
@@ -362,11 +362,11 @@ static void pushdown_predicates(VecNode *node) {
     if (strcmp(kind, "FilterNode") == 0) {
         FilterNode *fn = (FilterNode *)node;
 
-        /* Check if child is a ScanNode with v3 stats */
+        /* tdc files always carry per-rowgroup column stats, so push the
+           predicate to the scan as long as it doesn't already have one. */
         if (fn->child->kind && strcmp(fn->child->kind, "ScanNode") == 0) {
             ScanNode *sn = (ScanNode *)fn->child;
-            if (sn->file->header.version >= 3 && !sn->predicate) {
-                /* Clone the predicate for the scan (filter keeps its copy) */
+            if (!sn->predicate) {
                 sn->predicate = fn->predicate;
                 sn->pred_borrowed = 1;  /* don't free on scan cleanup */
             }

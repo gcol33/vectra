@@ -139,26 +139,52 @@ tdc_status vtr_codec_tdc_prepare_request(
         req->block.shape.dim[0] = (int64_t)sspec->ny;  /* row-major: rows first */
         req->block.shape.dim[1] = (int64_t)sspec->nx;
 
+        int xi = 0;
+
         if (sspec->predictor == VTR_PRED_PLANE) {
             req->spec.model        = TDC_MODEL_PLANE_2D;
             req->plp.tile_size     = sspec->tile_size ? sspec->tile_size : 32;
             req->spec.model_params = &req->plp;
+            if (quantize_active) {
+                /* PLANE_2D doesn't fuse with QUANTIZE; surface quantize as a
+                 * leading transform. */
+                req->qp.scale  = qspec->scale;
+                req->qp.offset = qspec->offset;
+                req->qp.target = vtr_quantize_target_to_tdc(qspec->target_type);
+                req->spec.xform[xi]        = TDC_XFORM_QUANTIZE;
+                req->spec.xform_params[xi] = &req->qp;
+                ++xi;
+            }
+        } else if (quantize_active) {
+            /* Spatial + quantize on a float column: use the fused
+             * QUANTIZE_THEN_PRED2D composite. The naive
+             * "model=PRED_2D, xform[0]=QUANTIZE" order runs the predictor
+             * on the raw float raster first and then re-quantizes the
+             * float residual into garbage that no longer round-trips. The
+             * composite quantizes BEFORE the predictor sees the data so
+             * PRED_2D operates on a clean integer raster. */
+            req->qpp.scale  = qspec->scale;
+            req->qpp.offset = qspec->offset;
+            req->qpp.target = vtr_quantize_target_to_tdc(qspec->target_type);
+            req->qpp.kind   = vtr_pred_to_tdc_pred2d_kind(sspec->predictor);
+            req->spec.model        = TDC_MODEL_QUANTIZE_PRED_2D;
+            req->spec.model_params = &req->qpp;
         } else {
             req->spec.model        = TDC_MODEL_PRED_2D;
             req->pp.kind           = vtr_pred_to_tdc_pred2d_kind(sspec->predictor);
             req->spec.model_params = &req->pp;
         }
 
-        int xi = 0;
-        if (quantize_active) {
-            req->qp.scale  = qspec->scale;
-            req->qp.offset = qspec->offset;
-            req->qp.target = vtr_quantize_target_to_tdc(qspec->target_type);
-            req->spec.xform[xi]        = TDC_XFORM_QUANTIZE;
-            req->spec.xform_params[xi] = &req->qp;
-            ++xi;
+        /* ZIGZAG is integer-only (signed -> unsigned interleave for entropy
+         * coding). When the residual is float (spatial on doubles without
+         * quantize and predictor != composite), skip ZIGZAG and rely on
+         * BYTE_SHUFFLE to decorrelate exponent/mantissa bytes ahead of LZ.
+         * The composite emits an integer residual so ZIGZAG applies. */
+        const int residual_is_float =
+            (col->type == VEC_DOUBLE) && !quantize_active;
+        if (!residual_is_float) {
+            req->spec.xform[xi++] = TDC_XFORM_ZIGZAG;
         }
-        req->spec.xform[xi++] = TDC_XFORM_ZIGZAG;
         req->spec.xform[xi++] = TDC_XFORM_BYTE_SHUFFLE;
         req->spec.entropy[0]  = TDC_ENTROPY_LZ;
     } else if (quantize_active) {

@@ -97,12 +97,13 @@ tdc_dtype vtr_type_to_tdc_dtype(VecType t);
  * the request must outlive the encode call. */
 
 typedef struct {
-    tdc_block            block;
-    tdc_codec_spec       spec;
-    tdc_quantize_params  qp;
-    tdc_pred2d_params    pp;
-    tdc_plane2d_params   plp;
-    uint32_t            *str_offsets_owned;  /* NULL unless VEC_STRING */
+    tdc_block                    block;
+    tdc_codec_spec               spec;
+    tdc_quantize_params          qp;
+    tdc_pred2d_params            pp;
+    tdc_plane2d_params           plp;
+    tdc_quantize_pred2d_params   qpp;  /* used when spatial + quantize fuse */
+    uint32_t                    *str_offsets_owned;  /* NULL unless VEC_STRING */
 } VtrTdcEncodeRequest;
 
 tdc_status vtr_codec_tdc_prepare_request(

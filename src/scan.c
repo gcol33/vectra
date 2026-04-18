@@ -279,12 +279,12 @@ static int extract_simple_pred(const VecExpr *pred, const VecSchema *schema,
    and last row group where min <= val (for ==, <= predicates).
    Operates on the row group stats array for a sorted column.
    Sets *first_rg and *last_rg (exclusive upper bound). */
-static void binary_search_rg_range(const Vtr1File *file, int col_idx,
+static void binary_search_rg_range(const Vtr1TdcFile *file, int col_idx,
                                     char op, char op2, VecType col_type,
                                     double lit_dbl, int64_t lit_i64,
                                     const char *lit_str, int64_t lit_str_len,
                                     uint32_t *first_rg, uint32_t *last_rg) {
-    uint32_t n_rgs = file->header.n_rowgroups;
+    uint32_t n_rgs = vtr1_tdc_n_rowgroups(file);
     *first_rg = 0;
     *last_rg = n_rgs;
 
@@ -297,11 +297,15 @@ static void binary_search_rg_range(const Vtr1File *file, int col_idx,
         str_hi = scan_pack_str(lit_str, lit_str_len, 0xFF);
     }
 
-    /* Helper macros to get stat values as comparable scalars */
-    #define RG_MIN_I64(rg) file->rowgroups[rg].col_stats[col_idx].i64.min
-    #define RG_MAX_I64(rg) file->rowgroups[rg].col_stats[col_idx].i64.max
-    #define RG_MIN_DBL(rg) file->rowgroups[rg].col_stats[col_idx].dbl.min
-    #define RG_MAX_DBL(rg) file->rowgroups[rg].col_stats[col_idx].dbl.max
+    /* Helper macros to get stat values as comparable scalars.
+     * vtr1_tdc_rowgroup_col_stats may return NULL for zero-row groups,
+     * but binary_search_rg_range is only entered when col_sorted[c]==1
+     * which requires every rg to have stats — safe to deref. */
+    #define RG_STATS(rg) vtr1_tdc_rowgroup_col_stats(file, rg)[col_idx]
+    #define RG_MIN_I64(rg) RG_STATS(rg).i64.min
+    #define RG_MAX_I64(rg) RG_STATS(rg).i64.max
+    #define RG_MIN_DBL(rg) RG_STATS(rg).dbl.min
+    #define RG_MAX_DBL(rg) RG_STATS(rg).dbl.max
 
     if (op == '=' && op2 == '=') {
         /* Equality: find first rg where max >= lit, last rg where min <= lit */
@@ -392,6 +396,7 @@ static void binary_search_rg_range(const Vtr1File *file, int col_idx,
     }
     /* != doesn't benefit from binary search — leave full range */
 
+    #undef RG_STATS
     #undef RG_MIN_I64
     #undef RG_MAX_I64
     #undef RG_MIN_DBL
@@ -404,7 +409,7 @@ static void try_hash_index(ScanNode *sn) {
 
     /* Look for an equality predicate on the indexed column */
     const VecExpr *pred = sn->predicate;
-    const VecSchema *schema = &sn->file->header.schema;
+    const VecSchema *schema = vtr1_tdc_schema(sn->file);
 
     /* Walk through AND chain looking for indexed column */
     const VecExpr *eq_pred = NULL;
@@ -438,7 +443,7 @@ static void try_hash_index(ScanNode *sn) {
         int ci = vec_schema_find_col(schema, in_pred->operand->col_name);
         if (ci < 0 || (uint16_t)ci != sn->index->col_idx) return;
 
-        uint32_t n_rgs = sn->file->header.n_rowgroups;
+        uint32_t n_rgs = vtr1_tdc_n_rowgroups(sn->file);
         uint8_t *combined = (uint8_t *)calloc(n_rgs, 1);
         if (!combined) return;
         VecType idx_col_type = schema->col_types[ci];
@@ -481,7 +486,7 @@ static void try_hash_index(ScanNode *sn) {
     int ci = vec_schema_find_col(schema, col_expr->col_name);
     if (ci < 0 || (uint16_t)ci != sn->index->col_idx) return;
 
-    uint32_t n_rgs = sn->file->header.n_rowgroups;
+    uint32_t n_rgs = vtr1_tdc_n_rowgroups(sn->file);
     uint8_t *bitmap = NULL;
 
     /* Probe must hash with the same type the index was built with.
@@ -524,7 +529,7 @@ static void try_composite_index(ScanNode *sn) {
     if (sn->rg_bitmap) return; /* already resolved */
 
     const VecExpr *pred = sn->predicate;
-    const VecSchema *schema = &sn->file->header.schema;
+    const VecSchema *schema = vtr1_tdc_schema(sn->file);
 
     /* Collect equality predicates from AND chain.
        We support flat AND chains: (A & B), (A & (B & C)), etc. */
@@ -606,7 +611,7 @@ static void try_composite_index(ScanNode *sn) {
     }
 
     uint8_t *bitmap = vtri_probe_composite(cidx, col_hashes, n_eq,
-                                            sn->file->header.n_rowgroups);
+                                            vtr1_tdc_n_rowgroups(sn->file));
     vtri_close(cidx);
     if (bitmap) sn->rg_bitmap = bitmap;
     #undef MAX_COMPOSITE_COLS
@@ -623,9 +628,11 @@ static void try_binary_search(ScanNode *sn) {
     /* If single-column index didn't help, try composite */
     if (!sn->rg_bitmap) try_composite_index(sn);
 
-    if (!sn->predicate || !sn->file->col_sorted) return;
-    if (sn->file->header.version < 3) return;
-    if (sn->file->header.n_rowgroups <= 1) return;
+    const uint8_t *col_sorted = vtr1_tdc_col_sorted(sn->file);
+    if (!sn->predicate || !col_sorted) return;
+    uint32_t n_rgs = vtr1_tdc_n_rowgroups(sn->file);
+    if (n_rgs <= 1) return;
+    const VecSchema *schema = vtr1_tdc_schema(sn->file);
 
     int col_idx;
     char op, op2;
@@ -638,23 +645,23 @@ static void try_binary_search(ScanNode *sn) {
     /* For AND predicates, try to extract and intersect ranges from both sides */
     if (sn->predicate->kind == EXPR_BOOL && sn->predicate->op == '&') {
         /* Try left side */
-        uint32_t l_first = 0, l_last = sn->file->header.n_rowgroups;
+        uint32_t l_first = 0, l_last = n_rgs;
         if (sn->predicate->left &&
-            extract_simple_pred(sn->predicate->left, &sn->file->header.schema,
+            extract_simple_pred(sn->predicate->left, schema,
                                 &col_idx, &op, &op2, &lit_dbl, &lit_i64,
                                 &lit_str, &lit_str_len, &col_type) &&
-            sn->file->col_sorted[col_idx]) {
+            col_sorted[col_idx]) {
             binary_search_rg_range(sn->file, col_idx, op, op2, col_type,
                                    lit_dbl, lit_i64, lit_str, lit_str_len,
                                    &l_first, &l_last);
         }
         /* Try right side */
-        uint32_t r_first = 0, r_last = sn->file->header.n_rowgroups;
+        uint32_t r_first = 0, r_last = n_rgs;
         if (sn->predicate->right &&
-            extract_simple_pred(sn->predicate->right, &sn->file->header.schema,
+            extract_simple_pred(sn->predicate->right, schema,
                                 &col_idx, &op, &op2, &lit_dbl, &lit_i64,
                                 &lit_str, &lit_str_len, &col_type) &&
-            sn->file->col_sorted[col_idx]) {
+            col_sorted[col_idx]) {
             binary_search_rg_range(sn->file, col_idx, op, op2, col_type,
                                    lit_dbl, lit_i64, lit_str, lit_str_len,
                                    &r_first, &r_last);
@@ -662,36 +669,36 @@ static void try_binary_search(ScanNode *sn) {
         /* Intersect */
         uint32_t first = l_first > r_first ? l_first : r_first;
         uint32_t last  = l_last < r_last ? l_last : r_last;
-        if (first < last && (first > 0 || last < sn->file->header.n_rowgroups)) {
+        if (first < last && (first > 0 || last < n_rgs)) {
             sn->next_rg = first;
             sn->last_rg = last;
             /* Compute rg_row_base for the starting position */
             sn->rg_row_base = 0;
             for (uint32_t rg = 0; rg < first; rg++)
-                sn->rg_row_base += sn->file->rowgroups[rg].n_rows;
+                sn->rg_row_base += vtr1_tdc_rowgroup_n_rows(sn->file, rg);
         }
         return;
     }
 
     /* Single predicate */
-    if (!extract_simple_pred(sn->predicate, &sn->file->header.schema,
+    if (!extract_simple_pred(sn->predicate, schema,
                              &col_idx, &op, &op2, &lit_dbl, &lit_i64,
                              &lit_str, &lit_str_len, &col_type))
         return;
-    if (!sn->file->col_sorted[col_idx]) return;
+    if (!col_sorted[col_idx]) return;
 
     uint32_t first_rg, last_rg;
     binary_search_rg_range(sn->file, col_idx, op, op2, col_type,
                            lit_dbl, lit_i64, lit_str, lit_str_len,
                            &first_rg, &last_rg);
 
-    if (first_rg > 0 || last_rg < sn->file->header.n_rowgroups) {
+    if (first_rg > 0 || last_rg < n_rgs) {
         sn->next_rg = first_rg;
         sn->last_rg = last_rg;
         /* Compute rg_row_base for the starting position */
         sn->rg_row_base = 0;
         for (uint32_t rg = 0; rg < first_rg; rg++)
-            sn->rg_row_base += sn->file->rowgroups[rg].n_rows;
+            sn->rg_row_base += vtr1_tdc_rowgroup_n_rows(sn->file, rg);
     }
 }
 
@@ -704,12 +711,12 @@ static VecBatch *scan_next_batch(VecNode *self) {
     }
 
     uint32_t rg_limit = sn->last_rg ? sn->last_rg
-                                     : sn->file->header.n_rowgroups;
+                                     : vtr1_tdc_n_rowgroups(sn->file);
 
     while (sn->next_rg < rg_limit) {
         /* Track the physical row base for tombstone checking */
         int64_t rg_base = sn->rg_row_base;
-        int64_t rg_n_rows = sn->file->rowgroups[sn->next_rg].n_rows;
+        int64_t rg_n_rows = vtr1_tdc_rowgroup_n_rows(sn->file, sn->next_rg);
 
         /* Hash index bitmap: skip row groups not in the probe result */
         if (sn->rg_bitmap && !sn->rg_bitmap[sn->next_rg]) {
@@ -719,18 +726,19 @@ static VecBatch *scan_next_batch(VecNode *self) {
         }
 
         /* Predicate pushdown: skip row groups that can't match */
-        if (sn->predicate && sn->file->header.version >= 3) {
-            Vtr1ColStat *stats = sn->file->rowgroups[sn->next_rg].col_stats;
+        if (sn->predicate) {
+            const Vtr1ColStat *stats =
+                vtr1_tdc_rowgroup_col_stats(sn->file, sn->next_rg);
             if (stats && !predicate_might_match(sn->predicate, stats,
-                                                 &sn->file->header.schema)) {
+                                                 vtr1_tdc_schema(sn->file))) {
                 sn->next_rg++;
                 sn->rg_row_base += rg_n_rows;
                 continue;
             }
         }
 
-        VecBatch *batch = vtr1_read_rowgroup(sn->file, sn->next_rg,
-                                              sn->col_mask);
+        VecBatch *batch = vtr1_read_rowgroup_tdc(sn->file, sn->next_rg,
+                                                  sn->col_mask);
         sn->next_rg++;
         sn->rg_row_base += rg_n_rows;
 
@@ -754,7 +762,7 @@ static void scan_free(VecNode *self) {
     if (sn->predicate && !sn->pred_borrowed)
         vec_expr_free(sn->predicate);
     tombstone_free(sn->tombstone);
-    vtr1_close(sn->file);
+    vtr1_close_tdc(sn->file);
     free(sn->col_mask);
     free(sn->rg_bitmap);
     if (sn->index) vtri_close(sn->index);
@@ -767,7 +775,8 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
     ScanNode *sn = (ScanNode *)calloc(1, sizeof(ScanNode));
     if (!sn) vectra_error("alloc failed for ScanNode");
 
-    sn->file = vtr1_open(path);
+    sn->file = vtr1_open_tdc(path);
+    if (!sn->file) vectra_error("vtr1_open_tdc failed for %s", path);
     sn->next_rg = 0;
     sn->rg_row_base = 0;
     sn->vtr_path = (char *)malloc(strlen(path) + 1);
@@ -782,7 +791,7 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
     sn->tombstone = tombstone_load(del_path);
     free(del_path);
 
-    const VecSchema *file_schema = &sn->file->header.schema;
+    const VecSchema *file_schema = vtr1_tdc_schema(sn->file);
     int n_cols = file_schema->n_cols;
 
     /* Build column mask */
@@ -818,7 +827,7 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
     /* Check for .vtri sidecar index files */
     sn->index = NULL;
     {
-        const VecSchema *fs = &sn->file->header.schema;
+        const VecSchema *fs = vtr1_tdc_schema(sn->file);
         for (int c = 0; c < fs->n_cols; c++) {
             char *vtri_path = vtri_make_path(path, fs->col_names[c]);
             if (vtri_path) {
@@ -840,8 +849,9 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
 
     /* Compute total row count hint from row group metadata */
     int64_t total = 0;
-    for (uint32_t rg = 0; rg < sn->file->header.n_rowgroups; rg++)
-        total += sn->file->rowgroups[rg].n_rows;
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(sn->file);
+    for (uint32_t rg = 0; rg < n_rg; rg++)
+        total += vtr1_tdc_rowgroup_n_rows(sn->file, rg);
     sn->base.row_count_hint = total;
 
     return sn;
@@ -856,7 +866,7 @@ int scan_node_is_parallel_safe(const VecNode *node) {
     if (sn->tombstone) return 0;
     if (sn->rg_bitmap) return 0;
     if (sn->rg_range_set) return 0;
-    if (sn->file->header.n_rowgroups < 4) return 0; /* need enough RGs */
+    if (vtr1_tdc_n_rowgroups(sn->file) < 4) return 0; /* need enough RGs */
     return 1;
 }
 
@@ -864,7 +874,7 @@ const char *scan_node_get_path(const VecNode *node) {
     return ((const ScanNode *)node)->vtr_path;
 }
 
-Vtr1File *scan_node_get_file(const VecNode *node) {
+Vtr1TdcFile *scan_node_get_file(const VecNode *node) {
     return ((const ScanNode *)node)->file;
 }
 

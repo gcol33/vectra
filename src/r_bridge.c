@@ -21,6 +21,7 @@
 #include "batch.h"
 #include "schema.h"
 #include "vtr1.h"
+#include "vtr1_tdc.h"
 #include "scan.h"
 #include "collect.h"
 #include "filter.h"
@@ -203,21 +204,14 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
         for (int i = 0; i < batch->n_cols; i++)
             schema.col_types[i] = batch->columns[i].type;
 
-        FILE *fp = fopen(fpath, "wb");
-        if (!fp) vectra_error("cannot open file for writing: %s", fpath);
-        setvbuf(fp, NULL, _IOFBF, 256 * 1024);
-        vtr1_write_header(fp, &schema, 1);
-        vtr1_write_rowgroup_qs(fp, batch, comp_level, qspecs, sspecs);
-        fclose(fp);
+        Vtr1TdcWriter *w = vtr1_open_tdc_writer(fpath, &schema);
+        vtr1_write_rowgroup_tdc(w, batch, comp_level, qspecs, sspecs);
+        vtr1_close_tdc_writer(w);
 
         free(schema.col_types);
         vec_batch_free(batch);
     } else {
         /* Multiple row groups */
-        FILE *fp = fopen(fpath, "wb");
-        if (!fp) vectra_error("cannot open file for writing: %s", fpath);
-        setvbuf(fp, NULL, _IOFBF, 256 * 1024);
-
         uint32_t n_rg = (uint32_t)((n_rows + bs - 1) / bs);
 
         /* Build schema from first few elements */
@@ -244,7 +238,7 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
             annotations[i] = NULL; /* ownership transferred */
         }
 
-        vtr1_write_header(fp, &schema, n_rg);
+        Vtr1TdcWriter *w = vtr1_open_tdc_writer(fpath, &schema);
 
         /* Write row groups as slices of the data.frame */
         for (uint32_t rg = 0; rg < n_rg; rg++) {
@@ -393,12 +387,12 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
                 batch->columns[c] = arr;
             }
 
-            vtr1_write_rowgroup_qs(fp, batch, comp_level, qspecs, sspecs);
+            vtr1_write_rowgroup_tdc(w, batch, comp_level, qspecs, sspecs);
             vec_batch_free(batch);
         }
 
+        vtr1_close_tdc_writer(w);
         vec_schema_free(&schema);
-        fclose(fp);
     }
 
     /* Free any annotations not transferred to schema */
@@ -523,7 +517,7 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
 
     if (strcmp(kind, "ScanNode") == 0) {
         ScanNode *sn = (ScanNode *)node;
-        int file_cols = sn->file->header.schema.n_cols;
+        int file_cols = vtr1_tdc_schema(sn->file)->n_cols;
         int read_cols = sn->base.output_schema.n_cols;
         int pos = 0;
         if (read_cols < file_cols)
@@ -535,8 +529,7 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
         if (sn->predicate)
             pos += snprintf(buf + pos, (size_t)(bufsize - pos),
                             ", predicate pushdown");
-        if (sn->file->header.version >= 3)
-            pos += snprintf(buf + pos, (size_t)(bufsize - pos), ", v3 stats");
+        pos += snprintf(buf + pos, (size_t)(bufsize - pos), ", tdc stats");
         return pos;
     }
     if (strcmp(kind, "CsvScanNode") == 0) {

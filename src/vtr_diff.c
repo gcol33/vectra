@@ -1,5 +1,6 @@
 #include "vtr_diff.h"
 #include "vtr1.h"
+#include "vtr1_tdc.h"
 #include "scan.h"
 #include "schema.h"
 #include "hash.h"
@@ -265,23 +266,6 @@ static SEXP array_col_to_sexp(const VecArray *arr) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Compute byte offset of n_rowgroups field in header                */
-/*  (mirrors compute_rg_count_offset in vtr_append.c)                 */
-/* ------------------------------------------------------------------ */
-
-static long diff_rg_count_offset(const VecSchema *schema) {
-    long off = 4 + 2 + 2; /* magic + version + n_cols */
-    for (int i = 0; i < schema->n_cols; i++) {
-        uint16_t name_len = (uint16_t)strlen(schema->col_names[i]);
-        off += 2 + name_len + 1; /* name_len(2) + name + type(1) */
-        const char *ann = schema->col_annotations ? schema->col_annotations[i] : NULL;
-        uint16_t ann_len = ann ? (uint16_t)strlen(ann) : 0;
-        off += 2 + ann_len; /* ann_len(2) + ann */
-    }
-    return off;
-}
-
-/* ------------------------------------------------------------------ */
 /*  Main diff implementation                                           */
 /* ------------------------------------------------------------------ */
 
@@ -291,26 +275,30 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
     const char *key_col = CHAR(STRING_ELT(key_col_sexp, 0));
 
     /* ---- Validate key column exists in both files ---- */
-    Vtr1File *fa = vtr1_open(path_a);
-    int key_idx_a = vec_schema_find_col(&fa->header.schema, key_col);
+    Vtr1TdcFile *fa = vtr1_open_tdc(path_a);
+    if (!fa) vectra_error("vtr1_open_tdc failed for %s", path_a);
+    const VecSchema *fa_schema = vtr1_tdc_schema(fa);
+    int key_idx_a = vec_schema_find_col(fa_schema, key_col);
     if (key_idx_a < 0) {
-        vtr1_close(fa);
+        vtr1_close_tdc(fa);
         vectra_error("key_col '%s' not found in old_path", key_col);
     }
-    VecType key_type = fa->header.schema.col_types[key_idx_a];
-    vtr1_close(fa);
+    VecType key_type = fa_schema->col_types[key_idx_a];
+    vtr1_close_tdc(fa);
 
-    Vtr1File *fb = vtr1_open(path_b);
-    int key_idx_b = vec_schema_find_col(&fb->header.schema, key_col);
+    Vtr1TdcFile *fb = vtr1_open_tdc(path_b);
+    if (!fb) vectra_error("vtr1_open_tdc failed for %s", path_b);
+    const VecSchema *fb_schema = vtr1_tdc_schema(fb);
+    int key_idx_b = vec_schema_find_col(fb_schema, key_col);
     if (key_idx_b < 0) {
-        vtr1_close(fb);
+        vtr1_close_tdc(fb);
         vectra_error("key_col '%s' not found in new_path", key_col);
     }
-    VecType key_type_b = fb->header.schema.col_types[key_idx_b];
+    VecType key_type_b = fb_schema->col_types[key_idx_b];
 
     /* Capture B's full schema for the temp file header */
-    VecSchema b_schema = vec_schema_copy(&fb->header.schema);
-    vtr1_close(fb);
+    VecSchema b_schema = vec_schema_copy(fb_schema);
+    vtr1_close_tdc(fb);
 
     if (key_type != key_type_b) {
         vec_schema_free(&b_schema);
@@ -403,23 +391,13 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
         /* Suppress unused-variable warning for 'suffix' */
         (void)suffix;
 
-        FILE *tmp_fp = fopen(tmp_path, "wb");
-        if (!tmp_fp) {
-            free(tmp_path);
-            vec_schema_free(&b_schema);
-            free(seen_in_b);
-            vectra_error("C_diff_vtr: cannot open temp file for added rows");
-        }
-
-        /* Write header placeholder (n_rowgroups = 0) */
-        vtr1_write_header(tmp_fp, &b_schema, 0);
-        long rg_count_pos = diff_rg_count_offset(&b_schema);
+        Vtr1TdcWriter *tmp_w = vtr1_open_tdc_writer(tmp_path, &b_schema);
+        /* tdc writer aborts via vectra_error on open failure; on success
+         * it owns the file handle for the duration of the diff pass. */
 
         /* ---- Pass 2: stream ALL columns of B, write added rows ---- */
         ScanNode *scan_b = scan_node_create(path_b, NULL, 0);
         VecNode  *node_b = (VecNode *)scan_b;
-
-        uint32_t n_rg_written = 0;
 
         while ((batch = node_b->next_batch(node_b)) != NULL) {
             int64_t n_logical = vec_batch_logical_rows(batch);
@@ -434,7 +412,7 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
             if (!added_sel) {
                 vec_batch_free(batch);
                 node_b->free_node(node_b);
-                fclose(tmp_fp);
+                vtr1_close_tdc_writer(tmp_w);
                 free(tmp_path);
                 vec_schema_free(&b_schema);
                 free(seen_in_b);
@@ -461,7 +439,7 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
                         vec_batch_free(batch);
                         node_b->free_node(node_b);
                         free(added_sel);
-                        fclose(tmp_fp);
+                        vtr1_close_tdc_writer(tmp_w);
                         free(tmp_path);
                         vec_schema_free(&b_schema);
                         vectra_error("C_diff_vtr: realloc failed for seen_in_b");
@@ -482,9 +460,9 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
                 batch->sel_n = n_added_this_batch;
                 VecBatch *compact = vec_batch_compact(batch);
                 /* batch is now freed by compact — do not use */
-                vtr1_write_rowgroup(tmp_fp, compact, VTR_COMPRESS_FAST);
+                vtr1_write_rowgroup_tdc(tmp_w, compact, VTR_COMPRESS_FAST,
+                                        NULL, NULL);
                 vec_batch_free(compact);
-                n_rg_written++;
             } else {
                 free(added_sel);
                 vec_batch_free(batch);
@@ -492,16 +470,9 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
         }
         node_b->free_node(node_b);
 
-        /* Patch n_rowgroups in the temp file header */
-        if (fseek(tmp_fp, rg_count_pos, SEEK_SET) != 0) {
-            fclose(tmp_fp);
-            free(tmp_path);
-            vec_schema_free(&b_schema);
-            free(seen_in_b);
-            vectra_error("C_diff_vtr: fseek failed patching rowgroup count");
-        }
-        fwrite(&n_rg_written, sizeof(uint32_t), 1, tmp_fp);
-        fclose(tmp_fp);
+        /* tdc writer self-finalizes the trailing rowgroup index in close;
+         * no equivalent of v4's manual n_rowgroups patch is needed. */
+        vtr1_close_tdc_writer(tmp_w);
 
         vec_ht_free(&ht);
         vec_schema_free(&b_schema);

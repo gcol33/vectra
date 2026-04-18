@@ -370,6 +370,16 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         const VtrQuantizeSpec *qs = (qspecs && qspecs[c].enabled) ? &qspecs[c] : NULL;
         const VtrSpatialSpec  *ss = (sspecs && sspecs[c].enabled) ? &sspecs[c] : NULL;
 
+        if (ss) {
+            uint64_t nxny = (uint64_t)ss->nx * (uint64_t)ss->ny;
+            if (nxny != (uint64_t)batch->n_rows) {
+                vectra_error("spatial: nx*ny (%u*%u=%llu) != n_rows (%lld)",
+                             ss->nx, ss->ny,
+                             (unsigned long long)nxny,
+                             (long long)batch->n_rows);
+            }
+        }
+
         VtrTdcEncodeRequest req;
         tdc_status st = vtr_codec_tdc_prepare_request(
             &req, col, batch->n_rows, comp_level, qs, ss,
@@ -455,6 +465,9 @@ struct Vtr1TdcFile {
     VecSchema         schema;
     uint32_t          n_rowgroups;
     Vtr1TdcRowgroup  *rowgroups;  /* length n_rowgroups */
+    /* Per-column sorted flag across row groups, length schema.n_cols.
+     * NULL when n_rowgroups < 2 or alloc failed. See vtr1_tdc_col_sorted. */
+    uint8_t          *col_sorted;
 };
 
 static void vtr1_tdc_file_destroy(Vtr1TdcFile *f) {
@@ -467,6 +480,7 @@ static void vtr1_tdc_file_destroy(Vtr1TdcFile *f) {
         }
         free(f->rowgroups);
     }
+    free(f->col_sorted);
     vec_schema_free(&f->schema);
     if (f->fp) fclose(f->fp);
     free(f);
@@ -493,8 +507,13 @@ static void vtr1_tdc_decode_stat(const tdc_column_stats *src, VecType t,
         dst->bln.min = (uint8_t)get_le_u64(src->min);
         dst->bln.max = (uint8_t)get_le_u64(src->max);
     } else if (t == VEC_STRING) {
-        /* String columns carry only null_count today; min/max stay zero
-         * and the R-side reader maps them to NA. */
+        /* Packed-prefix string min/max isn't populated yet. Surface
+         * the universal prefix range (0 .. UINT64_MAX) so scan.c's
+         * prefix-based pruning never incorrectly skips a row group;
+         * the R-side reader still maps these to NA on read because
+         * they are sentinel "no min/max" markers, not real strings. */
+        dst->i64.min = 0;
+        dst->i64.max = (int64_t)UINT64_MAX;
     } else {
         /* Unsupported type — degrade silently to no-stats. */
         dst->has_stats = 0;
@@ -519,11 +538,9 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
     tdc_status st = tdc_stream_decoder_open(&cfg, &dec);
     if (st != TDC_OK) { fclose(fp); return NULL; }
 
-    if (!tdc_stream_decoder_has_rowgroup_index(dec)) {
-        tdc_stream_decoder_close(&dec);
-        fclose(fp);
-        return NULL;
-    }
+    /* A zero-rowgroup file has no trailing index — the encoder skips
+     * emitting it. Treat that as a valid empty container; the schema
+     * is in the header section and rowgroup_count() returns 0. */
 
     const tdc_schema *src_sch = tdc_stream_decoder_read_schema(dec);
     if (!src_sch) {
@@ -642,6 +659,38 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
         }
     }
 
+    /* Detect sorted columns: every consecutive rowgroup pair must have
+     * stats[c] with sa.max <= sb.min (typed compare). Mirrors the v4
+     * algorithm in vtr1.c so scan.c's binary-search RG narrowing works
+     * unchanged. VEC_STRING is treated as not-sorted because tdc doesn't
+     * yet pack a string min/max prefix into stats. */
+    if (n_cols > 0 && f->n_rowgroups > 1) {
+        f->col_sorted = (uint8_t *)calloc((size_t)n_cols, 1);
+        if (f->col_sorted) {
+            for (int c = 0; c < n_cols; c++) {
+                VecType t = f->schema.col_types[c];
+                int sorted = 1;
+                for (uint32_t rg = 0; rg + 1 < f->n_rowgroups; rg++) {
+                    Vtr1ColStat *sa = f->rowgroups[rg].col_stats;
+                    Vtr1ColStat *sb = f->rowgroups[rg + 1].col_stats;
+                    if (!sa || !sb || !sa[c].has_stats || !sb[c].has_stats) {
+                        sorted = 0; break;
+                    }
+                    if (vec_type_is_int(t)) {
+                        if (sa[c].i64.max > sb[c].i64.min) { sorted = 0; break; }
+                    } else if (t == VEC_DOUBLE) {
+                        if (sa[c].dbl.max > sb[c].dbl.min) { sorted = 0; break; }
+                    } else if (t == VEC_BOOL) {
+                        if (sa[c].bln.max > sb[c].bln.min) { sorted = 0; break; }
+                    } else {
+                        sorted = 0; break;
+                    }
+                }
+                f->col_sorted[c] = (uint8_t)sorted;
+            }
+        }
+    }
+
     tdc_stream_decoder_close(&dec);
     return f;
 }
@@ -663,6 +712,10 @@ const Vtr1ColStat *vtr1_tdc_rowgroup_col_stats(const Vtr1TdcFile *file,
                                                uint32_t rg_idx) {
     if (!file || rg_idx >= file->n_rowgroups) return NULL;
     return file->rowgroups[rg_idx].col_stats;
+}
+
+const uint8_t *vtr1_tdc_col_sorted(const Vtr1TdcFile *file) {
+    return file ? file->col_sorted : NULL;
 }
 
 /* Build a VecArray that aliases a caller-supplied direct buffer. owns_data
@@ -714,6 +767,33 @@ static VecBatch *read_rg_tdc_with_fp(Vtr1TdcFile *file, uint32_t rg_idx,
     }
 
     VecBatch *batch = vec_batch_alloc(n_selected, n_rows);
+
+    /* Empty rowgroup: skip the per-column block read/decode entirely and
+     * return an empty batch with placeholder arrays. Column blocks may
+     * still exist on disk (the writer emits them for shape uniformity),
+     * but the on-disk encoding for a zero-length payload isn't
+     * round-trippable through tdc_decode_block_into in the current v0
+     * codec. */
+    if (n_rows == 0) {
+        int out_col0 = 0;
+        for (int c = 0; c < n_cols; c++) {
+            if (!col_mask[c]) continue;
+            VecType t = schema->col_types[c];
+            void *direct = (direct_bufs ? direct_bufs[out_col0] : NULL);
+            batch->columns[out_col0] = direct
+                ? vtr1_tdc_make_borrowing_array(t, 0, direct)
+                : vec_array_alloc(t, 0);
+            size_t name_len = strlen(schema->col_names[c]);
+            batch->col_names[out_col0] = (char *)malloc(name_len + 1);
+            if (!batch->col_names[out_col0]) {
+                vec_batch_free(batch);
+                vectra_error("alloc failed for col name");
+            }
+            memcpy(batch->col_names[out_col0], schema->col_names[c], name_len + 1);
+            out_col0++;
+        }
+        return batch;
+    }
 
     int out_col = 0;
     for (int c = 0; c < n_cols; c++) {
