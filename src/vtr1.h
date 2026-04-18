@@ -20,6 +20,10 @@ typedef struct {
         struct { double min, max; } dbl;
         struct { uint8_t min, max; } bln;
     };
+    /* Number of NA rows in the row group. Always 0 in legacy v3/v4/v5
+     * .vtr files (the on-disk format never stored it); the tdc-backed
+     * reader populates it from tdc_column_stats.null_count. */
+    uint64_t null_count;
 } Vtr1ColStat;
 
 /* Row group metadata (for seeking) */

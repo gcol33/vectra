@@ -1,5 +1,5 @@
 /*
- * vtr1_tdc.c — tdc-backed row-group container writer/reader (P3).
+ * vtr1_tdc.c — tdc-backed row-group container writer/reader (P3+P4a).
  *
  * Side-by-side with vtr1.c. The on-disk format is a tdc container
  * (TDC_CONTAINER_MAGIC, HETEROGENEOUS flag, attached schema, trailing
@@ -8,13 +8,20 @@
  *
  * Reader strategy: tdc_stream_decoder parses the header, schema, and
  * index at open time. We deep-copy what we need (schema -> VecSchema,
- * per-row-group offset+size table) and then ignore the decoder's
- * read_block API. Block bytes are fseek/fread'd from our own FILE*
- * and handed to vtr_decode_column_tdc, which extracts the validity
- * bitmap that tdc v0 leaves opaque.
+ * per-row-group offset+size table, per-row-group col_stats) and then
+ * ignore the decoder's read_block API. Block bytes are fseek/fread'd
+ * from our own FILE* and handed to vtr_decode_column_tdc, which
+ * extracts the validity bitmap that tdc v0 leaves opaque.
  *
- * No per-column statistics. No string columns. Both gaps are
- * intentional for P3 and tracked in VECTRA_REWIRE.md.
+ * Per-column statistics (P4a) are computed during encode and attached
+ * via tdc_stream_encoder_set_rowgroup_stats. The dtype-native value
+ * bytes go into the leading 8 bytes of the 16-byte min/max slots
+ * (little-endian). Empty row groups skip the stats call so the
+ * reader sees NULL via tdc_stream_decoder_get_stats.
+ *
+ * VEC_STRING is rejected at write time. The annotation slot carries a
+ * length-prefixed VecType discriminator followed by the verbatim user
+ * annotation; see vtr1_tdc.h for the layout.
  */
 
 #include "vtr1_tdc.h"
@@ -28,6 +35,7 @@
 #include "tdc/format.h"
 #include "tdc/stream.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,14 +85,18 @@ static tdc_status vtr1_tdc_io_seek(void *ctx, int64_t offset, int whence) {
 
 /* ---------- schema mapping ----------------------------------------------- */
 
-/* Each schema column carries the VecType name as its annotation
- * ("int8" .. "string"). On read we parse this back, which is
- * unambiguous for the dtype-overloaded cases (TDC_DT_U8 might be
- * VEC_BOOL or a future u8). */
+/* Annotation slot layout:
+ *
+ *     byte 0       : vt_name_len (uint8, in [3..6] for current types)
+ *     bytes 1..k   : vec_type_name (no NUL), k = vt_name_len
+ *     bytes k+1..n : user annotation (no NUL), n = ann_len
+ *
+ * The length-prefix carries the VecType discriminator unambiguously
+ * (separating VEC_BOOL from a hypothetical future u8 mapping); the
+ * remainder is the verbatim VecSchema.col_annotations[i] payload. The
+ * empty user annotation collapses to a 1+k-byte slot. */
 
-static const char *vec_type_annotation(VecType t) { return vec_type_name(t); }
-
-static VecType vec_type_from_annotation(const char *s, uint16_t len) {
+static VecType vec_type_from_name(const char *s, size_t len) {
     if (len == 5 && memcmp(s, "int64", 5) == 0)  return VEC_INT64;
     if (len == 6 && memcmp(s, "double", 6) == 0) return VEC_DOUBLE;
     if (len == 4 && memcmp(s, "bool", 4) == 0)   return VEC_BOOL;
@@ -95,6 +107,158 @@ static VecType vec_type_from_annotation(const char *s, uint16_t len) {
     return (VecType)-1;
 }
 
+/* Build the packed annotation byte string. Caller frees with free().
+ * Always non-NULL for any valid VecType. */
+static char *vtr1_tdc_pack_annotation(VecType t, const char *user_ann,
+                                      uint16_t *out_len) {
+    const char *vname = vec_type_name(t);
+    size_t vlen = strlen(vname);
+    size_t ulen = user_ann ? strlen(user_ann) : 0;
+    size_t total = 1 + vlen + ulen;
+    if (total > UINT16_MAX) {
+        vectra_error("annotation too large for tdc schema slot (%zu bytes)", total);
+    }
+    char *buf = (char *)malloc(total > 0 ? total : 1);
+    if (!buf) vectra_error("alloc failed for annotation");
+    buf[0] = (char)(uint8_t)vlen;
+    memcpy(buf + 1, vname, vlen);
+    if (ulen > 0) memcpy(buf + 1 + vlen, user_ann, ulen);
+    *out_len = (uint16_t)total;
+    return buf;
+}
+
+/* Parse a packed annotation. *out_user_ann is malloc'd (caller frees) when
+ * a user annotation is present, or set to NULL when there is none. Returns
+ * (VecType)-1 on malformed input. */
+static VecType vtr1_tdc_parse_annotation(const char *data, uint16_t len,
+                                         char **out_user_ann) {
+    *out_user_ann = NULL;
+    if (len < 1) return (VecType)-1;
+    uint8_t vlen = (uint8_t)data[0];
+    if ((size_t)vlen + 1 > (size_t)len) return (VecType)-1;
+    VecType t = vec_type_from_name(data + 1, vlen);
+    if ((int)t < 0) return (VecType)-1;
+    size_t ulen = (size_t)len - 1 - (size_t)vlen;
+    if (ulen > 0) {
+        char *u = (char *)malloc(ulen + 1);
+        if (!u) vectra_error("alloc failed for user annotation");
+        memcpy(u, data + 1 + vlen, ulen);
+        u[ulen] = '\0';
+        *out_user_ann = u;
+    }
+    return t;
+}
+
+/* ---------- per-column statistics ---------------------------------------- */
+
+/* Encode an int64 / double / bool min/max value into the leading 8 bytes
+ * of a 16-byte tdc_column_stats slot. The field is little-endian dtype-
+ * native bytes per the tdc/stream.h contract; the trailing 8 bytes are
+ * zero-filled so byte-equality comparisons across encoders are stable. */
+static void put_le_u64(uint8_t out[TDC_STATS_VALUE_SIZE], uint64_t v) {
+    memset(out, 0, TDC_STATS_VALUE_SIZE);
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)((v >> (8 * i)) & 0xFFu);
+}
+
+static uint64_t get_le_u64(const uint8_t in[TDC_STATS_VALUE_SIZE]) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= ((uint64_t)in[i]) << (8 * i);
+    return v;
+}
+
+/* Count NA rows in a validity bitmap. validity == NULL means all valid. */
+static uint64_t count_nulls(const uint8_t *validity, int64_t n_rows) {
+    if (!validity || n_rows <= 0) return 0;
+    uint64_t valid = 0;
+    int64_t full = n_rows / 8;
+    for (int64_t b = 0; b < full; b++) {
+        uint8_t v = validity[b];
+        v = (uint8_t)((v & 0x55) + ((v >> 1) & 0x55));
+        v = (uint8_t)((v & 0x33) + ((v >> 2) & 0x33));
+        v = (uint8_t)((v & 0x0F) + ((v >> 4) & 0x0F));
+        valid += v;
+    }
+    int rem = (int)(n_rows % 8);
+    if (rem > 0) {
+        uint8_t v = (uint8_t)(validity[full] & ((1u << rem) - 1u));
+        v = (uint8_t)((v & 0x55) + ((v >> 1) & 0x55));
+        v = (uint8_t)((v & 0x33) + ((v >> 2) & 0x33));
+        v = (uint8_t)((v & 0x0F) + ((v >> 4) & 0x0F));
+        valid += v;
+    }
+    return (uint64_t)n_rows - valid;
+}
+
+/* Compute per-column stats for a single row group. Stats are filled
+ * into out[c]; out is the caller-allocated array of n_cols entries.
+ * Returns 1 if any column has stats (so the encoder call should fire),
+ * 0 if every column collapsed to has_stats == 0 (e.g. zero-row group). */
+static int vtr1_tdc_compute_rowgroup_stats(const VecBatch *batch,
+                                           tdc_column_stats *out) {
+    int any = 0;
+    int n_cols = batch->n_cols;
+    int64_t n_rows = batch->n_rows;
+    for (int c = 0; c < n_cols; c++) {
+        memset(&out[c], 0, sizeof(out[c]));
+        const VecArray *col = &batch->columns[c];
+        if (n_rows == 0) continue;
+        out[c].null_count = count_nulls(col->validity, n_rows);
+
+        if (vec_type_is_int(col->type)) {
+            int64_t mn = INT64_MAX, mx = INT64_MIN;
+            int found = 0;
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                int64_t v = vec_array_get_int(col, i);
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                found = 1;
+            }
+            if (found) {
+                put_le_u64(out[c].min, (uint64_t)mn);
+                put_le_u64(out[c].max, (uint64_t)mx);
+                out[c].has_stats = 1;
+                any = 1;
+            }
+        } else if (col->type == VEC_DOUBLE) {
+            double mn = HUGE_VAL, mx = -HUGE_VAL;
+            int found = 0;
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                double v = col->buf.dbl[i];
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                found = 1;
+            }
+            if (found) {
+                uint64_t mn_bits, mx_bits;
+                memcpy(&mn_bits, &mn, 8);
+                memcpy(&mx_bits, &mx, 8);
+                put_le_u64(out[c].min, mn_bits);
+                put_le_u64(out[c].max, mx_bits);
+                out[c].has_stats = 1;
+                any = 1;
+            }
+        } else if (col->type == VEC_BOOL) {
+            uint8_t has_false = 0, has_true = 0;
+            for (int64_t i = 0; i < n_rows; i++) {
+                if (!vec_array_is_valid(col, i)) continue;
+                if (col->buf.bln[i]) has_true = 1; else has_false = 1;
+            }
+            if (has_true || has_false) {
+                /* Pack {has_false, has_true} as the {min, max} 0/1 pair to
+                 * mirror vtr1.c's Vtr1ColStat.bln layout exactly. */
+                put_le_u64(out[c].min, (uint64_t)has_false);
+                put_le_u64(out[c].max, (uint64_t)has_true);
+                out[c].has_stats = 1;
+                any = 1;
+            }
+        }
+        /* VEC_STRING is rejected at write time (P3 gap); P4d will add it. */
+    }
+    return any;
+}
+
 /* ============================================================ writer === */
 
 struct Vtr1TdcWriter {
@@ -102,7 +266,17 @@ struct Vtr1TdcWriter {
     tdc_stream_encoder  *enc;
     VecSchema            schema;       /* deep-copied */
     tdc_column_desc     *desc_buf;     /* sized n_cols, freed at close */
+    char               **ann_buf;      /* sized n_cols, packed annotation
+                                          payload owned per column */
+    int                  n_cols;
 };
+
+static void vtr1_tdc_writer_free_ann(Vtr1TdcWriter *w) {
+    if (!w || !w->ann_buf) return;
+    for (int i = 0; i < w->n_cols; i++) free(w->ann_buf[i]);
+    free(w->ann_buf);
+    w->ann_buf = NULL;
+}
 
 Vtr1TdcWriter *vtr1_open_tdc_writer(const char *path, const VecSchema *schema) {
     if (!path || !schema || schema->n_cols < 0) {
@@ -116,21 +290,29 @@ Vtr1TdcWriter *vtr1_open_tdc_writer(const char *path, const VecSchema *schema) {
     if (!w) { fclose(fp); vectra_error("alloc failed for Vtr1TdcWriter"); }
     w->fp = fp;
     w->schema = vec_schema_copy(schema);
+    w->n_cols = schema->n_cols;
 
     int n_cols = schema->n_cols;
     if (n_cols > 0) {
         w->desc_buf = (tdc_column_desc *)calloc((size_t)n_cols, sizeof(*w->desc_buf));
-        if (!w->desc_buf) {
+        w->ann_buf  = (char **)calloc((size_t)n_cols, sizeof(char *));
+        if (!w->desc_buf || !w->ann_buf) {
+            vtr1_tdc_writer_free_ann(w);
+            free(w->desc_buf);
             vec_schema_free(&w->schema); free(w); fclose(fp);
-            vectra_error("alloc failed for tdc_column_desc array");
+            vectra_error("alloc failed for tdc_column_desc / annotation array");
         }
         for (int i = 0; i < n_cols; i++) {
-            const char *ann = vec_type_annotation(w->schema.col_types[i]);
+            const char *user_ann = (w->schema.col_annotations)
+                                 ? w->schema.col_annotations[i] : NULL;
+            uint16_t alen = 0;
+            w->ann_buf[i] = vtr1_tdc_pack_annotation(w->schema.col_types[i],
+                                                     user_ann, &alen);
             w->desc_buf[i].name        = w->schema.col_names[i];
             w->desc_buf[i].name_len    = (uint16_t)strlen(w->schema.col_names[i]);
             w->desc_buf[i].dtype       = (uint8_t)vtr_type_to_tdc_dtype(w->schema.col_types[i]);
-            w->desc_buf[i].annotation  = ann;
-            w->desc_buf[i].ann_len     = (uint16_t)strlen(ann);
+            w->desc_buf[i].annotation  = w->ann_buf[i];
+            w->desc_buf[i].ann_len     = alen;
         }
     }
 
@@ -150,6 +332,7 @@ Vtr1TdcWriter *vtr1_open_tdc_writer(const char *path, const VecSchema *schema) {
 
     tdc_status st = tdc_stream_encoder_open(&cfg, &w->enc);
     if (st != TDC_OK) {
+        vtr1_tdc_writer_free_ann(w);
         free(w->desc_buf);
         vec_schema_free(&w->schema);
         free(w);
@@ -201,6 +384,27 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         }
     }
 
+    /* Compute per-column stats and attach them before closing the rowgroup.
+     * Skip the call entirely for empty row groups so the reader sees NULL
+     * via tdc_stream_decoder_get_stats (matches vtr1.c's has_stats=0). */
+    if (n_cols > 0 && batch->n_rows > 0) {
+        tdc_column_stats *stats =
+            (tdc_column_stats *)calloc((size_t)n_cols, sizeof(tdc_column_stats));
+        if (!stats) vectra_error("alloc failed for tdc_column_stats");
+        int any = vtr1_tdc_compute_rowgroup_stats(batch, stats);
+        if (any) {
+            tdc_status sst = tdc_stream_encoder_set_rowgroup_stats(
+                w->enc, stats, (uint16_t)n_cols);
+            free(stats);
+            if (sst != TDC_OK) {
+                vectra_error("tdc_stream_encoder_set_rowgroup_stats failed: status=%d",
+                             (int)sst);
+            }
+        } else {
+            free(stats);
+        }
+    }
+
     tdc_status st = tdc_stream_encoder_end_rowgroup(w->enc, (uint64_t)batch->n_rows);
     if (st != TDC_OK) {
         vectra_error("tdc_stream_encoder_end_rowgroup failed: status=%d", (int)st);
@@ -214,6 +418,7 @@ void vtr1_close_tdc_writer(Vtr1TdcWriter *w) {
         if (st != TDC_OK) {
             /* Don't leak fp/schema even on failure. Surface the error
              * to R after cleanup. */
+            vtr1_tdc_writer_free_ann(w);
             free(w->desc_buf);
             vec_schema_free(&w->schema);
             if (w->fp) fclose(w->fp);
@@ -221,6 +426,7 @@ void vtr1_close_tdc_writer(Vtr1TdcWriter *w) {
             vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
         }
     }
+    vtr1_tdc_writer_free_ann(w);
     free(w->desc_buf);
     vec_schema_free(&w->schema);
     if (w->fp) fclose(w->fp);
@@ -234,6 +440,11 @@ typedef struct {
     /* Per-column raw block byte slices, indexed by schema column. */
     uint64_t *block_offset;  /* length n_cols */
     uint64_t *block_total;   /* length n_cols */
+    /* Per-column statistics decoded from the tdc index, in vtr1.c's
+     * Vtr1ColStat layout so scan.c can consume both backends with
+     * minimal change. NULL when the row group has no stats attached
+     * (e.g. zero-row group). */
+    Vtr1ColStat *col_stats;
 } Vtr1TdcRowgroup;
 
 struct Vtr1TdcFile {
@@ -249,12 +460,39 @@ static void vtr1_tdc_file_destroy(Vtr1TdcFile *f) {
         for (uint32_t r = 0; r < f->n_rowgroups; r++) {
             free(f->rowgroups[r].block_offset);
             free(f->rowgroups[r].block_total);
+            free(f->rowgroups[r].col_stats);
         }
         free(f->rowgroups);
     }
     vec_schema_free(&f->schema);
     if (f->fp) fclose(f->fp);
     free(f);
+}
+
+/* Translate a single tdc_column_stats slot back into Vtr1ColStat shape
+ * for the requested VecType. has_stats == 0 in the source produces
+ * has_stats == 0 in the destination. */
+static void vtr1_tdc_decode_stat(const tdc_column_stats *src, VecType t,
+                                 Vtr1ColStat *dst) {
+    memset(dst, 0, sizeof(*dst));
+    if (!src || !src->has_stats) return;
+    dst->has_stats = 1;
+    dst->null_count = src->null_count;
+    if (vec_type_is_int(t)) {
+        dst->i64.min = (int64_t)get_le_u64(src->min);
+        dst->i64.max = (int64_t)get_le_u64(src->max);
+    } else if (t == VEC_DOUBLE) {
+        uint64_t mn = get_le_u64(src->min);
+        uint64_t mx = get_le_u64(src->max);
+        memcpy(&dst->dbl.min, &mn, 8);
+        memcpy(&dst->dbl.max, &mx, 8);
+    } else if (t == VEC_BOOL) {
+        dst->bln.min = (uint8_t)get_le_u64(src->min);
+        dst->bln.max = (uint8_t)get_le_u64(src->max);
+    } else {
+        /* Unsupported type — degrade silently to no-stats. */
+        dst->has_stats = 0;
+    }
 }
 
 Vtr1TdcFile *vtr1_open_tdc(const char *path) {
@@ -292,8 +530,9 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
     int n_cols = (int)src_sch->n_columns;
     char    **names = (char **)calloc((size_t)(n_cols > 0 ? n_cols : 1), sizeof(char *));
     VecType  *types = (VecType *)calloc((size_t)(n_cols > 0 ? n_cols : 1), sizeof(VecType));
-    if ((!names || !types) && n_cols > 0) {
-        free(names); free(types);
+    char    **user_anns = (char **)calloc((size_t)(n_cols > 0 ? n_cols : 1), sizeof(char *));
+    if ((!names || !types || !user_anns) && n_cols > 0) {
+        free(names); free(types); free(user_anns);
         tdc_stream_decoder_close(&dec);
         fclose(fp);
         return NULL;
@@ -307,12 +546,13 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
         if (cd->name_len > 0) memcpy(names[i], cd->name, cd->name_len);
         names[i][cd->name_len] = '\0';
 
-        types[i] = vec_type_from_annotation(cd->annotation, cd->ann_len);
+        types[i] = vtr1_tdc_parse_annotation(cd->annotation, cd->ann_len,
+                                             &user_anns[i]);
         if ((int)types[i] < 0) { parse_ok = 0; break; }
     }
     if (!parse_ok) {
-        for (int i = 0; i < n_cols; i++) free(names[i]);
-        free(names); free(types);
+        for (int i = 0; i < n_cols; i++) { free(names[i]); free(user_anns[i]); }
+        free(names); free(types); free(user_anns);
         tdc_stream_decoder_close(&dec);
         fclose(fp);
         return NULL;
@@ -320,16 +560,21 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
 
     Vtr1TdcFile *f = (Vtr1TdcFile *)calloc(1, sizeof(*f));
     if (!f) {
-        for (int i = 0; i < n_cols; i++) free(names[i]);
-        free(names); free(types);
+        for (int i = 0; i < n_cols; i++) { free(names[i]); free(user_anns[i]); }
+        free(names); free(types); free(user_anns);
         tdc_stream_decoder_close(&dec);
         fclose(fp);
         return NULL;
     }
     f->fp = fp;
     f->schema = vec_schema_create(n_cols, names, types);
-    for (int i = 0; i < n_cols; i++) free(names[i]);
-    free(names); free(types);
+    /* Hand user-annotation ownership over to the schema. */
+    for (int i = 0; i < n_cols; i++) {
+        f->schema.col_annotations[i] = user_anns[i];
+        user_anns[i] = NULL;
+        free(names[i]);
+    }
+    free(names); free(types); free(user_anns);
 
     /* Deep-copy the row-group index so we can drop the decoder. */
     uint64_t n_rg = tdc_stream_decoder_rowgroup_count(dec);
@@ -367,6 +612,27 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
                     f->rowgroups[r].block_total[c]  = re->columns[c].block_total;
                 }
             }
+
+            /* Decode per-column stats if the rowgroup carries them. We
+             * peek the first column's slot to decide; tdc only emits the
+             * whole array or none-at-all. */
+            const tdc_column_stats *probe =
+                (n_cols > 0) ? tdc_stream_decoder_get_stats(dec, r, 0) : NULL;
+            if (probe && n_cols > 0) {
+                Vtr1ColStat *stats =
+                    (Vtr1ColStat *)calloc((size_t)n_cols, sizeof(Vtr1ColStat));
+                if (!stats) {
+                    vtr1_tdc_file_destroy(f);
+                    tdc_stream_decoder_close(&dec);
+                    return NULL;
+                }
+                for (int c = 0; c < n_cols; c++) {
+                    const tdc_column_stats *src =
+                        tdc_stream_decoder_get_stats(dec, r, (uint16_t)c);
+                    vtr1_tdc_decode_stat(src, f->schema.col_types[c], &stats[c]);
+                }
+                f->rowgroups[r].col_stats = stats;
+            }
         }
     }
 
@@ -385,6 +651,12 @@ uint32_t vtr1_tdc_n_rowgroups(const Vtr1TdcFile *file) {
 int64_t vtr1_tdc_rowgroup_n_rows(const Vtr1TdcFile *file, uint32_t rg_idx) {
     if (!file || rg_idx >= file->n_rowgroups) return -1;
     return file->rowgroups[rg_idx].n_rows;
+}
+
+const Vtr1ColStat *vtr1_tdc_rowgroup_col_stats(const Vtr1TdcFile *file,
+                                               uint32_t rg_idx) {
+    if (!file || rg_idx >= file->n_rowgroups) return NULL;
+    return file->rowgroups[rg_idx].col_stats;
 }
 
 VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
@@ -564,7 +836,8 @@ static void r_col_slice_into_vecarray(SEXP col, R_xlen_t row_offset,
 }
 
 SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
-                     SEXP rowgroup_size_sexp, SEXP comp_level_sexp) {
+                     SEXP rowgroup_size_sexp, SEXP comp_level_sexp,
+                     SEXP annotations_sexp) {
     if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) != 1)
         Rf_error("C_write_vtr_tdc: path must be a single string");
     if (TYPEOF(df_sexp) != VECSXP)
@@ -585,6 +858,14 @@ SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
     SEXP names_sexp = Rf_getAttrib(df_sexp, R_NamesSymbol);
     if (TYPEOF(names_sexp) != STRSXP || LENGTH(names_sexp) != n_cols)
         Rf_error("df must have a names attribute of length n_cols");
+
+    /* annotations may be NULL or a character vector of length n_cols; NA_string
+     * or "" entries are recorded as no-annotation. */
+    if (annotations_sexp != R_NilValue) {
+        if (TYPEOF(annotations_sexp) != STRSXP ||
+            LENGTH(annotations_sexp) != n_cols)
+            Rf_error("annotations must be NULL or a character vector of length n_cols");
+    }
 
     R_xlen_t n_rows = Rf_xlength(VECTOR_ELT(df_sexp, 0));
     for (int c = 1; c < n_cols; c++) {
@@ -608,6 +889,23 @@ SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
         }
     }
     VecSchema schema = vec_schema_create(n_cols, col_names, col_types);
+
+    /* Attach user annotations into the schema (deep copy). */
+    if (annotations_sexp != R_NilValue) {
+        for (int c = 0; c < n_cols; c++) {
+            SEXP s = STRING_ELT(annotations_sexp, c);
+            if (s == NA_STRING) continue;
+            const char *a = CHAR(s);
+            if (a[0] == '\0') continue;
+            size_t alen = strlen(a);
+            schema.col_annotations[c] = (char *)malloc(alen + 1);
+            if (!schema.col_annotations[c]) {
+                vec_schema_free(&schema);
+                Rf_error("alloc failed for column annotation");
+            }
+            memcpy(schema.col_annotations[c], a, alen + 1);
+        }
+    }
 
     Vtr1TdcWriter *w = vtr1_open_tdc_writer(path, &schema);
 
@@ -722,5 +1020,89 @@ SEXP C_read_vtr_tdc(SEXP path_sexp) {
 
     vtr1_close_tdc(f);
     UNPROTECT(2);
+    return out;
+}
+
+/* Returns the per-column user annotations as a STRSXP of length n_cols.
+ * NA_character_ when a column has no annotation. */
+SEXP C_read_vtr_tdc_annotations(SEXP path_sexp) {
+    if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) != 1)
+        Rf_error("C_read_vtr_tdc_annotations: path must be a single string");
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+
+    Vtr1TdcFile *f = vtr1_open_tdc(path);
+    if (!f) Rf_error("vtr1_open_tdc failed for %s", path);
+    const VecSchema *schema = vtr1_tdc_schema(f);
+    int n_cols = schema->n_cols;
+
+    SEXP out = PROTECT(allocVector(STRSXP, n_cols));
+    for (int c = 0; c < n_cols; c++) {
+        const char *a = schema->col_annotations
+                      ? schema->col_annotations[c] : NULL;
+        if (a)
+            SET_STRING_ELT(out, c, mkChar(a));
+        else
+            SET_STRING_ELT(out, c, NA_STRING);
+    }
+    vtr1_close_tdc(f);
+    UNPROTECT(1);
+    return out;
+}
+
+/* Returns per-rowgroup, per-column statistics as a list of length n_rg.
+ * Each element is a list of length n_cols; each per-col entry is either
+ * NULL (no stats) or a named numeric/double vector with elements
+ * c(has_stats, min, max, null_count). For VEC_DOUBLE, min/max are doubles;
+ * for integer/bool types the values are encoded as REALSXP for uniform
+ * handling on the R side (R has no native int64). */
+SEXP C_read_vtr_tdc_stats(SEXP path_sexp) {
+    if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) != 1)
+        Rf_error("C_read_vtr_tdc_stats: path must be a single string");
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+
+    Vtr1TdcFile *f = vtr1_open_tdc(path);
+    if (!f) Rf_error("vtr1_open_tdc failed for %s", path);
+    const VecSchema *schema = vtr1_tdc_schema(f);
+    int n_cols = schema->n_cols;
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(f);
+
+    SEXP out = PROTECT(allocVector(VECSXP, (R_xlen_t)n_rg));
+    for (uint32_t r = 0; r < n_rg; r++) {
+        SEXP per_rg = PROTECT(allocVector(VECSXP, n_cols));
+        const Vtr1ColStat *stats = vtr1_tdc_rowgroup_col_stats(f, r);
+        if (!stats) {
+            for (int c = 0; c < n_cols; c++)
+                SET_VECTOR_ELT(per_rg, c, R_NilValue);
+        } else {
+            for (int c = 0; c < n_cols; c++) {
+                if (!stats[c].has_stats) {
+                    SET_VECTOR_ELT(per_rg, c, R_NilValue);
+                    continue;
+                }
+                SEXP v = PROTECT(allocVector(REALSXP, 4));
+                REAL(v)[0] = 1.0;
+                if (vec_type_is_int(schema->col_types[c])) {
+                    REAL(v)[1] = (double)stats[c].i64.min;
+                    REAL(v)[2] = (double)stats[c].i64.max;
+                } else if (schema->col_types[c] == VEC_DOUBLE) {
+                    REAL(v)[1] = stats[c].dbl.min;
+                    REAL(v)[2] = stats[c].dbl.max;
+                } else if (schema->col_types[c] == VEC_BOOL) {
+                    REAL(v)[1] = (double)stats[c].bln.min;
+                    REAL(v)[2] = (double)stats[c].bln.max;
+                } else {
+                    REAL(v)[1] = NA_REAL;
+                    REAL(v)[2] = NA_REAL;
+                }
+                REAL(v)[3] = (double)stats[c].null_count;
+                SET_VECTOR_ELT(per_rg, c, v);
+                UNPROTECT(1);
+            }
+        }
+        SET_VECTOR_ELT(out, (R_xlen_t)r, per_rg);
+        UNPROTECT(1);
+    }
+    vtr1_close_tdc(f);
+    UNPROTECT(1);
     return out;
 }

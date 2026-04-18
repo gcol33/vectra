@@ -2,7 +2,7 @@
 #define VECTRA_VTR1_TDC_H
 
 /*
- * vtr1_tdc.h — tdc-backed row-group container writer/reader (P3).
+ * vtr1_tdc.h — tdc-backed row-group container writer/reader (P3+P4a).
  *
  * Side-by-side companion to vtr1.c. Writes a tdc heterogeneous
  * container (TDC1 magic, per-block dtype/layout, attached schema,
@@ -15,19 +15,29 @@
  * + vtr_decode_column_tdc, which surfaces the validity bitmap that
  * tdc v0 leaves opaque.
  *
- * No per-column statistics in P3. tdc supports them via
- * tdc_stream_encoder_set_rowgroup_stats; vtr1_tdc skips them so the
- * gate is purely byte-exact data round-trip. P4 may wire up stats.
+ * P4a wires per-column min/max/null_count statistics through
+ * tdc_stream_encoder_set_rowgroup_stats / _decoder_get_stats and
+ * propagates VecSchema.col_annotations through the schema-section
+ * annotation slot. Annotation slot layout:
+ *
+ *   [1 byte: vt_name_len] [vt_name_len bytes: vec_type_name]
+ *   [remaining ann_len-1-vt_name_len bytes: user annotation]
+ *
+ * The leading length-prefix carries the VecType discriminator so the
+ * reader can distinguish e.g. VEC_BOOL from a future u8 mapping;
+ * the rest is the verbatim user annotation (factor levels, quantize
+ * spec, etc.).
  *
  * VEC_STRING is rejected at write time (TDC_E_UNSUPPORTED via R-side
  * Rf_error), since vtr_decode_column_tdc cannot round-trip strings
  * until tdc grows a public size query for variable-width payloads.
  *
  * Production read/write entry points (C_write_vtr / C_scan_node) are
- * NOT yet routed through this code — that swap is P4.
+ * NOT yet routed through this code — that swap is P4e.
  */
 
 #include "types.h"
+#include "vtr1.h"        /* Vtr1ColStat reused by the reader's stats accessor */
 #include "vtr_codec.h"
 #include <stdint.h>
 
@@ -71,6 +81,13 @@ int64_t          vtr1_tdc_rowgroup_n_rows(const Vtr1TdcFile *file,
  * (vec_batch_free to release). Aborts via vectra_error on corruption. */
 VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
                                  const int *col_mask);
+
+/* Per-rowgroup column statistics, indexed by schema column. Returns
+ * NULL when stats were not encoded for the row group (e.g. zero-row
+ * group) or rg_idx is out of range. The returned array has n_cols
+ * entries and is owned by the file. */
+const Vtr1ColStat *vtr1_tdc_rowgroup_col_stats(const Vtr1TdcFile *file,
+                                               uint32_t rg_idx);
 
 void vtr1_close_tdc(Vtr1TdcFile *file);
 
