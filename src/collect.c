@@ -16,7 +16,16 @@
 #define STR_CACHE_BITS 13
 #define STR_CACHE_SIZE (1 << STR_CACHE_BITS)
 #define STR_CACHE_MASK (STR_CACHE_SIZE - 1)
-typedef struct { uint32_t hash; int len; const char *ptr; SEXP sexp; } StrCacheSlot;
+/* Cache slot for de-duplicating CHARSXP creation across batches.
+ * We intentionally do NOT store a raw pointer into the decoder's heap
+ * buffer: that buffer belongs to a VecBatch and is freed between
+ * consumer iterations, which would make any cross-batch memcmp
+ * dereference freed memory (classic use-after-free). Instead we keep
+ * the already-interned CHARSXP and read its body via CHAR() when we
+ * need to verify a hash match. The CHARSXP is kept alive by the output
+ * STRSXP (which was PROTECTed before any SET_STRING_ELT), so its body
+ * pointer is stable for the lifetime of this collect. */
+typedef struct { uint32_t hash; int len; SEXP sexp; } StrCacheSlot;
 
 /* Fill a slice of an R STRSXP from a VecArray's flat string buffer. With
  * str_cache != NULL, duplicate values skip R's CHARSXP hash via a content-hash
@@ -50,12 +59,11 @@ static void fill_string_col_from_batch(SEXP col, int64_t offset,
                     cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
                     str_cache[si].hash = h;
                     str_cache[si].len = slen;
-                    str_cache[si].ptr = sptr;
                     str_cache[si].sexp = cs;
                     break;
                 }
                 if (str_cache[si].hash == h && str_cache[si].len == slen &&
-                    memcmp(str_cache[si].ptr, sptr, (size_t)slen) == 0) {
+                    memcmp(CHAR(str_cache[si].sexp), sptr, (size_t)slen) == 0) {
                     cs = str_cache[si].sexp;
                     break;
                 }

@@ -1,3 +1,31 @@
+# vectra 0.5.1
+
+## CRAN resubmission fixes (0.5.0 incoming pretest feedback)
+
+* `configure` / `configure.win`: rewritten as POSIX `/bin/sh` (previously
+  `#!/usr/bin/env bash` with `set -o pipefail` and `[[ ... ]]`). Bash is
+  not guaranteed on all CRAN build hosts.
+* `src/window.c`: the OpenMP task-parallel merge sort helper was defined
+  unconditionally but called only from `#ifdef _OPENMP` branches, producing
+  a clang `-Wunneeded-internal-declaration` warning under Debian's
+  no-OpenMP build. The definition now shares the guard.
+* Vendored `tdc`: all `fprintf(stderr, ...)` debug/timing prints are routed
+  through a `TDC_LOG(...)` macro that is a no-op unless
+  `TDC_ENABLE_STDERR_LOG` is defined at build time, so the released `.so`
+  contains no `stderr` / `fprintf` symbols. Addresses the WRE §1.6.4 policy
+  forbidding compiled code from writing to stdout/stderr.
+
+## Fixes
+
+* `collect()`: fix use-after-free in the cross-batch CHARSXP dedup cache. Each
+  slot stored a raw pointer into the decoder's heap buffer, which is freed
+  when the batch is consumed; the next batch's hash-collision `memcmp` then
+  dereferenced freed memory. Manifested as segfaults on the second consecutive
+  `collect()` of a large multi-rowgroup string-heavy `.vtr` (register,
+  backbones), more likely under the parallel reader where batches accumulate
+  before the serial consumer loop. Now verifies cache hits against
+  `CHAR(sexp)`, which points into the still-alive interned CHARSXP body.
+
 # vectra 0.5.0
 
 ## Compression backend rewire

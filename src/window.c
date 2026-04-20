@@ -61,6 +61,7 @@ static void win_merge_sort(int64_t *indices, int64_t *tmp, int64_t n,
     memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
 }
 
+#ifdef _OPENMP
 /* OMP task-parallel merge sort — only for top-level calls (ungrouped path).
    Uses OMP tasks to parallelize the recursive sort across cores. */
 static void win_merge_sort_par(int64_t *indices, int64_t *tmp, int64_t n,
@@ -79,7 +80,6 @@ static void win_merge_sort_par(int64_t *indices, int64_t *tmp, int64_t n,
         return;
     }
     int64_t mid = n / 2;
-#ifdef _OPENMP
     if (n > VEC_OMP_THRESHOLD) {
         #pragma omp task shared(arr) if(n > VEC_OMP_THRESHOLD)
         win_merge_sort_par(indices, tmp, mid, arr);
@@ -87,12 +87,9 @@ static void win_merge_sort_par(int64_t *indices, int64_t *tmp, int64_t n,
         win_merge_sort_par(indices + mid, tmp + mid, n - mid, arr);
         #pragma omp taskwait
     } else {
-#endif
         win_merge_sort_par(indices, tmp, mid, arr);
         win_merge_sort_par(indices + mid, tmp + mid, n - mid, arr);
-#ifdef _OPENMP
     }
-#endif
     int64_t i = 0, j = mid, k = 0;
     while (i < mid && j < n) {
         if (vec_compare_values(arr, indices[i], indices[j]) <= 0)
@@ -104,6 +101,7 @@ static void win_merge_sort_par(int64_t *indices, int64_t *tmp, int64_t n,
     while (j < n)   tmp[k++] = indices[j++];
     memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
 }
+#endif  /* _OPENMP */
 
 /* Top-level sort entry: uses parallel merge sort for large arrays,
    sequential for small.  Thread-safe, no global state. */

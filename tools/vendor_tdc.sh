@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # vendor_tdc.sh — sync tdc into vectra/src/tdc/
 #
 # tdc is the source of truth in its own repo. Vectra vendors a snapshot
@@ -11,14 +11,14 @@
 #   TDC=/path/to/tdc tools/vendor_tdc.sh
 #
 # This script lives under tools/ which is .Rbuildignore'd, so it never
-# ships in the source tarball.
+# ships in the source tarball. POSIX sh only.
 
-set -euo pipefail
+set -eu
 
-VECTRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TDC="${TDC:-$VECTRA_ROOT/../tdc}"
+VECTRA_ROOT=`cd "\`dirname "$0"\`/.." && pwd`
+TDC=${TDC-"$VECTRA_ROOT/../tdc"}
 
-if [[ ! -d "$TDC/include/tdc" || ! -d "$TDC/src" ]]; then
+if [ ! -d "$TDC/include/tdc" ] || [ ! -d "$TDC/src" ]; then
   echo "vendor_tdc.sh: tdc tree not found at $TDC" >&2
   echo "  set TDC=/path/to/tdc to override" >&2
   exit 1
@@ -38,18 +38,18 @@ cp    "$TDC/include/tdc.h" "$DEST/include/tdc.h"
 # Source tree (api/, core/, entropy/, format/, layout/, model/, symbols/,
 # transform/) — copy whole subdirs so internal headers come along.
 for sub in api core entropy format layout model symbols transform; do
-  if [[ -d "$TDC/src/$sub" ]]; then
+  if [ -d "$TDC/src/$sub" ]; then
     cp -R "$TDC/src/$sub" "$DEST/src/$sub"
   fi
 done
 
 # Stamp the snapshot with the source commit so we know what we vendored.
-if command -v git >/dev/null 2>&1 && [[ -d "$TDC/.git" ]]; then
+if command -v git >/dev/null 2>&1 && [ -d "$TDC/.git" ]; then
   ( cd "$TDC" && git rev-parse HEAD ) > "$DEST/VENDORED_FROM" 2>/dev/null || true
 fi
 
 # Count vendored files
-n_h=$(find "$DEST" -name '*.h' | wc -l)
-n_c=$(find "$DEST" -name '*.c' | wc -l)
+n_h=`find "$DEST" -name '*.h' | wc -l`
+n_c=`find "$DEST" -name '*.c' | wc -l`
 echo "vendor_tdc.sh: vendored $n_h headers + $n_c .c files"
 echo "vendor_tdc.sh: done. Remember to rebuild vectra (devtools::clean_dll())."
