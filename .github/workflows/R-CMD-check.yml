@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: gcol33/tdc
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.TDC_TOKEN }}
           path: _tdc
 
       - name: Pre-vendor tdc into src/tdc
