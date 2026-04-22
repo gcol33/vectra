@@ -10,9 +10,7 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 /* Thin wrappers around shared implementations in string_distance.h,
    preserving the call-site names used throughout this file. */

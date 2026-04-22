@@ -1,3 +1,26 @@
+# vectra 0.5.2
+
+## CRAN incoming fixes (0.5.1, deadline 2026-05-06)
+
+* Fedora clang-22 installation ERROR: R's `Rinternals.h` defines
+  `match` as `Rf_match` via the default remapping macros. clang-22's
+  `<omp.h>` uses `match` as a pragma-clause token inside
+  `#pragma omp declare variant(...) match(...)`, so including `<omp.h>`
+  after an R header made `block.c` and `collect.c` fail to parse.
+  All OpenMP inclusion now goes through `src/vec_omp.h`, which
+  `#undef`s `match` around `#include <omp.h>` and restores it
+  afterwards. No direct `#include <omp.h>` remains in the package.
+
+* gcc-ASAN heap-buffer-overflow (additional issue): the LZ fast-path
+  decoder called `tdc_copy16` (16-byte SIMD load) for literal runs of
+  1–16 bytes without reserving 16 readable bytes on the literals
+  source. Decoding the last literal run of a block could overread
+  `lit_data` by up to 15 bytes. The fast-path bail check now requires
+  16 tail bytes on the literals side whenever `lit_len` is in the SIMD
+  fast-copy range; shorter tails are decoded by the memcpy-based safe
+  path. Valgrind did not catch this because the overread landed in a
+  still-mapped page; ASAN red-zones did.
+
 # vectra 0.5.1
 
 ## CRAN resubmission fixes (0.5.0 incoming pretest feedback)

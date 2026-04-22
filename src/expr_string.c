@@ -8,9 +8,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <regex.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 /* Expand regex backreferences (\1..\9) in replacement string.
    Writes expanded replacement to dst, returns bytes written. */
