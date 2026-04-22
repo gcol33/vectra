@@ -30,7 +30,11 @@ jobs:
         with:
           repository: gcol33/tdc
           token: ${{ secrets.GITHUB_TOKEN }}
-          path: ../tdc
+          path: _tdc
+
+      - name: Pre-vendor tdc into src/tdc
+        shell: bash
+        run: TDC="${{ github.workspace }}/_tdc" bash tools/vendor_tdc.sh
 
       - uses: r-lib/actions/setup-r@v2
         with:
