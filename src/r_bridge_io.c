@@ -65,6 +65,8 @@ typedef struct {
     int epsg_geographic;
     int epsg_projected;
     const char *crs_citation;
+    int tile_width;
+    int tile_height;
 } TiffTypedCtx;
 
 static void tiff_typed_writer(VecNode *node, const char *path, void *ctx) {
@@ -72,7 +74,8 @@ static void tiff_typed_writer(VecNode *node, const char *path, void *ctx) {
     tiff_write_node_typed(node, path, tc->use_deflate, tc->pixel_type,
                           tc->metadata_xml,
                           tc->epsg_geographic, tc->epsg_projected,
-                          tc->crs_citation);
+                          tc->crs_citation,
+                          tc->tile_width, tc->tile_height);
 }
 
 typedef struct {
@@ -479,7 +482,8 @@ SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path_sexp,
                         SEXP compress_sexp, SEXP pixel_type_sexp,
                         SEXP metadata_sexp,
                         SEXP epsg_geog_sexp, SEXP epsg_proj_sexp,
-                        SEXP crs_citation_sexp) {
+                        SEXP crs_citation_sexp,
+                        SEXP tile_width_sexp, SEXP tile_height_sexp) {
     TiffTypedCtx ctx;
     ctx.use_deflate = Rf_asLogical(compress_sexp);
     ctx.pixel_type = Rf_asInteger(pixel_type_sexp);
@@ -493,6 +497,12 @@ SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path_sexp,
     if (ctx.epsg_projected  == NA_INTEGER) ctx.epsg_projected  = 0;
     ctx.crs_citation = (crs_citation_sexp == R_NilValue)
                         ? NULL : CHAR(STRING_ELT(crs_citation_sexp, 0));
+    ctx.tile_width  = (tile_width_sexp  == R_NilValue)
+                       ? 0 : Rf_asInteger(tile_width_sexp);
+    ctx.tile_height = (tile_height_sexp == R_NilValue)
+                       ? 0 : Rf_asInteger(tile_height_sexp);
+    if (ctx.tile_width  == NA_INTEGER) ctx.tile_width  = 0;
+    if (ctx.tile_height == NA_INTEGER) ctx.tile_height = 0;
     return write_node_dispatch(node_xptr, path_sexp, tiff_typed_writer, &ctx);
 }
 

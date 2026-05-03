@@ -84,7 +84,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_tiff_scan_meta",         (DL_FUNC) &C_tiff_scan_meta,         1},
     {"C_tiff_extract_points",    (DL_FUNC) &C_tiff_extract_points,    3},
     {"C_write_tiff",             (DL_FUNC) &C_write_tiff,             3},
-    {"C_write_tiff_typed",       (DL_FUNC) &C_write_tiff_typed,       8},
+    {"C_write_tiff_typed",       (DL_FUNC) &C_write_tiff_typed,       10},
     {"C_tiff_read_metadata",     (DL_FUNC) &C_tiff_read_metadata,     1},
     {"C_tiff_read_crs",          (DL_FUNC) &C_tiff_read_crs,          1},
     {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 7},

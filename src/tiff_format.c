@@ -1369,10 +1369,22 @@ struct TiffWriter {
     int      bits_per_sample;  /* derived: 8, 16, 32, or 64 */
     int      sample_format;    /* derived: SAMPLE_UINT/INT/FLOAT */
 
+    /* Strip mode (is_tiled == 0) */
     int64_t  n_strips;
     uint32_t *strip_offsets;
     uint32_t *strip_byte_counts;
     int64_t   strips_written;
+
+    /* Tiled mode (is_tiled == 1): tags 322/323/324/325 instead of 273/278/279.
+       Edge tiles are padded with NoData/NaN to tile_width * tile_height. */
+    int       is_tiled;
+    int       tile_width;
+    int       tile_height;
+    int64_t   n_tiles_x;       /* ceil(width  / tile_width)  */
+    int64_t   n_tiles_y;       /* ceil(height / tile_height) */
+    int64_t   n_tiles;         /* n_tiles_x * n_tiles_y      */
+    uint32_t *tile_offsets;
+    uint32_t *tile_byte_counts;
 
     char    *metadata;         /* GDAL_METADATA XML (tag 42112), or NULL */
 
@@ -1401,10 +1413,14 @@ static void pixel_type_props(int pixel_type,
     }
 }
 
-int tiff_writer_open(const char *path, TiffWriter **out,
-                           int64_t width, int64_t height, int n_bands,
-                           const double *gt, double nodata,
-                           int compression, int pixel_type) {
+/* Internal: shared open for both strip and tiled modes.
+   compression: one of TIFF_COMPRESS_* constants.
+   tile_w/tile_h > 0 selects tiled layout; 0 selects strip layout. */
+static int tiff_writer_open_impl(const char *path, TiffWriter **out,
+                                 int64_t width, int64_t height, int n_bands,
+                                 const double *gt, double nodata,
+                                 int compression, int pixel_type,
+                                 int tile_w, int tile_h) {
     TiffWriter *w = (TiffWriter *)calloc(1, sizeof(TiffWriter));
     if (!w) return -1;
 
@@ -1425,8 +1441,6 @@ int tiff_writer_open(const char *path, TiffWriter **out,
     case TIFF_COMPRESS_LZW:     w->compression = COMPRESS_LZW;     break;
     default:                    w->compression = COMPRESS_NONE;    break;
     }
-    w->rows_per_strip = 256;
-    if (w->rows_per_strip > height) w->rows_per_strip = (int)height;
 
     w->pixel_type = pixel_type;
     pixel_type_props(pixel_type, &w->bytes_per_sample,
@@ -1454,10 +1468,46 @@ int tiff_writer_open(const char *path, TiffWriter **out,
     w->has_nodata = !isnan(nodata);
     w->nodata = nodata;
 
-    w->n_strips = (height + w->rows_per_strip - 1) / w->rows_per_strip;
-    w->strip_offsets = (uint32_t *)calloc((size_t)w->n_strips, sizeof(uint32_t));
-    w->strip_byte_counts = (uint32_t *)calloc((size_t)w->n_strips, sizeof(uint32_t));
-    w->strips_written = 0;
+    if (tile_w > 0 && tile_h > 0) {
+        /* TIFF spec requires tile dimensions to be multiples of 16. */
+        if ((tile_w % 16) != 0 || (tile_h % 16) != 0) {
+            snprintf(w->errmsg, 256,
+                     "tile dimensions must be multiples of 16, got %dx%d",
+                     tile_w, tile_h);
+            *out = w;
+            return -1;
+        }
+        w->is_tiled = 1;
+        w->tile_width  = tile_w;
+        w->tile_height = tile_h;
+        w->n_tiles_x = (width  + tile_w - 1) / tile_w;
+        w->n_tiles_y = (height + tile_h - 1) / tile_h;
+        w->n_tiles   = w->n_tiles_x * w->n_tiles_y;
+        if (w->n_tiles <= 0) {
+            snprintf(w->errmsg, 256, "invalid tiled raster dimensions");
+            *out = w;
+            return -1;
+        }
+        w->tile_offsets = (uint32_t *)calloc((size_t)w->n_tiles,
+                                              sizeof(uint32_t));
+        w->tile_byte_counts = (uint32_t *)calloc((size_t)w->n_tiles,
+                                                  sizeof(uint32_t));
+        if (!w->tile_offsets || !w->tile_byte_counts) {
+            snprintf(w->errmsg, 256, "alloc failed for tile arrays");
+            *out = w;
+            return -1;
+        }
+    } else {
+        w->is_tiled = 0;
+        w->rows_per_strip = 256;
+        if (w->rows_per_strip > height) w->rows_per_strip = (int)height;
+        w->n_strips = (height + w->rows_per_strip - 1) / w->rows_per_strip;
+        w->strip_offsets = (uint32_t *)calloc((size_t)w->n_strips,
+                                               sizeof(uint32_t));
+        w->strip_byte_counts = (uint32_t *)calloc((size_t)w->n_strips,
+                                                   sizeof(uint32_t));
+        w->strips_written = 0;
+    }
 
     /* Write TIFF header: little-endian, magic=42, IFD offset=0 (patched later) */
     uint8_t hdr[8] = {'I', 'I', 42, 0, 0, 0, 0, 0};
@@ -1465,6 +1515,24 @@ int tiff_writer_open(const char *path, TiffWriter **out,
 
     *out = w;
     return 0;
+}
+
+int tiff_writer_open(const char *path, TiffWriter **out,
+                           int64_t width, int64_t height, int n_bands,
+                           const double *gt, double nodata,
+                           int compression, int pixel_type) {
+    return tiff_writer_open_impl(path, out, width, height, n_bands, gt,
+                                 nodata, compression, pixel_type, 0, 0);
+}
+
+int tiff_writer_open_tiled(const char *path, TiffWriter **out,
+                           int64_t width, int64_t height, int n_bands,
+                           const double *gt, double nodata,
+                           int compression, int pixel_type,
+                           int tile_width, int tile_height) {
+    return tiff_writer_open_impl(path, out, width, height, n_bands, gt,
+                                 nodata, compression, pixel_type,
+                                 tile_width, tile_height);
 }
 
 void tiff_writer_set_metadata(TiffWriter *w, const char *xml) {
@@ -1547,8 +1615,126 @@ static void fill_nodata(uint8_t *raw, int64_t n_samples, TiffWriter *w) {
     }
 }
 
+/* Compress a raw block (strip or tile) and write it; record offset/size.
+   Returns 0 on success, -1 on error. The block is freed by the caller.
+   Predictor 2 (horizontal differencing) is the caller's responsibility — it
+   must be applied to `raw` before calling this helper, since the predictor
+   stride differs between strips and tiles. */
+static int write_block(TiffWriter *w, const uint8_t *raw, int64_t raw_size,
+                       uint32_t *out_offset, uint32_t *out_byte_count) {
+    const uint8_t *out_data = raw;
+    int64_t out_size = raw_size;
+
+    uint8_t *comp_buf = NULL;
+    if (w->compression == COMPRESS_DEFLATE) {
+        uLong comp_len = compressBound((uLong)raw_size);
+        comp_buf = (uint8_t *)malloc((size_t)comp_len);
+        if (comp_buf) {
+            int rc = compress2(comp_buf, &comp_len, raw, (uLong)raw_size, 6);
+            if (rc == Z_OK) {
+                out_data = comp_buf;
+                out_size = (int64_t)comp_len;
+            }
+            /* On compression failure, fall through to uncompressed. */
+        }
+    } else if (w->compression == COMPRESS_LZW) {
+        size_t lzw_len = 0;
+        if (tiff_lzw_encode(raw, (size_t)raw_size,
+                            &comp_buf, &lzw_len) != 0) {
+            snprintf(w->errmsg, 256, "LZW encode failed");
+            return -1;
+        }
+        out_data = comp_buf;
+        out_size = (int64_t)lzw_len;
+    }
+
+    *out_offset     = (uint32_t)ftell(w->fp);
+    *out_byte_count = (uint32_t)out_size;
+    fwrite(out_data, 1, (size_t)out_size, w->fp);
+    free(comp_buf);
+    return 0;
+}
+
+/* Tiled write path: render each tile (with edge padding) and emit it. */
+static int tiff_writer_write_rows_tiled(TiffWriter *w, int64_t row_start,
+                                         int64_t n_rows,
+                                         const double *const *bands) {
+    int64_t W   = w->width;
+    int64_t H   = w->height;
+    int     nb  = w->n_bands;
+    int     bps = w->bytes_per_sample;
+    int     TW  = w->tile_width;
+    int     TH  = w->tile_height;
+
+    /* Tile-rows touched by [row_start, row_start + n_rows). */
+    int64_t first_ty = row_start / TH;
+    int64_t last_ty  = (row_start + n_rows - 1) / TH;
+    int64_t tile_pixels = (int64_t)TW * (int64_t)TH;
+    int64_t tile_raw_size = tile_pixels * nb * bps;
+
+    uint8_t *raw = (uint8_t *)malloc((size_t)tile_raw_size);
+    if (!raw) {
+        snprintf(w->errmsg, 256, "alloc failed for tile data");
+        return -1;
+    }
+
+    for (int64_t ty = first_ty; ty <= last_ty; ty++) {
+        int64_t tile_row0 = ty * TH;
+        int64_t tile_row1 = tile_row0 + TH;
+        if (tile_row1 > H) tile_row1 = H;       /* image-edge clip */
+
+        /* Caller may not have given us the rows for this tile yet — only
+           emit a tile when [tile_row0, tile_row0 + TH) is fully buffered.
+           Currently the node writer hands us all rows in one call, so this
+           condition is always met; the check stays for streaming callers. */
+        int64_t need_r1 = tile_row0 + TH;
+        if (need_r1 > H) need_r1 = H;
+        if (tile_row0 < row_start || need_r1 > row_start + n_rows) continue;
+
+        for (int64_t tx = 0; tx < w->n_tiles_x; tx++) {
+            int64_t tile_col0 = tx * TW;
+            int64_t tile_col1 = tile_col0 + TW;
+            if (tile_col1 > W) tile_col1 = W;   /* image-edge clip */
+
+            /* Pad the entire tile with NoData/NaN first, then overwrite the
+               in-image region. The TIFF spec requires fully padded tiles. */
+            fill_nodata(raw, tile_pixels * nb, w);
+
+            for (int64_t row = tile_row0; row < tile_row1; row++) {
+                int64_t src_row = row - row_start;
+                int64_t dst_row = row - tile_row0;
+                for (int64_t col = tile_col0; col < tile_col1; col++) {
+                    int64_t src_idx = src_row * W + col;
+                    int64_t dst_off = (dst_row * TW + (col - tile_col0)) *
+                                       nb * bps;
+                    for (int b = 0; b < nb; b++) {
+                        write_pixel(raw, dst_off + b * bps,
+                                    bands[b][src_idx], w);
+                    }
+                }
+            }
+
+            int64_t tile_idx = ty * w->n_tiles_x + tx;
+            if (tile_idx >= 0 && tile_idx < w->n_tiles) {
+                if (write_block(w, raw, tile_raw_size,
+                                &w->tile_offsets[tile_idx],
+                                &w->tile_byte_counts[tile_idx]) != 0) {
+                    free(raw);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    free(raw);
+    return 0;
+}
+
 int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
                            const double *const *bands) {
+    if (w->is_tiled)
+        return tiff_writer_write_rows_tiled(w, row_start, n_rows, bands);
+
     int64_t W = w->width;
     int nb = w->n_bands;
     int rps = w->rows_per_strip;
@@ -1618,46 +1804,17 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
             tiff_predictor2_apply(raw, actual_rows, W, nb, bps);
         }
 
-        /* Compress if requested */
-        uint8_t *out_data = raw;
-        int64_t out_size = raw_size;
-
-        uint8_t *comp_buf = NULL;
-        if (w->compression == COMPRESS_DEFLATE) {
-            uLong comp_len = compressBound((uLong)raw_size);
-            comp_buf = (uint8_t *)malloc((size_t)comp_len);
-            if (comp_buf) {
-                int rc = compress2(comp_buf, &comp_len,
-                                   raw, (uLong)raw_size, 6);
-                if (rc == Z_OK) {
-                    out_data = comp_buf;
-                    out_size = (int64_t)comp_len;
-                }
-                /* On compression failure, fall through to uncompressed */
-            }
-        } else if (w->compression == COMPRESS_LZW) {
-            size_t lzw_len = 0;
-            if (tiff_lzw_encode(raw, (size_t)raw_size,
-                                &comp_buf, &lzw_len) != 0) {
-                snprintf(w->errmsg, 256, "LZW encode failed");
+        /* Compress and write via shared helper */
+        if (s < w->n_strips) {
+            if (write_block(w, raw, raw_size,
+                            &w->strip_offsets[s],
+                            &w->strip_byte_counts[s]) != 0) {
                 free(raw);
                 return -1;
             }
-            out_data = comp_buf;
-            out_size = (int64_t)lzw_len;
+            w->strips_written++;
         }
-
-        /* Record offset and size */
-        if (s < w->n_strips) {
-            w->strip_offsets[s] = (uint32_t)ftell(w->fp);
-            w->strip_byte_counts[s] = (uint32_t)out_size;
-        }
-
-        fwrite(out_data, 1, (size_t)out_size, w->fp);
-        w->strips_written++;
-
         free(raw);
-        free(comp_buf);
     }
 
     return 0;
@@ -1676,13 +1833,20 @@ int tiff_writer_finish(TiffWriter *w) {
     long ifd_data_start = ftell(w->fp);
 
     int nb = w->n_bands;
-    int64_t ns = w->n_strips;
+    /* Block-array size: strips for strip mode, tiles for tiled mode. The two
+       layouts use disjoint IFD tags (273/279 vs 324/325) but share a single
+       on-disk array of LONG offsets/counts; we reuse those vars. */
+    int64_t n_blocks = w->is_tiled ? w->n_tiles : w->n_strips;
+    uint32_t *block_offsets    = w->is_tiled ? w->tile_offsets
+                                              : w->strip_offsets;
+    uint32_t *block_byte_counts = w->is_tiled ? w->tile_byte_counts
+                                               : w->strip_byte_counts;
     uint16_t bps_val = (uint16_t)w->bits_per_sample;
     uint16_t sf_val  = (uint16_t)w->sample_format;
 
     /* Write auxiliary data blocks before IFD:
-       1. StripOffsets array (4*ns bytes)
-       2. StripByteCounts array (4*ns bytes)
+       1. Block offsets (Strip or Tile) — LONG array
+       2. Block byte counts (Strip or Tile) — LONG array
        3. BitsPerSample array (2*nb bytes) — if nb > 1
        4. SampleFormat array (2*nb bytes) — if nb > 1
        5. ModelPixelScale (3 doubles = 24 bytes)
@@ -1691,19 +1855,19 @@ int tiff_writer_finish(TiffWriter *w) {
        8. GDAL_NODATA string
     */
 
-    /* StripOffsets */
-    uint32_t off_strip_offsets = (uint32_t)ftell(w->fp);
-    for (int64_t i = 0; i < ns; i++) {
+    /* Block offsets array (StripOffsets or TileOffsets) */
+    uint32_t off_block_offsets = (uint32_t)ftell(w->fp);
+    for (int64_t i = 0; i < n_blocks; i++) {
         uint8_t buf[4];
-        write_le32(buf, w->strip_offsets[i]);
+        write_le32(buf, block_offsets[i]);
         fwrite(buf, 1, 4, w->fp);
     }
 
-    /* StripByteCounts */
-    uint32_t off_strip_counts = (uint32_t)ftell(w->fp);
-    for (int64_t i = 0; i < ns; i++) {
+    /* Block byte counts array (StripByteCounts or TileByteCounts) */
+    uint32_t off_block_counts = (uint32_t)ftell(w->fp);
+    for (int64_t i = 0; i < n_blocks; i++) {
         uint8_t buf[4];
-        write_le32(buf, w->strip_byte_counts[i]);
+        write_le32(buf, block_byte_counts[i]);
         fwrite(buf, 1, 4, w->fp);
     }
 
@@ -1842,10 +2006,13 @@ int tiff_writer_finish(TiffWriter *w) {
         fwrite(nodata_str, 1, (size_t)nodata_len, w->fp);
     }
 
-    /* Count IFD entries */
-    int n_tags = 12; /* Width, Length, BPS, Compression, Photometric,
-                        StripOffsets, SPP, RowsPerStrip, StripByteCounts,
-                        PlanarConfig, SampleFormat, ModelPixelScale */
+    /* Count IFD entries.
+       Common (9): Width, Length, BPS, Compression, Photometric, SPP,
+                   PlanarConfig, SampleFormat, ModelPixelScale.
+       Strip mode adds 3: StripOffsets, RowsPerStrip, StripByteCounts.
+       Tiled mode adds 4: TileWidth, TileLength, TileOffsets, TileByteCounts. */
+    int n_tags = 9;
+    n_tags += w->is_tiled ? 4 : 3;
     n_tags++; /* ModelTiepoint */
     if (w->predictor != 1) n_tags++; /* Predictor (317) — only when != default */
     if (have_crs) {
@@ -1895,35 +2062,42 @@ int tiff_writer_finish(TiffWriter *w) {
     write_ifd_entry(ent, TAG_PHOTOMETRIC, TIFF_SHORT, 1, 1);
     fwrite(ent, 1, 12, w->fp);
 
-    /* 273: StripOffsets */
-    if (ns == 1) {
-        write_ifd_entry(ent, TAG_STRIP_OFFSETS, TIFF_LONG, 1,
-                         w->strip_offsets[0]);
-    } else {
-        write_ifd_entry(ent, TAG_STRIP_OFFSETS, TIFF_LONG,
-                         (uint32_t)ns, off_strip_offsets);
+    /* Strip-only tags 273/278/279 come before 277, but tile tags 322/323/
+       324/325 come after 284. The IFD MUST be sorted by tag id, so we emit
+       strip tags here and tile tags after PlanarConfig below. */
+    if (!w->is_tiled) {
+        /* 273: StripOffsets */
+        if (n_blocks == 1) {
+            write_ifd_entry(ent, TAG_STRIP_OFFSETS, TIFF_LONG, 1,
+                             block_offsets[0]);
+        } else {
+            write_ifd_entry(ent, TAG_STRIP_OFFSETS, TIFF_LONG,
+                             (uint32_t)n_blocks, off_block_offsets);
+        }
+        fwrite(ent, 1, 12, w->fp);
     }
-    fwrite(ent, 1, 12, w->fp);
 
     /* 277: SamplesPerPixel */
     write_ifd_entry(ent, TAG_SAMPLES_PER_PIXEL, TIFF_SHORT, 1,
                      (uint32_t)nb);
     fwrite(ent, 1, 12, w->fp);
 
-    /* 278: RowsPerStrip */
-    write_ifd_entry(ent, TAG_ROWS_PER_STRIP, TIFF_LONG, 1,
-                     (uint32_t)w->rows_per_strip);
-    fwrite(ent, 1, 12, w->fp);
+    if (!w->is_tiled) {
+        /* 278: RowsPerStrip */
+        write_ifd_entry(ent, TAG_ROWS_PER_STRIP, TIFF_LONG, 1,
+                         (uint32_t)w->rows_per_strip);
+        fwrite(ent, 1, 12, w->fp);
 
-    /* 279: StripByteCounts */
-    if (ns == 1) {
-        write_ifd_entry(ent, TAG_STRIP_BYTE_COUNTS, TIFF_LONG, 1,
-                         w->strip_byte_counts[0]);
-    } else {
-        write_ifd_entry(ent, TAG_STRIP_BYTE_COUNTS, TIFF_LONG,
-                         (uint32_t)ns, off_strip_counts);
+        /* 279: StripByteCounts */
+        if (n_blocks == 1) {
+            write_ifd_entry(ent, TAG_STRIP_BYTE_COUNTS, TIFF_LONG, 1,
+                             block_byte_counts[0]);
+        } else {
+            write_ifd_entry(ent, TAG_STRIP_BYTE_COUNTS, TIFF_LONG,
+                             (uint32_t)n_blocks, off_block_counts);
+        }
+        fwrite(ent, 1, 12, w->fp);
     }
-    fwrite(ent, 1, 12, w->fp);
 
     /* 284: PlanarConfiguration = 1 (chunky) */
     write_ifd_entry(ent, TAG_PLANAR_CONFIG, TIFF_SHORT, 1, 1);
@@ -1933,6 +2107,38 @@ int tiff_writer_finish(TiffWriter *w) {
     if (w->predictor != 1) {
         write_ifd_entry(ent, TAG_PREDICTOR, TIFF_SHORT, 1,
                          (uint32_t)w->predictor);
+        fwrite(ent, 1, 12, w->fp);
+    }
+
+    if (w->is_tiled) {
+        /* 322: TileWidth */
+        write_ifd_entry(ent, TAG_TILE_WIDTH, TIFF_LONG, 1,
+                         (uint32_t)w->tile_width);
+        fwrite(ent, 1, 12, w->fp);
+
+        /* 323: TileLength */
+        write_ifd_entry(ent, TAG_TILE_LENGTH, TIFF_LONG, 1,
+                         (uint32_t)w->tile_height);
+        fwrite(ent, 1, 12, w->fp);
+
+        /* 324: TileOffsets */
+        if (n_blocks == 1) {
+            write_ifd_entry(ent, TAG_TILE_OFFSETS, TIFF_LONG, 1,
+                             block_offsets[0]);
+        } else {
+            write_ifd_entry(ent, TAG_TILE_OFFSETS, TIFF_LONG,
+                             (uint32_t)n_blocks, off_block_offsets);
+        }
+        fwrite(ent, 1, 12, w->fp);
+
+        /* 325: TileByteCounts */
+        if (n_blocks == 1) {
+            write_ifd_entry(ent, TAG_TILE_BYTE_COUNTS, TIFF_LONG, 1,
+                             block_byte_counts[0]);
+        } else {
+            write_ifd_entry(ent, TAG_TILE_BYTE_COUNTS, TIFF_LONG,
+                             (uint32_t)n_blocks, off_block_counts);
+        }
         fwrite(ent, 1, 12, w->fp);
     }
 
@@ -2021,6 +2227,8 @@ void tiff_writer_close(TiffWriter *w) {
     if (w->fp) fclose(w->fp);
     free(w->strip_offsets);
     free(w->strip_byte_counts);
+    free(w->tile_offsets);
+    free(w->tile_byte_counts);
     free(w->metadata);
     free(w->crs_citation);
     free(w);

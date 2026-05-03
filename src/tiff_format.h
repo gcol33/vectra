@@ -102,6 +102,18 @@ int tiff_writer_open(const char *path, TiffWriter **out,
                            const double *gt, double nodata,
                            int compression, int pixel_type);
 
+/* Create a tiled GeoTIFF writer.
+   compression: one of TIFF_COMPRESS_* constants (composes with tiling).
+   tile_width, tile_height: positive multiples of 16 (TIFF spec).
+     Pass 0 for both to use strip layout (equivalent to tiff_writer_open).
+   Edge tiles at the right/bottom of the image are padded with NoData/NaN
+   to full tile size, as required by the TIFF spec. */
+int tiff_writer_open_tiled(const char *path, TiffWriter **out,
+                           int64_t width, int64_t height, int n_bands,
+                           const double *gt, double nodata,
+                           int compression, int pixel_type,
+                           int tile_width, int tile_height);
+
 /* Attach GDAL_METADATA XML to be written into tag 42112.
    Must be called before tiff_writer_finish(). */
 void tiff_writer_set_metadata(TiffWriter *w, const char *xml);

@@ -1,5 +1,19 @@
 # vectra 0.5.1
 
+## Tiled GeoTIFF write (Phase 4c)
+
+* `write_tiff()` gains `tiled` and `tile_size` arguments. When `tiled = TRUE`,
+  the writer emits TIFF tags 322 (TileWidth), 323 (TileLength), 324
+  (TileOffsets) and 325 (TileByteCounts) in place of the strip tags
+  (273/278/279). Each tile is independently compressed (DEFLATE or none), and
+  edge tiles at the right/bottom of the image are padded to full tile size
+  with the NoData / NaN value as required by the TIFF spec.
+* `tile_size` accepts a single integer (square tiles) or a length-2 vector
+  `c(width, height)`. Both dimensions must be positive multiples of 16.
+  Default is 256.
+* Tiled output is the layout required for Cloud-Optimized GeoTIFF (COG) and
+  enables random-access block reads from `terra::rast()` and friends.
+
 ## CRAN resubmission fixes (0.5.0 incoming pretest feedback)
 
 * `configure` / `configure.win`: rewritten as POSIX `/bin/sh` (previously
