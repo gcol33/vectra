@@ -42,6 +42,15 @@ SEXP C_vec_build_overviews(SEXP path_sexp, SEXP n_levels_sexp,
                            SEXP resampling_sexp, SEXP compression_sexp);
 SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
                    SEXP use_deflate_sexp);
+SEXP C_vec_write_time_cube(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
+                           SEXP times_sexp, SEXP dtype_sexp,
+                           SEXP tile_size_sexp,
+                           SEXP gt_sexp, SEXP epsg_sexp, SEXP nodata_sexp,
+                           SEXP band_names_sexp, SEXP compression_sexp);
+SEXP C_vec_read_time_slice(SEXP ptr_sexp, SEXP band_sexp, SEXP level_sexp,
+                           SEXP time_sexp,
+                           SEXP col_min_sexp, SEXP row_min_sexp,
+                           SEXP col_max_sexp, SEXP row_max_sexp);
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
@@ -92,6 +101,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_vec_close_raster",         (DL_FUNC) &C_vec_close_raster,         1},
     {"C_vec_build_overviews",      (DL_FUNC) &C_vec_build_overviews,      4},
     {"C_vec_to_tiff",              (DL_FUNC) &C_vec_to_tiff,              3},
+    {"C_vec_write_time_cube",      (DL_FUNC) &C_vec_write_time_cube,      11},
+    {"C_vec_read_time_slice",      (DL_FUNC) &C_vec_read_time_slice,      8},
     {NULL, NULL, 0}
 };
 

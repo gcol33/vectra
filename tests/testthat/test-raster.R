@@ -389,6 +389,45 @@ test_that("vec_to_tiff propagates nodata", {
   expect_true(any(is.na(vals)))
 })
 
+test_that("time cube round-trips per slice", {
+  ## 3 time steps x 2 bands x 8 rows x 10 cols.
+  arr <- array(0, dim = c(8, 10, 2, 3))
+  for (t in 1:3) {
+    for (b in 1:2) {
+      arr[, , b, t] <- matrix(seq_len(80) * (10 * t + b), 8, 10)
+    }
+  }
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(2020, 2021, 2022), path = tmp,
+                      dtype = "f64")
+
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+  expect_equal(r$n_bands, 2L)
+
+  for (t in c(2020, 2021, 2022)) {
+    for (b in 1:2) {
+      out <- vec_read_time_slice(r, time = t, band = b)
+      expect_equal(out, arr[, , b, t - 2019],
+                   info = sprintf("time=%d band=%d", t, b))
+    }
+  }
+})
+
+test_that("vec_read_time_slice errors on a missing time stamp", {
+  arr <- array(0, dim = c(4, 4, 1, 2))
+  arr[, , 1, 1] <- matrix(1:16, 4, 4)
+  arr[, , 1, 2] <- matrix(101:116, 4, 4)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(1, 2), path = tmp, dtype = "i32")
+
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+  expect_error(vec_read_time_slice(r, time = 99), "no tiles match")
+})
+
 test_that("terra can ingest pixel values via point extraction (smoke test)", {
   skip_if_not_installed("terra")
   ## Build a known raster, write to .vec, sample at known points and

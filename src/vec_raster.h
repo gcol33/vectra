@@ -98,7 +98,10 @@ typedef struct {
     uint64_t min_bits;     /* dtype-native min as raw bytes */
     uint64_t max_bits;     /* dtype-native max as raw bytes */
     int64_t  n_valid;
-    int64_t  _pad2;
+    int64_t  time;          /* epoch ms or step index; 0 = unspecified.
+                             * V1 wrote zero in this slot (under the name
+                             * _pad2); existing files therefore read as
+                             * time=0 without a format version bump. */
 } VecrIndexEntry;
 
 /* On-disk header — 160 bytes total.
@@ -226,6 +229,11 @@ int vecr_writer_write_band(VecrWriter *w,
                            int band_index,
                            const void *pixels);
 
+/* Set the time stamp recorded on every tile written by subsequent
+ * vecr_writer_write_band calls. Pass 0 to unset. Used by time-cube
+ * writers that emit multiple band-shaped slices into the same file. */
+void vecr_writer_set_time(VecrWriter *w, int64_t time);
+
 /* Finalize: write the index and patch the header. Must be called before
  * close. Returns 0 on success, -1 on error. */
 int vecr_writer_finish(VecrWriter *w);
@@ -269,6 +277,20 @@ int vecr_reader_read_window(VecrReader *r,
                             int64_t col_min, int64_t row_min,
                             int64_t col_max, int64_t row_max,
                             void *out);
+
+/* Read a window at a specific time stamp. The reader iterates the index
+ * looking for tiles whose .time field equals `time`. Pass 0 for the
+ * "untimed" default (matches files that never set a time). Returns -1 if
+ * no tiles match. */
+int vecr_reader_read_window_t(VecrReader *r,
+                              int band, uint8_t level,
+                              int64_t time,
+                              int64_t col_min, int64_t row_min,
+                              int64_t col_max, int64_t row_max,
+                              void *out);
+
+/* Returns 1 if the file has any tile with time != 0. */
+int vecr_reader_has_time(VecrReader *r);
 
 /* Extract values at n_points (xs, ys) from band b at level 0. Coordinates
  * are in CRS units (consumed via the geotransform). Output is doubles for

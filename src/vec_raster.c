@@ -262,6 +262,7 @@ struct VecrWriter {
     int64_t         index_cap;
 
     int compression;   /* VECR_COMPRESS_* */
+    int64_t cur_time;  /* time stamp recorded on subsequent tiles; 0 = unset */
     int finished;
 };
 
@@ -271,6 +272,10 @@ void vecr_writer_set_compression(VecrWriter *w, int level) {
         level = VECR_COMPRESS_FAST;
     }
     w->compression = level;
+}
+
+void vecr_writer_set_time(VecrWriter *w, int64_t time) {
+    if (w) w->cur_time = time;
 }
 
 static void vecr_writer_set_err(VecrWriter *w, const char *msg) {
@@ -502,6 +507,7 @@ static int vecr_writer_emit_tile(VecrWriter *w,
     e->offset  = off;
     e->size    = (int64_t)buf.size;
     e->n_valid = n_valid;
+    e->time    = w->cur_time;
     if (n_valid > 0) {
         vecr_pack_native(&e->min_bits, t_min, dt);
         vecr_pack_native(&e->max_bits, t_max, dt);
@@ -767,10 +773,19 @@ int vecr_reader_open(const char *path, VecrReader **out) {
         VecrIndexEntry *e = &r->index[i];
         if (e->level >= n_levels) continue;
         if (e->band >= r->hdr.n_bands) continue;
+        if (e->time != 0) continue;   /* timed slices use linear scan */
         int L = e->level;
         if (e->tile_x < 0 || e->tile_x >= r->tiles_x[L]) continue;
         if (e->tile_y < 0 || e->tile_y >= r->tiles_y[L]) continue;
         r->lookup[L][e->band][e->tile_y * r->tiles_x[L] + e->tile_x] = e;
+    }
+    return 0;
+}
+
+int vecr_reader_has_time(VecrReader *r) {
+    if (!r) return 0;
+    for (int64_t i = 0; i < r->n_index; ++i) {
+        if (r->index[i].time != 0) return 1;
     }
     return 0;
 }
@@ -840,6 +855,134 @@ static int vecr_reader_decode_tile(VecrReader *r,
     return 0;
 }
 
+/* Core window-decode loop. `entries` is a row-major array of size
+ * (ty_hi-ty_lo+1)*(tx_hi-tx_lo+1) holding pointers into r->index for the
+ * relevant tiles (NULL for missing tiles, which stay nodata). The output
+ * buffer must already be filled with the nodata pattern. */
+static int vecr_reader_decode_window_entries(
+    VecrReader *r, int band, int64_t level,
+    int64_t col_min, int64_t row_min,
+    int64_t col_max, int64_t row_max,
+    int64_t cmin, int64_t rmin, int64_t cmax, int64_t rmax,
+    int64_t tx_lo, int64_t tx_hi, int64_t ty_lo, int64_t ty_hi,
+    VecrIndexEntry **entries,
+    void *out) {
+
+    uint8_t  dt  = r->hdr.sample_dtype;
+    size_t   esz = vecr_dtype_size(dt);
+    uint16_t TS  = r->hdr.tile_size;
+    int64_t W = (r->hdr.width  + ((int64_t)1 << level) - 1) >> level;
+    int64_t H = (r->hdr.height + ((int64_t)1 << level) - 1) >> level;
+    if (W < 1) W = 1;
+    if (H < 1) H = 1;
+    int64_t out_w = col_max - col_min + 1;
+    int64_t n_tx = tx_hi - tx_lo + 1;
+
+    int64_t n_tiles = n_tx * (ty_hi - ty_lo + 1);
+    int n_threads = vec_omp_threads();
+    if (n_threads > n_tiles) n_threads = (int)n_tiles;
+    if (n_threads < 1) n_threads = 1;
+
+    int rc_global = 0;
+    (void)band; (void)level;  /* used below when fetching from entries[] */
+
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(n_threads)
+#endif
+    {
+        void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
+        if (!tile_buf) {
+#ifdef _OPENMP
+            #pragma omp atomic write
+#endif
+            rc_global = -1;
+        } else {
+#ifdef _OPENMP
+            #pragma omp for collapse(2) schedule(dynamic) nowait
+#endif
+            for (int64_t ty = ty_lo; ty <= ty_hi; ++ty) {
+                for (int64_t tx = tx_lo; tx <= tx_hi; ++tx) {
+                    if (rc_global) continue;
+                    int64_t tile_r0 = ty * TS;
+                    int64_t th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
+                    int64_t tile_c0 = tx * TS;
+                    int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
+
+                    VecrIndexEntry *e = entries[(ty - ty_lo) * n_tx + (tx - tx_lo)];
+                    if (!e) continue;
+
+                    uint8_t *bytes = (uint8_t *)malloc((size_t)e->size);
+                    if (!bytes) {
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        rc_global = -1;
+                        continue;
+                    }
+                    int io_ok = 1;
+#ifdef _OPENMP
+                    #pragma omp critical (vecr_fread)
+#endif
+                    {
+                        if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0 ||
+                            fread(bytes, 1, (size_t)e->size, r->fp)
+                                != (size_t)e->size) {
+                            io_ok = 0;
+                        }
+                    }
+                    if (!io_ok) {
+                        free(bytes);
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        rc_global = -1;
+                        continue;
+                    }
+
+                    tdc_block dst = {0};
+                    dst.data = tile_buf;
+                    dst.dtype = vecr_to_tdc(dt);
+                    dst.layout = TDC_LAYOUT_RASTER_2D;
+                    dst.shape.rank = 2;
+                    dst.shape.dim[0] = th;
+                    dst.shape.dim[1] = tw;
+                    tdc_shape_set_contiguous(&dst.shape);
+                    tdc_status st = tdc_decode_block_into(bytes,
+                                                          (size_t)e->size, &dst);
+                    free(bytes);
+                    if (st != TDC_OK) {
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        rc_global = -1;
+                        continue;
+                    }
+
+                    int64_t r_lo = tile_r0 > rmin ? tile_r0 : rmin;
+                    int64_t r_hi = (tile_r0 + th - 1) < rmax ? (tile_r0 + th - 1) : rmax;
+                    int64_t c_lo = tile_c0 > cmin ? tile_c0 : cmin;
+                    int64_t c_hi = (tile_c0 + tw - 1) < cmax ? (tile_c0 + tw - 1) : cmax;
+                    int64_t copy_h = r_hi - r_lo + 1;
+                    int64_t copy_w = c_hi - c_lo + 1;
+                    for (int64_t rr = 0; rr < copy_h; ++rr) {
+                        int64_t src_r = (r_lo - tile_r0) + rr;
+                        int64_t dst_r = (r_lo - row_min) + rr;
+                        int64_t src_c = c_lo - tile_c0;
+                        int64_t dst_c = c_lo - col_min;
+                        const uint8_t *src = (const uint8_t *)tile_buf
+                            + (size_t)(src_r * tw + src_c) * esz;
+                        uint8_t *dout = (uint8_t *)out
+                            + (size_t)(dst_r * out_w + dst_c) * esz;
+                        memcpy(dout, src, (size_t)copy_w * esz);
+                    }
+                }
+            }
+            free(tile_buf);
+        }
+    }
+    return rc_global;
+}
+
 int vecr_reader_read_window(VecrReader *r,
                             int band, uint8_t level,
                             int64_t col_min, int64_t row_min,
@@ -906,120 +1049,127 @@ int vecr_reader_read_window(VecrReader *r,
 
     int64_t tx_lo = cmin / TS, tx_hi = cmax / TS;
     int64_t ty_lo = rmin / TS, ty_hi = rmax / TS;
-    int64_t n_tiles_x = tx_hi - tx_lo + 1;
-    int64_t n_tiles_y = ty_hi - ty_lo + 1;
-    int64_t n_tiles = n_tiles_x * n_tiles_y;
+    int64_t n_tx = tx_hi - tx_lo + 1;
+    int64_t n_ty = ty_hi - ty_lo + 1;
+    int64_t n_entries = n_tx * n_ty;
 
-    /* Phase 5: parallel decode. Each thread owns its own tile buffer; the
-     * fread+seek pair is serialised through a critical section because the
-     * stdio FILE* has shared state. Decode and copy run lock-free since
-     * each tile writes to a non-overlapping output region. */
-    int n_threads = vec_omp_threads();
-    if (n_threads > n_tiles) n_threads = (int)n_tiles;
-    if (n_threads < 1) n_threads = 1;
+    VecrIndexEntry **entries = (VecrIndexEntry **)calloc((size_t)n_entries,
+                                                          sizeof(VecrIndexEntry *));
+    if (!entries) { vecr_reader_set_err(r, "alloc entries"); return -1; }
 
-    int rc_global = 0;
-
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(n_threads)
-#endif
-    {
-        void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
-        if (!tile_buf) {
-#ifdef _OPENMP
-            #pragma omp atomic write
-#endif
-            rc_global = -1;
-        } else {
-#ifdef _OPENMP
-            #pragma omp for collapse(2) schedule(dynamic) nowait
-#endif
-            for (int64_t ty = ty_lo; ty <= ty_hi; ++ty) {
-                for (int64_t tx = tx_lo; tx <= tx_hi; ++tx) {
-                    if (rc_global) continue;
-                    int64_t tile_r0 = ty * TS;
-                    int64_t th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
-                    int64_t tile_c0 = tx * TS;
-                    int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
-
-                    VecrIndexEntry *e =
-                        r->lookup[level][band][ty * r->tiles_x[level] + tx];
-                    if (!e) continue;
-
-                    /* Read the tile bytes — serialised on the FILE*. */
-                    uint8_t *bytes = (uint8_t *)malloc((size_t)e->size);
-                    if (!bytes) {
-#ifdef _OPENMP
-                        #pragma omp atomic write
-#endif
-                        rc_global = -1;
-                        continue;
-                    }
-                    int io_ok = 1;
-#ifdef _OPENMP
-                    #pragma omp critical (vecr_fread)
-#endif
-                    {
-                        if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0 ||
-                            fread(bytes, 1, (size_t)e->size, r->fp)
-                                != (size_t)e->size) {
-                            io_ok = 0;
-                        }
-                    }
-                    if (!io_ok) {
-                        free(bytes);
-#ifdef _OPENMP
-                        #pragma omp atomic write
-#endif
-                        rc_global = -1;
-                        continue;
-                    }
-
-                    /* Decode (lock-free, per-thread tile_buf). */
-                    tdc_block dst = {0};
-                    dst.data = tile_buf;
-                    dst.dtype = vecr_to_tdc(dt);
-                    dst.layout = TDC_LAYOUT_RASTER_2D;
-                    dst.shape.rank = 2;
-                    dst.shape.dim[0] = th;
-                    dst.shape.dim[1] = tw;
-                    tdc_shape_set_contiguous(&dst.shape);
-                    tdc_status st = tdc_decode_block_into(bytes,
-                                                          (size_t)e->size, &dst);
-                    free(bytes);
-                    if (st != TDC_OK) {
-#ifdef _OPENMP
-                        #pragma omp atomic write
-#endif
-                        rc_global = -1;
-                        continue;
-                    }
-
-                    /* Copy to output (lock-free, non-overlapping target). */
-                    int64_t r_lo = tile_r0 > rmin ? tile_r0 : rmin;
-                    int64_t r_hi = (tile_r0 + th - 1) < rmax ? (tile_r0 + th - 1) : rmax;
-                    int64_t c_lo = tile_c0 > cmin ? tile_c0 : cmin;
-                    int64_t c_hi = (tile_c0 + tw - 1) < cmax ? (tile_c0 + tw - 1) : cmax;
-                    int64_t copy_h = r_hi - r_lo + 1;
-                    int64_t copy_w = c_hi - c_lo + 1;
-                    for (int64_t rr = 0; rr < copy_h; ++rr) {
-                        int64_t src_r = (r_lo - tile_r0) + rr;
-                        int64_t dst_r = (r_lo - row_min) + rr;
-                        int64_t src_c = c_lo - tile_c0;
-                        int64_t dst_c = c_lo - col_min;
-                        const uint8_t *src = (const uint8_t *)tile_buf
-                            + (size_t)(src_r * tw + src_c) * esz;
-                        uint8_t *dout = (uint8_t *)out
-                            + (size_t)(dst_r * out_w + dst_c) * esz;
-                        memcpy(dout, src, (size_t)copy_w * esz);
-                    }
-                }
-            }
-            free(tile_buf);
+    for (int64_t ty = ty_lo; ty <= ty_hi; ++ty) {
+        for (int64_t tx = tx_lo; tx <= tx_hi; ++tx) {
+            entries[(ty - ty_lo) * n_tx + (tx - tx_lo)] =
+                r->lookup[level][band][ty * r->tiles_x[level] + tx];
         }
     }
 
-    if (rc_global != 0) {
+    int rc = vecr_reader_decode_window_entries(
+        r, band, level,
+        col_min, row_min, col_max, row_max,
+        cmin, rmin, cmax, rmax,
+        tx_lo, tx_hi, ty_lo, ty_hi,
+        entries, out);
+    free(entries);
+    if (rc != 0) {
+        vecr_reader_set_err(r, "tile decode failed");
+        return -1;
+    }
+    return 0;
+}
+
+int vecr_reader_read_window_t(VecrReader *r,
+                              int band, uint8_t level,
+                              int64_t time,
+                              int64_t col_min, int64_t row_min,
+                              int64_t col_max, int64_t row_max,
+                              void *out) {
+    if (!r || !out) return -1;
+    if (band < 0 || band >= r->hdr.n_bands) {
+        vecr_reader_set_err(r, "band out of range"); return -1;
+    }
+    if (level >= r->hdr.n_levels) {
+        vecr_reader_set_err(r, "level out of range"); return -1;
+    }
+    if (col_min > col_max || row_min > row_max) {
+        vecr_reader_set_err(r, "empty window"); return -1;
+    }
+
+    /* Mirror read_window's intersection / nodata-fill / tile-range setup,
+     * then build the entries[] from a linear scan of the index. */
+    uint8_t  dt  = r->hdr.sample_dtype;
+    size_t   esz = vecr_dtype_size(dt);
+    int      has_nd = (r->hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
+    double   nd  = r->hdr.nodata;
+    uint16_t TS  = r->hdr.tile_size;
+    int64_t  W = (r->hdr.width  + ((int64_t)1 << level) - 1) >> level;
+    int64_t  H = (r->hdr.height + ((int64_t)1 << level) - 1) >> level;
+    if (W < 1) W = 1;
+    if (H < 1) H = 1;
+
+    int64_t out_w = col_max - col_min + 1;
+    int64_t out_h = row_max - row_min + 1;
+    int64_t out_n = out_w * out_h;
+
+    double fill = has_nd ? nd : NAN;
+    if (vecr_dtype_is_float(dt)) {
+        if (dt == VECR_DT_F32) {
+            float ff = (float)fill;
+            float *p = (float *)out;
+            for (int64_t i = 0; i < out_n; ++i) p[i] = ff;
+        } else {
+            double *p = (double *)out;
+            for (int64_t i = 0; i < out_n; ++i) p[i] = fill;
+        }
+    } else if (has_nd) {
+        for (int64_t i = 0; i < out_n; ++i) vecr_store_double(out, i, dt, fill);
+    } else {
+        memset(out, 0, (size_t)out_n * esz);
+    }
+
+    int64_t cmin = col_min < 0 ? 0 : col_min;
+    int64_t rmin = row_min < 0 ? 0 : row_min;
+    int64_t cmax = col_max >= W ? W - 1 : col_max;
+    int64_t rmax = row_max >= H ? H - 1 : row_max;
+    if (cmin > cmax || rmin > rmax) return 0;
+
+    int64_t tx_lo = cmin / TS, tx_hi = cmax / TS;
+    int64_t ty_lo = rmin / TS, ty_hi = rmax / TS;
+    int64_t n_tx = tx_hi - tx_lo + 1;
+    int64_t n_ty = ty_hi - ty_lo + 1;
+    int64_t n_entries = n_tx * n_ty;
+
+    VecrIndexEntry **entries = (VecrIndexEntry **)calloc((size_t)n_entries,
+                                                          sizeof(VecrIndexEntry *));
+    if (!entries) { vecr_reader_set_err(r, "alloc entries"); return -1; }
+
+    int found_any = 0;
+    for (int64_t i = 0; i < r->n_index; ++i) {
+        VecrIndexEntry *e = &r->index[i];
+        if (e->level != level) continue;
+        if ((int)e->band != band) continue;
+        if (e->time != time) continue;
+        if (e->tile_x < tx_lo || e->tile_x > tx_hi) continue;
+        if (e->tile_y < ty_lo || e->tile_y > ty_hi) continue;
+        entries[(e->tile_y - ty_lo) * n_tx + (e->tile_x - tx_lo)] = e;
+        found_any = 1;
+    }
+    if (!found_any) {
+        free(entries);
+        snprintf(r->errbuf, sizeof(r->errbuf),
+                 "no tiles match band=%d level=%u time=%lld",
+                 band, (unsigned)level, (long long)time);
+        return -1;
+    }
+
+    int rc = vecr_reader_decode_window_entries(
+        r, band, level,
+        col_min, row_min, col_max, row_max,
+        cmin, rmin, cmax, rmax,
+        tx_lo, tx_hi, ty_lo, ty_hi,
+        entries, out);
+    free(entries);
+    if (rc != 0) {
         vecr_reader_set_err(r, "tile decode failed");
         return -1;
     }

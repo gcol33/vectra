@@ -294,6 +294,113 @@ vec_to_tiff <- function(r, path,
   invisible(NULL)
 }
 
+#' Write a 4D time-cube raster to .vec
+#'
+#' Each (band, time) combination becomes a stack of tiles tagged with the
+#' chosen time stamp. Stamps are stored as int64 in the per-tile index
+#' entry; a value of `0` is reserved for "untimed" so this writer remaps
+#' any caller-supplied 0 to 1 internally.
+#'
+#' @param x Numeric 4D array `c(rows, cols, bands, time)`.
+#' @param times Numeric/integer vector with `length(times) == dim(x)[4]`,
+#'   in the unit of your choice (epoch ms, year, step index).
+#' @param path Output `.vec` path.
+#' @param dtype Storage dtype (see `vec_write_raster`).
+#' @param tile_size Tile edge in pixels.
+#' @param extent,gt,epsg,nodata,band_names,compression Same semantics as
+#'   `vec_write_raster()`.
+#' @return Invisible `NULL`.
+#' @export
+vec_write_time_cube <- function(x, times, path,
+                                dtype       = "f32",
+                                tile_size   = 512L,
+                                extent      = NULL,
+                                gt          = NULL,
+                                epsg        = 0L,
+                                nodata      = NA_real_,
+                                band_names  = NULL,
+                                compression = c("fast", "balanced", "max")) {
+  if (!is.numeric(x))
+    stop("x must be numeric")
+  d <- dim(x)
+  if (is.null(d) || length(d) != 4L)
+    stop("x must be a 4D array c(rows, cols, bands, time)")
+  if (length(times) != d[4L])
+    stop("length(times) must equal dim(x)[4]")
+  if (!is.character(path) || length(path) != 1L)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+
+  rows <- d[1L]; cols <- d[2L]
+  width <- as.integer(cols); height <- as.integer(rows)
+  n_bands <- as.integer(d[3L]); n_time <- as.integer(d[4L])
+
+  if (is.null(gt)) {
+    if (is.null(extent)) {
+      gt <- c(0, 1, 0, 0, 0, 1)
+    } else {
+      xmin <- extent[1L]; ymin <- extent[2L]
+      xmax <- extent[3L]; ymax <- extent[4L]
+      gt <- c(xmin, (xmax - xmin) / cols, 0, ymax, 0, -(ymax - ymin) / rows)
+    }
+  }
+
+  ## Permute (rows, cols, bands, time) -> (cols, rows, bands, time) so the
+  ## flattened vector is row-major within each band-slice.
+  data_vec <- as.vector(aperm(x, c(2L, 1L, 3L, 4L)))
+  storage.mode(data_vec) <- "double"
+
+  compression <- match.arg(compression)
+  comp_code <- switch(compression, fast = 0L, balanced = 1L, max = 2L)
+
+  .Call(C_vec_write_time_cube,
+        path,
+        data_vec,
+        c(width, height, n_bands, n_time),
+        as.numeric(times),
+        as.character(dtype),
+        as.integer(tile_size),
+        as.numeric(gt),
+        as.integer(epsg),
+        as.numeric(nodata),
+        band_names,
+        comp_code)
+  invisible(NULL)
+}
+
+#' Read a single time slice from a .vec time cube
+#'
+#' Performs a linear scan of the index for tiles with `time == time` and
+#' decodes the matching window. The lookup is O(n_tiles) per call — Phase
+#' 6's optimized hash-map lookup is a follow-up.
+#'
+#' @param r A `vectra_raster` from `vec_open_raster()`.
+#' @param time Time value to match (numeric/integer).
+#' @param band Band index (1-based).
+#' @param level Overview level. Default 0.
+#' @param cols,rows 1-based ranges, same as `vec_read_window`.
+#' @return A numeric matrix.
+#' @export
+vec_read_time_slice <- function(r, time, band = 1L, level = 0L,
+                                cols = NULL, rows = NULL) {
+  if (!inherits(r, "vectra_raster"))
+    stop("r must be a vectra_raster")
+  level <- as.integer(level)
+  level_w <- max(1L, as.integer(ceiling(r$width  / 2^level)))
+  level_h <- max(1L, as.integer(ceiling(r$height / 2^level)))
+  if (is.null(cols)) cols <- c(1L, level_w)
+  if (is.null(rows)) rows <- c(1L, level_h)
+  ## Remap user 0 -> 1 to match the writer's reservation of 0 for "untimed".
+  t <- as.numeric(time)
+  if (t == 0) t <- 1
+  .Call(C_vec_read_time_slice,
+        r$ptr,
+        as.integer(band), as.integer(level),
+        t,
+        as.integer(cols[1L]), as.integer(rows[1L]),
+        as.integer(cols[2L]), as.integer(rows[2L]))
+}
+
 #' @export
 print.vectra_raster <- function(x, ...) {
   cat("<vectra_raster>\n")

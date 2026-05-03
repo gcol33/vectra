@@ -145,6 +145,173 @@ static VecrReader *unwrap_vecr_reader(SEXP xptr) {
 /*  C_vec_write_raster                                                     */
 /* ====================================================================== */
 
+/* ====================================================================== */
+/*  C_vec_write_time_cube                                                  */
+/* ====================================================================== */
+
+/* Write a 4D array (rows, cols, bands, time) as a stack of band slices,
+ * each slice tagged with its time stamp. The on-disk format is identical
+ * to a regular .vec raster — only the per-tile time field differs. */
+SEXP C_vec_write_time_cube(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
+                           SEXP times_sexp, SEXP dtype_sexp,
+                           SEXP tile_size_sexp,
+                           SEXP gt_sexp, SEXP epsg_sexp, SEXP nodata_sexp,
+                           SEXP band_names_sexp, SEXP compression_sexp) {
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+    int *dims = INTEGER(dims_sexp);
+    int64_t width   = (int64_t)dims[0];
+    int64_t height  = (int64_t)dims[1];
+    int     n_bands = dims[2];
+    int     n_time  = dims[3];
+
+    int64_t expected = width * height * (int64_t)n_bands * (int64_t)n_time;
+    if (Rf_xlength(data_sexp) != expected)
+        vectra_error("vec_write_time_cube: data length mismatch");
+    if (Rf_xlength(times_sexp) != n_time)
+        vectra_error("vec_write_time_cube: times length must match n_time");
+
+    uint8_t dt = dtype_from_string(CHAR(STRING_ELT(dtype_sexp, 0)));
+    if (dt == 0)
+        vectra_error("vec_write_time_cube: unknown dtype");
+
+    uint16_t tile_size = (uint16_t)Rf_asInteger(tile_size_sexp);
+    int32_t  epsg = (int32_t)Rf_asInteger(epsg_sexp);
+    double   nodata = Rf_asReal(nodata_sexp);
+
+    const double *gt = NULL;
+    if (TYPEOF(gt_sexp) == REALSXP && Rf_xlength(gt_sexp) == 6) {
+        gt = REAL(gt_sexp);
+    }
+
+    char **band_names = NULL;
+    if (TYPEOF(band_names_sexp) == STRSXP &&
+        Rf_xlength(band_names_sexp) == n_bands) {
+        band_names = (char **)calloc((size_t)n_bands, sizeof(char *));
+        if (!band_names) vectra_error("alloc failed");
+        for (int i = 0; i < n_bands; ++i)
+            band_names[i] = (char *)CHAR(STRING_ELT(band_names_sexp, i));
+    }
+
+    VecrWriter *w = NULL;
+    if (vecr_writer_open(path, width, height, n_bands, tile_size, dt,
+                         gt, epsg, nodata,
+                         (const char *const *)band_names, &w) != 0) {
+        const char *m = w ? vecr_writer_errmsg(w) : "open failed";
+        vecr_writer_close(w); free(band_names);
+        vectra_error("vec_write_time_cube: open failed: %s", m);
+    }
+    free(band_names);
+    vecr_writer_set_compression(w, Rf_asInteger(compression_sexp));
+
+    int64_t band_n = width * height;
+    size_t  esz    = vecr_dtype_size(dt);
+    void   *band_buf = malloc((size_t)band_n * esz);
+    if (!band_buf) {
+        vecr_writer_close(w);
+        vectra_error("alloc failed for band buffer");
+    }
+
+    const double *src = REAL(data_sexp);
+    /* R array layout: a[row, col, band, time]: index =
+     *   row + col*rows + band*rows*cols + time*rows*cols*bands.
+     * Our writer expects band-major then row-major. We iterate
+     * (time, band) outer, casting one slice at a time. */
+    int64_t per_slice = band_n;
+    int64_t per_band  = per_slice;          /* one band at one time */
+    int64_t stride_band = per_band;         /* doubles between band 0 and band 1 */
+    int64_t stride_time = per_band * (int64_t)n_bands;
+
+    const double *times = REAL(times_sexp);
+    for (int t = 0; t < n_time; ++t) {
+        int64_t tval = (int64_t)times[t];
+        if (tval == 0) tval = 1;  /* avoid 0 = "untimed" sentinel */
+        vecr_writer_set_time(w, tval);
+        for (int b = 0; b < n_bands; ++b) {
+            const double *slice = src + (int64_t)t * stride_time + (int64_t)b * stride_band;
+            cast_doubles_to_dtype(slice, per_slice, dt, band_buf);
+            if (vecr_writer_write_band(w, b, band_buf) != 0) {
+                const char *m = vecr_writer_errmsg(w);
+                free(band_buf); vecr_writer_close(w);
+                vectra_error("vec_write_time_cube: write failed: %s", m);
+            }
+        }
+    }
+    free(band_buf);
+
+    if (vecr_writer_finish(w) != 0) {
+        const char *m = vecr_writer_errmsg(w);
+        vecr_writer_close(w);
+        vectra_error("vec_write_time_cube: finish failed: %s", m);
+    }
+    vecr_writer_close(w);
+    return R_NilValue;
+}
+
+/*
+ * C_vec_read_time_slice(ptr, band, level, time, col_min, row_min, col_max, row_max)
+ *
+ * Like C_vec_read_window but matches tiles where index entry .time equals
+ * the supplied time value. Returns a numeric matrix with NA for nodata.
+ */
+SEXP C_vec_read_time_slice(SEXP ptr_sexp, SEXP band_sexp, SEXP level_sexp,
+                           SEXP time_sexp,
+                           SEXP col_min_sexp, SEXP row_min_sexp,
+                           SEXP col_max_sexp, SEXP row_max_sexp) {
+    VecrReader *r = unwrap_vecr_reader(ptr_sexp);
+    int     band  = Rf_asInteger(band_sexp) - 1;
+    int     level = Rf_asInteger(level_sexp);
+    int64_t time  = (int64_t)Rf_asReal(time_sexp);
+    int64_t col_min = (int64_t)Rf_asInteger(col_min_sexp) - 1;
+    int64_t row_min = (int64_t)Rf_asInteger(row_min_sexp) - 1;
+    int64_t col_max = (int64_t)Rf_asInteger(col_max_sexp) - 1;
+    int64_t row_max = (int64_t)Rf_asInteger(row_max_sexp) - 1;
+
+    int64_t out_w = col_max - col_min + 1;
+    int64_t out_h = row_max - row_min + 1;
+    int64_t out_n = out_w * out_h;
+
+    uint8_t dt  = vecr_reader_dtype(r);
+    size_t  esz = vecr_dtype_size(dt);
+
+    void *raw = malloc((size_t)out_n * esz);
+    if (!raw) vectra_error("alloc failed");
+
+    if (vecr_reader_read_window_t(r, band, (uint8_t)level, time,
+                                   col_min, row_min, col_max, row_max,
+                                   raw) != 0) {
+        const char *msg = vecr_reader_errmsg(r);
+        free(raw);
+        vectra_error("vec_read_time_slice: %s", msg);
+    }
+
+    SEXP out = PROTECT(Rf_allocMatrix(REALSXP, (int)out_h, (int)out_w));
+    double *dst = REAL(out);
+    int has_nd = vecr_reader_has_nodata(r);
+    double nd = vecr_reader_nodata(r);
+
+    double *row_buf = (double *)malloc((size_t)out_w * sizeof(double));
+    if (!row_buf) { free(raw); vectra_error("alloc failed for row buf"); }
+    for (int64_t rr = 0; rr < out_h; ++rr) {
+        const uint8_t *src_row = (const uint8_t *)raw + (size_t)(rr * out_w) * esz;
+        cast_dtype_to_doubles(src_row, out_w, dt, row_buf);
+        for (int64_t cc = 0; cc < out_w; ++cc) {
+            double v = row_buf[cc];
+            if (has_nd) {
+                if (dt == VECR_DT_F64 || dt == VECR_DT_F32) {
+                    if (isnan(nd) ? isnan(v) : v == nd) v = NA_REAL;
+                } else if (v == nd) v = NA_REAL;
+            } else if ((dt == VECR_DT_F64 || dt == VECR_DT_F32) && isnan(v)) {
+                v = NA_REAL;
+            }
+            dst[(int64_t)cc * out_h + rr] = v;
+        }
+    }
+    free(row_buf);
+    free(raw);
+    UNPROTECT(1);
+    return out;
+}
+
 /*
  * C_vec_write_raster(path, data, dims, dtype, tile_size, gt, epsg, nodata,
  *                     band_names, compression)
