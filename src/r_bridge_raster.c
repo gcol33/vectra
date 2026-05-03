@@ -147,7 +147,7 @@ static VecrReader *unwrap_vecr_reader(SEXP xptr) {
 
 /*
  * C_vec_write_raster(path, data, dims, dtype, tile_size, gt, epsg, nodata,
- *                     band_names)
+ *                     band_names, compression)
  *
  *   path        : character(1)
  *   data        : numeric vector of length width*height*n_bands (band-major:
@@ -159,11 +159,12 @@ static VecrReader *unwrap_vecr_reader(SEXP xptr) {
  *   epsg        : integer(1) — 0 = no CRS recorded
  *   nodata      : numeric(1) — NA_real_ = none recorded
  *   band_names  : character(n_bands) or NULL
+ *   compression : integer(1) — VECR_COMPRESS_FAST/BALANCED/MAX
  */
 SEXP C_vec_write_raster(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
                         SEXP dtype_sexp, SEXP tile_size_sexp,
                         SEXP gt_sexp, SEXP epsg_sexp, SEXP nodata_sexp,
-                        SEXP band_names_sexp) {
+                        SEXP band_names_sexp, SEXP compression_sexp) {
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
     int *dims = INTEGER(dims_sexp);
     int64_t width   = (int64_t)dims[0];
@@ -213,6 +214,7 @@ SEXP C_vec_write_raster(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
         vectra_error("vec_write_raster: open failed: %s", msg);
     }
     free(band_names);
+    vecr_writer_set_compression(w, Rf_asInteger(compression_sexp));
 
     /* Cast and write band-by-band. */
     int64_t band_n = width * height;

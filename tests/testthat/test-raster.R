@@ -176,6 +176,49 @@ test_that("CRS / EPSG round-trips", {
   expect_equal(r$epsg, 31287L)
 })
 
+test_that("compression='balanced' and 'max' produce identical decoded output", {
+  set.seed(7)
+  m <- matrix(rnorm(128 * 128), 128, 128)
+  ref <- matrix(as.numeric(as.single(m)), 128, 128)
+
+  outs <- list()
+  sizes <- integer(3)
+  for (i in seq_along(c("fast", "balanced", "max"))) {
+    level <- c("fast", "balanced", "max")[i]
+    tmp <- tempfile(fileext = ".vec")
+    vec_write_raster(m, tmp, dtype = "f32", compression = level)
+    sizes[i] <- file.size(tmp)
+    r <- vec_open_raster(tmp)
+    outs[[level]] <- vec_read_window(r)
+    vec_close_raster(r)
+    unlink(tmp)
+  }
+
+  ## All three levels must round-trip to the same f32-quantized matrix.
+  expect_equal(outs$fast,     ref, tolerance = 1e-7)
+  expect_equal(outs$balanced, ref, tolerance = 1e-7)
+  expect_equal(outs$max,      ref, tolerance = 1e-7)
+
+  ## max <= balanced <= fast for at least *most* inputs (not strictly true on
+  ## every random tile, but on ≥ 100kB random gaussian data it should hold).
+  ## Check the inequality with a small slack to avoid flake on edge cases.
+  expect_lte(sizes[3], sizes[1] + 256)   # max <= fast
+})
+
+test_that("compression='max' is non-disastrous on a constant tile", {
+  ## A constant raster should hit the predictor's zero-residual fast path
+  ## under every codec spec — the resulting file should be tiny under any
+  ## level (well under 4 KB for a 256x256 constant tile).
+  m <- matrix(7.5, 256, 256)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f32", compression = "max")
+  expect_lt(file.size(tmp), 4096)
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  out <- vec_read_window(r)
+  expect_equal(out, matrix(as.numeric(as.single(m)), 256, 256))
+})
+
 test_that("terra can ingest pixel values via point extraction (smoke test)", {
   skip_if_not_installed("terra")
   ## Build a known raster, write to .vec, sample at known points and

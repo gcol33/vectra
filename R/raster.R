@@ -33,16 +33,22 @@
 #' @param nodata Nodata value, or `NA_real_` to skip recording one.
 #' @param band_names Optional character vector of length equal to the number
 #'   of bands.
+#' @param compression Compression effort, one of `"fast"` (single spec, fast
+#'   encode), `"balanced"` (probe two entropy coders, ~2x encode time), or
+#'   `"max"` (probe six candidate specs per tile, slowest encode but
+#'   smallest file). Decode cost is unchanged across levels because each
+#'   tile records its own codec spec. Default `"fast"`.
 #' @return Invisible `NULL`.
 #' @export
 vec_write_raster <- function(x, path,
-                             dtype     = "f32",
-                             tile_size = 512L,
-                             extent    = NULL,
-                             gt        = NULL,
-                             epsg      = 0L,
-                             nodata    = NA_real_,
-                             band_names = NULL) {
+                             dtype       = "f32",
+                             tile_size   = 512L,
+                             extent      = NULL,
+                             gt          = NULL,
+                             epsg        = 0L,
+                             nodata      = NA_real_,
+                             band_names  = NULL,
+                             compression = c("fast", "balanced", "max")) {
 
   if (!is.character(path) || length(path) != 1L)
     stop("path must be a single character string")
@@ -98,6 +104,12 @@ vec_write_raster <- function(x, path,
   }
   storage.mode(data_vec) <- "double"
 
+  compression <- match.arg(compression)
+  comp_code <- switch(compression,
+                      fast     = 0L,
+                      balanced = 1L,
+                      max      = 2L)
+
   .Call(C_vec_write_raster,
         path,
         data_vec,
@@ -107,7 +119,8 @@ vec_write_raster <- function(x, path,
         as.numeric(gt),
         as.integer(epsg),
         as.numeric(nodata),
-        band_names)
+        band_names,
+        comp_code)
 
   invisible(NULL)
 }

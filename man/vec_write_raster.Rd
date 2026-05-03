@@ -13,7 +13,8 @@ vec_write_raster(
   gt = NULL,
   epsg = 0L,
   nodata = NA_real_,
-  band_names = NULL
+  band_names = NULL,
+  compression = c("fast", "balanced", "max")
 )
 }
 \arguments{
@@ -42,6 +43,12 @@ are given.}
 
 \item{band_names}{Optional character vector of length equal to the number
 of bands.}
+
+\item{compression}{Compression effort, one of \code{"fast"} (single spec, fast
+encode), \code{"balanced"} (probe two entropy coders, ~2x encode time), or
+\code{"max"} (probe six candidate specs per tile, slowest encode but
+smallest file). Decode cost is unchanged across levels because each
+tile records its own codec spec. Default \code{"fast"}.}
 }
 \value{
 Invisible \code{NULL}.

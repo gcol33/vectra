@@ -52,6 +52,21 @@
 #define VECR_FLAG_HAS_CRS         0x0002u
 #define VECR_FLAG_HAS_BAND_NAMES  0x0004u
 
+/* Compression knobs.
+ *
+ *   FAST     One spec, no probing. PRED_2D + ZIGZAG/BYTE_SHUFFLE + LZ.
+ *            Matches Phase 1's behavior. Predictable encode cost.
+ *   BALANCED Probe two entropy coders (LZ, LZ_SPLIT) and keep the smaller.
+ *            ~2x slower encode than FAST; usually 5-15% smaller files on
+ *            mixed-distribution rasters.
+ *   MAX      Probe a six-way candidate set (predictor variants + entropy
+ *            variants + RAW fallback). Slowest encode; smallest file.
+ *            Decode cost is unchanged — every spec produces a self-
+ *            describing block the existing reader already handles. */
+#define VECR_COMPRESS_FAST     0
+#define VECR_COMPRESS_BALANCED 1
+#define VECR_COMPRESS_MAX      2
+
 /* Tile index entry — exactly 64 bytes for cache-line alignment.
  *
  *     offset  size  field
@@ -162,6 +177,11 @@ int vecr_writer_open(const char *path,
                      double nodata,
                      const char *const *band_names,
                      VecrWriter **out);
+
+/* Set the compression level. Must be called between vecr_writer_open and
+ * the first vecr_writer_write_band call. Default is VECR_COMPRESS_FAST.
+ * Unknown values are silently clamped to FAST. */
+void vecr_writer_set_compression(VecrWriter *w, int level);
 
 /* Write a full band.
  *

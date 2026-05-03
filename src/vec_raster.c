@@ -176,11 +176,14 @@ static void vecr_pack_native(void *out8, double v, uint8_t dt) {
 /* ====================================================================== */
 
 typedef struct {
-    tdc_codec_spec spec;
+    tdc_codec_spec    spec;
     tdc_pred2d_params pp;
 } VecrCodec;
 
-static void vecr_codec_for(VecrCodec *c, uint8_t dt) {
+/* Build a baseline spec: PRED_2D + (ZIGZAG for signed) + (BYTE_SHUFFLE for
+ * multi-byte dtypes) + entropy. Returns the same shape regardless of
+ * entropy choice — we just swap the last stage for probing. */
+static void vecr_codec_pred2d(VecrCodec *c, uint8_t dt, tdc_entropy_id e) {
     memset(c, 0, sizeof(*c));
     c->pp.kind = TDC_PRED2D_AUTO;
     c->spec.model = TDC_MODEL_PRED_2D;
@@ -189,11 +192,25 @@ static void vecr_codec_for(VecrCodec *c, uint8_t dt) {
     if (vecr_dtype_is_signed(dt)) {
         c->spec.xform[xi++] = TDC_XFORM_ZIGZAG;
     }
-    /* For 1-byte dtypes, BYTE_SHUFFLE is a no-op — skip it. */
     if (vecr_dtype_size(dt) > 1) {
         c->spec.xform[xi++] = TDC_XFORM_BYTE_SHUFFLE;
     }
-    c->spec.entropy[0] = TDC_ENTROPY_LZ;
+    c->spec.entropy[0] = e;
+}
+
+/* RAW + BYTE_SHUFFLE + entropy. Fallback when the predictor stage itself
+ * is hurting (e.g. high-frequency / random data). */
+static void vecr_codec_raw(VecrCodec *c, uint8_t dt, tdc_entropy_id e) {
+    memset(c, 0, sizeof(*c));
+    c->spec.model = TDC_MODEL_RAW;
+    if (vecr_dtype_size(dt) > 1) {
+        c->spec.xform[0] = TDC_XFORM_BYTE_SHUFFLE;
+    }
+    c->spec.entropy[0] = e;
+}
+
+static void vecr_codec_for(VecrCodec *c, uint8_t dt) {
+    vecr_codec_pred2d(c, dt, TDC_ENTROPY_LZ);
 }
 
 /* ====================================================================== */
@@ -217,8 +234,17 @@ struct VecrWriter {
     int64_t         index_len;
     int64_t         index_cap;
 
+    int compression;   /* VECR_COMPRESS_* */
     int finished;
 };
+
+void vecr_writer_set_compression(VecrWriter *w, int level) {
+    if (!w) return;
+    if (level != VECR_COMPRESS_BALANCED && level != VECR_COMPRESS_MAX) {
+        level = VECR_COMPRESS_FAST;
+    }
+    w->compression = level;
+}
 
 static void vecr_writer_set_err(VecrWriter *w, const char *msg) {
     if (!w) return;
@@ -342,6 +368,54 @@ int vecr_writer_open(const char *path,
     return 0;
 }
 
+/* Encode the tile with a single spec into a fresh tdc_buffer. The buffer's
+ * .data is owned by the caller (free via free()). On failure, .data is NULL. */
+static tdc_status vecr_try_spec(const tdc_block *blk,
+                                const tdc_codec_spec *spec,
+                                tdc_buffer *out) {
+    out->data = NULL;
+    out->size = 0;
+    out->capacity = 0;
+    out->realloc_fn = vecr_realloc_shim;
+    out->user = NULL;
+    tdc_status st = tdc_encode_block(blk, spec, out);
+    if (st != TDC_OK) {
+        free(out->data);
+        out->data = NULL;
+        out->size = 0;
+    }
+    return st;
+}
+
+/* Encode the tile choosing the smallest of `n_specs` candidates. Returns 0
+ * on success and writes the winning bytes to *winner_out (caller frees). */
+static int vecr_encode_best(VecrWriter *w,
+                            const tdc_block *blk,
+                            const VecrCodec *candidates, int n_specs,
+                            tdc_buffer *winner_out) {
+    int best = -1;
+    tdc_buffer best_buf = {0};
+    for (int i = 0; i < n_specs; ++i) {
+        tdc_buffer b = {0};
+        tdc_status st = vecr_try_spec(blk, &candidates[i].spec, &b);
+        if (st != TDC_OK) continue;
+        if (best < 0 || b.size < best_buf.size) {
+            free(best_buf.data);
+            best_buf = b;
+            best = i;
+        } else {
+            free(b.data);
+        }
+    }
+    if (best < 0) {
+        snprintf(w->errbuf, sizeof(w->errbuf),
+                 "all codec candidates failed");
+        return -1;
+    }
+    *winner_out = best_buf;
+    return 0;
+}
+
 /* Encode one tile and append to the file. Updates the index on success. */
 static int vecr_writer_emit_tile(VecrWriter *w,
                                  int band_index,
@@ -361,18 +435,30 @@ static int vecr_writer_emit_tile(VecrWriter *w,
     blk.shape.dim[1] = tw;   /* cols (x) */
     tdc_shape_set_contiguous(&blk.shape);
 
-    VecrCodec c;
-    vecr_codec_for(&c, dt);
+    /* Build the candidate set for this compression level. */
+    VecrCodec cands[8];
+    int n_cands = 0;
+    switch (w->compression) {
+    case VECR_COMPRESS_FAST:
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ);
+        break;
+    case VECR_COMPRESS_BALANCED:
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ);
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ_SPLIT);
+        break;
+    case VECR_COMPRESS_MAX:
+    default:
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ);
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ_SPLIT);
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_HUFFMAN4);
+        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_FSE);
+        vecr_codec_raw(&cands[n_cands++],    dt, TDC_ENTROPY_LZ);
+        vecr_codec_raw(&cands[n_cands++],    dt, TDC_ENTROPY_FSE);
+        break;
+    }
 
     tdc_buffer buf = {0};
-    buf.realloc_fn = vecr_realloc_shim;
-
-    tdc_status st = tdc_encode_block(&blk, &c.spec, &buf);
-    if (st != TDC_OK) {
-        free(buf.data);
-        snprintf(w->errbuf, sizeof(w->errbuf),
-                 "tdc_encode_block failed (status=%d, tile=(%lld,%lld), band=%d)",
-                 (int)st, (long long)tx, (long long)ty, band_index);
+    if (vecr_encode_best(w, &blk, cands, n_cands, &buf) != 0) {
         return -1;
     }
 
