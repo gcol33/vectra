@@ -13,6 +13,7 @@ write_tiff(
   crs = NULL,
   tiled = FALSE,
   tile_size = 256L,
+  bigtiff = "auto",
   ...
 )
 }
@@ -46,6 +47,13 @@ multiple of 16 (TIFF spec). Either a single value (square tiles) or a
 length-2 vector \code{c(width, height)}. Default \code{256}. Edge tiles at the
 right and bottom of the image are padded to full tile size with the
 NoData / NaN value.}
+
+\item{bigtiff}{Controls BigTIFF dispatch. \code{"auto"} (default) emits BigTIFF
+when the expected raw payload would exceed the classic-TIFF 4 GB
+ceiling, otherwise emits classic TIFF. \code{TRUE} forces BigTIFF (magic
+\code{0x002B}, 64-bit offsets), useful for round-trip tests on small data.
+\code{FALSE} forces classic TIFF — beware that classic TIFF will silently
+corrupt outputs larger than 4 GB. Tiled BigTIFF is not yet supported.}
 
 \item{...}{Reserved for future use.}
 }

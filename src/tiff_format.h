@@ -25,6 +25,14 @@
 #define TIFF_COMPRESS_DEFLATE  1
 #define TIFF_COMPRESS_LZW      2
 
+/* BigTIFF dispatch for the writer.
+     AUTO  — pick automatically based on expected raw size (~3.9 GB cutoff).
+     OFF   — always emit classic TIFF (will silently corrupt past 4 GB).
+     FORCE — always emit BigTIFF (useful for round-trip tests on small data). */
+#define TIFF_BIGTIFF_AUTO   0
+#define TIFF_BIGTIFF_OFF    1
+#define TIFF_BIGTIFF_FORCE  2
+
 /* ---- Reader ---- */
 
 typedef struct TiffReader TiffReader;
@@ -96,7 +104,11 @@ typedef struct TiffWriter TiffWriter;
    (Predictor 2) before encoding for integer pixel types and emits the
    Predictor tag (317 = 2) in the IFD. Float pixel types skip the predictor
    (Predictor = 1) because byte-wise subtraction of float bit patterns is
-   not meaningful — that matches GDAL's behaviour. */
+   not meaningful — that matches GDAL's behaviour.
+
+   Auto-promotes to BigTIFF when the expected raw payload exceeds the
+   classic-TIFF 4 GB ceiling (minus a small header budget). Use
+   tiff_writer_open_ex to force a particular mode. */
 int tiff_writer_open(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
@@ -113,6 +125,16 @@ int tiff_writer_open_tiled(const char *path, TiffWriter **out,
                            const double *gt, double nodata,
                            int compression, int pixel_type,
                            int tile_width, int tile_height);
+
+/* Like tiff_writer_open, but with explicit control over BigTIFF dispatch.
+   compression: one of TIFF_COMPRESS_* constants.
+   bigtiff_mode: TIFF_BIGTIFF_AUTO (default), TIFF_BIGTIFF_OFF, or
+                 TIFF_BIGTIFF_FORCE. */
+int tiff_writer_open_ex(const char *path, TiffWriter **out,
+                        int64_t width, int64_t height, int n_bands,
+                        const double *gt, double nodata,
+                        int compression, int pixel_type,
+                        int bigtiff_mode);
 
 /* Attach GDAL_METADATA XML to be written into tag 42112.
    Must be called before tiff_writer_finish(). */

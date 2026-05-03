@@ -1352,6 +1352,36 @@ static void write_le32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)((v >> 24) & 0xFF);
 }
 
+static void write_le64(uint8_t *p, uint64_t v) {
+    write_le32(p,     (uint32_t)(v & 0xFFFFFFFFu));
+    write_le32(p + 4, (uint32_t)(v >> 32));
+}
+
+/* 64-bit-safe ftell: ftell()'s long return is 32-bit on Win32 / MinGW,
+   which would silently truncate file positions past 2 GB and corrupt
+   BigTIFF outputs. Use _ftelli64 on MSVC/MinGW, ftello elsewhere. */
+static int64_t tiff_ftell64(FILE *fp) {
+#if defined(_WIN32)
+    return (int64_t)_ftelli64(fp);
+#elif defined(_LARGEFILE_SOURCE) || defined(_LARGEFILE64_SOURCE) || \
+      defined(__APPLE__) || defined(__linux__)
+    return (int64_t)ftello(fp);
+#else
+    return (int64_t)ftell(fp);
+#endif
+}
+
+static int tiff_fseek64(FILE *fp, int64_t offset, int whence) {
+#if defined(_WIN32)
+    return _fseeki64(fp, offset, whence);
+#elif defined(_LARGEFILE_SOURCE) || defined(_LARGEFILE64_SOURCE) || \
+      defined(__APPLE__) || defined(__linux__)
+    return fseeko(fp, (off_t)offset, whence);
+#else
+    return fseek(fp, (long)offset, whence);
+#endif
+}
+
 struct TiffWriter {
     FILE    *fp;
     int64_t  width;
@@ -1362,6 +1392,7 @@ struct TiffWriter {
     int      has_nodata;
     int      compression;      /* TIFF tag 259 value: 1=NONE, 5=LZW, 8=DEFLATE */
     int      predictor;        /* TIFF tag 317 value: 1=none, 2=horizontal diff */
+    int      bigtiff;          /* 0 = classic TIFF (32-bit offsets), 1 = BigTIFF */
     int      rows_per_strip;
 
     int      pixel_type;       /* TIFF_PIXEL_* enum */
@@ -1371,8 +1402,9 @@ struct TiffWriter {
 
     /* Strip mode (is_tiled == 0) */
     int64_t  n_strips;
-    uint32_t *strip_offsets;
-    uint32_t *strip_byte_counts;
+    uint64_t *strip_offsets;       /* 64-bit so the same array works for
+                                       both classic and BigTIFF */
+    uint64_t *strip_byte_counts;
     int64_t   strips_written;
 
     /* Tiled mode (is_tiled == 1): tags 322/323/324/325 instead of 273/278/279.
@@ -1383,8 +1415,8 @@ struct TiffWriter {
     int64_t   n_tiles_x;       /* ceil(width  / tile_width)  */
     int64_t   n_tiles_y;       /* ceil(height / tile_height) */
     int64_t   n_tiles;         /* n_tiles_x * n_tiles_y      */
-    uint32_t *tile_offsets;
-    uint32_t *tile_byte_counts;
+    uint64_t *tile_offsets;
+    uint64_t *tile_byte_counts;
 
     char    *metadata;         /* GDAL_METADATA XML (tag 42112), or NULL */
 
@@ -1413,14 +1445,33 @@ static void pixel_type_props(int pixel_type,
     }
 }
 
-/* Internal: shared open for both strip and tiled modes.
+/* Estimate the raw (uncompressed) raster payload to decide whether
+   classic TIFF's 4 GB ceiling will be exceeded. We add a generous
+   header budget so the auto-promote threshold leaves room for the
+   IFD, GeoKey blocks, metadata strings, etc. */
+#define TIFF_CLASSIC_BUDGET_BYTES ((int64_t)(4LL * 1024 * 1024 * 1024 \
+                                              - 64 * 1024 * 1024))
+
+static int tiff_should_use_bigtiff(int64_t width, int64_t height, int n_bands,
+                                   int bytes_per_sample) {
+    /* Multiply with 64-bit math to avoid 32-bit overflow on the estimate
+       itself. If anything overflows even uint64_t, treat as needs-bigtiff. */
+    uint64_t pixels = (uint64_t)width * (uint64_t)height;
+    uint64_t samples = pixels * (uint64_t)n_bands;
+    uint64_t bytes = samples * (uint64_t)bytes_per_sample;
+    return bytes > (uint64_t)TIFF_CLASSIC_BUDGET_BYTES;
+}
+
+/* Internal: shared open for strip/tiled and classic/BigTIFF modes.
    compression: one of TIFF_COMPRESS_* constants.
-   tile_w/tile_h > 0 selects tiled layout; 0 selects strip layout. */
+   tile_w/tile_h > 0 selects tiled layout; 0 selects strip layout.
+   bigtiff_mode: AUTO/OFF/FORCE per TIFF_BIGTIFF_*. */
 static int tiff_writer_open_impl(const char *path, TiffWriter **out,
                                  int64_t width, int64_t height, int n_bands,
                                  const double *gt, double nodata,
                                  int compression, int pixel_type,
-                                 int tile_w, int tile_h) {
+                                 int tile_w, int tile_h,
+                                 int bigtiff_mode) {
     TiffWriter *w = (TiffWriter *)calloc(1, sizeof(TiffWriter));
     if (!w) return -1;
 
@@ -1458,6 +1509,16 @@ static int tiff_writer_open_impl(const char *path, TiffWriter **out,
         w->predictor = 1;
     }
 
+    /* Resolve bigtiff mode */
+    if (bigtiff_mode == TIFF_BIGTIFF_FORCE) {
+        w->bigtiff = 1;
+    } else if (bigtiff_mode == TIFF_BIGTIFF_OFF) {
+        w->bigtiff = 0;
+    } else { /* AUTO */
+        w->bigtiff = tiff_should_use_bigtiff(width, height, n_bands,
+                                              w->bytes_per_sample);
+    }
+
     if (gt) {
         memcpy(w->gt, gt, 6 * sizeof(double));
     } else {
@@ -1469,6 +1530,15 @@ static int tiff_writer_open_impl(const char *path, TiffWriter **out,
     w->nodata = nodata;
 
     if (tile_w > 0 && tile_h > 0) {
+        /* Tiled + BigTIFF would need 8-byte tile offset arrays (LONG8) —
+           not yet implemented. Refuse the combination explicitly so callers
+           don't get silent truncation past 4 GB. */
+        if (w->bigtiff) {
+            snprintf(w->errmsg, 256,
+                     "tiled BigTIFF not yet supported");
+            *out = w;
+            return -1;
+        }
         /* TIFF spec requires tile dimensions to be multiples of 16. */
         if ((tile_w % 16) != 0 || (tile_h % 16) != 0) {
             snprintf(w->errmsg, 256,
@@ -1488,10 +1558,10 @@ static int tiff_writer_open_impl(const char *path, TiffWriter **out,
             *out = w;
             return -1;
         }
-        w->tile_offsets = (uint32_t *)calloc((size_t)w->n_tiles,
-                                              sizeof(uint32_t));
-        w->tile_byte_counts = (uint32_t *)calloc((size_t)w->n_tiles,
-                                                  sizeof(uint32_t));
+        w->tile_offsets = (uint64_t *)calloc((size_t)w->n_tiles,
+                                              sizeof(uint64_t));
+        w->tile_byte_counts = (uint64_t *)calloc((size_t)w->n_tiles,
+                                                  sizeof(uint64_t));
         if (!w->tile_offsets || !w->tile_byte_counts) {
             snprintf(w->errmsg, 256, "alloc failed for tile arrays");
             *out = w;
@@ -1502,16 +1572,33 @@ static int tiff_writer_open_impl(const char *path, TiffWriter **out,
         w->rows_per_strip = 256;
         if (w->rows_per_strip > height) w->rows_per_strip = (int)height;
         w->n_strips = (height + w->rows_per_strip - 1) / w->rows_per_strip;
-        w->strip_offsets = (uint32_t *)calloc((size_t)w->n_strips,
-                                               sizeof(uint32_t));
-        w->strip_byte_counts = (uint32_t *)calloc((size_t)w->n_strips,
-                                                   sizeof(uint32_t));
+        w->strip_offsets = (uint64_t *)calloc((size_t)w->n_strips,
+                                               sizeof(uint64_t));
+        w->strip_byte_counts = (uint64_t *)calloc((size_t)w->n_strips,
+                                                   sizeof(uint64_t));
         w->strips_written = 0;
     }
 
-    /* Write TIFF header: little-endian, magic=42, IFD offset=0 (patched later) */
-    uint8_t hdr[8] = {'I', 'I', 42, 0, 0, 0, 0, 0};
-    fwrite(hdr, 1, 8, w->fp);
+    if (w->bigtiff) {
+        /* BigTIFF header (16 bytes):
+             [0..1]  byte order: 'II' (little-endian)
+             [2..3]  version: 0x002B = 43
+             [4..5]  offset size: 8 (LONG8 width)
+             [6..7]  always 0
+             [8..15] offset of first IFD (patched on finish)
+        */
+        uint8_t hdr[16] = {0};
+        hdr[0] = 'I'; hdr[1] = 'I';
+        write_le16(hdr + 2, 43);     /* BigTIFF magic */
+        write_le16(hdr + 4, 8);      /* offset bytesize */
+        write_le16(hdr + 6, 0);      /* always zero */
+        /* hdr[8..15] = first-IFD-offset, zero for now */
+        fwrite(hdr, 1, 16, w->fp);
+    } else {
+        /* Classic TIFF: little-endian, magic=42, IFD offset=0 (patched later) */
+        uint8_t hdr[8] = {'I', 'I', 42, 0, 0, 0, 0, 0};
+        fwrite(hdr, 1, 8, w->fp);
+    }
 
     *out = w;
     return 0;
@@ -1522,7 +1609,18 @@ int tiff_writer_open(const char *path, TiffWriter **out,
                            const double *gt, double nodata,
                            int compression, int pixel_type) {
     return tiff_writer_open_impl(path, out, width, height, n_bands, gt,
-                                 nodata, compression, pixel_type, 0, 0);
+                                 nodata, compression, pixel_type, 0, 0,
+                                 TIFF_BIGTIFF_AUTO);
+}
+
+int tiff_writer_open_ex(const char *path, TiffWriter **out,
+                        int64_t width, int64_t height, int n_bands,
+                        const double *gt, double nodata,
+                        int compression, int pixel_type,
+                        int bigtiff_mode) {
+    return tiff_writer_open_impl(path, out, width, height, n_bands, gt,
+                                 nodata, compression, pixel_type, 0, 0,
+                                 bigtiff_mode);
 }
 
 int tiff_writer_open_tiled(const char *path, TiffWriter **out,
@@ -1532,7 +1630,8 @@ int tiff_writer_open_tiled(const char *path, TiffWriter **out,
                            int tile_width, int tile_height) {
     return tiff_writer_open_impl(path, out, width, height, n_bands, gt,
                                  nodata, compression, pixel_type,
-                                 tile_width, tile_height);
+                                 tile_width, tile_height,
+                                 TIFF_BIGTIFF_AUTO);
 }
 
 void tiff_writer_set_metadata(TiffWriter *w, const char *xml) {
@@ -1621,7 +1720,7 @@ static void fill_nodata(uint8_t *raw, int64_t n_samples, TiffWriter *w) {
    must be applied to `raw` before calling this helper, since the predictor
    stride differs between strips and tiles. */
 static int write_block(TiffWriter *w, const uint8_t *raw, int64_t raw_size,
-                       uint32_t *out_offset, uint32_t *out_byte_count) {
+                       uint64_t *out_offset, uint64_t *out_byte_count) {
     const uint8_t *out_data = raw;
     int64_t out_size = raw_size;
 
@@ -1648,8 +1747,8 @@ static int write_block(TiffWriter *w, const uint8_t *raw, int64_t raw_size,
         out_size = (int64_t)lzw_len;
     }
 
-    *out_offset     = (uint32_t)ftell(w->fp);
-    *out_byte_count = (uint32_t)out_size;
+    *out_offset     = (uint64_t)tiff_ftell64(w->fp);
+    *out_byte_count = (uint64_t)out_size;
     fwrite(out_data, 1, (size_t)out_size, w->fp);
     free(comp_buf);
     return 0;
@@ -1820,59 +1919,139 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
     return 0;
 }
 
-/* Write an IFD entry */
-static void write_ifd_entry(uint8_t *p, uint16_t tag, uint16_t type,
-                             uint32_t count, uint32_t value) {
-    write_le16(p, tag);
-    write_le16(p + 2, type);
-    write_le32(p + 4, count);
-    write_le32(p + 8, value);
+/* ------------------------------------------------------------------ */
+/*  IFD entry emission                                                  */
+/*                                                                       */
+/*  Classic TIFF entry (12 bytes):                                       */
+/*     [0..1]  tag                                                       */
+/*     [2..3]  type                                                      */
+/*     [4..7]  count   (LONG, 32-bit)                                    */
+/*     [8..11] value or offset (32-bit)                                  */
+/*                                                                       */
+/*  BigTIFF entry (20 bytes):                                            */
+/*     [0..1]   tag                                                      */
+/*     [2..3]   type                                                     */
+/*     [4..11]  count   (LONG8, 64-bit)                                  */
+/*     [12..19] value or offset (LONG8, 64-bit)                          */
+/*                                                                       */
+/*  Inline value field is 4 bytes in classic and 8 bytes in BigTIFF —    */
+/*  larger payloads go to a separate offset.                             */
+/* ------------------------------------------------------------------ */
+
+/* Number of bytes that fit inline in the entry's value/offset field. */
+static inline int tiff_entry_inline_capacity(const TiffWriter *w) {
+    return w->bigtiff ? 8 : 4;
+}
+
+/* Total entry size: 12 bytes classic, 20 bytes BigTIFF. */
+static inline int tiff_entry_size(const TiffWriter *w) {
+    return w->bigtiff ? 20 : 12;
+}
+
+/* Emit one IFD entry. The caller has already decided whether the value
+   fits inline or needs to be referenced by `value_or_offset` (which is
+   then a file position). For inline values, pass the small value as an
+   integer in `value_or_offset`. For arbitrary inline byte strings (e.g.
+   short ASCII tags) use tiff_emit_inline_entry instead. */
+static void tiff_emit_entry(TiffWriter *w, uint16_t tag, uint16_t type,
+                            uint64_t count, uint64_t value_or_offset) {
+    uint8_t buf[20];
+    write_le16(buf,     tag);
+    write_le16(buf + 2, type);
+    if (w->bigtiff) {
+        write_le64(buf + 4,  count);
+        write_le64(buf + 12, value_or_offset);
+        fwrite(buf, 1, 20, w->fp);
+    } else {
+        write_le32(buf + 4, (uint32_t)count);
+        write_le32(buf + 8, (uint32_t)value_or_offset);
+        fwrite(buf, 1, 12, w->fp);
+    }
+}
+
+/* Emit an entry whose payload is `n` bytes copied from `bytes` directly
+   into the inline value/offset field. The caller must guarantee
+   n <= inline_capacity(w). Remaining bytes are zero-padded. */
+static void tiff_emit_inline_entry(TiffWriter *w, uint16_t tag, uint16_t type,
+                                   uint64_t count,
+                                   const void *bytes, int n) {
+    uint8_t buf[20];
+    int cap = tiff_entry_inline_capacity(w);
+    memset(buf, 0, sizeof(buf));
+    write_le16(buf,     tag);
+    write_le16(buf + 2, type);
+    if (w->bigtiff) {
+        write_le64(buf + 4, count);
+        if (n > 0) memcpy(buf + 12, bytes, (size_t)n);
+        if (n < cap) memset(buf + 12 + n, 0, (size_t)(cap - n));
+        fwrite(buf, 1, 20, w->fp);
+    } else {
+        write_le32(buf + 4, (uint32_t)count);
+        if (n > 0) memcpy(buf + 8, bytes, (size_t)n);
+        if (n < cap) memset(buf + 8 + n, 0, (size_t)(cap - n));
+        fwrite(buf, 1, 12, w->fp);
+    }
+}
+
+/* Emit a SHORT(s) entry inline-packed when count fits.
+   Used for BitsPerSample / SampleFormat. */
+static void tiff_emit_short_array_entry(TiffWriter *w, uint16_t tag,
+                                        uint16_t value, int count,
+                                        uint64_t fallback_offset) {
+    int cap = tiff_entry_inline_capacity(w);
+    int needed = count * 2;
+    if (needed <= cap) {
+        uint8_t small[8] = {0};
+        for (int i = 0; i < count; i++) write_le16(small + i * 2, value);
+        tiff_emit_inline_entry(w, tag, TIFF_SHORT, (uint64_t)count,
+                               small, needed);
+    } else {
+        tiff_emit_entry(w, tag, TIFF_SHORT, (uint64_t)count, fallback_offset);
+    }
 }
 
 int tiff_writer_finish(TiffWriter *w) {
-    long ifd_data_start = ftell(w->fp);
+    int64_t ifd_data_start = tiff_ftell64(w->fp);
 
     int nb = w->n_bands;
     /* Block-array size: strips for strip mode, tiles for tiled mode. The two
        layouts use disjoint IFD tags (273/279 vs 324/325) but share a single
        on-disk array of LONG offsets/counts; we reuse those vars. */
     int64_t n_blocks = w->is_tiled ? w->n_tiles : w->n_strips;
-    uint32_t *block_offsets    = w->is_tiled ? w->tile_offsets
-                                              : w->strip_offsets;
-    uint32_t *block_byte_counts = w->is_tiled ? w->tile_byte_counts
-                                               : w->strip_byte_counts;
     uint16_t bps_val = (uint16_t)w->bits_per_sample;
     uint16_t sf_val  = (uint16_t)w->sample_format;
+    int big = w->bigtiff;
 
-    /* Write auxiliary data blocks before IFD:
-       1. Block offsets (Strip or Tile) — LONG array
-       2. Block byte counts (Strip or Tile) — LONG array
-       3. BitsPerSample array (2*nb bytes) — if nb > 1
-       4. SampleFormat array (2*nb bytes) — if nb > 1
-       5. ModelPixelScale (3 doubles = 24 bytes)
-       6. ModelTiepoint (6 doubles = 48 bytes)
-       7. GDAL_METADATA string (if set)
-       8. GDAL_NODATA string
-    */
+    /* Block offsets/byte counts use TIFF_LONG (4 B) for classic or
+       TIFF_LONG8 (8 B) for BigTIFF. Tiled+BigTIFF is rejected at open(),
+       so when w->is_tiled is true, big is always 0 here. */
+    int block_dtype = big ? TIFF_LONG8 : TIFF_LONG;
+    int block_elem  = big ? 8 : 4;
 
-    /* Block offsets array (StripOffsets or TileOffsets) */
-    uint32_t off_block_offsets = (uint32_t)ftell(w->fp);
+    /* Block offsets array (StripOffsets / TileOffsets) */
+    uint64_t off_block_offsets = (uint64_t)tiff_ftell64(w->fp);
     for (int64_t i = 0; i < n_blocks; i++) {
-        uint8_t buf[4];
-        write_le32(buf, block_offsets[i]);
-        fwrite(buf, 1, 4, w->fp);
+        uint8_t buf[8];
+        uint64_t v = w->is_tiled ? (uint64_t)w->tile_offsets[i]
+                                  : w->strip_offsets[i];
+        if (big) write_le64(buf, v);
+        else     write_le32(buf, (uint32_t)v);
+        fwrite(buf, 1, (size_t)block_elem, w->fp);
     }
 
-    /* Block byte counts array (StripByteCounts or TileByteCounts) */
-    uint32_t off_block_counts = (uint32_t)ftell(w->fp);
+    /* Block byte counts array (StripByteCounts / TileByteCounts) */
+    uint64_t off_block_counts = (uint64_t)tiff_ftell64(w->fp);
     for (int64_t i = 0; i < n_blocks; i++) {
-        uint8_t buf[4];
-        write_le32(buf, block_byte_counts[i]);
-        fwrite(buf, 1, 4, w->fp);
+        uint8_t buf[8];
+        uint64_t v = w->is_tiled ? (uint64_t)w->tile_byte_counts[i]
+                                  : w->strip_byte_counts[i];
+        if (big) write_le64(buf, v);
+        else     write_le32(buf, (uint32_t)v);
+        fwrite(buf, 1, (size_t)block_elem, w->fp);
     }
 
-    /* BitsPerSample array */
-    uint32_t off_bps = (uint32_t)ftell(w->fp);
+    /* BitsPerSample array (used only when count*2 > inline capacity) */
+    uint64_t off_bps = (uint64_t)tiff_ftell64(w->fp);
     for (int b = 0; b < nb; b++) {
         uint8_t buf[2];
         write_le16(buf, bps_val);
@@ -1880,7 +2059,7 @@ int tiff_writer_finish(TiffWriter *w) {
     }
 
     /* SampleFormat array */
-    uint32_t off_sf = (uint32_t)ftell(w->fp);
+    uint64_t off_sf = (uint64_t)tiff_ftell64(w->fp);
     for (int b = 0; b < nb; b++) {
         uint8_t buf[2];
         write_le16(buf, sf_val);
@@ -1888,47 +2067,40 @@ int tiff_writer_finish(TiffWriter *w) {
     }
 
     /* ModelPixelScale: 3 doubles */
-    uint32_t off_scale = (uint32_t)ftell(w->fp);
+    uint64_t off_scale = (uint64_t)tiff_ftell64(w->fp);
     {
         double scale[3] = { w->gt[1], -w->gt[5], 0.0 };
         fwrite(scale, sizeof(double), 3, w->fp);
     }
 
     /* ModelTiepoint: 6 doubles */
-    uint32_t off_tiepoint = (uint32_t)ftell(w->fp);
+    uint64_t off_tiepoint = (uint64_t)tiff_ftell64(w->fp);
     {
         double tp[6] = { 0, 0, 0, w->gt[0], w->gt[3], 0 };
         fwrite(tp, sizeof(double), 6, w->fp);
     }
 
-    /* Build GeoKey directory + GeoAsciiParams blob if a CRS was set.
-       Layout (GeoTIFF spec §7):
-         dir[0..3] = (KeyDirectoryVersion=1, KeyRevision=1, MinorRevision=0,
-                      NumberOfKeys)
-         dir[4 + 4*i ..] = (KeyID, TIFFTagLocation, Count, Value_Offset)
-       Inline keys use TIFFTagLocation=0 and Value_Offset=value.
-       ASCII keys point into GeoAsciiParams (TIFFTagLocation=34737), with
-       Count = byte length and Value_Offset = byte offset; each ASCII run
-       MUST end with '|' which the reader treats as a string terminator. */
+    /* GeoKey directory + GeoAsciiParams (see classic-TIFF comment in prior
+       revision for the spec details — the on-disk layout is identical
+       between classic TIFF and BigTIFF; only the IFD entry referencing
+       these blobs differs in width). */
     int      have_crs       = (w->epsg_geographic > 0 || w->epsg_projected > 0);
     int      n_geo_keys     = 0;
-    uint16_t geo_keys[5 * 4];     /* up to 5 keys: 3 fixed + EPSG + citation */
-    uint32_t off_geo_dir    = 0;
-    uint32_t off_geo_ascii  = 0;
+    uint16_t geo_keys[5 * 4];
+    uint64_t off_geo_dir    = 0;
+    uint64_t off_geo_ascii  = 0;
     int      geo_dir_count  = 0;
     int      geo_ascii_len  = 0;
 
     if (have_crs) {
         int is_projected = (w->epsg_projected > 0);
 
-        /* GTModelTypeGeoKey (1024): 1 = projected, 2 = geographic */
         geo_keys[n_geo_keys * 4 + 0] = 1024;
         geo_keys[n_geo_keys * 4 + 1] = 0;
         geo_keys[n_geo_keys * 4 + 2] = 1;
         geo_keys[n_geo_keys * 4 + 3] = (uint16_t)(is_projected ? 1 : 2);
         n_geo_keys++;
 
-        /* GTRasterTypeGeoKey (1025): 1 = RasterPixelIsArea (TIFF default) */
         geo_keys[n_geo_keys * 4 + 0] = 1025;
         geo_keys[n_geo_keys * 4 + 1] = 0;
         geo_keys[n_geo_keys * 4 + 2] = 1;
@@ -1936,14 +2108,12 @@ int tiff_writer_finish(TiffWriter *w) {
         n_geo_keys++;
 
         if (is_projected) {
-            /* ProjectedCSTypeGeoKey (3072) */
             geo_keys[n_geo_keys * 4 + 0] = 3072;
             geo_keys[n_geo_keys * 4 + 1] = 0;
             geo_keys[n_geo_keys * 4 + 2] = 1;
             geo_keys[n_geo_keys * 4 + 3] = (uint16_t)w->epsg_projected;
             n_geo_keys++;
         } else {
-            /* GeographicTypeGeoKey (2048) */
             geo_keys[n_geo_keys * 4 + 0] = 2048;
             geo_keys[n_geo_keys * 4 + 1] = 0;
             geo_keys[n_geo_keys * 4 + 2] = 1;
@@ -1951,13 +2121,10 @@ int tiff_writer_finish(TiffWriter *w) {
             n_geo_keys++;
         }
 
-        /* Optional citation: PCSCitationGeoKey (3073) for projected,
-           GeogCitationGeoKey (2049) for geographic. */
         if (w->crs_citation && w->crs_citation[0]) {
             int cit_raw = (int)strlen(w->crs_citation);
-            /* Append a single '|' terminator (GeoTIFF convention). */
             geo_ascii_len = cit_raw + 1;
-            off_geo_ascii = (uint32_t)ftell(w->fp);
+            off_geo_ascii = (uint64_t)tiff_ftell64(w->fp);
             fwrite(w->crs_citation, 1, (size_t)cit_raw, w->fp);
             uint8_t bar = (uint8_t)'|';
             fwrite(&bar, 1, 1, w->fp);
@@ -1965,18 +2132,16 @@ int tiff_writer_finish(TiffWriter *w) {
             geo_keys[n_geo_keys * 4 + 0] = (uint16_t)(is_projected ? 3073 : 2049);
             geo_keys[n_geo_keys * 4 + 1] = TAG_GEO_ASCII_PARAMS;
             geo_keys[n_geo_keys * 4 + 2] = (uint16_t)geo_ascii_len;
-            geo_keys[n_geo_keys * 4 + 3] = 0;  /* offset into GeoAsciiParams */
+            geo_keys[n_geo_keys * 4 + 3] = 0;
             n_geo_keys++;
         }
 
-        /* Write GeoKeyDirectory: 4 SHORTs of header + 4*n_geo_keys SHORTs.
-           Header.NumberOfKeys = n_geo_keys (does NOT include the header). */
         geo_dir_count = 4 + 4 * n_geo_keys;
-        off_geo_dir = (uint32_t)ftell(w->fp);
+        off_geo_dir = (uint64_t)tiff_ftell64(w->fp);
         uint8_t hdr_buf[8];
-        write_le16(hdr_buf + 0, 1);                   /* KeyDirectoryVersion */
-        write_le16(hdr_buf + 2, 1);                   /* KeyRevision */
-        write_le16(hdr_buf + 4, 0);                   /* MinorRevision */
+        write_le16(hdr_buf + 0, 1);
+        write_le16(hdr_buf + 2, 1);
+        write_le16(hdr_buf + 4, 0);
         write_le16(hdr_buf + 6, (uint16_t)n_geo_keys);
         fwrite(hdr_buf, 1, 8, w->fp);
         for (int i = 0; i < n_geo_keys * 4; i++) {
@@ -1987,22 +2152,22 @@ int tiff_writer_finish(TiffWriter *w) {
     }
 
     /* GDAL_METADATA string (tag 42112) */
-    uint32_t off_metadata = 0;
+    uint64_t off_metadata = 0;
     int metadata_len = 0;
     if (w->metadata) {
-        metadata_len = (int)strlen(w->metadata) + 1; /* include null */
-        off_metadata = (uint32_t)ftell(w->fp);
+        metadata_len = (int)strlen(w->metadata) + 1;
+        off_metadata = (uint64_t)tiff_ftell64(w->fp);
         fwrite(w->metadata, 1, (size_t)metadata_len, w->fp);
     }
 
     /* GDAL_NODATA string */
-    uint32_t off_nodata = 0;
+    uint64_t off_nodata = 0;
     int nodata_len = 0;
     char nodata_str[64];
     if (w->has_nodata) {
         nodata_len = snprintf(nodata_str, 64, "%.17g", w->nodata);
         nodata_len++; /* include null terminator */
-        off_nodata = (uint32_t)ftell(w->fp);
+        off_nodata = (uint64_t)tiff_ftell64(w->fp);
         fwrite(nodata_str, 1, (size_t)nodata_len, w->fp);
     }
 
@@ -2023,198 +2188,174 @@ int tiff_writer_finish(TiffWriter *w) {
     if (w->has_nodata) n_tags++;
 
     /* Write IFD */
-    uint32_t ifd_offset = (uint32_t)ftell(w->fp);
+    uint64_t ifd_offset = (uint64_t)tiff_ftell64(w->fp);
 
-    /* Entry count */
-    uint8_t cnt[2];
-    write_le16(cnt, (uint16_t)n_tags);
-    fwrite(cnt, 1, 2, w->fp);
+    /* Entry count: SHORT (2 B) classic, LONG8 (8 B) BigTIFF */
+    if (big) {
+        uint8_t cnt[8];
+        write_le64(cnt, (uint64_t)n_tags);
+        fwrite(cnt, 1, 8, w->fp);
+    } else {
+        uint8_t cnt[2];
+        write_le16(cnt, (uint16_t)n_tags);
+        fwrite(cnt, 1, 2, w->fp);
+    }
 
-    /* Entries (12 bytes each, sorted by tag) */
-    uint8_t ent[12];
+    /* Entries (sorted by tag). Inline values populate the value/offset
+       field directly; large payloads pass the previously-recorded byte
+       offset. */
 
     /* 256: ImageWidth */
-    write_ifd_entry(ent, TAG_IMAGE_WIDTH, TIFF_LONG, 1, (uint32_t)w->width);
-    fwrite(ent, 1, 12, w->fp);
+    tiff_emit_entry(w, TAG_IMAGE_WIDTH, TIFF_LONG, 1, (uint64_t)w->width);
 
     /* 257: ImageLength */
-    write_ifd_entry(ent, TAG_IMAGE_LENGTH, TIFF_LONG, 1, (uint32_t)w->height);
-    fwrite(ent, 1, 12, w->fp);
+    tiff_emit_entry(w, TAG_IMAGE_LENGTH, TIFF_LONG, 1, (uint64_t)w->height);
 
-    /* 258: BitsPerSample — inline when fits in value field (TIFF spec) */
-    if (nb == 1) {
-        write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT, 1, bps_val);
-    } else if (nb == 2) {
-        write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT, 2,
-                         (uint32_t)bps_val | ((uint32_t)bps_val << 16));
-    } else {
-        write_ifd_entry(ent, TAG_BITS_PER_SAMPLE, TIFF_SHORT,
-                         (uint32_t)nb, off_bps);
-    }
-    fwrite(ent, 1, 12, w->fp);
+    /* 258: BitsPerSample (SHORT) */
+    tiff_emit_short_array_entry(w, TAG_BITS_PER_SAMPLE, bps_val, nb, off_bps);
 
     /* 259: Compression */
-    write_ifd_entry(ent, TAG_COMPRESSION, TIFF_SHORT, 1,
-                     (uint32_t)w->compression);
-    fwrite(ent, 1, 12, w->fp);
+    tiff_emit_entry(w, TAG_COMPRESSION, TIFF_SHORT, 1,
+                    (uint64_t)w->compression);
 
     /* 262: PhotometricInterpretation = 1 (MinIsBlack) */
-    write_ifd_entry(ent, TAG_PHOTOMETRIC, TIFF_SHORT, 1, 1);
-    fwrite(ent, 1, 12, w->fp);
+    tiff_emit_entry(w, TAG_PHOTOMETRIC, TIFF_SHORT, 1, 1);
 
-    /* Strip-only tags 273/278/279 come before 277, but tile tags 322/323/
-       324/325 come after 284. The IFD MUST be sorted by tag id, so we emit
-       strip tags here and tile tags after PlanarConfig below. */
+    /* Strip-only tags 273/278/279 come before 277/284, tile tags 322-325
+       come after 284. IFD entries MUST be sorted by tag id. */
     if (!w->is_tiled) {
         /* 273: StripOffsets */
         if (n_blocks == 1) {
-            write_ifd_entry(ent, TAG_STRIP_OFFSETS, TIFF_LONG, 1,
-                             block_offsets[0]);
+            tiff_emit_entry(w, TAG_STRIP_OFFSETS, block_dtype, 1,
+                            w->strip_offsets[0]);
         } else {
-            write_ifd_entry(ent, TAG_STRIP_OFFSETS, TIFF_LONG,
-                             (uint32_t)n_blocks, off_block_offsets);
+            tiff_emit_entry(w, TAG_STRIP_OFFSETS, block_dtype,
+                            (uint64_t)n_blocks, off_block_offsets);
         }
-        fwrite(ent, 1, 12, w->fp);
     }
 
     /* 277: SamplesPerPixel */
-    write_ifd_entry(ent, TAG_SAMPLES_PER_PIXEL, TIFF_SHORT, 1,
-                     (uint32_t)nb);
-    fwrite(ent, 1, 12, w->fp);
+    tiff_emit_entry(w, TAG_SAMPLES_PER_PIXEL, TIFF_SHORT, 1, (uint64_t)nb);
 
     if (!w->is_tiled) {
         /* 278: RowsPerStrip */
-        write_ifd_entry(ent, TAG_ROWS_PER_STRIP, TIFF_LONG, 1,
-                         (uint32_t)w->rows_per_strip);
-        fwrite(ent, 1, 12, w->fp);
+        tiff_emit_entry(w, TAG_ROWS_PER_STRIP, TIFF_LONG, 1,
+                        (uint64_t)w->rows_per_strip);
 
         /* 279: StripByteCounts */
         if (n_blocks == 1) {
-            write_ifd_entry(ent, TAG_STRIP_BYTE_COUNTS, TIFF_LONG, 1,
-                             block_byte_counts[0]);
+            tiff_emit_entry(w, TAG_STRIP_BYTE_COUNTS, block_dtype, 1,
+                            w->strip_byte_counts[0]);
         } else {
-            write_ifd_entry(ent, TAG_STRIP_BYTE_COUNTS, TIFF_LONG,
-                             (uint32_t)n_blocks, off_block_counts);
+            tiff_emit_entry(w, TAG_STRIP_BYTE_COUNTS, block_dtype,
+                            (uint64_t)n_blocks, off_block_counts);
         }
-        fwrite(ent, 1, 12, w->fp);
     }
 
     /* 284: PlanarConfiguration = 1 (chunky) */
-    write_ifd_entry(ent, TAG_PLANAR_CONFIG, TIFF_SHORT, 1, 1);
-    fwrite(ent, 1, 12, w->fp);
+    tiff_emit_entry(w, TAG_PLANAR_CONFIG, TIFF_SHORT, 1, 1);
 
     /* 317: Predictor — only emit when non-default (1 = none) */
     if (w->predictor != 1) {
-        write_ifd_entry(ent, TAG_PREDICTOR, TIFF_SHORT, 1,
-                         (uint32_t)w->predictor);
-        fwrite(ent, 1, 12, w->fp);
+        tiff_emit_entry(w, TAG_PREDICTOR, TIFF_SHORT, 1,
+                        (uint64_t)w->predictor);
     }
 
     if (w->is_tiled) {
         /* 322: TileWidth */
-        write_ifd_entry(ent, TAG_TILE_WIDTH, TIFF_LONG, 1,
-                         (uint32_t)w->tile_width);
-        fwrite(ent, 1, 12, w->fp);
+        tiff_emit_entry(w, TAG_TILE_WIDTH, TIFF_LONG, 1,
+                        (uint64_t)w->tile_width);
 
         /* 323: TileLength */
-        write_ifd_entry(ent, TAG_TILE_LENGTH, TIFF_LONG, 1,
-                         (uint32_t)w->tile_height);
-        fwrite(ent, 1, 12, w->fp);
+        tiff_emit_entry(w, TAG_TILE_LENGTH, TIFF_LONG, 1,
+                        (uint64_t)w->tile_height);
 
         /* 324: TileOffsets */
         if (n_blocks == 1) {
-            write_ifd_entry(ent, TAG_TILE_OFFSETS, TIFF_LONG, 1,
-                             block_offsets[0]);
+            tiff_emit_entry(w, TAG_TILE_OFFSETS, block_dtype, 1,
+                            (uint64_t)w->tile_offsets[0]);
         } else {
-            write_ifd_entry(ent, TAG_TILE_OFFSETS, TIFF_LONG,
-                             (uint32_t)n_blocks, off_block_offsets);
+            tiff_emit_entry(w, TAG_TILE_OFFSETS, block_dtype,
+                            (uint64_t)n_blocks, off_block_offsets);
         }
-        fwrite(ent, 1, 12, w->fp);
 
         /* 325: TileByteCounts */
         if (n_blocks == 1) {
-            write_ifd_entry(ent, TAG_TILE_BYTE_COUNTS, TIFF_LONG, 1,
-                             block_byte_counts[0]);
+            tiff_emit_entry(w, TAG_TILE_BYTE_COUNTS, block_dtype, 1,
+                            (uint64_t)w->tile_byte_counts[0]);
         } else {
-            write_ifd_entry(ent, TAG_TILE_BYTE_COUNTS, TIFF_LONG,
-                             (uint32_t)n_blocks, off_block_counts);
+            tiff_emit_entry(w, TAG_TILE_BYTE_COUNTS, block_dtype,
+                            (uint64_t)n_blocks, off_block_counts);
         }
-        fwrite(ent, 1, 12, w->fp);
     }
 
-    /* 339: SampleFormat — inline when fits in value field (TIFF spec) */
-    if (nb == 1) {
-        write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT, 1, sf_val);
-    } else if (nb == 2) {
-        write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT, 2,
-                         (uint32_t)sf_val | ((uint32_t)sf_val << 16));
-    } else {
-        write_ifd_entry(ent, TAG_SAMPLE_FORMAT, TIFF_SHORT,
-                         (uint32_t)nb, off_sf);
-    }
-    fwrite(ent, 1, 12, w->fp);
+    /* 339: SampleFormat (SHORT) */
+    tiff_emit_short_array_entry(w, TAG_SAMPLE_FORMAT, sf_val, nb, off_sf);
 
-    /* 33550: ModelPixelScale */
-    write_ifd_entry(ent, TAG_MODEL_PIXEL_SCALE, TIFF_DOUBLE, 3, off_scale);
-    fwrite(ent, 1, 12, w->fp);
+    /* 33550: ModelPixelScale (3 DOUBLEs = 24 B → never inline) */
+    tiff_emit_entry(w, TAG_MODEL_PIXEL_SCALE, TIFF_DOUBLE, 3, off_scale);
 
-    /* 33922: ModelTiepoint */
-    write_ifd_entry(ent, TAG_MODEL_TIEPOINT, TIFF_DOUBLE, 6, off_tiepoint);
-    fwrite(ent, 1, 12, w->fp);
+    /* 33922: ModelTiepoint (6 DOUBLEs = 48 B → never inline) */
+    tiff_emit_entry(w, TAG_MODEL_TIEPOINT, TIFF_DOUBLE, 6, off_tiepoint);
 
-    /* 34735: GeoKeyDirectory (only when a CRS was set) */
+    /* 34735: GeoKeyDirectory */
     if (have_crs) {
-        write_ifd_entry(ent, TAG_GEO_KEY_DIRECTORY, TIFF_SHORT,
-                         (uint32_t)geo_dir_count, off_geo_dir);
-        fwrite(ent, 1, 12, w->fp);
+        tiff_emit_entry(w, TAG_GEO_KEY_DIRECTORY, TIFF_SHORT,
+                        (uint64_t)geo_dir_count, off_geo_dir);
 
-        /* 34737: GeoAsciiParams (only when a citation was attached) */
         if (geo_ascii_len > 0) {
-            write_ifd_entry(ent, TAG_GEO_ASCII_PARAMS, TIFF_ASCII,
-                             (uint32_t)geo_ascii_len, off_geo_ascii);
-            fwrite(ent, 1, 12, w->fp);
+            tiff_emit_entry(w, TAG_GEO_ASCII_PARAMS, TIFF_ASCII,
+                            (uint64_t)geo_ascii_len, off_geo_ascii);
         }
     }
 
     /* 42112: GDAL_METADATA */
     if (w->metadata) {
-        if (metadata_len <= 4) {
-            write_ifd_entry(ent, TAG_GDAL_METADATA, TIFF_ASCII,
-                             (uint32_t)metadata_len, 0);
-            memcpy(ent + 8, w->metadata, (size_t)metadata_len);
-            if (metadata_len < 4) memset(ent + 8 + metadata_len, 0,
-                                          (size_t)(4 - metadata_len));
+        if (metadata_len <= tiff_entry_inline_capacity(w)) {
+            tiff_emit_inline_entry(w, TAG_GDAL_METADATA, TIFF_ASCII,
+                                   (uint64_t)metadata_len,
+                                   w->metadata, metadata_len);
         } else {
-            write_ifd_entry(ent, TAG_GDAL_METADATA, TIFF_ASCII,
-                             (uint32_t)metadata_len, off_metadata);
+            tiff_emit_entry(w, TAG_GDAL_METADATA, TIFF_ASCII,
+                            (uint64_t)metadata_len, off_metadata);
         }
-        fwrite(ent, 1, 12, w->fp);
     }
 
     /* 42113: GDAL_NODATA */
     if (w->has_nodata) {
-        if (nodata_len <= 4) {
-            write_ifd_entry(ent, TAG_GDAL_NODATA, TIFF_ASCII,
-                             (uint32_t)nodata_len, 0);
-            memcpy(ent + 8, nodata_str, (size_t)nodata_len);
-            if (nodata_len < 4) memset(ent + 8 + nodata_len, 0,
-                                        (size_t)(4 - nodata_len));
+        if (nodata_len <= tiff_entry_inline_capacity(w)) {
+            tiff_emit_inline_entry(w, TAG_GDAL_NODATA, TIFF_ASCII,
+                                   (uint64_t)nodata_len,
+                                   nodata_str, nodata_len);
         } else {
-            write_ifd_entry(ent, TAG_GDAL_NODATA, TIFF_ASCII,
-                             (uint32_t)nodata_len, off_nodata);
+            tiff_emit_entry(w, TAG_GDAL_NODATA, TIFF_ASCII,
+                            (uint64_t)nodata_len, off_nodata);
         }
-        fwrite(ent, 1, 12, w->fp);
     }
 
-    /* Next IFD offset = 0 (no more IFDs) */
-    uint8_t zero4[4] = {0, 0, 0, 0};
-    fwrite(zero4, 1, 4, w->fp);
+    /* Next IFD offset = 0 (no more IFDs). 4 bytes classic / 8 BigTIFF. */
+    if (big) {
+        uint8_t zero8[8] = {0};
+        fwrite(zero8, 1, 8, w->fp);
+    } else {
+        uint8_t zero4[4] = {0};
+        fwrite(zero4, 1, 4, w->fp);
+    }
 
-    /* Patch header: write IFD offset at byte 4 */
-    fseek(w->fp, 4, SEEK_SET);
-    uint8_t ifd_off_buf[4];
-    write_le32(ifd_off_buf, ifd_offset);
-    fwrite(ifd_off_buf, 1, 4, w->fp);
+    /* Patch header with IFD offset.
+         Classic: 4-byte LONG at offset 4.
+         BigTIFF: 8-byte LONG8 at offset 8. */
+    if (big) {
+        tiff_fseek64(w->fp, 8, SEEK_SET);
+        uint8_t off_buf[8];
+        write_le64(off_buf, ifd_offset);
+        fwrite(off_buf, 1, 8, w->fp);
+    } else {
+        tiff_fseek64(w->fp, 4, SEEK_SET);
+        uint8_t off_buf[4];
+        write_le32(off_buf, (uint32_t)ifd_offset);
+        fwrite(off_buf, 1, 4, w->fp);
+    }
 
     (void)ifd_data_start;
     return 0;

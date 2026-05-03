@@ -131,6 +131,12 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #'   length-2 vector `c(width, height)`. Default `256`. Edge tiles at the
 #'   right and bottom of the image are padded to full tile size with the
 #'   NoData / NaN value.
+#' @param bigtiff Controls BigTIFF dispatch. `"auto"` (default) emits BigTIFF
+#'   when the expected raw payload would exceed the classic-TIFF 4 GB
+#'   ceiling, otherwise emits classic TIFF. `TRUE` forces BigTIFF (magic
+#'   `0x002B`, 64-bit offsets), useful for round-trip tests on small data.
+#'   `FALSE` forces classic TIFF — beware that classic TIFF will silently
+#'   corrupt outputs larger than 4 GB. Tiled BigTIFF is not yet supported.
 #' @param ... Reserved for future use.
 #'
 #' @return Invisible `NULL`.
@@ -148,7 +154,8 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #' @export
 write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
                        metadata = NULL, crs = NULL,
-                       tiled = FALSE, tile_size = 256L, ...) {
+                       tiled = FALSE, tile_size = 256L,
+                       bigtiff = "auto", ...) {
   UseMethod("write_tiff")
 }
 
@@ -156,6 +163,25 @@ write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
   float64 = 0L, float32 = 1L, int16 = 2L, int32 = 3L,
   uint8 = 4L, uint16 = 5L
 )
+
+# Mirrors TIFF_BIGTIFF_AUTO / TIFF_BIGTIFF_OFF / TIFF_BIGTIFF_FORCE in
+# src/tiff_format.h. Keep these in lockstep — they're shipped through
+# C_write_tiff_typed as plain integers.
+.BIGTIFF_AUTO  <- 0L
+.BIGTIFF_OFF   <- 1L
+.BIGTIFF_FORCE <- 2L
+
+.parse_bigtiff <- function(bigtiff) {
+  if (is.null(bigtiff)) return(.BIGTIFF_AUTO)
+  if (is.character(bigtiff) && length(bigtiff) == 1) {
+    if (identical(bigtiff, "auto")) return(.BIGTIFF_AUTO)
+    stop("bigtiff string must be \"auto\" (got '", bigtiff, "')")
+  }
+  if (is.logical(bigtiff) && length(bigtiff) == 1 && !is.na(bigtiff)) {
+    return(if (bigtiff) .BIGTIFF_FORCE else .BIGTIFF_OFF)
+  }
+  stop("bigtiff must be \"auto\", TRUE, or FALSE")
+}
 
 # Translate a user-supplied `crs` argument into (epsg_geographic,
 # epsg_projected, citation). The C side requires us to commit each EPSG to
@@ -231,7 +257,8 @@ write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
 write_tiff.vectra_node <- function(x, path, compress = FALSE,
                                    pixel_type = "float64",
                                    metadata = NULL, crs = NULL,
-                                   tiled = FALSE, tile_size = 256L, ...) {
+                                   tiled = FALSE, tile_size = 256L,
+                                   bigtiff = "auto", ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
 
@@ -245,10 +272,11 @@ write_tiff.vectra_node <- function(x, path, compress = FALSE,
 
   cs <- .parse_crs(crs)
   ts <- .parse_tile_size(tiled, tile_size)
+  bt <- .parse_bigtiff(bigtiff)
 
   # Always use the typed path — it handles all pixel types including float64
   .Call(C_write_tiff_typed, x$.node, path, as.logical(compress), pt, metadata,
-        cs$epsg_g, cs$epsg_p, cs$cit, ts$w, ts$h)
+        cs$epsg_g, cs$epsg_p, cs$cit, ts$w, ts$h, bt)
   invisible(NULL)
 }
 
@@ -256,10 +284,11 @@ write_tiff.vectra_node <- function(x, path, compress = FALSE,
 write_tiff.data.frame <- function(x, path, compress = FALSE,
                                   pixel_type = "float64",
                                   metadata = NULL, crs = NULL,
-                                  tiled = FALSE, tile_size = 256L, ...) {
+                                  tiled = FALSE, tile_size = 256L,
+                                  bigtiff = "auto", ...) {
   write_tiff.vectra_node(df_to_node(x), path, compress, pixel_type,
-                         metadata, crs, tiled = tiled, tile_size = tile_size,
-                         ...)
+                         metadata, crs, tiled = tiled,
+                         tile_size = tile_size, bigtiff = bigtiff, ...)
 }
 
 #' Write data to a .vtr file
