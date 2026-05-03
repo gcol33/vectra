@@ -16,6 +16,7 @@
 
 #include "vec_raster.h"
 #include "error.h"
+#include "vec_omp.h"
 
 #include "tdc/types.h"
 #include "tdc/codec.h"
@@ -905,51 +906,123 @@ int vecr_reader_read_window(VecrReader *r,
 
     int64_t tx_lo = cmin / TS, tx_hi = cmax / TS;
     int64_t ty_lo = rmin / TS, ty_hi = rmax / TS;
+    int64_t n_tiles_x = tx_hi - tx_lo + 1;
+    int64_t n_tiles_y = ty_hi - ty_lo + 1;
+    int64_t n_tiles = n_tiles_x * n_tiles_y;
 
-    void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
-    if (!tile_buf) { vecr_reader_set_err(r, "alloc tile buf"); return -1; }
+    /* Phase 5: parallel decode. Each thread owns its own tile buffer; the
+     * fread+seek pair is serialised through a critical section because the
+     * stdio FILE* has shared state. Decode and copy run lock-free since
+     * each tile writes to a non-overlapping output region. */
+    int n_threads = vec_omp_threads();
+    if (n_threads > n_tiles) n_threads = (int)n_tiles;
+    if (n_threads < 1) n_threads = 1;
 
-    for (int64_t ty = ty_lo; ty <= ty_hi; ++ty) {
-        int64_t tile_r0 = ty * TS;
-        int64_t th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
-        for (int64_t tx = tx_lo; tx <= tx_hi; ++tx) {
-            int64_t tile_c0 = tx * TS;
-            int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
+    int rc_global = 0;
 
-            VecrIndexEntry *e =
-                r->lookup[level][band][ty * r->tiles_x[level] + tx];
-            if (!e) continue;  /* missing tile -> stays as nodata */
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(n_threads)
+#endif
+    {
+        void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
+        if (!tile_buf) {
+#ifdef _OPENMP
+            #pragma omp atomic write
+#endif
+            rc_global = -1;
+        } else {
+#ifdef _OPENMP
+            #pragma omp for collapse(2) schedule(dynamic) nowait
+#endif
+            for (int64_t ty = ty_lo; ty <= ty_hi; ++ty) {
+                for (int64_t tx = tx_lo; tx <= tx_hi; ++tx) {
+                    if (rc_global) continue;
+                    int64_t tile_r0 = ty * TS;
+                    int64_t th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
+                    int64_t tile_c0 = tx * TS;
+                    int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
 
-            if (vecr_reader_decode_tile(r, e, tile_buf, tw, th) != 0) {
-                free(tile_buf);
-                return -1;
+                    VecrIndexEntry *e =
+                        r->lookup[level][band][ty * r->tiles_x[level] + tx];
+                    if (!e) continue;
+
+                    /* Read the tile bytes — serialised on the FILE*. */
+                    uint8_t *bytes = (uint8_t *)malloc((size_t)e->size);
+                    if (!bytes) {
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        rc_global = -1;
+                        continue;
+                    }
+                    int io_ok = 1;
+#ifdef _OPENMP
+                    #pragma omp critical (vecr_fread)
+#endif
+                    {
+                        if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0 ||
+                            fread(bytes, 1, (size_t)e->size, r->fp)
+                                != (size_t)e->size) {
+                            io_ok = 0;
+                        }
+                    }
+                    if (!io_ok) {
+                        free(bytes);
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        rc_global = -1;
+                        continue;
+                    }
+
+                    /* Decode (lock-free, per-thread tile_buf). */
+                    tdc_block dst = {0};
+                    dst.data = tile_buf;
+                    dst.dtype = vecr_to_tdc(dt);
+                    dst.layout = TDC_LAYOUT_RASTER_2D;
+                    dst.shape.rank = 2;
+                    dst.shape.dim[0] = th;
+                    dst.shape.dim[1] = tw;
+                    tdc_shape_set_contiguous(&dst.shape);
+                    tdc_status st = tdc_decode_block_into(bytes,
+                                                          (size_t)e->size, &dst);
+                    free(bytes);
+                    if (st != TDC_OK) {
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        rc_global = -1;
+                        continue;
+                    }
+
+                    /* Copy to output (lock-free, non-overlapping target). */
+                    int64_t r_lo = tile_r0 > rmin ? tile_r0 : rmin;
+                    int64_t r_hi = (tile_r0 + th - 1) < rmax ? (tile_r0 + th - 1) : rmax;
+                    int64_t c_lo = tile_c0 > cmin ? tile_c0 : cmin;
+                    int64_t c_hi = (tile_c0 + tw - 1) < cmax ? (tile_c0 + tw - 1) : cmax;
+                    int64_t copy_h = r_hi - r_lo + 1;
+                    int64_t copy_w = c_hi - c_lo + 1;
+                    for (int64_t rr = 0; rr < copy_h; ++rr) {
+                        int64_t src_r = (r_lo - tile_r0) + rr;
+                        int64_t dst_r = (r_lo - row_min) + rr;
+                        int64_t src_c = c_lo - tile_c0;
+                        int64_t dst_c = c_lo - col_min;
+                        const uint8_t *src = (const uint8_t *)tile_buf
+                            + (size_t)(src_r * tw + src_c) * esz;
+                        uint8_t *dout = (uint8_t *)out
+                            + (size_t)(dst_r * out_w + dst_c) * esz;
+                        memcpy(dout, src, (size_t)copy_w * esz);
+                    }
+                }
             }
-
-            /* Compute the intersection of the tile's raster span with the
-             * window, in raster coords. */
-            int64_t r_lo = tile_r0 > rmin ? tile_r0 : rmin;
-            int64_t r_hi = (tile_r0 + th - 1) < rmax ? (tile_r0 + th - 1) : rmax;
-            int64_t c_lo = tile_c0 > cmin ? tile_c0 : cmin;
-            int64_t c_hi = (tile_c0 + tw - 1) < cmax ? (tile_c0 + tw - 1) : cmax;
-
-            int64_t copy_h = r_hi - r_lo + 1;
-            int64_t copy_w = c_hi - c_lo + 1;
-
-            for (int64_t rr = 0; rr < copy_h; ++rr) {
-                int64_t src_r = (r_lo - tile_r0) + rr;
-                int64_t dst_r = (r_lo - row_min) + rr;
-                int64_t src_c = c_lo - tile_c0;
-                int64_t dst_c = c_lo - col_min;
-                const uint8_t *src = (const uint8_t *)tile_buf
-                    + (size_t)(src_r * tw + src_c) * esz;
-                uint8_t *dst = (uint8_t *)out
-                    + (size_t)(dst_r * out_w + dst_c) * esz;
-                memcpy(dst, src, (size_t)copy_w * esz);
-            }
+            free(tile_buf);
         }
     }
 
-    free(tile_buf);
+    if (rc_global != 0) {
+        vecr_reader_set_err(r, "tile decode failed");
+        return -1;
+    }
     return 0;
 }
 

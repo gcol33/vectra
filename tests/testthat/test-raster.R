@@ -314,6 +314,20 @@ test_that("vec_build_overviews refuses to add fewer levels than already exist", 
   unlink(tmp)
 })
 
+test_that("parallel tile decode matches serial decode (sufficient tiles)", {
+  ## 800x800 with tile_size 128 -> 7x7 = 49 tiles. With OMP_NUM_THREADS>1
+  ## the read path uses the parallel branch; result must match.
+  set.seed(2)
+  m <- matrix(rnorm(800 * 800), 800, 800)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_raster(m, tmp, dtype = "f64", tile_size = 128L)
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+  out <- vec_read_window(r)
+  expect_equal(out, m, tolerance = 0)
+})
+
 test_that("vec_to_tiff round-trips a single-band raster via terra", {
   skip_if_not_installed("terra")
   m <- matrix(seq(-1, 1, length.out = 30 * 40), 30, 40)
