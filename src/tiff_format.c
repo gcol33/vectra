@@ -20,11 +20,25 @@
 #define TAG_ROWS_PER_STRIP       278
 #define TAG_STRIP_BYTE_COUNTS    279
 #define TAG_PLANAR_CONFIG        284
+#define TAG_TILE_WIDTH           322
+#define TAG_TILE_LENGTH          323
+#define TAG_TILE_OFFSETS         324
+#define TAG_TILE_BYTE_COUNTS     325
 #define TAG_SAMPLE_FORMAT        339
 #define TAG_MODEL_TIEPOINT       33922
 #define TAG_MODEL_PIXEL_SCALE    33550
+#define TAG_GEO_KEY_DIRECTORY    34735
+#define TAG_GEO_DOUBLE_PARAMS    34736
+#define TAG_GEO_ASCII_PARAMS     34737
 #define TAG_GDAL_METADATA        42112
 #define TAG_GDAL_NODATA          42113
+
+/* GeoKey IDs we care about (GeoTIFF spec section 6.2). */
+#define GEO_KEY_GT_CITATION       1026  /* full WKT-ish citation */
+#define GEO_KEY_GEOGRAPHIC_TYPE   2048  /* EPSG of geographic CRS */
+#define GEO_KEY_GEOG_CITATION     2049
+#define GEO_KEY_PROJECTED_CS_TYPE 3072  /* EPSG of projected CRS */
+#define GEO_KEY_PCS_CITATION      3073
 
 #define COMPRESS_NONE     1
 #define COMPRESS_DEFLATE  8
@@ -252,12 +266,23 @@ struct TiffReader {
     int     bits_per_sample;
     int     sample_format;     /* SAMPLE_UINT, SAMPLE_INT, SAMPLE_FLOAT */
     int     compression;
-    int     rows_per_strip;
     int     planar_config;     /* 1=chunky, 2=planar */
 
-    int64_t *strip_offsets;
-    int64_t *strip_byte_counts;
-    int64_t  n_strips;
+    /* Unified block layout: a "block" is one strip OR one tile.
+       For strips, block_width == width and n_blocks_x == 1, so block_idx
+       enumerates strips top-to-bottom; for tiles, blocks are arranged
+       row-major (block_idx = by * n_blocks_x + bx).
+       Strips may be shorter than block_height in the last block row;
+       tiles are always exactly block_width * block_height in storage
+       (image edges are padded). */
+    int      is_tiled;
+    int64_t  block_width;
+    int64_t  block_height;
+    int64_t  n_blocks_x;
+    int64_t  n_blocks_y;
+    int64_t *block_offsets;
+    int64_t *block_byte_counts;
+    int64_t  n_blocks;
 
     double gt[6];
     int    has_geotransform;
@@ -267,8 +292,80 @@ struct TiffReader {
 
     char  *metadata;   /* GDAL_METADATA (tag 42112), NULL if absent */
 
+    int32_t epsg;          /* 0 if no GeoKey directory or no EPSG resolved */
+    char   *crs_citation;  /* NULL if absent */
+
     char errmsg[256];
 };
+
+/* Resolve EPSG + citation from a captured GeoKey directory.
+   dir is the raw SHORT array; ascii_params is the geo_ascii blob (may be NULL).
+   See GeoTIFF spec section 7 for GeoKey directory layout:
+     dir[0..3] = (Version, Major, Minor, NumberOfKeys)
+     dir[4 + 4*i .. 4 + 4*i + 3] = (KeyID, TIFFTagLocation, Count, Value_Offset)
+   For inline (TIFFTagLocation == 0), Value_Offset *is* the SHORT value.
+   For TIFFTagLocation == 34737, Value_Offset is the byte offset into the
+   geo_ascii_params blob and Count is the byte length. */
+static void parse_geokeys(TiffReader *r,
+                          const int64_t *dir, int64_t dir_count,
+                          const char *ascii_params, int64_t ascii_count) {
+    if (!dir || dir_count < 4) return;
+    int64_t n_keys = dir[3];
+    if (n_keys < 0 || dir_count < 4 + n_keys * 4) return;
+
+    int32_t epsg_pcs = 0, epsg_geog = 0;
+    int64_t cit_pcs_off  = -1, cit_pcs_count  = 0;
+    int64_t cit_gt_off   = -1, cit_gt_count   = 0;
+    int64_t cit_geog_off = -1, cit_geog_count = 0;
+
+    for (int64_t i = 0; i < n_keys; i++) {
+        int64_t key_id  = dir[4 + i * 4 + 0];
+        int64_t tag_loc = dir[4 + i * 4 + 1];
+        int64_t count   = dir[4 + i * 4 + 2];
+        int64_t value   = dir[4 + i * 4 + 3];
+
+        if (tag_loc == 0) {
+            if (key_id == GEO_KEY_PROJECTED_CS_TYPE)      epsg_pcs  = (int32_t)value;
+            else if (key_id == GEO_KEY_GEOGRAPHIC_TYPE)   epsg_geog = (int32_t)value;
+        } else if (tag_loc == TAG_GEO_ASCII_PARAMS) {
+            if (key_id == GEO_KEY_PCS_CITATION) {
+                cit_pcs_off = value; cit_pcs_count = count;
+            } else if (key_id == GEO_KEY_GT_CITATION) {
+                cit_gt_off = value; cit_gt_count = count;
+            } else if (key_id == GEO_KEY_GEOG_CITATION) {
+                cit_geog_off = value; cit_geog_count = count;
+            }
+        }
+    }
+
+    /* Prefer projected EPSG; fall back to geographic. */
+    if (epsg_pcs > 0)       r->epsg = epsg_pcs;
+    else if (epsg_geog > 0) r->epsg = epsg_geog;
+
+    /* Prefer PCS citation, then GT, then geographic. */
+    int64_t cit_off = -1, cit_count = 0;
+    if (cit_pcs_off >= 0) {
+        cit_off = cit_pcs_off; cit_count = cit_pcs_count;
+    } else if (cit_gt_off >= 0) {
+        cit_off = cit_gt_off; cit_count = cit_gt_count;
+    } else if (cit_geog_off >= 0) {
+        cit_off = cit_geog_off; cit_count = cit_geog_count;
+    }
+
+    if (cit_off >= 0 && cit_count > 0 && ascii_params &&
+        cit_off + cit_count <= ascii_count) {
+        /* GeoAsciiParams strings are pipe-terminated; trim if present. */
+        int64_t actual = cit_count;
+        if (actual > 0 && ascii_params[cit_off + actual - 1] == '|') actual--;
+        if (actual > 0) {
+            r->crs_citation = (char *)malloc((size_t)actual + 1);
+            if (r->crs_citation) {
+                memcpy(r->crs_citation, ascii_params + cit_off, (size_t)actual);
+                r->crs_citation[actual] = '\0';
+            }
+        }
+    }
+}
 
 /* ================================================================== */
 /*  IFD parsing                                                        */
@@ -307,12 +404,28 @@ static int parse_ifd(TiffReader *r) {
     int64_t entries_offset = ifd_offset + (io->bigtiff ? 8 : 2);
 
     /* Defaults */
-    r->rows_per_strip = (int)r->height;
     r->planar_config = 1;
     r->n_bands = 1;
     r->bits_per_sample = 8;
     r->sample_format = SAMPLE_UINT;
     r->compression = COMPRESS_NONE;
+
+    /* Captured GeoKey directory + ascii params; resolved after the IFD loop
+       so tag order doesn't matter. */
+    int64_t *geokey_dir       = NULL;
+    int64_t  geokey_dir_count = 0;
+    char    *geo_ascii        = NULL;
+    int64_t  geo_ascii_count  = 0;
+
+    /* Capture strip and tile descriptors separately; reconcile after the
+       loop into the unified block layout. Strip and tile tags are mutually
+       exclusive in well-formed TIFFs, so picking the populated set works. */
+    int64_t *strip_offsets     = NULL, *strip_byte_counts = NULL;
+    int64_t  strip_offset_count = 0, strip_count_count = 0;
+    int      rows_per_strip    = 0;
+    int64_t *tile_offsets      = NULL, *tile_byte_counts  = NULL;
+    int64_t  tile_offset_count  = 0, tile_count_count   = 0;
+    int64_t  tile_width        = 0, tile_length         = 0;
 
     for (int64_t i = 0; i < n_entries; i++) {
         uint8_t entry[20];
@@ -361,18 +474,45 @@ static int parse_ifd(TiffReader *r) {
         }
         case TAG_ROWS_PER_STRIP: {
             int64_t *v = read_tag_ints(io, dtype, 1, valp, entry_val_bytes);
-            if (v) { r->rows_per_strip = (int)v[0]; free(v); }
+            if (v) { rows_per_strip = (int)v[0]; free(v); }
             break;
         }
         case TAG_STRIP_OFFSETS: {
-            r->strip_offsets = read_tag_ints(io, dtype, count,
-                                              valp, entry_val_bytes);
-            r->n_strips = count;
+            free(strip_offsets);
+            strip_offsets = read_tag_ints(io, dtype, count,
+                                          valp, entry_val_bytes);
+            strip_offset_count = count;
             break;
         }
         case TAG_STRIP_BYTE_COUNTS: {
-            r->strip_byte_counts = read_tag_ints(io, dtype, count,
-                                                  valp, entry_val_bytes);
+            free(strip_byte_counts);
+            strip_byte_counts = read_tag_ints(io, dtype, count,
+                                              valp, entry_val_bytes);
+            strip_count_count = count;
+            break;
+        }
+        case TAG_TILE_WIDTH: {
+            int64_t *v = read_tag_ints(io, dtype, 1, valp, entry_val_bytes);
+            if (v) { tile_width = v[0]; free(v); }
+            break;
+        }
+        case TAG_TILE_LENGTH: {
+            int64_t *v = read_tag_ints(io, dtype, 1, valp, entry_val_bytes);
+            if (v) { tile_length = v[0]; free(v); }
+            break;
+        }
+        case TAG_TILE_OFFSETS: {
+            free(tile_offsets);
+            tile_offsets = read_tag_ints(io, dtype, count,
+                                         valp, entry_val_bytes);
+            tile_offset_count = count;
+            break;
+        }
+        case TAG_TILE_BYTE_COUNTS: {
+            free(tile_byte_counts);
+            tile_byte_counts = read_tag_ints(io, dtype, count,
+                                             valp, entry_val_bytes);
+            tile_count_count = count;
             break;
         }
         case TAG_PLANAR_CONFIG: {
@@ -407,6 +547,18 @@ static int parse_ifd(TiffReader *r) {
             free(v);
             break;
         }
+        case TAG_GEO_KEY_DIRECTORY: {
+            free(geokey_dir);
+            geokey_dir = read_tag_ints(io, dtype, count, valp, entry_val_bytes);
+            geokey_dir_count = count;
+            break;
+        }
+        case TAG_GEO_ASCII_PARAMS: {
+            free(geo_ascii);
+            geo_ascii = read_tag_ascii(io, count, valp, entry_val_bytes);
+            geo_ascii_count = count;
+            break;
+        }
         case TAG_GDAL_METADATA: {
             r->metadata = read_tag_ascii(io, count, valp, entry_val_bytes);
             break;
@@ -430,12 +582,7 @@ static int parse_ifd(TiffReader *r) {
     if (r->width <= 0 || r->height <= 0) {
         snprintf(r->errmsg, 256, "invalid dimensions: %lld x %lld",
                  (long long)r->width, (long long)r->height);
-        return -1;
-    }
-    if (!r->strip_offsets || !r->strip_byte_counts) {
-        snprintf(r->errmsg, 256,
-                 "missing strip offsets/counts (tiled TIFFs not supported)");
-        return -1;
+        goto fail;
     }
     if (r->compression != COMPRESS_NONE &&
         r->compression != COMPRESS_DEFLATE &&
@@ -443,11 +590,59 @@ static int parse_ifd(TiffReader *r) {
         snprintf(r->errmsg, 256,
                  "unsupported compression: %d (only none/deflate supported)",
                  r->compression);
-        return -1;
+        goto fail;
     }
     if (r->n_bands > TIFF_MAX_BANDS) {
         snprintf(r->errmsg, 256, "too many bands: %d", r->n_bands);
-        return -1;
+        goto fail;
+    }
+
+    /* Reconcile strip vs tile layout into the unified block fields. */
+    int have_tiles  = tile_offsets && tile_byte_counts &&
+                      tile_width > 0 && tile_length > 0;
+    int have_strips = strip_offsets && strip_byte_counts;
+
+    if (have_tiles) {
+        r->is_tiled = 1;
+        r->block_width  = tile_width;
+        r->block_height = tile_length;
+        r->n_blocks_x   = (r->width  + tile_width  - 1) / tile_width;
+        r->n_blocks_y   = (r->height + tile_length - 1) / tile_length;
+        int64_t expect = r->n_blocks_x * r->n_blocks_y;
+        if (tile_offset_count != expect || tile_count_count != expect) {
+            snprintf(r->errmsg, 256,
+                     "tile array length mismatch: got %lld offsets, %lld counts, "
+                     "expected %lld",
+                     (long long)tile_offset_count, (long long)tile_count_count,
+                     (long long)expect);
+            goto fail;
+        }
+        r->n_blocks         = expect;
+        r->block_offsets    = tile_offsets;     tile_offsets = NULL;
+        r->block_byte_counts = tile_byte_counts; tile_byte_counts = NULL;
+    } else if (have_strips) {
+        r->is_tiled = 0;
+        r->block_width  = r->width;
+        if (rows_per_strip <= 0) rows_per_strip = (int)r->height;
+        r->block_height = rows_per_strip;
+        r->n_blocks_x   = 1;
+        r->n_blocks_y   = (r->height + rows_per_strip - 1) / rows_per_strip;
+        if (strip_offset_count != r->n_blocks_y ||
+            strip_count_count  != r->n_blocks_y) {
+            snprintf(r->errmsg, 256,
+                     "strip array length mismatch: got %lld offsets, %lld counts, "
+                     "expected %lld",
+                     (long long)strip_offset_count, (long long)strip_count_count,
+                     (long long)r->n_blocks_y);
+            goto fail;
+        }
+        r->n_blocks         = r->n_blocks_y;
+        r->block_offsets    = strip_offsets;     strip_offsets = NULL;
+        r->block_byte_counts = strip_byte_counts; strip_byte_counts = NULL;
+    } else {
+        snprintf(r->errmsg, 256,
+                 "missing pixel offsets (no strip or tile tags found)");
+        goto fail;
     }
 
     if (!r->has_geotransform) {
@@ -455,17 +650,55 @@ static int parse_ifd(TiffReader *r) {
         r->gt[3] = (double)r->height; r->gt[4] = 0.0; r->gt[5] = -1.0;
     }
 
+    /* Resolve CRS metadata from the captured GeoKey directory. */
+    parse_geokeys(r, geokey_dir, geokey_dir_count, geo_ascii, geo_ascii_count);
+    free(geokey_dir);
+    free(geo_ascii);
+    free(strip_offsets);
+    free(strip_byte_counts);
+    free(tile_offsets);
+    free(tile_byte_counts);
+
     return 0;
+
+fail:
+    free(geokey_dir);
+    free(geo_ascii);
+    free(strip_offsets);
+    free(strip_byte_counts);
+    free(tile_offsets);
+    free(tile_byte_counts);
+    return -1;
 }
 
 /* ================================================================== */
-/*  Strip decompression                                                */
+/*  Block decompression (uniform path for strips and tiles)            */
 /* ================================================================== */
 
-static uint8_t *read_strip(TiffReader *r, int64_t strip_idx,
-                             int64_t expected_bytes, int64_t *out_len) {
-    int64_t offset = r->strip_offsets[strip_idx];
-    int64_t compressed_len = r->strip_byte_counts[strip_idx];
+/* Number of stored pixel rows in this block. Tiles always store
+   block_height rows (image edges padded). The last strip in a strip-based
+   TIFF may be shorter than block_height if height is not a multiple. */
+static int64_t block_stored_rows(TiffReader *r, int64_t block_idx) {
+    if (r->is_tiled) return r->block_height;
+    int64_t row_start = block_idx * r->block_height;
+    int64_t rows = r->block_height;
+    if (row_start + rows > r->height) rows = r->height - row_start;
+    return rows;
+}
+
+static int64_t block_expected_bytes(TiffReader *r, int64_t block_idx) {
+    int bps = r->bits_per_sample / 8;
+    int64_t rows = block_stored_rows(r, block_idx);
+    if (r->planar_config == 1)
+        return rows * r->block_width * r->n_bands * bps;
+    return rows * r->block_width * bps;
+}
+
+static uint8_t *read_block(TiffReader *r, int64_t block_idx,
+                           int64_t *out_len) {
+    int64_t offset = r->block_offsets[block_idx];
+    int64_t compressed_len = r->block_byte_counts[block_idx];
+    int64_t expected_bytes = block_expected_bytes(r, block_idx);
 
     if (r->compression == COMPRESS_NONE) {
         uint8_t *buf = (uint8_t *)malloc((size_t)compressed_len);
@@ -594,6 +827,8 @@ double tiff_reader_nodata(TiffReader *r) { return r->nodata; }
 int tiff_reader_has_nodata(TiffReader *r) { return r->has_nodata; }
 
 const char *tiff_reader_metadata(TiffReader *r) { return r->metadata; }
+int32_t     tiff_reader_epsg(TiffReader *r) { return r->epsg; }
+const char *tiff_reader_crs_citation(TiffReader *r) { return r->crs_citation; }
 const char *tiff_reader_errmsg(TiffReader *r) { return r->errmsg; }
 
 int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
@@ -614,64 +849,74 @@ int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
         }
     }
 
-    int rps = r->rows_per_strip;
-    int64_t first_strip = row_start / rps;
-    int64_t last_strip = (row_start + n_rows - 1) / rps;
+    /* Iterate the block rows that intersect [row_start, row_start + n_rows).
+       For strip-based TIFFs n_blocks_x == 1, so this collapses to the
+       sequential strip walk; for tiled TIFFs we additionally iterate
+       block columns left-to-right inside each block row. */
+    int64_t bw = r->block_width;
+    int64_t bh = r->block_height;
+    int64_t row_end = row_start + n_rows;
+    int64_t first_by = row_start / bh;
+    int64_t last_by  = (row_end - 1) / bh;
 
-    for (int64_t s = first_strip; s <= last_strip && s < r->n_strips; s++) {
-        int64_t strip_row_start = s * rps;
-        int64_t strip_rows = rps;
-        if (strip_row_start + strip_rows > r->height)
-            strip_rows = r->height - strip_row_start;
+    for (int64_t by = first_by; by <= last_by && by < r->n_blocks_y; by++) {
+        int64_t blk_row0 = by * bh;
+        int64_t stored_rows = block_stored_rows(r, by);
 
-        int64_t expected_bytes;
-        if (r->planar_config == 1)
-            expected_bytes = strip_rows * W * pixel_bytes;
-        else
-            expected_bytes = strip_rows * W * bytes_per_sample;
+        for (int64_t bx = 0; bx < r->n_blocks_x; bx++) {
+            int64_t blk_col0 = bx * bw;
+            /* Only iterate the in-block columns that map into the image. */
+            int64_t cols_in_block = bw;
+            if (blk_col0 + cols_in_block > W) cols_in_block = W - blk_col0;
 
-        int64_t actual_len = 0;
-        uint8_t *strip_data = read_strip(r, s, expected_bytes, &actual_len);
-        if (!strip_data) {
-            snprintf(r->errmsg, 256, "failed to read strip %lld",
-                     (long long)s);
-            return -1;
-        }
+            int64_t block_idx = by * r->n_blocks_x + bx;
+            int64_t actual_len = 0;
+            uint8_t *blk = read_block(r, block_idx, &actual_len);
+            if (!blk) {
+                snprintf(r->errmsg, 256, "failed to read block %lld",
+                         (long long)block_idx);
+                return -1;
+            }
 
-        for (int64_t sr = 0; sr < strip_rows; sr++) {
-            int64_t abs_row = strip_row_start + sr;
-            if (abs_row < row_start || abs_row >= row_start + n_rows)
-                continue;
-            int64_t out_row = abs_row - row_start;
+            int64_t row_stride = (r->planar_config == 1)
+                                  ? bw * pixel_bytes
+                                  : bw * bytes_per_sample;
 
-            for (int64_t col = 0; col < W; col++) {
-                int64_t out_idx = out_row * W + col;
+            for (int64_t in_row = 0; in_row < stored_rows; in_row++) {
+                int64_t abs_row = blk_row0 + in_row;
+                if (abs_row < row_start || abs_row >= row_end) continue;
+                int64_t out_row = abs_row - row_start;
 
-                if (r->planar_config == 1) {
-                    int64_t pixel_off = (sr * W + col) * pixel_bytes;
-                    for (int b = 0; b < nb; b++) {
-                        double val = extract_pixel(strip_data,
-                            pixel_off + b * bytes_per_sample,
-                            bps, r->sample_format, &r->io);
-                        if (r->has_nodata && val == r->nodata)
-                            val = NAN;
-                        out_bands[b][out_idx] = val;
-                    }
-                } else {
-                    /* Planar: simplified — only handles chunky well */
-                    for (int b = 0; b < nb; b++) {
-                        int64_t pixel_off = (sr * W + col) * bytes_per_sample;
-                        double val = extract_pixel(strip_data, pixel_off,
-                            bps, r->sample_format, &r->io);
-                        if (r->has_nodata && val == r->nodata)
-                            val = NAN;
-                        out_bands[b][out_idx] = val;
+                for (int64_t in_col = 0; in_col < cols_in_block; in_col++) {
+                    int64_t abs_col = blk_col0 + in_col;
+                    int64_t out_idx = out_row * W + abs_col;
+
+                    if (r->planar_config == 1) {
+                        int64_t pixel_off = in_row * row_stride
+                                          + in_col * pixel_bytes;
+                        for (int b = 0; b < nb; b++) {
+                            double val = extract_pixel(blk,
+                                pixel_off + b * bytes_per_sample,
+                                bps, r->sample_format, &r->io);
+                            if (r->has_nodata && val == r->nodata) val = NAN;
+                            out_bands[b][out_idx] = val;
+                        }
+                    } else {
+                        /* Planar: simplified — only handles chunky well */
+                        int64_t pixel_off = in_row * row_stride
+                                          + in_col * bytes_per_sample;
+                        for (int b = 0; b < nb; b++) {
+                            double val = extract_pixel(blk, pixel_off,
+                                bps, r->sample_format, &r->io);
+                            if (r->has_nodata && val == r->nodata) val = NAN;
+                            out_bands[b][out_idx] = val;
+                        }
                     }
                 }
             }
-        }
 
-        free(strip_data);
+            free(blk);
+        }
     }
 
     return 0;
@@ -681,14 +926,14 @@ int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
 /*  Point extraction: sample band values at (x,y) coordinates          */
 /* ================================================================== */
 
-/* Comparison for sorting point indices by strip index */
-typedef struct { int64_t idx; int64_t strip; int64_t col; int64_t row; } PointLoc;
+/* Comparison for sorting point indices by block index */
+typedef struct { int64_t idx; int64_t block; int64_t col; int64_t row; } PointLoc;
 
 static int pointloc_cmp(const void *a, const void *b) {
     const PointLoc *pa = (const PointLoc *)a;
     const PointLoc *pb = (const PointLoc *)b;
-    if (pa->strip < pb->strip) return -1;
-    if (pa->strip > pb->strip) return  1;
+    if (pa->block < pb->block) return -1;
+    if (pa->block > pb->block) return  1;
     return 0;
 }
 
@@ -701,7 +946,8 @@ int tiff_reader_extract_points(TiffReader *r, int64_t n_points,
     int bps = r->bits_per_sample;
     int bytes_per_sample = bps / 8;
     int pixel_bytes = bytes_per_sample * nb;
-    int rps = r->rows_per_strip;
+    int64_t bw = r->block_width;
+    int64_t bh = r->block_height;
 
     /* Precompute inverse affine geotransform.
        Forward:  x = gt[0] + (c+0.5)*gt[1] + (r+0.5)*gt[2]
@@ -745,78 +991,75 @@ int tiff_reader_extract_points(TiffReader *r, int64_t n_points,
         if (col < 0 || col >= W || row < 0 || row >= H)
             continue; /* out of bounds — already NaN */
 
+        int64_t bx = col / bw;
+        int64_t by = row / bh;
         locs[n_valid].idx   = i;
         locs[n_valid].col   = col;
         locs[n_valid].row   = row;
-        locs[n_valid].strip = row / rps;
+        locs[n_valid].block = by * r->n_blocks_x + bx;
         n_valid++;
     }
 
-    /* Sort by strip for sequential I/O */
+    /* Sort by block for sequential I/O */
     if (n_valid > 1)
         qsort(locs, (size_t)n_valid, sizeof(PointLoc), pointloc_cmp);
 
-    /* Process points strip by strip */
+    /* Process points block by block */
     int64_t pi = 0;
     while (pi < n_valid) {
-        int64_t cur_strip = locs[pi].strip;
-
-        /* Read this strip */
-        int64_t strip_row_start = cur_strip * rps;
-        int64_t strip_rows = rps;
-        if (strip_row_start + strip_rows > H)
-            strip_rows = H - strip_row_start;
-
-        int64_t expected_bytes;
-        if (r->planar_config == 1)
-            expected_bytes = strip_rows * W * pixel_bytes;
-        else
-            expected_bytes = strip_rows * W * bytes_per_sample;
+        int64_t cur_block = locs[pi].block;
+        int64_t bx = cur_block % r->n_blocks_x;
+        int64_t by = cur_block / r->n_blocks_x;
+        int64_t blk_col0 = bx * bw;
+        int64_t blk_row0 = by * bh;
 
         int64_t actual_len = 0;
-        uint8_t *strip_data = read_strip(r, cur_strip, expected_bytes, &actual_len);
-        if (!strip_data) {
-            snprintf(r->errmsg, 256, "failed to read strip %lld",
-                     (long long)cur_strip);
+        uint8_t *blk = read_block(r, cur_block, &actual_len);
+        if (!blk) {
+            snprintf(r->errmsg, 256, "failed to read block %lld",
+                     (long long)cur_block);
             free(locs);
             return -1;
         }
 
-        /* Extract pixel values for all points in this strip */
+        int64_t row_stride = (r->planar_config == 1)
+                              ? bw * pixel_bytes
+                              : bw * bytes_per_sample;
+
         if (r->planar_config == 1) {
-            while (pi < n_valid && locs[pi].strip == cur_strip) {
+            while (pi < n_valid && locs[pi].block == cur_block) {
                 int64_t oi = locs[pi].idx;
-                int64_t col = locs[pi].col;
-                int64_t sr = locs[pi].row - strip_row_start;
-                int64_t pixel_off = (sr * W + col) * pixel_bytes;
+                int64_t in_col = locs[pi].col - blk_col0;
+                int64_t in_row = locs[pi].row - blk_row0;
+                int64_t pixel_off = in_row * row_stride
+                                  + in_col * pixel_bytes;
                 for (int b = 0; b < nb; b++) {
-                    double val = extract_pixel(strip_data,
+                    double val = extract_pixel(blk,
                         pixel_off + b * bytes_per_sample,
                         bps, r->sample_format, &r->io);
-                    if (r->has_nodata && val == r->nodata)
-                        val = NAN;
+                    if (r->has_nodata && val == r->nodata) val = NAN;
                     out_bands[b][oi] = val;
                 }
                 pi++;
             }
         } else {
-            while (pi < n_valid && locs[pi].strip == cur_strip) {
+            while (pi < n_valid && locs[pi].block == cur_block) {
                 int64_t oi = locs[pi].idx;
-                int64_t col = locs[pi].col;
-                int64_t sr = locs[pi].row - strip_row_start;
+                int64_t in_col = locs[pi].col - blk_col0;
+                int64_t in_row = locs[pi].row - blk_row0;
+                int64_t pixel_off = in_row * row_stride
+                                  + in_col * bytes_per_sample;
                 for (int b = 0; b < nb; b++) {
-                    int64_t pixel_off = (sr * W + col) * bytes_per_sample;
-                    double val = extract_pixel(strip_data, pixel_off,
+                    double val = extract_pixel(blk, pixel_off,
                         bps, r->sample_format, &r->io);
-                    if (r->has_nodata && val == r->nodata)
-                        val = NAN;
+                    if (r->has_nodata && val == r->nodata) val = NAN;
                     out_bands[b][oi] = val;
                 }
                 pi++;
             }
         }
 
-        free(strip_data);
+        free(blk);
     }
 
     free(locs);
@@ -826,9 +1069,10 @@ int tiff_reader_extract_points(TiffReader *r, int64_t n_points,
 void tiff_reader_close(TiffReader *r) {
     if (!r) return;
     if (r->io.fp) fclose(r->io.fp);
-    free(r->strip_offsets);
-    free(r->strip_byte_counts);
+    free(r->block_offsets);
+    free(r->block_byte_counts);
     free(r->metadata);
+    free(r->crs_citation);
     free(r);
 }
 
@@ -870,6 +1114,14 @@ struct TiffWriter {
     int64_t   strips_written;
 
     char    *metadata;         /* GDAL_METADATA XML (tag 42112), or NULL */
+
+    /* CRS to embed via GeoKey directory. Caller picks one of:
+         epsg_geographic > 0   → GeographicTypeGeoKey (2048)
+         epsg_projected  > 0   → ProjectedCSTypeGeoKey (3072)
+       If both are zero, no GeoKey directory is written. */
+    int32_t  epsg_geographic;
+    int32_t  epsg_projected;
+    char    *crs_citation;     /* optional GeoAsciiParams citation */
 
     char errmsg[256];
 };
@@ -939,6 +1191,14 @@ int tiff_writer_open(const char *path, TiffWriter **out,
 void tiff_writer_set_metadata(TiffWriter *w, const char *xml) {
     free(w->metadata);
     w->metadata = xml ? strdup(xml) : NULL;
+}
+
+void tiff_writer_set_crs(TiffWriter *w, int32_t epsg_geographic,
+                         int32_t epsg_projected, const char *citation) {
+    w->epsg_geographic = epsg_geographic > 0 ? epsg_geographic : 0;
+    w->epsg_projected  = epsg_projected  > 0 ? epsg_projected  : 0;
+    free(w->crs_citation);
+    w->crs_citation = citation ? strdup(citation) : NULL;
 }
 
 /* Write a single pixel sample to raw buffer at given offset */
@@ -1181,6 +1441,91 @@ int tiff_writer_finish(TiffWriter *w) {
         fwrite(tp, sizeof(double), 6, w->fp);
     }
 
+    /* Build GeoKey directory + GeoAsciiParams blob if a CRS was set.
+       Layout (GeoTIFF spec §7):
+         dir[0..3] = (KeyDirectoryVersion=1, KeyRevision=1, MinorRevision=0,
+                      NumberOfKeys)
+         dir[4 + 4*i ..] = (KeyID, TIFFTagLocation, Count, Value_Offset)
+       Inline keys use TIFFTagLocation=0 and Value_Offset=value.
+       ASCII keys point into GeoAsciiParams (TIFFTagLocation=34737), with
+       Count = byte length and Value_Offset = byte offset; each ASCII run
+       MUST end with '|' which the reader treats as a string terminator. */
+    int      have_crs       = (w->epsg_geographic > 0 || w->epsg_projected > 0);
+    int      n_geo_keys     = 0;
+    uint16_t geo_keys[5 * 4];     /* up to 5 keys: 3 fixed + EPSG + citation */
+    uint32_t off_geo_dir    = 0;
+    uint32_t off_geo_ascii  = 0;
+    int      geo_dir_count  = 0;
+    int      geo_ascii_len  = 0;
+
+    if (have_crs) {
+        int is_projected = (w->epsg_projected > 0);
+
+        /* GTModelTypeGeoKey (1024): 1 = projected, 2 = geographic */
+        geo_keys[n_geo_keys * 4 + 0] = 1024;
+        geo_keys[n_geo_keys * 4 + 1] = 0;
+        geo_keys[n_geo_keys * 4 + 2] = 1;
+        geo_keys[n_geo_keys * 4 + 3] = (uint16_t)(is_projected ? 1 : 2);
+        n_geo_keys++;
+
+        /* GTRasterTypeGeoKey (1025): 1 = RasterPixelIsArea (TIFF default) */
+        geo_keys[n_geo_keys * 4 + 0] = 1025;
+        geo_keys[n_geo_keys * 4 + 1] = 0;
+        geo_keys[n_geo_keys * 4 + 2] = 1;
+        geo_keys[n_geo_keys * 4 + 3] = 1;
+        n_geo_keys++;
+
+        if (is_projected) {
+            /* ProjectedCSTypeGeoKey (3072) */
+            geo_keys[n_geo_keys * 4 + 0] = 3072;
+            geo_keys[n_geo_keys * 4 + 1] = 0;
+            geo_keys[n_geo_keys * 4 + 2] = 1;
+            geo_keys[n_geo_keys * 4 + 3] = (uint16_t)w->epsg_projected;
+            n_geo_keys++;
+        } else {
+            /* GeographicTypeGeoKey (2048) */
+            geo_keys[n_geo_keys * 4 + 0] = 2048;
+            geo_keys[n_geo_keys * 4 + 1] = 0;
+            geo_keys[n_geo_keys * 4 + 2] = 1;
+            geo_keys[n_geo_keys * 4 + 3] = (uint16_t)w->epsg_geographic;
+            n_geo_keys++;
+        }
+
+        /* Optional citation: PCSCitationGeoKey (3073) for projected,
+           GeogCitationGeoKey (2049) for geographic. */
+        if (w->crs_citation && w->crs_citation[0]) {
+            int cit_raw = (int)strlen(w->crs_citation);
+            /* Append a single '|' terminator (GeoTIFF convention). */
+            geo_ascii_len = cit_raw + 1;
+            off_geo_ascii = (uint32_t)ftell(w->fp);
+            fwrite(w->crs_citation, 1, (size_t)cit_raw, w->fp);
+            uint8_t bar = (uint8_t)'|';
+            fwrite(&bar, 1, 1, w->fp);
+
+            geo_keys[n_geo_keys * 4 + 0] = (uint16_t)(is_projected ? 3073 : 2049);
+            geo_keys[n_geo_keys * 4 + 1] = TAG_GEO_ASCII_PARAMS;
+            geo_keys[n_geo_keys * 4 + 2] = (uint16_t)geo_ascii_len;
+            geo_keys[n_geo_keys * 4 + 3] = 0;  /* offset into GeoAsciiParams */
+            n_geo_keys++;
+        }
+
+        /* Write GeoKeyDirectory: 4 SHORTs of header + 4*n_geo_keys SHORTs.
+           Header.NumberOfKeys = n_geo_keys (does NOT include the header). */
+        geo_dir_count = 4 + 4 * n_geo_keys;
+        off_geo_dir = (uint32_t)ftell(w->fp);
+        uint8_t hdr_buf[8];
+        write_le16(hdr_buf + 0, 1);                   /* KeyDirectoryVersion */
+        write_le16(hdr_buf + 2, 1);                   /* KeyRevision */
+        write_le16(hdr_buf + 4, 0);                   /* MinorRevision */
+        write_le16(hdr_buf + 6, (uint16_t)n_geo_keys);
+        fwrite(hdr_buf, 1, 8, w->fp);
+        for (int i = 0; i < n_geo_keys * 4; i++) {
+            uint8_t buf[2];
+            write_le16(buf, geo_keys[i]);
+            fwrite(buf, 1, 2, w->fp);
+        }
+    }
+
     /* GDAL_METADATA string (tag 42112) */
     uint32_t off_metadata = 0;
     int metadata_len = 0;
@@ -1206,6 +1551,10 @@ int tiff_writer_finish(TiffWriter *w) {
                         StripOffsets, SPP, RowsPerStrip, StripByteCounts,
                         PlanarConfig, SampleFormat, ModelPixelScale */
     n_tags++; /* ModelTiepoint */
+    if (have_crs) {
+        n_tags++; /* GeoKeyDirectory */
+        if (geo_ascii_len > 0) n_tags++; /* GeoAsciiParams */
+    }
     if (w->metadata) n_tags++;
     if (w->has_nodata) n_tags++;
 
@@ -1303,6 +1652,20 @@ int tiff_writer_finish(TiffWriter *w) {
     write_ifd_entry(ent, TAG_MODEL_TIEPOINT, TIFF_DOUBLE, 6, off_tiepoint);
     fwrite(ent, 1, 12, w->fp);
 
+    /* 34735: GeoKeyDirectory (only when a CRS was set) */
+    if (have_crs) {
+        write_ifd_entry(ent, TAG_GEO_KEY_DIRECTORY, TIFF_SHORT,
+                         (uint32_t)geo_dir_count, off_geo_dir);
+        fwrite(ent, 1, 12, w->fp);
+
+        /* 34737: GeoAsciiParams (only when a citation was attached) */
+        if (geo_ascii_len > 0) {
+            write_ifd_entry(ent, TAG_GEO_ASCII_PARAMS, TIFF_ASCII,
+                             (uint32_t)geo_ascii_len, off_geo_ascii);
+            fwrite(ent, 1, 12, w->fp);
+        }
+    }
+
     /* 42112: GDAL_METADATA */
     if (w->metadata) {
         if (metadata_len <= 4) {
@@ -1355,5 +1718,6 @@ void tiff_writer_close(TiffWriter *w) {
     free(w->strip_offsets);
     free(w->strip_byte_counts);
     free(w->metadata);
+    free(w->crs_citation);
     free(w);
 }

@@ -248,3 +248,142 @@ tiff_metadata <- function(path) {
   path <- normalizePath(path, mustWork = TRUE)
   .Call(C_tiff_read_metadata, path)
 }
+
+#' Read per-band names from a GeoTIFF
+#'
+#' Returns the band names embedded in the file's GDAL_METADATA XML
+#' (TIFF tag 42112). GDAL writes per-band names as
+#' `<Item name="DESCRIPTION" sample="N" role="description">...</Item>` entries,
+#' where `sample` is the 0-based band index. Bands without a name in the XML
+#' are reported as `NA`. Files with no GDAL_METADATA tag at all return a
+#' length-`nbands` vector of `NA_character_`.
+#'
+#' This is a small, dependency-free scanner intended for the common case
+#' (`terra::names(r) <- ...` and similar). For arbitrary XML, parse the raw
+#' string from [tiff_metadata()] yourself.
+#'
+#' @param path Path to a GeoTIFF file.
+#' @return A character vector of length `nbands`. Element `i` is the name
+#'   of band `i` (or `NA_character_` if the file does not name it).
+#'
+#' @examples
+#' \donttest{
+#' f <- tempfile(fileext = ".tif")
+#' df <- data.frame(x = rep(1:2, 2), y = rep(1:2, each = 2),
+#'                  band1 = as.double(1:4), band2 = as.double(5:8))
+#' xml <- paste0(
+#'   "<GDALMetadata>",
+#'   "<Item name=\"DESCRIPTION\" sample=\"0\" role=\"description\">temperature</Item>",
+#'   "<Item name=\"DESCRIPTION\" sample=\"1\" role=\"description\">humidity</Item>",
+#'   "</GDALMetadata>")
+#' write_tiff(df, f, metadata = xml)
+#' tiff_band_names(f)
+#' unlink(f)
+#' }
+#'
+#' @export
+tiff_band_names <- function(path) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+
+  # We need nbands to size the output. Open via tbl_tiff() to reuse the
+  # existing C scan node.
+  node <- tbl_tiff(path)
+  nb <- node$.tiff_meta$nbands
+  out <- rep(NA_character_, nb)
+
+  meta <- tiff_metadata(path)
+  if (is.na(meta) || !nzchar(meta)) return(out)
+
+  items <- .parse_gdal_metadata_items(meta)
+  if (nrow(items) == 0) return(out)
+
+  desc <- items[items$name == "DESCRIPTION" & !is.na(items$sample), ,
+                drop = FALSE]
+  if (nrow(desc) == 0) return(out)
+
+  # sample is 0-based; clamp out-of-range entries silently.
+  ok <- desc$sample >= 0 & desc$sample < nb
+  for (i in which(ok)) out[desc$sample[i] + 1L] <- desc$value[i]
+  out
+}
+
+# Internal: scan a GDAL_METADATA XML blob for <Item ...>value</Item> entries.
+# Returns a data.frame with columns name (chr), sample (int, NA if absent),
+# role (chr, NA if absent), value (chr). Built for the well-constrained
+# format GDAL emits — not a general XML parser.
+.parse_gdal_metadata_items <- function(xml) {
+  m <- gregexpr("<Item\\b([^>]*)>(.*?)</Item>", xml, perl = TRUE)[[1]]
+  if (length(m) == 1 && m == -1)
+    return(data.frame(name = character(0), sample = integer(0),
+                      role = character(0), value = character(0),
+                      stringsAsFactors = FALSE))
+
+  starts <- as.integer(m)
+  lens   <- attr(m, "match.length")
+  cap_starts <- attr(m, "capture.start")
+  cap_lens   <- attr(m, "capture.length")
+
+  n <- length(starts)
+  attrs_chr  <- substring(xml, cap_starts[, 1], cap_starts[, 1] + cap_lens[, 1] - 1L)
+  values_chr <- substring(xml, cap_starts[, 2], cap_starts[, 2] + cap_lens[, 2] - 1L)
+
+  get_attr <- function(s, key) {
+    pat <- paste0(key, "\\s*=\\s*\"([^\"]*)\"")
+    m2  <- regmatches(s, regexec(pat, s, perl = TRUE))[[1]]
+    if (length(m2) == 2) m2[2] else NA_character_
+  }
+
+  name   <- vapply(attrs_chr, get_attr, character(1), key = "name")
+  sample <- vapply(attrs_chr, function(s) {
+    v <- get_attr(s, "sample")
+    if (is.na(v)) NA_integer_ else suppressWarnings(as.integer(v))
+  }, integer(1))
+  role   <- vapply(attrs_chr, get_attr, character(1), key = "role")
+
+  data.frame(name   = unname(name),
+             sample = unname(sample),
+             role   = unname(role),
+             value  = unname(.unescape_xml(values_chr)),
+             stringsAsFactors = FALSE)
+}
+
+.unescape_xml <- function(x) {
+  x <- gsub("&lt;",   "<",  x, fixed = TRUE)
+  x <- gsub("&gt;",   ">",  x, fixed = TRUE)
+  x <- gsub("&quot;", "\"", x, fixed = TRUE)
+  x <- gsub("&apos;", "'",  x, fixed = TRUE)
+  gsub("&amp;",  "&",  x, fixed = TRUE)
+}
+
+#' Read CRS metadata from a GeoTIFF
+#'
+#' Returns the spatial reference system embedded in a GeoTIFF, parsed from
+#' the GeoKey directory (TIFF tag 34735). The projected CRS EPSG
+#' (`PCSTypeGeoKey` 3072) is preferred over the geographic CRS EPSG
+#' (`GeographicTypeGeoKey` 2048). Citation strings are read from
+#' `GeoAsciiParams` (tag 34737) with priority PCS > GeoTIFF > geographic.
+#'
+#' Files written without a GeoKey directory return `NA` for both fields.
+#'
+#' @param path Path to a GeoTIFF file.
+#' @return A list with elements `epsg` (integer or `NA_integer_`) and
+#'   `citation` (character or `NA_character_`).
+#'
+#' @examples
+#' \donttest{
+#' f <- tempfile(fileext = ".tif")
+#' df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = as.double(1:4))
+#' write_tiff(df, f)
+#' tiff_crs(f)  # epsg = NA, citation = NA — vectra writer omits GeoKeys
+#' unlink(f)
+#' }
+#'
+#' @export
+tiff_crs <- function(path) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  .Call(C_tiff_read_crs, path)
+}

@@ -10,6 +10,7 @@ write_tiff(
   compress = FALSE,
   pixel_type = "float64",
   metadata = NULL,
+  crs = NULL,
   ...
 )
 }
@@ -27,6 +28,13 @@ One of \code{"float64"} (default), \code{"float32"}, \code{"int16"}, \code{"int3
 \item{metadata}{Optional character string of GDAL_METADATA XML to embed
 in the file (tag 42112). Use \code{\link[=tiff_metadata]{tiff_metadata()}} to read it back.}
 
+\item{crs}{Optional CRS to embed as a GeoKey directory (TIFF tag 34735).
+Accepts an integer EPSG code, an \code{"EPSG:xxxx"} string, or a list with
+named fields \code{epsg}, \code{geographic} (\code{TRUE}/\code{FALSE}), and optionally
+\code{citation}. Codes that are not auto-classified as projected/geographic
+default to projected; pass \code{geographic = TRUE} to override.
+Use \code{\link[=tiff_crs]{tiff_crs()}} to read it back.}
+
 \item{...}{Reserved for future use.}
 }
 \value{
@@ -40,10 +48,11 @@ inferred from the x/y coordinate arrays. Missing pixels are written as NaN
 }
 \examples{
 \donttest{
-# Write as int16 with DEFLATE compression
+# Write as int16 with DEFLATE compression and an EPSG:4326 GeoKey
 df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
 f <- tempfile(fileext = ".tif")
-write_tiff(df, f, compress = TRUE, pixel_type = "int16")
+write_tiff(df, f, compress = TRUE, pixel_type = "int16", crs = 4326L)
+tiff_crs(f)
 unlink(f)
 }
 

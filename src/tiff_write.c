@@ -3,6 +3,7 @@
 #include "array.h"
 #include "batch.h"
 #include "error.h"
+#include "grow.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -37,11 +38,8 @@ static void dv_init(DblVec *v) {
 }
 
 static void dv_push(DblVec *v, double val) {
-    if (v->len >= v->cap) {
-        v->cap *= 2;
-        v->data = (double *)realloc(v->data, (size_t)v->cap * sizeof(double));
-        if (!v->data) vectra_error("realloc failed for DblVec");
-    }
+    vec_grow_to((void **)&v->data, &v->cap, v->len + 1, sizeof(double),
+                "DblVec");
     v->data[v->len++] = val;
 }
 
@@ -95,11 +93,14 @@ static double find_resolution(const double *uniq, int64_t n) {
 /* ------------------------------------------------------------------ */
 
 void tiff_write_node(VecNode *node, const char *path, int use_deflate) {
-    tiff_write_node_typed(node, path, use_deflate, TIFF_PIXEL_FLOAT64, NULL);
+    tiff_write_node_typed(node, path, use_deflate, TIFF_PIXEL_FLOAT64, NULL,
+                          0, 0, NULL);
 }
 
 void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
-                           int pixel_type, const char *metadata_xml) {
+                           int pixel_type, const char *metadata_xml,
+                           int epsg_geographic, int epsg_projected,
+                           const char *crs_citation) {
     const VecSchema *schema = &node->output_schema;
     int n_cols = schema->n_cols;
 
@@ -227,6 +228,10 @@ void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
 
     if (metadata_xml)
         tiff_writer_set_metadata(writer, metadata_xml);
+
+    if (epsg_geographic > 0 || epsg_projected > 0 || crs_citation)
+        tiff_writer_set_crs(writer, epsg_geographic, epsg_projected,
+                            crs_citation);
 
     /* Write all rows at once */
     if (tiff_writer_write_rows(writer, 0, height,

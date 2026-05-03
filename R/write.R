@@ -117,22 +117,29 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #'   `"uint8"`, or `"uint16"`.
 #' @param metadata Optional character string of GDAL_METADATA XML to embed
 #'   in the file (tag 42112). Use [tiff_metadata()] to read it back.
+#' @param crs Optional CRS to embed as a GeoKey directory (TIFF tag 34735).
+#'   Accepts an integer EPSG code, an `"EPSG:xxxx"` string, or a list with
+#'   named fields `epsg`, `geographic` (`TRUE`/`FALSE`), and optionally
+#'   `citation`. Codes that are not auto-classified as projected/geographic
+#'   default to projected; pass `geographic = TRUE` to override.
+#'   Use [tiff_crs()] to read it back.
 #' @param ... Reserved for future use.
 #'
 #' @return Invisible `NULL`.
 #'
 #' @examples
 #' \donttest{
-#' # Write as int16 with DEFLATE compression
+#' # Write as int16 with DEFLATE compression and an EPSG:4326 GeoKey
 #' df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
 #' f <- tempfile(fileext = ".tif")
-#' write_tiff(df, f, compress = TRUE, pixel_type = "int16")
+#' write_tiff(df, f, compress = TRUE, pixel_type = "int16", crs = 4326L)
+#' tiff_crs(f)
 #' unlink(f)
 #' }
 #'
 #' @export
 write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
-                       metadata = NULL, ...) {
+                       metadata = NULL, crs = NULL, ...) {
   UseMethod("write_tiff")
 }
 
@@ -141,10 +148,57 @@ write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
   uint8 = 4L, uint16 = 5L
 )
 
+# Translate a user-supplied `crs` argument into (epsg_geographic,
+# epsg_projected, citation). The C side requires us to commit each EPSG to
+# exactly one slot. We classify with a small table covering the common
+# geographic codes (4326 WGS84, 4269 NAD83, the EPSG:42xx historical block
+# and EPSG:4xxx geographic block); everything else is treated as projected,
+# matching the behavior most users want for UTM/Web Mercator/national grids.
+.crs_is_geographic_code <- function(epsg) {
+  if (is.na(epsg)) return(FALSE)
+  # EPSG geographic 2D CRS block is roughly 4001..4999, with a few outliers
+  # in 4xxxx that we don't try to enumerate.
+  epsg >= 4001L && epsg <= 4999L
+}
+
+.parse_crs <- function(crs) {
+  if (is.null(crs)) return(list(epsg_g = 0L, epsg_p = 0L, cit = NULL))
+
+  cit <- NULL
+  geographic <- NULL
+  epsg <- NA_integer_
+
+  if (is.list(crs)) {
+    if (!is.null(crs$epsg))      epsg <- as.integer(crs$epsg)
+    if (!is.null(crs$citation))  cit  <- as.character(crs$citation)
+    if (!is.null(crs$geographic)) geographic <- isTRUE(crs$geographic)
+  } else if (is.character(crs) && length(crs) == 1) {
+    m <- regmatches(crs, regexec("^EPSG:(\\d+)$", crs, ignore.case = TRUE))[[1]]
+    if (length(m) == 2) epsg <- as.integer(m[2])
+    else stop("crs string must look like 'EPSG:xxxx', got '", crs, "'")
+  } else if (is.numeric(crs) && length(crs) == 1) {
+    epsg <- as.integer(crs)
+  } else {
+    stop("crs must be NULL, an integer EPSG, an 'EPSG:xxxx' string, ",
+         "or a list with $epsg")
+  }
+
+  if (is.na(epsg) || epsg <= 0)
+    stop("crs needs a positive integer EPSG code")
+
+  if (is.null(geographic))
+    geographic <- .crs_is_geographic_code(epsg)
+
+  if (geographic)
+    list(epsg_g = epsg, epsg_p = 0L, cit = cit)
+  else
+    list(epsg_g = 0L, epsg_p = epsg, cit = cit)
+}
+
 #' @export
 write_tiff.vectra_node <- function(x, path, compress = FALSE,
                                    pixel_type = "float64",
-                                   metadata = NULL, ...) {
+                                   metadata = NULL, crs = NULL, ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
 
@@ -156,17 +210,20 @@ write_tiff.vectra_node <- function(x, path, compress = FALSE,
   if (!is.null(metadata) && (!is.character(metadata) || length(metadata) != 1))
     stop("metadata must be a single character string or NULL")
 
+  cs <- .parse_crs(crs)
+
   # Always use the typed path — it handles all pixel types including float64
-  .Call(C_write_tiff_typed, x$.node, path, as.logical(compress), pt, metadata)
+  .Call(C_write_tiff_typed, x$.node, path, as.logical(compress), pt, metadata,
+        cs$epsg_g, cs$epsg_p, cs$cit)
   invisible(NULL)
 }
 
 #' @export
 write_tiff.data.frame <- function(x, path, compress = FALSE,
                                   pixel_type = "float64",
-                                  metadata = NULL, ...) {
+                                  metadata = NULL, crs = NULL, ...) {
   write_tiff.vectra_node(df_to_node(x), path, compress, pixel_type,
-                         metadata, ...)
+                         metadata, crs, ...)
 }
 
 #' Write data to a .vtr file

@@ -62,12 +62,17 @@ typedef struct {
     int use_deflate;
     int pixel_type;
     const char *metadata_xml;
+    int epsg_geographic;
+    int epsg_projected;
+    const char *crs_citation;
 } TiffTypedCtx;
 
 static void tiff_typed_writer(VecNode *node, const char *path, void *ctx) {
     TiffTypedCtx *tc = (TiffTypedCtx *)ctx;
     tiff_write_node_typed(node, path, tc->use_deflate, tc->pixel_type,
-                          tc->metadata_xml);
+                          tc->metadata_xml,
+                          tc->epsg_geographic, tc->epsg_projected,
+                          tc->crs_citation);
 }
 
 typedef struct {
@@ -472,12 +477,22 @@ SEXP C_tiff_extract_points(SEXP path_sexp, SEXP x_sexp, SEXP y_sexp) {
 
 SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path_sexp,
                         SEXP compress_sexp, SEXP pixel_type_sexp,
-                        SEXP metadata_sexp) {
+                        SEXP metadata_sexp,
+                        SEXP epsg_geog_sexp, SEXP epsg_proj_sexp,
+                        SEXP crs_citation_sexp) {
     TiffTypedCtx ctx;
     ctx.use_deflate = Rf_asLogical(compress_sexp);
     ctx.pixel_type = Rf_asInteger(pixel_type_sexp);
     ctx.metadata_xml = (metadata_sexp == R_NilValue)
                         ? NULL : CHAR(STRING_ELT(metadata_sexp, 0));
+    ctx.epsg_geographic = (epsg_geog_sexp == R_NilValue)
+                          ? 0 : Rf_asInteger(epsg_geog_sexp);
+    ctx.epsg_projected  = (epsg_proj_sexp == R_NilValue)
+                          ? 0 : Rf_asInteger(epsg_proj_sexp);
+    if (ctx.epsg_geographic == NA_INTEGER) ctx.epsg_geographic = 0;
+    if (ctx.epsg_projected  == NA_INTEGER) ctx.epsg_projected  = 0;
+    ctx.crs_citation = (crs_citation_sexp == R_NilValue)
+                        ? NULL : CHAR(STRING_ELT(crs_citation_sexp, 0));
     return write_node_dispatch(node_xptr, path_sexp, tiff_typed_writer, &ctx);
 }
 
@@ -515,14 +530,16 @@ SEXP C_tiff_scan_meta(SEXP node_xptr) {
     TiffScanNode *sn = (TiffScanNode *)node;
     TiffReader *r = sn->reader;
 
-    SEXP result = PROTECT(Rf_allocVector(VECSXP, 5));
-    SEXP names = PROTECT(Rf_allocVector(STRSXP, 5));
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 7));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 7));
 
     SET_STRING_ELT(names, 0, Rf_mkChar("width"));
     SET_STRING_ELT(names, 1, Rf_mkChar("height"));
     SET_STRING_ELT(names, 2, Rf_mkChar("nbands"));
     SET_STRING_ELT(names, 3, Rf_mkChar("gt"));
     SET_STRING_ELT(names, 4, Rf_mkChar("nodata"));
+    SET_STRING_ELT(names, 5, Rf_mkChar("epsg"));
+    SET_STRING_ELT(names, 6, Rf_mkChar("crs_citation"));
 
     SET_VECTOR_ELT(result, 0, Rf_ScalarReal((double)tiff_reader_width(r)));
     SET_VECTOR_ELT(result, 1, Rf_ScalarReal((double)tiff_reader_height(r)));
@@ -538,8 +555,51 @@ SEXP C_tiff_scan_meta(SEXP node_xptr) {
     else
         SET_VECTOR_ELT(result, 4, Rf_ScalarReal(NA_REAL));
 
+    int32_t epsg = tiff_reader_epsg(r);
+    SET_VECTOR_ELT(result, 5,
+        Rf_ScalarInteger(epsg > 0 ? (int)epsg : NA_INTEGER));
+
+    const char *cit = tiff_reader_crs_citation(r);
+    if (cit)
+        SET_VECTOR_ELT(result, 6, Rf_mkString(cit));
+    else
+        SET_VECTOR_ELT(result, 6, Rf_ScalarString(NA_STRING));
+
     Rf_setAttrib(result, R_NamesSymbol, names);
     UNPROTECT(3);
+    return result;
+}
+
+/* --- C_tiff_read_crs --- */
+
+SEXP C_tiff_read_crs(SEXP path_sexp) {
+    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
+
+    TiffReader *reader = NULL;
+    if (tiff_reader_open(fpath, &reader) != 0) {
+        const char *msg = reader ? tiff_reader_errmsg(reader) : "unknown";
+        tiff_reader_close(reader);
+        vectra_error("cannot open GeoTIFF: %s", msg);
+    }
+
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 2));
+    SEXP names  = PROTECT(Rf_allocVector(STRSXP, 2));
+    SET_STRING_ELT(names, 0, Rf_mkChar("epsg"));
+    SET_STRING_ELT(names, 1, Rf_mkChar("citation"));
+
+    int32_t epsg = tiff_reader_epsg(reader);
+    SET_VECTOR_ELT(result, 0,
+        Rf_ScalarInteger(epsg > 0 ? (int)epsg : NA_INTEGER));
+
+    const char *cit = tiff_reader_crs_citation(reader);
+    if (cit)
+        SET_VECTOR_ELT(result, 1, Rf_mkString(cit));
+    else
+        SET_VECTOR_ELT(result, 1, Rf_ScalarString(NA_STRING));
+
+    Rf_setAttrib(result, R_NamesSymbol, names);
+    tiff_reader_close(reader);
+    UNPROTECT(2);
     return result;
 }
 

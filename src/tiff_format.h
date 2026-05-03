@@ -62,6 +62,15 @@ int tiff_reader_extract_points(TiffReader *r, int64_t n_points,
    Returned pointer is owned by the reader — do not free. */
 const char *tiff_reader_metadata(TiffReader *r);
 
+/* CRS metadata from the GeoKey directory (TIFF tags 34735/34736/34737).
+   tiff_reader_epsg() returns the projected CRS EPSG (key 3072) if present,
+   else the geographic CRS EPSG (key 2048), else 0 if no GeoKey directory.
+   tiff_reader_crs_citation() returns the PCS / GT / Geog citation string
+   (keys 3073 / 1026 / 2049, in that priority), or NULL if absent.
+   Returned pointer is owned by the reader — do not free. */
+int32_t     tiff_reader_epsg(TiffReader *r);
+const char *tiff_reader_crs_citation(TiffReader *r);
+
 const char *tiff_reader_errmsg(TiffReader *r);
 void tiff_reader_close(TiffReader *r);
 
@@ -84,6 +93,17 @@ int tiff_writer_open(const char *path, TiffWriter **out,
 /* Attach GDAL_METADATA XML to be written into tag 42112.
    Must be called before tiff_writer_finish(). */
 void tiff_writer_set_metadata(TiffWriter *w, const char *xml);
+
+/* Embed CRS metadata as a GeoKey directory (TIFF tag 34735).
+   Pass exactly one positive EPSG (the other should be 0):
+     epsg_geographic > 0 → GeographicTypeGeoKey  (geographic CRS)
+     epsg_projected  > 0 → ProjectedCSTypeGeoKey (projected CRS)
+   When both are 0 the writer emits no GeoKey directory.
+   citation may be NULL; when non-NULL it is written into GeoAsciiParams
+   (tag 34737) and referenced by PCSCitationGeoKey or GeogCitationGeoKey.
+   Must be called before tiff_writer_finish(). */
+void tiff_writer_set_crs(TiffWriter *w, int32_t epsg_geographic,
+                         int32_t epsg_projected, const char *citation);
 
 /* Write a block of rows [row_start, row_start+n_rows).
    bands[b] = array of width * n_rows doubles, row-major.

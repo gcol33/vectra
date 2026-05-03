@@ -10,8 +10,11 @@
 void tiff_write_node(VecNode *node, const char *path, int use_deflate);
 
 /* Write with explicit pixel type (TIFF_PIXEL_*) and optional GDAL_METADATA.
-   metadata_xml may be NULL. */
+   metadata_xml may be NULL. epsg_geographic / epsg_projected are passed
+   to tiff_writer_set_crs (pass 0 for either to omit). citation may be NULL. */
 void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
-                           int pixel_type, const char *metadata_xml);
+                           int pixel_type, const char *metadata_xml,
+                           int epsg_geographic, int epsg_projected,
+                           const char *crs_citation);
 
 #endif /* VECTRA_TIFF_WRITE_H */
