@@ -1,0 +1,197 @@
+# Phase 1 round-trip tests for vec_write_raster / vec_open_raster /
+# vec_read_window / vec_extract_points. These exercise:
+#   - lossless float and integer round-trips
+#   - tile boundaries (raster larger than tile_size, edge tiles)
+#   - nodata handling
+#   - multi-band writes
+#   - geotransform-based point extraction
+#   - terra round-trip when terra is installed (smoke test only — terra is
+#     a Suggests dependency)
+
+make_raster <- function(rows, cols, bands = 1L, fn = function(b, r, c) b * 1000 + r * cols + c) {
+  if (bands == 1L) {
+    m <- matrix(fn(1L, rep(seq_len(rows), times = cols), rep(seq_len(cols), each = rows)),
+                nrow = rows, ncol = cols)
+    return(m)
+  }
+  arr <- array(0, dim = c(rows, cols, bands))
+  for (b in seq_len(bands)) {
+    for (r in seq_len(rows)) {
+      for (cc in seq_len(cols)) {
+        arr[r, cc, b] <- fn(b, r, cc)
+      }
+    }
+  }
+  arr
+}
+
+test_that("f64 single-band round-trip preserves values exactly", {
+  m <- matrix(rnorm(50 * 50), 50, 50)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_raster(m, tmp, dtype = "f64")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+  expect_equal(r$width,  50L)
+  expect_equal(r$height, 50L)
+  expect_equal(r$dtype,  "f64")
+  out <- vec_read_window(r)
+  expect_equal(dim(out), c(50L, 50L))
+  expect_equal(out, m, tolerance = 0)
+})
+
+test_that("f32 round-trip is lossless within float32 representable values", {
+  m <- matrix(seq(-1, 1, length.out = 64 * 64), 64, 64)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f32")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  out <- vec_read_window(r)
+  ## f32 round-trip is lossless against the f32-quantized original.
+  m32 <- matrix(as.numeric(as.single(m)), 64, 64)
+  expect_equal(out, m32, tolerance = 1e-7)
+})
+
+test_that("i16 round-trip is exact", {
+  m <- matrix(sample(-1000:1000, 80 * 80, replace = TRUE), 80, 80)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "i16")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  out <- vec_read_window(r)
+  expect_equal(out, m, tolerance = 0)
+})
+
+test_that("u8 round-trip is exact", {
+  m <- matrix(sample(0:255, 200 * 200, replace = TRUE), 200, 200)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "u8")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  out <- vec_read_window(r)
+  expect_equal(out, m, tolerance = 0)
+})
+
+test_that("raster larger than tile_size with edge tiles round-trips", {
+  ## 600x800 > 512 tile -> 2x2 tile grid with edge tiles 88 wide / 288 tall.
+  m <- matrix(runif(600 * 800), 600, 800)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f32", tile_size = 512L)
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  expect_equal(r$tile_size, 512L)
+  out <- vec_read_window(r)
+  expect_equal(out, matrix(as.numeric(as.single(m)), 600, 800),
+               tolerance = 1e-7)
+})
+
+test_that("partial windows match the corresponding slab of the full raster", {
+  m <- matrix(rnorm(300 * 400), 300, 400)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64", tile_size = 128L)
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+
+  ## Window inside a single tile.
+  win <- vec_read_window(r, rows = c(50, 100), cols = c(70, 120))
+  expect_equal(dim(win), c(51L, 51L))
+  expect_equal(win, m[50:100, 70:120], tolerance = 0)
+
+  ## Window spanning multiple tiles.
+  win2 <- vec_read_window(r, rows = c(100, 200), cols = c(200, 350))
+  expect_equal(dim(win2), c(101L, 151L))
+  expect_equal(win2, m[100:200, 200:350], tolerance = 0)
+})
+
+test_that("nodata pixels become NA on read", {
+  m <- matrix(1:100, 10, 10)
+  m[5, 5] <- -9999L
+  m[8, 3] <- -9999L
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "i32", nodata = -9999)
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  expect_equal(r$nodata, -9999)
+  out <- vec_read_window(r)
+  expect_true(is.na(out[5, 5]))
+  expect_true(is.na(out[8, 3]))
+  expect_equal(out[1, 1], m[1, 1])
+})
+
+test_that("multi-band raster round-trips with band names", {
+  arr <- array(seq_len(40 * 40 * 3) * 0.5, dim = c(40, 40, 3))
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(arr, tmp, dtype = "f32",
+                   band_names = c("red", "green", "blue"))
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  expect_equal(r$n_bands, 3L)
+  expect_equal(r$band_names, c("red", "green", "blue"))
+
+  for (b in 1:3) {
+    out <- vec_read_window(r, band = b)
+    expect_equal(out, matrix(as.numeric(as.single(arr[, , b])), 40, 40),
+                 tolerance = 1e-7,
+                 info = sprintf("band %d", b))
+  }
+})
+
+test_that("vec_extract_points returns pixel-center values via the geotransform", {
+  ## 5 cols x 3 rows raster, extent (0,0)-(5,3); each pixel is 1x1.
+  m <- matrix(1:15, nrow = 3, ncol = 5)   # row-major: row 1 = c(1, 4, 7, 10, 13)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64",
+                   extent = c(0, 0, 5, 3))
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+
+  ## Pixel centers: x = 0.5,1.5,..., y = 0.5,1.5,2.5 (with row 1 at the top).
+  pts <- vec_extract_points(r,
+    x = c(0.5, 4.5, 2.5),
+    y = c(2.5, 0.5, 1.5))   # row 1 (top), row 3 (bottom), row 2 (middle)
+  expect_equal(pts$band1[1], m[1, 1])  # top-left
+  expect_equal(pts$band1[2], m[3, 5])  # bottom-right
+  expect_equal(pts$band1[3], m[2, 3])  # middle
+})
+
+test_that("points outside the raster come back as NA", {
+  m <- matrix(1, 4, 4)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64", extent = c(0, 0, 4, 4))
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  pts <- vec_extract_points(r, x = c(2, -1, 99), y = c(2, 2, 2))
+  expect_equal(pts$band1[1], 1)
+  expect_true(is.na(pts$band1[2]))
+  expect_true(is.na(pts$band1[3]))
+})
+
+test_that("CRS / EPSG round-trips", {
+  m <- matrix(0, 8, 8)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64", epsg = 31287L,
+                   extent = c(0, 0, 8, 8))
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  expect_equal(r$epsg, 31287L)
+})
+
+test_that("terra can ingest pixel values via point extraction (smoke test)", {
+  skip_if_not_installed("terra")
+  ## Build a known raster, write to .vec, sample at known points and
+  ## compare to terra's interpretation of the same matrix at those points.
+  set.seed(1)
+  m <- matrix(rnorm(20 * 30), nrow = 20, ncol = 30)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f32", extent = c(0, 0, 30, 20))
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+
+  tr <- terra::rast(m, extent = terra::ext(0, 30, 0, 20))
+  pts <- data.frame(x = c(1.5, 15.5, 28.5),
+                    y = c(19.5, 10.5, 0.5))
+  ours <- vec_extract_points(r, pts$x, pts$y)$band1
+  theirs <- terra::extract(tr, as.matrix(pts))[, 1]
+  ## Both pipelines should report the f32-quantized matrix at pixel centers.
+  expect_equal(ours, theirs, tolerance = 1e-6)
+})
