@@ -165,11 +165,14 @@ vec_close_raster <- function(r) {
 #'
 #' @param r A `vectra_raster` from `vec_open_raster()`.
 #' @param band Band index (1-based). Default 1.
-#' @param level Overview level (Phase 1: must be 0).
+#' @param level Overview level — 0 = full resolution, 1 = half, 2 =
+#'   quarter, etc. Must be < `r$n_levels` (which is 1 unless
+#'   `vec_build_overviews()` has been run on the file).
 #' @param cols 1-based column range `c(col_min, col_max)`. Inclusive.
-#'   Default `c(1, r$width)`.
+#'   Coordinates are in the chosen level's pixel grid (so at level 1 the
+#'   raster is half as wide). Default `c(1, level_width)`.
 #' @param rows 1-based row range `c(row_min, row_max)`. Inclusive.
-#'   Default `c(1, r$height)`.
+#'   Default `c(1, level_height)`.
 #' @return A numeric matrix with `nrow = row_max - row_min + 1` and
 #'   `ncol = col_max - col_min + 1`. Nodata pixels become `NA`.
 #' @export
@@ -180,8 +183,11 @@ vec_read_window <- function(r,
                             rows = NULL) {
   if (!inherits(r, "vectra_raster"))
     stop("r must be a vectra_raster")
-  if (is.null(cols)) cols <- c(1L, r$width)
-  if (is.null(rows)) rows <- c(1L, r$height)
+  level <- as.integer(level)
+  level_width  <- max(1L, as.integer(ceiling(r$width  / 2^level)))
+  level_height <- max(1L, as.integer(ceiling(r$height / 2^level)))
+  if (is.null(cols)) cols <- c(1L, level_width)
+  if (is.null(rows)) rows <- c(1L, level_height)
   if (length(cols) != 2L || length(rows) != 2L)
     stop("cols and rows must each be length 2")
 
@@ -212,6 +218,46 @@ vec_extract_points <- function(r, x, y) {
         as.numeric(x), as.numeric(y))
 }
 
+#' Build overview pyramids for a .vec raster
+#'
+#' Appends `n_levels - 1` reduced-resolution copies of the raster to the
+#' file. Each level is computed by 2x downsampling the previous level
+#' with the chosen kernel. Reading via `vec_read_window(level = L)`
+#' picks tiles at level L; the file's `n_levels` is updated in place.
+#'
+#' @param path Path to a `.vec` raster file. The file is modified in place.
+#' @param levels Total levels including level 0 (so `levels = 5` adds
+#'   four overviews: levels 1..4). Must be in `[2, 16]`.
+#' @param resampling One of `"nearest"`, `"average"`, `"bilinear"`,
+#'   `"mode"`, `"gauss"`. `"average"` is the right choice for continuous
+#'   rasters; `"mode"` for categorical/land-cover.
+#' @param compression Compression effort for the new tiles. Defaults to
+#'   `"fast"` because overview tiles are usually one-shot writes.
+#' @return Invisible `NULL`.
+#' @export
+vec_build_overviews <- function(path,
+                                levels,
+                                resampling  = c("average", "nearest",
+                                                "bilinear", "mode", "gauss"),
+                                compression = c("fast", "balanced", "max")) {
+  if (!is.character(path) || length(path) != 1L)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  if (!is.numeric(levels) || length(levels) != 1L || levels < 2L)
+    stop("levels must be a single integer >= 2")
+
+  resampling <- match.arg(resampling)
+  compression <- match.arg(compression)
+  comp_code <- switch(compression, fast = 0L, balanced = 1L, max = 2L)
+
+  .Call(C_vec_build_overviews,
+        path,
+        as.integer(levels),
+        resampling,
+        comp_code)
+  invisible(NULL)
+}
+
 #' @export
 print.vectra_raster <- function(x, ...) {
   cat("<vectra_raster>\n")
@@ -221,6 +267,8 @@ print.vectra_raster <- function(x, ...) {
   cat(sprintf("  tile_size   : %d\n", x$tile_size))
   cat(sprintf("  geotransform: [%.6g, %.6g, %.6g, %.6g, %.6g, %.6g]\n",
               x$gt[1], x$gt[2], x$gt[3], x$gt[4], x$gt[5], x$gt[6]))
+  if (!is.null(x$n_levels) && x$n_levels > 1L)
+    cat(sprintf("  n_levels    : %d\n", x$n_levels))
   if (x$epsg > 0L) cat(sprintf("  epsg        : %d\n", x$epsg))
   if (!is.na(x$nodata)) cat(sprintf("  nodata      : %g\n", x$nodata))
   if (!is.null(x$band_names))

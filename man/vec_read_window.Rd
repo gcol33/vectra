@@ -11,13 +11,16 @@ vec_read_window(r, band = 1L, level = 0L, cols = NULL, rows = NULL)
 
 \item{band}{Band index (1-based). Default 1.}
 
-\item{level}{Overview level (Phase 1: must be 0).}
+\item{level}{Overview level — 0 = full resolution, 1 = half, 2 =
+quarter, etc. Must be < \code{r$n_levels} (which is 1 unless
+\code{vec_build_overviews()} has been run on the file).}
 
 \item{cols}{1-based column range \code{c(col_min, col_max)}. Inclusive.
-Default \code{c(1, r$width)}.}
+Coordinates are in the chosen level's pixel grid (so at level 1 the
+raster is half as wide). Default \code{c(1, level_width)}.}
 
 \item{rows}{1-based row range \code{c(row_min, row_max)}. Inclusive.
-Default \code{c(1, r$height)}.}
+Default \code{c(1, level_height)}.}
 }
 \value{
 A numeric matrix with \code{nrow = row_max - row_min + 1} and

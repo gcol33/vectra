@@ -219,6 +219,101 @@ test_that("compression='max' is non-disastrous on a constant tile", {
   expect_equal(out, matrix(as.numeric(as.single(m)), 256, 256))
 })
 
+test_that("vec_build_overviews adds N-1 reduced levels", {
+  ## A 64x64 constant raster: building 4 levels gives sizes 64, 32, 16, 8.
+  m <- matrix(7.0, 64, 64)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_raster(m, tmp, dtype = "f64", tile_size = 32L)
+
+  vec_build_overviews(tmp, levels = 4L, resampling = "average")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+  expect_equal(r$n_levels, 4L)
+
+  ## Each level should round-trip the (constant) value.
+  for (L in 0:3) {
+    out <- vec_read_window(r, level = L)
+    target_w <- max(1, ceiling(64 / 2^L))
+    target_h <- max(1, ceiling(64 / 2^L))
+    expect_equal(dim(out), c(target_h, target_w),
+                 info = sprintf("level %d", L))
+    expect_true(all(out == 7.0), info = sprintf("level %d", L))
+  }
+})
+
+test_that("average resampling produces correct level-1 means", {
+  ## Build a 4x4 raster where each 2x2 block has a distinct value;
+  ## level 1 should be the per-block average (= the block's value).
+  m <- matrix(0, 4, 4)
+  m[1:2, 1:2] <- 1
+  m[1:2, 3:4] <- 2
+  m[3:4, 1:2] <- 3
+  m[3:4, 3:4] <- 4
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64", tile_size = 64L)
+  vec_build_overviews(tmp, levels = 2L, resampling = "average")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+
+  l1 <- vec_read_window(r, level = 1L)
+  expect_equal(dim(l1), c(2L, 2L))
+  expect_equal(l1, matrix(c(1, 3, 2, 4), 2, 2))
+})
+
+test_that("nearest resampling takes the top-left pixel of each 2x2", {
+  m <- matrix(c(1, 2, 3, 4,
+                5, 6, 7, 8,
+                9, 10, 11, 12,
+                13, 14, 15, 16),
+              nrow = 4, byrow = TRUE)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64", tile_size = 64L)
+  vec_build_overviews(tmp, levels = 2L, resampling = "nearest")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+
+  l1 <- vec_read_window(r, level = 1L)
+  expect_equal(l1, matrix(c(1, 9, 3, 11), 2, 2))
+})
+
+test_that("mode resampling picks the most-frequent value", {
+  m <- matrix(c(5, 5, 8, 8,
+                5, 7, 8, 9,
+                3, 3, 1, 1,
+                3, 4, 2, 1),
+              nrow = 4, byrow = TRUE)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "i32", tile_size = 64L)
+  vec_build_overviews(tmp, levels = 2L, resampling = "mode")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  l1 <- vec_read_window(r, level = 1L)
+  ## Top-left 2x2 = {5,5,5,7} -> mode 5
+  ## Top-right     = {8,8,8,9} -> 8
+  ## Bottom-left   = {3,3,3,4} -> 3
+  ## Bottom-right  = {1,1,2,1} -> 1
+  expect_equal(l1, matrix(c(5L, 3L, 8L, 1L), 2, 2))
+})
+
+test_that("vec_read_window rejects an out-of-range level", {
+  m <- matrix(0, 8, 8)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) })
+  expect_error(vec_read_window(r, level = 5L), "level")
+})
+
+test_that("vec_build_overviews refuses to add fewer levels than already exist", {
+  m <- matrix(0, 32, 32)
+  tmp <- tempfile(fileext = ".vec")
+  vec_write_raster(m, tmp, dtype = "f64")
+  vec_build_overviews(tmp, levels = 3L)
+  expect_error(vec_build_overviews(tmp, levels = 2L), "already")
+  unlink(tmp)
+})
+
 test_that("terra can ingest pixel values via point extraction (smoke test)", {
   skip_if_not_installed("terra")
   ## Build a known raster, write to .vec, sample at known points and

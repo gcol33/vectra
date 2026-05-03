@@ -273,8 +273,8 @@ SEXP C_vec_open_raster(SEXP path_sexp) {
     }
 
     SEXP ptr = PROTECT(wrap_vecr_reader(r));
-    SEXP names = PROTECT(Rf_allocVector(STRSXP, 10));
-    SEXP out   = PROTECT(Rf_allocVector(VECSXP, 10));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 11));
+    SEXP out   = PROTECT(Rf_allocVector(VECSXP, 11));
 
     SET_VECTOR_ELT(out, 0, ptr);
     SET_STRING_ELT(names, 0, Rf_mkChar("ptr"));
@@ -325,6 +325,9 @@ SEXP C_vec_open_raster(SEXP path_sexp) {
         SET_VECTOR_ELT(out, 9, R_NilValue);
     }
     SET_STRING_ELT(names, 9, Rf_mkChar("band_names"));
+
+    SET_VECTOR_ELT(out, 10, Rf_ScalarInteger(vecr_reader_n_levels(r)));
+    SET_STRING_ELT(names, 10, Rf_mkChar("n_levels"));
 
     Rf_setAttrib(out, R_NamesSymbol, names);
     UNPROTECT(3);
@@ -514,6 +517,39 @@ SEXP C_vec_close_raster(SEXP ptr_sexp) {
     if (r) {
         vecr_reader_close(r);
         R_ClearExternalPtr(ptr_sexp);
+    }
+    return R_NilValue;
+}
+
+/* ====================================================================== */
+/*  C_vec_build_overviews                                                  */
+/* ====================================================================== */
+
+static int resampling_from_string(const char *s) {
+    if (!s) return VECR_RESAMPLE_AVERAGE;
+    if (strcmp(s, "nearest")  == 0) return VECR_RESAMPLE_NEAREST;
+    if (strcmp(s, "average")  == 0) return VECR_RESAMPLE_AVERAGE;
+    if (strcmp(s, "bilinear") == 0) return VECR_RESAMPLE_BILINEAR;
+    if (strcmp(s, "mode")     == 0) return VECR_RESAMPLE_MODE;
+    if (strcmp(s, "gauss")    == 0) return VECR_RESAMPLE_GAUSS;
+    return -1;
+}
+
+SEXP C_vec_build_overviews(SEXP path_sexp, SEXP n_levels_sexp,
+                           SEXP resampling_sexp, SEXP compression_sexp) {
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+    int n_levels = Rf_asInteger(n_levels_sexp);
+    int resampling = resampling_from_string(CHAR(STRING_ELT(resampling_sexp, 0)));
+    if (resampling < 0)
+        vectra_error("vec_build_overviews: unknown resampling '%s'",
+                     CHAR(STRING_ELT(resampling_sexp, 0)));
+    int compression = Rf_asInteger(compression_sexp);
+
+    char errbuf[256] = {0};
+    if (vecr_build_overviews(path, n_levels, resampling, compression,
+                              errbuf, sizeof(errbuf)) != 0) {
+        vectra_error("vec_build_overviews: %s",
+                     errbuf[0] ? errbuf : "unknown error");
     }
     return R_NilValue;
 }

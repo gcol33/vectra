@@ -183,6 +183,35 @@ int vecr_writer_open(const char *path,
  * Unknown values are silently clamped to FAST. */
 void vecr_writer_set_compression(VecrWriter *w, int level);
 
+/* ---------- Overviews --------------------------------------------------- */
+
+/* Resampling kernels for vecr_build_overviews. Nearest = top-left of the
+ * source 2x2 (fast, no smoothing). Average = mean of valid pixels (skips
+ * nodata). Bilinear = 3x3 [1,2,1;2,4,2;1,2,1]/16 followed by 2x decimation.
+ * Mode = most-frequent value over the 2x2 (categorical). Gauss = 5x5
+ * separable [1,4,6,4,1]/16 then decimate; alias of Bilinear when no Gauss
+ * implementation is built (Phase 3 ships Bilinear). */
+#define VECR_RESAMPLE_NEAREST  0
+#define VECR_RESAMPLE_AVERAGE  1
+#define VECR_RESAMPLE_BILINEAR 2
+#define VECR_RESAMPLE_MODE     3
+#define VECR_RESAMPLE_GAUSS    4
+
+/* Append n_levels-1 overview levels to an existing .vec raster (so the
+ * file ends up holding levels 0..n_levels-1 inclusive). The caller must
+ * have closed any open writer/reader on the file. compression is the
+ * VECR_COMPRESS_* constant used for the new tiles; pass -1 to inherit
+ * VECR_COMPRESS_FAST.
+ *
+ * Returns 0 on success. On failure the file may be left without an index
+ * (corrupted) — callers that care about atomicity should write a temp
+ * copy first. */
+int vecr_build_overviews(const char *path,
+                         int n_levels,
+                         int resampling,
+                         int compression,
+                         char *errbuf, size_t errbuf_size);
+
 /* Write a full band.
  *
  *   band_index:  0-based band index (must be < n_bands)
@@ -219,6 +248,7 @@ const double *vecr_reader_geotransform(VecrReader *r);
 int32_t       vecr_reader_epsg(VecrReader *r);
 double        vecr_reader_nodata(VecrReader *r);
 int           vecr_reader_has_nodata(VecrReader *r);
+int           vecr_reader_n_levels(VecrReader *r);
 /* Returns the band-name string for `band` (NUL-terminated), or NULL if
  * the file did not record band names. Pointer is owned by the reader. */
 const char   *vecr_reader_band_name(VecrReader *r, int band);

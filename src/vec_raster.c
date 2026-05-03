@@ -213,6 +213,32 @@ static void vecr_codec_for(VecrCodec *c, uint8_t dt) {
     vecr_codec_pred2d(c, dt, TDC_ENTROPY_LZ);
 }
 
+/* Fill a candidate set for the given compression level. cands must hold at
+ * least 8 entries. n_out receives the active count. */
+static void vecr_build_candidates(uint8_t dt, int compression,
+                                  VecrCodec *cands, int *n_out) {
+    int n = 0;
+    switch (compression) {
+    case VECR_COMPRESS_BALANCED:
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_LZ);
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_LZ_SPLIT);
+        break;
+    case VECR_COMPRESS_MAX:
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_LZ);
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_LZ_SPLIT);
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_HUFFMAN4);
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_FSE);
+        vecr_codec_raw(&cands[n++],    dt, TDC_ENTROPY_LZ);
+        vecr_codec_raw(&cands[n++],    dt, TDC_ENTROPY_FSE);
+        break;
+    case VECR_COMPRESS_FAST:
+    default:
+        vecr_codec_pred2d(&cands[n++], dt, TDC_ENTROPY_LZ);
+        break;
+    }
+    *n_out = n;
+}
+
 /* ====================================================================== */
 /*  Writer                                                                 */
 /* ====================================================================== */
@@ -435,27 +461,9 @@ static int vecr_writer_emit_tile(VecrWriter *w,
     blk.shape.dim[1] = tw;   /* cols (x) */
     tdc_shape_set_contiguous(&blk.shape);
 
-    /* Build the candidate set for this compression level. */
     VecrCodec cands[8];
     int n_cands = 0;
-    switch (w->compression) {
-    case VECR_COMPRESS_FAST:
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ);
-        break;
-    case VECR_COMPRESS_BALANCED:
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ);
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ_SPLIT);
-        break;
-    case VECR_COMPRESS_MAX:
-    default:
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ);
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_LZ_SPLIT);
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_HUFFMAN4);
-        vecr_codec_pred2d(&cands[n_cands++], dt, TDC_ENTROPY_FSE);
-        vecr_codec_raw(&cands[n_cands++],    dt, TDC_ENTROPY_LZ);
-        vecr_codec_raw(&cands[n_cands++],    dt, TDC_ENTROPY_FSE);
-        break;
-    }
+    vecr_build_candidates(dt, w->compression, cands, &n_cands);
 
     tdc_buffer buf = {0};
     if (vecr_encode_best(w, &blk, cands, n_cands, &buf) != 0) {
@@ -613,18 +621,19 @@ struct VecrReader {
     char  *band_names_blob;
     char **band_names;      /* pointers into band_names_blob; NULL if absent */
 
-    /* Tile index, sorted as written. We also build a 2-D lookup table
-     * keyed by (level, band, ty, tx) -> entry, to avoid a linear scan
-     * per window read. The lookup is allocated lazily on first window
-     * read; for Phase 1 we eagerly populate level 0. */
+    /* Tile index, sorted as written. We also build a per-level 2-D lookup
+     * table keyed by (level, band, ty, tx) -> entry to avoid a linear
+     * scan per window read. */
     VecrIndexEntry *index;
     int64_t         n_index;
 
-    /* Lookup: for each band, a tiles_y * tiles_x array of pointers into
-     * `index`. Built at open time for level 0. */
-    int64_t tiles_x;
-    int64_t tiles_y;
-    VecrIndexEntry ***lookup_l0;   /* [band][ty * tiles_x + tx] */
+    /* Per-level grid dims and lookup. tiles_x/y are level-L pixel-grid
+     * sizes divided by tile_size, rounded up. Layout:
+     *   lookup[L][band][ty * tiles_x[L] + tx] -> &index entry.
+     */
+    int64_t  *tiles_x;        /* length n_levels */
+    int64_t  *tiles_y;        /* length n_levels */
+    VecrIndexEntry ****lookup; /* [level][band][...] */
 };
 
 static void vecr_reader_set_err(VecrReader *r, const char *msg) {
@@ -642,10 +651,16 @@ void vecr_reader_close(VecrReader *r) {
     free(r->band_names_blob);
     free(r->band_names);
     free(r->index);
-    if (r->lookup_l0) {
-        for (int b = 0; b < r->hdr.n_bands; ++b) free(r->lookup_l0[b]);
-        free(r->lookup_l0);
+    if (r->lookup) {
+        for (int L = 0; L < r->hdr.n_levels; ++L) {
+            if (!r->lookup[L]) continue;
+            for (int b = 0; b < r->hdr.n_bands; ++b) free(r->lookup[L][b]);
+            free(r->lookup[L]);
+        }
+        free(r->lookup);
     }
+    free(r->tiles_x);
+    free(r->tiles_y);
     free(r);
 }
 
@@ -716,27 +731,45 @@ int vecr_reader_open(const char *path, VecrReader **out) {
         }
     }
 
-    /* Build level-0 lookup. */
+    /* Build per-level tile-grid sizes and lookups. */
     uint16_t TS = r->hdr.tile_size;
-    r->tiles_x = (r->hdr.width  + TS - 1) / TS;
-    r->tiles_y = (r->hdr.height + TS - 1) / TS;
-    int64_t per_band = r->tiles_x * r->tiles_y;
+    int n_levels = r->hdr.n_levels;
+    if (n_levels < 1) n_levels = 1;
 
-    r->lookup_l0 = (VecrIndexEntry ***)calloc((size_t)r->hdr.n_bands,
-                                              sizeof(VecrIndexEntry **));
-    if (!r->lookup_l0) { vecr_reader_set_err(r, "alloc lookup"); return -1; }
-    for (int b = 0; b < r->hdr.n_bands; ++b) {
-        r->lookup_l0[b] = (VecrIndexEntry **)calloc((size_t)per_band,
-                                                    sizeof(VecrIndexEntry *));
-        if (!r->lookup_l0[b]) { vecr_reader_set_err(r, "alloc lookup band"); return -1; }
+    r->tiles_x = (int64_t *)calloc((size_t)n_levels, sizeof(int64_t));
+    r->tiles_y = (int64_t *)calloc((size_t)n_levels, sizeof(int64_t));
+    r->lookup  = (VecrIndexEntry ****)calloc((size_t)n_levels,
+                                             sizeof(VecrIndexEntry ***));
+    if (!r->tiles_x || !r->tiles_y || !r->lookup) {
+        vecr_reader_set_err(r, "alloc level tables"); return -1;
+    }
+    for (int L = 0; L < n_levels; ++L) {
+        int64_t lvl_w = (r->hdr.width  + ((int64_t)1 << L) - 1) >> L;
+        int64_t lvl_h = (r->hdr.height + ((int64_t)1 << L) - 1) >> L;
+        if (lvl_w < 1) lvl_w = 1;
+        if (lvl_h < 1) lvl_h = 1;
+        r->tiles_x[L] = (lvl_w + TS - 1) / TS;
+        r->tiles_y[L] = (lvl_h + TS - 1) / TS;
+        int64_t per_band = r->tiles_x[L] * r->tiles_y[L];
+        r->lookup[L] = (VecrIndexEntry ***)calloc((size_t)r->hdr.n_bands,
+                                                   sizeof(VecrIndexEntry **));
+        if (!r->lookup[L]) { vecr_reader_set_err(r, "alloc lookup level"); return -1; }
+        for (int b = 0; b < r->hdr.n_bands; ++b) {
+            r->lookup[L][b] = (VecrIndexEntry **)calloc((size_t)per_band,
+                                                        sizeof(VecrIndexEntry *));
+            if (!r->lookup[L][b]) {
+                vecr_reader_set_err(r, "alloc lookup band"); return -1;
+            }
+        }
     }
     for (int64_t i = 0; i < r->n_index; ++i) {
         VecrIndexEntry *e = &r->index[i];
-        if (e->level != 0) continue;
+        if (e->level >= n_levels) continue;
         if (e->band >= r->hdr.n_bands) continue;
-        if (e->tile_x < 0 || e->tile_x >= r->tiles_x) continue;
-        if (e->tile_y < 0 || e->tile_y >= r->tiles_y) continue;
-        r->lookup_l0[e->band][e->tile_y * r->tiles_x + e->tile_x] = e;
+        int L = e->level;
+        if (e->tile_x < 0 || e->tile_x >= r->tiles_x[L]) continue;
+        if (e->tile_y < 0 || e->tile_y >= r->tiles_y[L]) continue;
+        r->lookup[L][e->band][e->tile_y * r->tiles_x[L] + e->tile_x] = e;
     }
     return 0;
 }
@@ -757,6 +790,9 @@ double        vecr_reader_nodata(VecrReader *r) {
 }
 int           vecr_reader_has_nodata(VecrReader *r) {
     return (r && (r->hdr.flags & VECR_FLAG_HAS_NODATA)) ? 1 : 0;
+}
+int           vecr_reader_n_levels(VecrReader *r) {
+    return r ? (int)r->hdr.n_levels : 0;
 }
 const char   *vecr_reader_band_name(VecrReader *r, int band) {
     if (!r || !r->band_names) return NULL;
@@ -812,8 +848,10 @@ int vecr_reader_read_window(VecrReader *r,
     if (band < 0 || band >= r->hdr.n_bands) {
         vecr_reader_set_err(r, "band out of range"); return -1;
     }
-    if (level != 0) {
-        vecr_reader_set_err(r, "only level 0 is supported in Phase 1");
+    if (level >= r->hdr.n_levels) {
+        snprintf(r->errbuf, sizeof(r->errbuf),
+                 "level %u out of range (n_levels=%u)",
+                 (unsigned)level, (unsigned)r->hdr.n_levels);
         return -1;
     }
     if (col_min > col_max || row_min > row_max) {
@@ -826,7 +864,11 @@ int vecr_reader_read_window(VecrReader *r,
     int      has_nd = (r->hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
     double   nd  = r->hdr.nodata;
     uint16_t TS  = r->hdr.tile_size;
-    int64_t  W   = r->hdr.width, H = r->hdr.height;
+    /* Per-level pixel-grid dimensions: ceil(width / 2^level). */
+    int64_t  W = (r->hdr.width  + ((int64_t)1 << level) - 1) >> level;
+    int64_t  H = (r->hdr.height + ((int64_t)1 << level) - 1) >> level;
+    if (W < 1) W = 1;
+    if (H < 1) H = 1;
 
     int64_t out_w = col_max - col_min + 1;
     int64_t out_h = row_max - row_min + 1;
@@ -874,7 +916,8 @@ int vecr_reader_read_window(VecrReader *r,
             int64_t tile_c0 = tx * TS;
             int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
 
-            VecrIndexEntry *e = r->lookup_l0[band][ty * r->tiles_x + tx];
+            VecrIndexEntry *e =
+                r->lookup[level][band][ty * r->tiles_x[level] + tx];
             if (!e) continue;  /* missing tile -> stays as nodata */
 
             if (vecr_reader_decode_tile(r, e, tile_buf, tw, th) != 0) {
@@ -959,7 +1002,7 @@ int vecr_reader_extract_points(VecrReader *r, int band,
 
         int64_t tx = col / TS, ty = row / TS;
         if (tx != cached_tx || ty != cached_ty) {
-            VecrIndexEntry *e = r->lookup_l0[band][ty * r->tiles_x + tx];
+            VecrIndexEntry *e = r->lookup[0][band][ty * r->tiles_x[0] + tx];
             if (!e) {
                 out[i] = NAN;
                 cached_tx = -1; cached_ty = -1;
@@ -988,5 +1031,383 @@ int vecr_reader_extract_points(VecrReader *r, int band,
     }
 
     free(tile_buf);
+    return 0;
+}
+
+/* ====================================================================== */
+/*  Overviews                                                              */
+/* ====================================================================== */
+
+static double vecr_resample_2x2_avg(const double *src, int64_t W, int64_t H,
+                                     int64_t r, int64_t c) {
+    int64_t r2 = r * 2, c2 = c * 2;
+    double acc = 0; int n = 0;
+    for (int dr = 0; dr < 2; ++dr) {
+        for (int dc = 0; dc < 2; ++dc) {
+            int64_t rr = r2 + dr, cc = c2 + dc;
+            if (rr >= H || cc >= W) continue;
+            double v = src[rr * W + cc];
+            if (isnan(v)) continue;
+            acc += v; ++n;
+        }
+    }
+    return n > 0 ? acc / n : NAN;
+}
+
+static double vecr_resample_2x2_nearest(const double *src, int64_t W, int64_t H,
+                                         int64_t r, int64_t c) {
+    int64_t r2 = r * 2, c2 = c * 2;
+    if (r2 >= H || c2 >= W) return NAN;
+    return src[r2 * W + c2];
+}
+
+static double vecr_resample_2x2_mode(const double *src, int64_t W, int64_t H,
+                                      int64_t r, int64_t c) {
+    int64_t r2 = r * 2, c2 = c * 2;
+    double vals[4]; int counts[4]; int n = 0;
+    for (int dr = 0; dr < 2; ++dr) {
+        for (int dc = 0; dc < 2; ++dc) {
+            int64_t rr = r2 + dr, cc = c2 + dc;
+            if (rr >= H || cc >= W) continue;
+            double v = src[rr * W + cc];
+            if (isnan(v)) continue;
+            int found = 0;
+            for (int i = 0; i < n; ++i) {
+                if (vals[i] == v) { ++counts[i]; found = 1; break; }
+            }
+            if (!found) { vals[n] = v; counts[n] = 1; ++n; }
+        }
+    }
+    if (n == 0) return NAN;
+    int best = 0;
+    for (int i = 1; i < n; ++i) {
+        if (counts[i] > counts[best]) best = i;
+    }
+    return vals[best];
+}
+
+/* Bilinear-style: 3x3 weighted [1,2,1; 2,4,2; 1,2,1]/16 anchored at the
+ * source pixel that maps to (r, c) at the output, then 2x decimate. Skips
+ * NaN cells in the weighted sum and renormalises by the active weight. */
+static double vecr_resample_2x2_bilinear(const double *src, int64_t W, int64_t H,
+                                          int64_t r, int64_t c) {
+    int64_t r2 = r * 2, c2 = c * 2;
+    static const int wgrid[3][3] = {{1, 2, 1}, {2, 4, 2}, {1, 2, 1}};
+    double acc = 0; int wtot = 0;
+    for (int dr = -1; dr <= 1; ++dr) {
+        for (int dc = -1; dc <= 1; ++dc) {
+            int64_t rr = r2 + dr, cc = c2 + dc;
+            if (rr < 0 || rr >= H || cc < 0 || cc >= W) continue;
+            double v = src[rr * W + cc];
+            if (isnan(v)) continue;
+            int w = wgrid[dr + 1][dc + 1];
+            acc += v * w; wtot += w;
+        }
+    }
+    if (wtot == 0) return NAN;
+    return acc / wtot;
+}
+
+typedef double (*VecrResampleFn)(const double *src, int64_t W, int64_t H,
+                                  int64_t r, int64_t c);
+
+static VecrResampleFn vecr_resample_fn(int kind) {
+    switch (kind) {
+    case VECR_RESAMPLE_NEAREST:  return vecr_resample_2x2_nearest;
+    case VECR_RESAMPLE_AVERAGE:  return vecr_resample_2x2_avg;
+    case VECR_RESAMPLE_BILINEAR: return vecr_resample_2x2_bilinear;
+    case VECR_RESAMPLE_MODE:     return vecr_resample_2x2_mode;
+    case VECR_RESAMPLE_GAUSS:    return vecr_resample_2x2_bilinear;  /* alias */
+    }
+    return vecr_resample_2x2_avg;
+}
+
+/* Decode the full level-0 raster of one band as doubles (NaN for nodata). */
+static double *vecr_decode_band_doubles(VecrReader *r, int band) {
+    int64_t W = r->hdr.width, H = r->hdr.height;
+    double *out = (double *)malloc((size_t)W * (size_t)H * sizeof(double));
+    if (!out) return NULL;
+    uint8_t  dt  = r->hdr.sample_dtype;
+    size_t   esz = vecr_dtype_size(dt);
+    void *raw = malloc((size_t)W * (size_t)H * esz);
+    if (!raw) { free(out); return NULL; }
+    if (vecr_reader_read_window(r, band, 0, 0, 0, W - 1, H - 1, raw) != 0) {
+        free(raw); free(out); return NULL;
+    }
+    int has_nd = (r->hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
+    double nd = r->hdr.nodata;
+    int64_t n = W * H;
+    for (int64_t i = 0; i < n; ++i) {
+        if (vecr_is_nodata(raw, i, dt, has_nd, nd)) { out[i] = NAN; continue; }
+        double v = vecr_load_double(raw, i, dt);
+        out[i] = (vecr_dtype_is_float(dt) && isnan(v)) ? NAN : v;
+    }
+    free(raw);
+    return out;
+}
+
+static void vecr_doubles_to_dtype_with_nodata(const double *src, int64_t n,
+                                               uint8_t dt,
+                                               int has_nd, double nd,
+                                               void *dst) {
+    for (int64_t i = 0; i < n; ++i) {
+        double v = src[i];
+        double w = isnan(v) ? (has_nd ? nd : (vecr_dtype_is_float(dt) ? NAN : 0))
+                            : v;
+        vecr_store_double(dst, i, dt, w);
+    }
+}
+
+int vecr_build_overviews(const char *path,
+                         int n_levels,
+                         int resampling,
+                         int compression,
+                         char *errbuf, size_t errbuf_size) {
+    if (!path) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "null path");
+        return -1;
+    }
+    if (n_levels < 2 || n_levels > 16) {
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size,
+                     "n_levels must be in [2..16], got %d", n_levels);
+        return -1;
+    }
+    if (compression < 0) compression = VECR_COMPRESS_FAST;
+
+    VecrResampleFn kernel = vecr_resample_fn(resampling);
+
+    /* Pull existing state via the reader, copy what we need, then close. */
+    VecrReader *r = NULL;
+    double **band_l0 = NULL;
+    VecrIndexEntry *old_index = NULL;
+    int64_t n_old_index = 0;
+    VecrHeader hdr;
+    int n_bands = 0;
+
+    if (vecr_reader_open(path, &r) != 0) {
+        const char *msg = r ? vecr_reader_errmsg(r) : "open failed";
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "%s", msg);
+        vecr_reader_close(r);
+        return -1;
+    }
+    hdr = r->hdr;
+    if (hdr.n_levels >= n_levels) {
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size,
+                     "file already has %u levels; requested %d",
+                     (unsigned)hdr.n_levels, n_levels);
+        vecr_reader_close(r);
+        return -1;
+    }
+    n_bands = hdr.n_bands;
+    band_l0 = (double **)calloc((size_t)n_bands, sizeof(double *));
+    if (!band_l0) { vecr_reader_close(r); return -1; }
+    for (int b = 0; b < n_bands; ++b) {
+        band_l0[b] = vecr_decode_band_doubles(r, b);
+        if (!band_l0[b]) {
+            if (errbuf && errbuf_size)
+                snprintf(errbuf, errbuf_size, "failed to decode level 0 band %d", b);
+            for (int j = 0; j < n_bands; ++j) free(band_l0[j]);
+            free(band_l0);
+            vecr_reader_close(r);
+            return -1;
+        }
+    }
+    n_old_index = r->n_index;
+    old_index = (VecrIndexEntry *)malloc((size_t)n_old_index * sizeof(*old_index));
+    if (!old_index) {
+        for (int b = 0; b < n_bands; ++b) free(band_l0[b]);
+        free(band_l0); vecr_reader_close(r); return -1;
+    }
+    memcpy(old_index, r->index, (size_t)n_old_index * sizeof(*old_index));
+    vecr_reader_close(r);
+
+    FILE *fp = fopen(path, "r+b");
+    if (!fp) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "fopen r+b failed");
+        for (int b = 0; b < n_bands; ++b) free(band_l0[b]);
+        free(band_l0); free(old_index); return -1;
+    }
+    if (vecr_fseek64(fp, hdr.index_offset, SEEK_SET) != 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "seek failed");
+        fclose(fp);
+        for (int b = 0; b < n_bands; ++b) free(band_l0[b]);
+        free(band_l0); free(old_index); return -1;
+    }
+
+    uint8_t  dt  = hdr.sample_dtype;
+    size_t   esz = vecr_dtype_size(dt);
+    int      has_nd = (hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
+    double   nd  = hdr.nodata;
+    uint16_t TS  = hdr.tile_size;
+
+    int64_t cap_new = 256;
+    VecrIndexEntry *new_index = (VecrIndexEntry *)malloc((size_t)cap_new * sizeof(*new_index));
+    int64_t n_new = 0;
+    void *tile_native = malloc((size_t)TS * (size_t)TS * esz);
+    double *tile_dbl = (double *)malloc((size_t)TS * (size_t)TS * sizeof(double));
+    if (!new_index || !tile_native || !tile_dbl) {
+        free(new_index); free(tile_native); free(tile_dbl);
+        fclose(fp);
+        for (int b = 0; b < n_bands; ++b) free(band_l0[b]);
+        free(band_l0); free(old_index);
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "alloc failed");
+        return -1;
+    }
+
+    int rc = 0;
+    int64_t W_prev = hdr.width, H_prev = hdr.height;
+    for (int L = 1; L < n_levels && rc == 0; ++L) {
+        int64_t W_cur = (W_prev + 1) / 2;
+        int64_t H_cur = (H_prev + 1) / 2;
+        int64_t tx_n = (W_cur + TS - 1) / TS;
+        int64_t ty_n = (H_cur + TS - 1) / TS;
+
+        for (int b = 0; b < n_bands && rc == 0; ++b) {
+            double *cur = (double *)malloc((size_t)W_cur * (size_t)H_cur * sizeof(double));
+            if (!cur) { rc = -1; break; }
+            for (int64_t r2 = 0; r2 < H_cur; ++r2) {
+                for (int64_t c2 = 0; c2 < W_cur; ++c2) {
+                    cur[r2 * W_cur + c2] = kernel(band_l0[b], W_prev, H_prev, r2, c2);
+                }
+            }
+
+            VecrCodec cands[8];
+            int n_cands = 0;
+            vecr_build_candidates(dt, compression, cands, &n_cands);
+
+            for (int64_t ty = 0; ty < ty_n && rc == 0; ++ty) {
+                int64_t r0 = ty * TS;
+                int64_t th = (r0 + TS <= H_cur) ? TS : (H_cur - r0);
+                for (int64_t tx = 0; tx < tx_n && rc == 0; ++tx) {
+                    int64_t c0 = tx * TS;
+                    int64_t tw = (c0 + TS <= W_cur) ? TS : (W_cur - c0);
+
+                    for (int64_t rr = 0; rr < th; ++rr) {
+                        memcpy(tile_dbl + rr * tw,
+                               cur + (r0 + rr) * W_cur + c0,
+                               (size_t)tw * sizeof(double));
+                    }
+
+                    int64_t n_pix = tw * th;
+                    int64_t n_valid = 0;
+                    double t_min = INFINITY, t_max = -INFINITY;
+                    int saw = 0;
+                    for (int64_t i = 0; i < n_pix; ++i) {
+                        double v = tile_dbl[i];
+                        if (isnan(v)) continue;
+                        ++n_valid;
+                        if (!saw || v < t_min) t_min = v;
+                        if (!saw || v > t_max) t_max = v;
+                        saw = 1;
+                    }
+                    vecr_doubles_to_dtype_with_nodata(tile_dbl, n_pix, dt,
+                                                      has_nd, nd, tile_native);
+
+                    tdc_block blk = {0};
+                    blk.data = tile_native;
+                    blk.dtype = vecr_to_tdc(dt);
+                    blk.layout = TDC_LAYOUT_RASTER_2D;
+                    blk.shape.rank = 2;
+                    blk.shape.dim[0] = th;
+                    blk.shape.dim[1] = tw;
+                    tdc_shape_set_contiguous(&blk.shape);
+
+                    int best = -1;
+                    tdc_buffer best_buf = {0};
+                    for (int i = 0; i < n_cands; ++i) {
+                        tdc_buffer bb = {0};
+                        tdc_status st = vecr_try_spec(&blk, &cands[i].spec, &bb);
+                        if (st != TDC_OK) continue;
+                        if (best < 0 || bb.size < best_buf.size) {
+                            free(best_buf.data);
+                            best_buf = bb;
+                            best = i;
+                        } else {
+                            free(bb.data);
+                        }
+                    }
+                    if (best < 0) { rc = -1; break; }
+
+                    int64_t off = vecr_ftell64(fp);
+                    if (off < 0 ||
+                        fwrite(best_buf.data, 1, best_buf.size, fp) != best_buf.size) {
+                        free(best_buf.data); rc = -1; break;
+                    }
+
+                    if (n_new == cap_new) {
+                        cap_new *= 2;
+                        VecrIndexEntry *p = (VecrIndexEntry *)realloc(
+                            new_index, (size_t)cap_new * sizeof(*new_index));
+                        if (!p) { free(best_buf.data); rc = -1; break; }
+                        new_index = p;
+                    }
+                    VecrIndexEntry *e = &new_index[n_new++];
+                    memset(e, 0, sizeof(*e));
+                    e->level   = (uint8_t)L;
+                    e->band    = (uint16_t)b;
+                    e->tile_x  = (int32_t)tx;
+                    e->tile_y  = (int32_t)ty;
+                    e->offset  = off;
+                    e->size    = (int64_t)best_buf.size;
+                    e->n_valid = n_valid;
+                    if (n_valid > 0) {
+                        vecr_pack_native(&e->min_bits, t_min, dt);
+                        vecr_pack_native(&e->max_bits, t_max, dt);
+                    }
+                    free(best_buf.data);
+                }
+            }
+
+            free(band_l0[b]);
+            band_l0[b] = cur;
+        }
+        W_prev = W_cur;
+        H_prev = H_cur;
+    }
+
+    free(tile_dbl);
+    free(tile_native);
+    for (int b = 0; b < n_bands; ++b) free(band_l0[b]);
+    free(band_l0);
+
+    if (rc != 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "tile encode failed");
+        free(new_index); free(old_index); fclose(fp); return -1;
+    }
+
+    int64_t new_index_off = vecr_ftell64(fp);
+    if (new_index_off < 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "ftell failed");
+        free(new_index); free(old_index); fclose(fp); return -1;
+    }
+    if (n_old_index > 0 &&
+        fwrite(old_index, 1, (size_t)n_old_index * sizeof(VecrIndexEntry), fp)
+            != (size_t)n_old_index * sizeof(VecrIndexEntry)) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "write old index failed");
+        free(new_index); free(old_index); fclose(fp); return -1;
+    }
+    if (n_new > 0 &&
+        fwrite(new_index, 1, (size_t)n_new * sizeof(VecrIndexEntry), fp)
+            != (size_t)n_new * sizeof(VecrIndexEntry)) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "write new index failed");
+        free(new_index); free(old_index); fclose(fp); return -1;
+    }
+    free(new_index);
+    free(old_index);
+
+    hdr.n_levels      = (uint8_t)n_levels;
+    hdr.index_offset  = new_index_off;
+    hdr.n_tiles_total = n_old_index + n_new;
+    hdr.index_size    = hdr.n_tiles_total * VECR_INDEX_ENTRY_SIZE;
+
+    if (vecr_fseek64(fp, 0, SEEK_SET) != 0 ||
+        fwrite(&hdr, 1, VECR_HEADER_SIZE, fp) != VECR_HEADER_SIZE ||
+        fflush(fp) != 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "patch header failed");
+        fclose(fp); return -1;
+    }
+    fclose(fp);
     return 0;
 }

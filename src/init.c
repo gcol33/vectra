@@ -38,6 +38,8 @@ SEXP C_vec_read_window(SEXP ptr_sexp, SEXP band_sexp, SEXP level_sexp,
                        SEXP col_max_sexp, SEXP row_max_sexp);
 SEXP C_vec_extract_points(SEXP ptr_sexp, SEXP x_sexp, SEXP y_sexp);
 SEXP C_vec_close_raster(SEXP ptr_sexp);
+SEXP C_vec_build_overviews(SEXP path_sexp, SEXP n_levels_sexp,
+                           SEXP resampling_sexp, SEXP compression_sexp);
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
@@ -86,6 +88,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_vec_read_window",          (DL_FUNC) &C_vec_read_window,          7},
     {"C_vec_extract_points",       (DL_FUNC) &C_vec_extract_points,       3},
     {"C_vec_close_raster",         (DL_FUNC) &C_vec_close_raster,         1},
+    {"C_vec_build_overviews",      (DL_FUNC) &C_vec_build_overviews,      4},
     {NULL, NULL, 0}
 };
 
