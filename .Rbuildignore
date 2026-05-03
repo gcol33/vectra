@@ -21,6 +21,8 @@
 ^\.run\.R$
 ^\.run_test\.R$
 ^\.run_build\.R$
+^\.run_.*\.R$
+^\.code-review-graph$
 ^\.check\.R$
 ^\.doc\.R$
 ^\.build\.R$
