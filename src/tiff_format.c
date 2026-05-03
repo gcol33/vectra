@@ -25,6 +25,7 @@
 #define TAG_TILE_OFFSETS         324
 #define TAG_TILE_BYTE_COUNTS     325
 #define TAG_SAMPLE_FORMAT        339
+#define TAG_PREDICTOR            317
 #define TAG_MODEL_TIEPOINT       33922
 #define TAG_MODEL_PIXEL_SCALE    33550
 #define TAG_GEO_KEY_DIRECTORY    34735
@@ -41,6 +42,7 @@
 #define GEO_KEY_PCS_CITATION      3073
 
 #define COMPRESS_NONE     1
+#define COMPRESS_LZW      5
 #define COMPRESS_DEFLATE  8
 #define COMPRESS_ADOBE_DEFLATE 32946
 
@@ -1077,6 +1079,264 @@ void tiff_reader_close(TiffReader *r) {
 }
 
 /* ================================================================== */
+/*  LZW encoder (TIFF flavour)                                         */
+/* ================================================================== */
+/*
+ *  TIFF LZW differs from GIF/Unix-compress LZW in two ways:
+ *    1. Bit packing is MSB-first (most-significant bit of each output byte
+ *       is filled first); GIF is LSB-first.
+ *    2. Code width grows one step early — a writer must increase the code
+ *       width when the next code to be emitted is one less than 2^width
+ *       (i.e. emit `nextcode` at the new width). Most LZW bugs in TIFF
+ *       readers/writers come from getting that off-by-one wrong.
+ *
+ *  Codes:
+ *    0..255  literal byte values
+ *    256     ClearCode (reset dictionary, reset width to 9)
+ *    257     EoiCode (end of stream)
+ *    258..   string codes
+ *
+ *  Width starts at 9 bits and grows up to 12 bits (max code 4095). When
+ *  the dictionary fills (next code would be 4094 with width still 12), we
+ *  emit ClearCode and reset. We pre-emit ClearCode at the start of the
+ *  stream as required by the TIFF spec.
+ *
+ *  Dictionary representation: a flat hash table keyed on (prefix_code,
+ *  next_byte). Each non-empty slot stores its own (prefix, byte) so we
+ *  can detect collisions; the value is the assigned code.
+ */
+
+#define TIFF_LZW_CLEAR_CODE   256
+#define TIFF_LZW_EOI_CODE     257
+#define TIFF_LZW_FIRST_CODE   258
+#define TIFF_LZW_MAX_CODE     4094  /* TIFF spec: clear before code 4095 */
+#define TIFF_LZW_HASH_SIZE    9001  /* prime, > 4096 */
+#define TIFF_LZW_EMPTY        (-1)
+
+typedef struct {
+    int32_t prefix;   /* prefix code (-1 if slot empty) */
+    int32_t byte;     /* next byte (0..255) */
+    int32_t code;     /* assigned code */
+} TiffLzwEntry;
+
+typedef struct {
+    uint8_t *out;
+    size_t   cap;
+    size_t   len;
+    /* MSB-first bit accumulator */
+    uint32_t accum;
+    int      nbits_in_accum;
+} TiffLzwBitWriter;
+
+static int tiff_lzw_bw_grow(TiffLzwBitWriter *bw, size_t need) {
+    if (bw->len + need <= bw->cap) return 0;
+    size_t ncap = bw->cap ? bw->cap * 2 : 4096;
+    while (ncap < bw->len + need) ncap *= 2;
+    uint8_t *p = (uint8_t *)realloc(bw->out, ncap);
+    if (!p) return -1;
+    bw->out = p;
+    bw->cap = ncap;
+    return 0;
+}
+
+static int tiff_lzw_bw_put(TiffLzwBitWriter *bw, uint32_t code, int width) {
+    /* Append `width` bits of `code` MSB-first. */
+    bw->accum = (bw->accum << width) | (code & ((1u << width) - 1u));
+    bw->nbits_in_accum += width;
+    while (bw->nbits_in_accum >= 8) {
+        if (tiff_lzw_bw_grow(bw, 1) != 0) return -1;
+        int shift = bw->nbits_in_accum - 8;
+        bw->out[bw->len++] = (uint8_t)((bw->accum >> shift) & 0xFFu);
+        bw->nbits_in_accum -= 8;
+        bw->accum &= (shift == 0) ? 0u : ((1u << bw->nbits_in_accum) - 1u);
+    }
+    return 0;
+}
+
+static int tiff_lzw_bw_flush(TiffLzwBitWriter *bw) {
+    if (bw->nbits_in_accum > 0) {
+        if (tiff_lzw_bw_grow(bw, 1) != 0) return -1;
+        int shift = 8 - bw->nbits_in_accum;
+        bw->out[bw->len++] = (uint8_t)((bw->accum << shift) & 0xFFu);
+        bw->accum = 0;
+        bw->nbits_in_accum = 0;
+    }
+    return 0;
+}
+
+/* Look up (prefix, byte) in the hash table; return code if present, else -1
+ * and write the empty slot index to *out_slot for insertion. */
+static int32_t tiff_lzw_lookup(const TiffLzwEntry *table, int32_t prefix,
+                               int32_t byte, int *out_slot) {
+    /* Mix prefix and byte; classic LZW hash. */
+    uint32_t h = (uint32_t)((prefix << 8) ^ byte) % TIFF_LZW_HASH_SIZE;
+    uint32_t step = 1u + (h % (TIFF_LZW_HASH_SIZE - 2));
+    for (;;) {
+        const TiffLzwEntry *e = &table[h];
+        if (e->prefix == TIFF_LZW_EMPTY) {
+            *out_slot = (int)h;
+            return -1;
+        }
+        if (e->prefix == prefix && e->byte == byte) return e->code;
+        h += step;
+        if (h >= TIFF_LZW_HASH_SIZE) h -= TIFF_LZW_HASH_SIZE;
+    }
+}
+
+static void tiff_lzw_reset(TiffLzwEntry *table, int32_t *next_code,
+                           int *width) {
+    for (int i = 0; i < TIFF_LZW_HASH_SIZE; i++) {
+        table[i].prefix = TIFF_LZW_EMPTY;
+        table[i].byte = 0;
+        table[i].code = 0;
+    }
+    *next_code = TIFF_LZW_FIRST_CODE;
+    *width = 9;
+}
+
+/* Encode `n` bytes into a fresh malloc'd output buffer.
+ * Returns 0 on success; *out_buf and *out_len point at the encoded bytes.
+ * Caller frees *out_buf. */
+static int tiff_lzw_encode(const uint8_t *in, size_t n,
+                           uint8_t **out_buf, size_t *out_len) {
+    TiffLzwEntry *table =
+        (TiffLzwEntry *)malloc(TIFF_LZW_HASH_SIZE * sizeof(TiffLzwEntry));
+    if (!table) return -1;
+
+    TiffLzwBitWriter bw;
+    bw.out = NULL; bw.cap = 0; bw.len = 0;
+    bw.accum = 0; bw.nbits_in_accum = 0;
+
+    int32_t next_code;
+    int     width;
+    tiff_lzw_reset(table, &next_code, &width);
+
+    /* Always start with ClearCode. */
+    if (tiff_lzw_bw_put(&bw, TIFF_LZW_CLEAR_CODE, width) != 0) goto fail;
+
+    if (n > 0) {
+        int32_t prefix = in[0];
+        for (size_t i = 1; i < n; i++) {
+            int32_t b = in[i];
+            int slot;
+            int32_t found = tiff_lzw_lookup(table, prefix, b, &slot);
+            if (found >= 0) {
+                prefix = found;
+            } else {
+                if (tiff_lzw_bw_put(&bw, (uint32_t)prefix, width) != 0) goto fail;
+
+                /* Insert (prefix, b) → next_code. */
+                table[slot].prefix = prefix;
+                table[slot].byte = b;
+                table[slot].code = next_code;
+                next_code++;
+
+                /* Grow width when next_code no longer fits in the current
+                 * width — i.e. after incrementing, next_code >= 1 << width.
+                 * The TIFF spec's "EarlyChange" applies on the decoder
+                 * side (which lags by one deferred entry); the libtiff
+                 * encoder bumps exactly here, so we match. */
+                if (next_code >= (1 << width) && width < 12) {
+                    width++;
+                }
+
+                if (next_code >= TIFF_LZW_MAX_CODE) {
+                    /* Dictionary full: emit ClearCode and reset. */
+                    if (tiff_lzw_bw_put(&bw, TIFF_LZW_CLEAR_CODE, width) != 0)
+                        goto fail;
+                    tiff_lzw_reset(table, &next_code, &width);
+                }
+
+                prefix = b;
+            }
+        }
+        /* Emit final prefix. */
+        if (tiff_lzw_bw_put(&bw, (uint32_t)prefix, width) != 0) goto fail;
+    }
+
+    /* End of information. */
+    if (tiff_lzw_bw_put(&bw, TIFF_LZW_EOI_CODE, width) != 0) goto fail;
+    if (tiff_lzw_bw_flush(&bw) != 0) goto fail;
+
+    free(table);
+    *out_buf = bw.out;
+    *out_len = bw.len;
+    return 0;
+
+fail:
+    free(table);
+    free(bw.out);
+    return -1;
+}
+
+/* ================================================================== */
+/*  Predictor 2 (horizontal differencing)                              */
+/* ================================================================== */
+/*
+ *  For each scanline, replace each sample with the difference from the
+ *  previous sample of the same band. Channels are interleaved chunky
+ *  (sample0_band0, sample0_band1, ..., sample1_band0, ...), so the
+ *  "previous sample of the same band" is `nbands` positions back, not 1.
+ *
+ *  Difference is computed in the integer width of the sample. Wraparound
+ *  on overflow is intentional — the inverse predictor sums modulo 2^N and
+ *  recovers the original exactly.
+ */
+
+static void tiff_predictor2_apply_row_u8(uint8_t *row, int64_t W, int nb) {
+    for (int64_t col = W - 1; col >= 1; col--) {
+        for (int b = 0; b < nb; b++) {
+            row[col * nb + b] =
+                (uint8_t)(row[col * nb + b] - row[(col - 1) * nb + b]);
+        }
+    }
+}
+
+static void tiff_predictor2_apply_row_u16(uint8_t *row, int64_t W, int nb) {
+    /* Little-endian 16-bit samples in chunky layout. Operate on uint16_t
+     * values via memcpy to stay alignment-safe on platforms that care. */
+    int stride = nb * 2;
+    for (int64_t col = W - 1; col >= 1; col--) {
+        for (int b = 0; b < nb; b++) {
+            uint16_t a, c;
+            memcpy(&a, row + (col - 1) * stride + b * 2, 2);
+            memcpy(&c, row + col       * stride + b * 2, 2);
+            uint16_t d = (uint16_t)(c - a);
+            memcpy(row + col * stride + b * 2, &d, 2);
+        }
+    }
+}
+
+static void tiff_predictor2_apply_row_u32(uint8_t *row, int64_t W, int nb) {
+    int stride = nb * 4;
+    for (int64_t col = W - 1; col >= 1; col--) {
+        for (int b = 0; b < nb; b++) {
+            uint32_t a, c;
+            memcpy(&a, row + (col - 1) * stride + b * 4, 4);
+            memcpy(&c, row + col       * stride + b * 4, 4);
+            uint32_t d = c - a;
+            memcpy(row + col * stride + b * 4, &d, 4);
+        }
+    }
+}
+
+/* Apply Predictor 2 to a chunky-interleaved buffer of `nrows` x `W` pixels
+ * with `nb` bands. `bytes_per_sample` selects 1 / 2 / 4. */
+static void tiff_predictor2_apply(uint8_t *buf, int64_t nrows, int64_t W,
+                                  int nb, int bytes_per_sample) {
+    int64_t row_bytes = W * nb * bytes_per_sample;
+    for (int64_t r = 0; r < nrows; r++) {
+        uint8_t *row = buf + r * row_bytes;
+        switch (bytes_per_sample) {
+        case 1: tiff_predictor2_apply_row_u8(row, W, nb); break;
+        case 2: tiff_predictor2_apply_row_u16(row, W, nb); break;
+        case 4: tiff_predictor2_apply_row_u32(row, W, nb); break;
+        default: /* unsupported sample width — leave untouched */ break;
+        }
+    }
+}
+
+/* ================================================================== */
 /*  Writer: little-endian classic TIFF with Float64 output             */
 /* ================================================================== */
 
@@ -1100,7 +1360,8 @@ struct TiffWriter {
     double   gt[6];
     double   nodata;
     int      has_nodata;
-    int      use_deflate;
+    int      compression;      /* TIFF tag 259 value: 1=NONE, 5=LZW, 8=DEFLATE */
+    int      predictor;        /* TIFF tag 317 value: 1=none, 2=horizontal diff */
     int      rows_per_strip;
 
     int      pixel_type;       /* TIFF_PIXEL_* enum */
@@ -1143,7 +1404,7 @@ static void pixel_type_props(int pixel_type,
 int tiff_writer_open(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
-                           int use_deflate, int pixel_type) {
+                           int compression, int pixel_type) {
     TiffWriter *w = (TiffWriter *)calloc(1, sizeof(TiffWriter));
     if (!w) return -1;
 
@@ -1157,13 +1418,31 @@ int tiff_writer_open(const char *path, TiffWriter **out,
     w->width = width;
     w->height = height;
     w->n_bands = n_bands;
-    w->use_deflate = use_deflate;
+    /* Translate writer-API compression code to the on-disk TIFF tag value. */
+    switch (compression) {
+    case TIFF_COMPRESS_NONE:    w->compression = COMPRESS_NONE;    break;
+    case TIFF_COMPRESS_DEFLATE: w->compression = COMPRESS_DEFLATE; break;
+    case TIFF_COMPRESS_LZW:     w->compression = COMPRESS_LZW;     break;
+    default:                    w->compression = COMPRESS_NONE;    break;
+    }
     w->rows_per_strip = 256;
     if (w->rows_per_strip > height) w->rows_per_strip = (int)height;
 
     w->pixel_type = pixel_type;
     pixel_type_props(pixel_type, &w->bytes_per_sample,
                      &w->bits_per_sample, &w->sample_format);
+
+    /* Predictor 2 (horizontal differencing) is only well-defined for
+     * integer sample formats. Float types skip the predictor — same as
+     * GDAL's default for LZW + float32 / float64. */
+    if (w->compression == COMPRESS_LZW &&
+        w->sample_format != SAMPLE_FLOAT &&
+        (w->bytes_per_sample == 1 || w->bytes_per_sample == 2 ||
+         w->bytes_per_sample == 4)) {
+        w->predictor = 2;
+    } else {
+        w->predictor = 1;
+    }
 
     if (gt) {
         memcpy(w->gt, gt, 6 * sizeof(double));
@@ -1332,12 +1611,19 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
             raw_size = strip_raw_size;
         }
 
+        /* Apply Predictor 2 (horizontal differencing) before compression.
+         * Only LZW + integer types use it; float and uncompressed/DEFLATE
+         * keep predictor = 1 (none). */
+        if (w->predictor == 2) {
+            tiff_predictor2_apply(raw, actual_rows, W, nb, bps);
+        }
+
         /* Compress if requested */
         uint8_t *out_data = raw;
         int64_t out_size = raw_size;
 
         uint8_t *comp_buf = NULL;
-        if (w->use_deflate) {
+        if (w->compression == COMPRESS_DEFLATE) {
             uLong comp_len = compressBound((uLong)raw_size);
             comp_buf = (uint8_t *)malloc((size_t)comp_len);
             if (comp_buf) {
@@ -1349,6 +1635,16 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
                 }
                 /* On compression failure, fall through to uncompressed */
             }
+        } else if (w->compression == COMPRESS_LZW) {
+            size_t lzw_len = 0;
+            if (tiff_lzw_encode(raw, (size_t)raw_size,
+                                &comp_buf, &lzw_len) != 0) {
+                snprintf(w->errmsg, 256, "LZW encode failed");
+                free(raw);
+                return -1;
+            }
+            out_data = comp_buf;
+            out_size = (int64_t)lzw_len;
         }
 
         /* Record offset and size */
@@ -1551,6 +1847,7 @@ int tiff_writer_finish(TiffWriter *w) {
                         StripOffsets, SPP, RowsPerStrip, StripByteCounts,
                         PlanarConfig, SampleFormat, ModelPixelScale */
     n_tags++; /* ModelTiepoint */
+    if (w->predictor != 1) n_tags++; /* Predictor (317) — only when != default */
     if (have_crs) {
         n_tags++; /* GeoKeyDirectory */
         if (geo_ascii_len > 0) n_tags++; /* GeoAsciiParams */
@@ -1591,7 +1888,7 @@ int tiff_writer_finish(TiffWriter *w) {
 
     /* 259: Compression */
     write_ifd_entry(ent, TAG_COMPRESSION, TIFF_SHORT, 1,
-                     w->use_deflate ? COMPRESS_DEFLATE : COMPRESS_NONE);
+                     (uint32_t)w->compression);
     fwrite(ent, 1, 12, w->fp);
 
     /* 262: PhotometricInterpretation = 1 (MinIsBlack) */
@@ -1631,6 +1928,13 @@ int tiff_writer_finish(TiffWriter *w) {
     /* 284: PlanarConfiguration = 1 (chunky) */
     write_ifd_entry(ent, TAG_PLANAR_CONFIG, TIFF_SHORT, 1, 1);
     fwrite(ent, 1, 12, w->fp);
+
+    /* 317: Predictor — only emit when non-default (1 = none) */
+    if (w->predictor != 1) {
+        write_ifd_entry(ent, TAG_PREDICTOR, TIFF_SHORT, 1,
+                         (uint32_t)w->predictor);
+        fwrite(ent, 1, 12, w->fp);
+    }
 
     /* 339: SampleFormat — inline when fits in value field (TIFF spec) */
     if (nb == 1) {

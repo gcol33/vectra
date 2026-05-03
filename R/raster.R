@@ -262,17 +262,20 @@ vec_build_overviews <- function(path,
 #'
 #' Writes the level-0 pixels of a `.vec` raster to a GeoTIFF file. The
 #' TIFF inherits dtype, geotransform, EPSG, and nodata from the source.
-#' Strip layout with optional DEFLATE compression — LZW, tiled, and
-#' BigTIFF support land in a follow-up commit.
+#' Strip layout; the writer supports `"none"`, `"deflate"`, and `"lzw"`
+#' compression. LZW also applies horizontal differencing (Predictor 2)
+#' for integer pixel types, which dramatically improves compression on
+#' smooth raster data and matches the layout most production GIS tools
+#' produce by default. Tiled and BigTIFF output land in a follow-up.
 #'
 #' @param r Either a path to a `.vec` raster or a `vectra_raster` returned
 #'   by `vec_open_raster()`. If a handle is passed it is left open.
 #' @param path Output `.tif` path.
-#' @param compression One of `"none"` or `"deflate"` (default).
+#' @param compression One of `"deflate"` (default), `"lzw"`, or `"none"`.
 #' @return Invisible `NULL`.
 #' @export
 vec_to_tiff <- function(r, path,
-                        compression = c("deflate", "none")) {
+                        compression = c("deflate", "lzw", "none")) {
   if (!is.character(path) || length(path) != 1L)
     stop("path must be a single character string")
   path <- normalizePath(path, mustWork = FALSE)
@@ -288,9 +291,12 @@ vec_to_tiff <- function(r, path,
   }
 
   compression <- match.arg(compression)
-  use_deflate <- if (compression == "deflate") 1L else 0L
+  comp_code <- switch(compression,
+                      none    = 0L,
+                      deflate = 1L,
+                      lzw     = 2L)
 
-  .Call(C_vec_to_tiff, vec_path, path, use_deflate)
+  .Call(C_vec_to_tiff, vec_path, path, comp_code)
   invisible(NULL)
 }
 

@@ -218,8 +218,10 @@ void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
     else if (pixel_type == TIFF_PIXEL_UINT8)  nodata_val = 255.0;
     else if (pixel_type == TIFF_PIXEL_UINT16) nodata_val = 65535.0;
 
+    int compression_code = use_deflate ? TIFF_COMPRESS_DEFLATE
+                                       : TIFF_COMPRESS_NONE;
     if (tiff_writer_open(path, &writer, width, height, n_bands,
-                                gt, nodata_val, use_deflate,
+                                gt, nodata_val, compression_code,
                                 pixel_type) != 0) {
         const char *msg = writer ? tiff_writer_errmsg(writer) : "unknown";
         tiff_writer_close(writer);

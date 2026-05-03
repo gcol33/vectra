@@ -4,7 +4,7 @@
 \alias{vec_to_tiff}
 \title{Export a .vec raster to GeoTIFF}
 \usage{
-vec_to_tiff(r, path, compression = c("deflate", "none"))
+vec_to_tiff(r, path, compression = c("deflate", "lzw", "none"))
 }
 \arguments{
 \item{r}{Either a path to a \code{.vec} raster or a \code{vectra_raster} returned
@@ -12,7 +12,7 @@ by \code{vec_open_raster()}. If a handle is passed it is left open.}
 
 \item{path}{Output \code{.tif} path.}
 
-\item{compression}{One of \code{"none"} or \code{"deflate"} (default).}
+\item{compression}{One of \code{"deflate"} (default), \code{"lzw"}, or \code{"none"}.}
 }
 \value{
 Invisible \code{NULL}.
@@ -20,6 +20,9 @@ Invisible \code{NULL}.
 \description{
 Writes the level-0 pixels of a \code{.vec} raster to a GeoTIFF file. The
 TIFF inherits dtype, geotransform, EPSG, and nodata from the source.
-Strip layout with optional DEFLATE compression — LZW, tiled, and
-BigTIFF support land in a follow-up commit.
+Strip layout; the writer supports \code{"none"}, \code{"deflate"}, and \code{"lzw"}
+compression. LZW also applies horizontal differencing (Predictor 2)
+for integer pixel types, which dramatically improves compression on
+smooth raster data and matches the layout most production GIS tools
+produce by default. Tiled and BigTIFF output land in a follow-up.
 }

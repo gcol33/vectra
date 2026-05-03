@@ -19,6 +19,12 @@
 #define TIFF_PIXEL_UINT8    4
 #define TIFF_PIXEL_UINT16   5
 
+/* Compression codes accepted by tiff_writer_open(). Internal to the writer
+   API; the on-disk TIFF Compression tag (259) values are 1/8/5 respectively. */
+#define TIFF_COMPRESS_NONE     0
+#define TIFF_COMPRESS_DEFLATE  1
+#define TIFF_COMPRESS_LZW      2
+
 /* ---- Reader ---- */
 
 typedef struct TiffReader TiffReader;
@@ -83,12 +89,18 @@ typedef struct TiffWriter TiffWriter;
    n_bands: samples per pixel
    gt: 6-element affine transform (NULL for default identity)
    nodata: nodata value (NaN = no GDAL_NODATA tag)
-   use_deflate: 1 to DEFLATE-compress strips
-   pixel_type: one of TIFF_PIXEL_* constants */
+   compression: one of TIFF_COMPRESS_* constants
+   pixel_type: one of TIFF_PIXEL_* constants
+
+   When compression is LZW the writer also applies horizontal differencing
+   (Predictor 2) before encoding for integer pixel types and emits the
+   Predictor tag (317 = 2) in the IFD. Float pixel types skip the predictor
+   (Predictor = 1) because byte-wise subtraction of float bit patterns is
+   not meaningful — that matches GDAL's behaviour. */
 int tiff_writer_open(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
-                           int use_deflate, int pixel_type);
+                           int compression, int pixel_type);
 
 /* Attach GDAL_METADATA XML to be written into tag 42112.
    Must be called before tiff_writer_finish(). */

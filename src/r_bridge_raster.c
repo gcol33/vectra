@@ -741,21 +741,27 @@ static int pixel_type_from_dtype(uint8_t dt) {
 }
 
 /*
- * C_vec_to_tiff(vec_path, tiff_path, use_deflate)
+ * C_vec_to_tiff(vec_path, tiff_path, compression)
  *
  *   vec_path     : character(1) — source .vec raster
  *   tiff_path    : character(1) — output .tif
- *   use_deflate  : integer(1)   — 0 = no compression, 1 = DEFLATE
+ *   compression  : integer(1)   — TIFF_COMPRESS_NONE / DEFLATE / LZW
+ *                                 (0 / 1 / 2; mirrors the public enum)
  *
  * The exported TIFF uses the same dtype as the source .vec raster (with
  * a fallback to f64 for dtypes TIFF doesn't natively carry — i8/u32/i64).
  * Geotransform, EPSG, and nodata are forwarded from the .vec header.
  */
 SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
-                   SEXP use_deflate_sexp) {
+                   SEXP compression_sexp) {
     const char *vpath = CHAR(STRING_ELT(vec_path_sexp,  0));
     const char *tpath = CHAR(STRING_ELT(tiff_path_sexp, 0));
-    int use_deflate = Rf_asInteger(use_deflate_sexp);
+    int compression = Rf_asInteger(compression_sexp);
+    if (compression != TIFF_COMPRESS_NONE &&
+        compression != TIFF_COMPRESS_DEFLATE &&
+        compression != TIFF_COMPRESS_LZW) {
+        vectra_error("vec_to_tiff: invalid compression code %d", compression);
+    }
 
     VecrReader *r = NULL;
     if (vecr_reader_open(vpath, &r) != 0) {
@@ -774,7 +780,7 @@ SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
     TiffWriter *w = NULL;
     if (tiff_writer_open(tpath, &w, width, height, n_bands,
                          vecr_reader_geotransform(r), nodata,
-                         use_deflate, pix) != 0) {
+                         compression, pix) != 0) {
         const char *m = w ? tiff_writer_errmsg(w) : "open failed";
         tiff_writer_close(w);
         vecr_reader_close(r);

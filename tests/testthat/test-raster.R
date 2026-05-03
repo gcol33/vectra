@@ -389,6 +389,102 @@ test_that("vec_to_tiff propagates nodata", {
   expect_true(any(is.na(vals)))
 })
 
+test_that("vec_to_tiff LZW + Predictor 2 round-trips an integer raster", {
+  skip_if_not_installed("terra")
+  ## A smooth integer ramp — Predictor 2 should slash the byte stream
+  ## entropy (most differences become 0/1) before LZW sees it.
+  m <- matrix(seq_len(40 * 30), 30, 40)
+  vec_path  <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(m, vec_path, dtype = "i32",
+                   extent = c(0, 0, 40, 30), epsg = 4326L)
+  vec_to_tiff(vec_path, tiff_path, compression = "lzw")
+
+  tr <- terra::rast(tiff_path)
+  expect_equal(terra::nlyr(tr), 1L)
+  expect_equal(terra::ncol(tr), 40L)
+  expect_equal(terra::nrow(tr), 30L)
+
+  px <- as.numeric(terra::values(tr))
+  expect_equal(px, as.numeric(t(m)))
+})
+
+test_that("vec_to_tiff LZW handles a multi-band 16-bit raster", {
+  skip_if_not_installed("terra")
+  arr <- array(0L, dim = c(20, 25, 3))
+  for (b in 1:3) arr[, , b] <- matrix(seq_len(20 * 25) * b, 20, 25)
+  vec_path  <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(arr, vec_path, dtype = "i16",
+                   extent = c(0, 0, 25, 20))
+  vec_to_tiff(vec_path, tiff_path, compression = "lzw")
+
+  tr <- terra::rast(tiff_path)
+  expect_equal(terra::nlyr(tr), 3L)
+  for (b in 1:3) {
+    layer <- terra::values(tr[[b]])
+    expect_equal(as.numeric(layer), as.numeric(t(arr[, , b])),
+                 info = sprintf("band %d", b))
+  }
+})
+
+test_that("vec_to_tiff LZW (no predictor) round-trips a float raster", {
+  skip_if_not_installed("terra")
+  ## Float pixel types: writer emits Predictor = 1 (none), since byte-wise
+  ## subtraction of float bit patterns is not meaningful. terra/GDAL
+  ## must still read the LZW stream back correctly.
+  m <- matrix(seq(-1, 1, length.out = 30 * 40), 30, 40)
+  vec_path  <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(m, vec_path, dtype = "f32",
+                   extent = c(0, 0, 40, 30), epsg = 4326L)
+  vec_to_tiff(vec_path, tiff_path, compression = "lzw")
+
+  tr <- terra::rast(tiff_path)
+  expect_equal(terra::nlyr(tr), 1L)
+  px <- as.numeric(terra::values(tr))
+  expect_equal(px, as.numeric(as.single(t(m))), tolerance = 1e-6)
+})
+
+test_that("vec_to_tiff LZW emits Compression=5 and Predictor=2 for integers", {
+  ## Pure on-disk tag check — does not depend on terra. We poke at the IFD
+  ## for tags 259 (Compression) and 317 (Predictor) and confirm the writer
+  ## set them as advertised.
+  m <- matrix(seq_len(64 * 64), 64, 64)
+  vec_path  <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(m, vec_path, dtype = "i32")
+  vec_to_tiff(vec_path, tiff_path, compression = "lzw")
+
+  raw <- readBin(tiff_path, what = "raw",
+                 n = file.info(tiff_path)$size)
+  ## Header: "II", magic 42, IFD offset (LE u32 at byte 4).
+  expect_equal(rawToChar(raw[1:2]), "II")
+  ifd_off <- sum(as.integer(raw[5:8]) * c(1L, 256L, 65536L, 16777216L)) + 1L
+
+  n_entries <- sum(as.integer(raw[ifd_off:(ifd_off + 1L)]) *
+                     c(1L, 256L))
+  base <- ifd_off + 2L
+  found_compression <- found_predictor <- NA_integer_
+  for (i in seq_len(n_entries)) {
+    e <- ifd_off + 2L + (i - 1L) * 12L
+    tag <- sum(as.integer(raw[e:(e + 1L)]) * c(1L, 256L))
+    val <- sum(as.integer(raw[(e + 8L):(e + 9L)]) * c(1L, 256L))
+    if (tag == 259L) found_compression <- val
+    if (tag == 317L) found_predictor   <- val
+  }
+  expect_equal(found_compression, 5L) ## LZW
+  expect_equal(found_predictor,   2L) ## horizontal differencing
+})
+
 test_that("time cube round-trips per slice", {
   ## 3 time steps x 2 bands x 8 rows x 10 cols.
   arr <- array(0, dim = c(8, 10, 2, 3))
