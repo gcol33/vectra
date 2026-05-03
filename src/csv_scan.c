@@ -4,6 +4,7 @@
 #include "batch.h"
 #include "schema.h"
 #include "error.h"
+#include "grow.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -30,11 +31,7 @@ static void gbuf_init(GBuf *g) {
 }
 
 static void gbuf_push(GBuf *g, char c) {
-    if (g->len >= g->cap) {
-        g->cap *= 2;
-        g->data = (char *)realloc(g->data, (size_t)g->cap);
-        if (!g->data) vectra_error("realloc failed for GBuf");
-    }
+    vec_grow_to((void **)&g->data, &g->cap, g->len + 1, sizeof(char), "GBuf");
     g->data[g->len++] = c;
 }
 
@@ -53,9 +50,9 @@ static const char *gbuf_str(GBuf *g) {
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    char  **items;
-    int     n;
-    int     cap;
+    char    **items;
+    int64_t   n;
+    int64_t   cap;
 } FieldVec;
 
 static void fv_init(FieldVec *v) {
@@ -66,11 +63,8 @@ static void fv_init(FieldVec *v) {
 }
 
 static void fv_push(FieldVec *v, const char *s, int64_t len) {
-    if (v->n >= v->cap) {
-        v->cap *= 2;
-        v->items = (char **)realloc(v->items, (size_t)v->cap * sizeof(char *));
-        if (!v->items) vectra_error("realloc failed for FieldVec");
-    }
+    vec_grow_to((void **)&v->items, &v->cap, v->n + 1, sizeof(char *),
+                "FieldVec");
     char *copy = (char *)malloc((size_t)(len + 1));
     if (!copy) vectra_error("alloc failed for field copy");
     memcpy(copy, s, (size_t)len);
@@ -79,7 +73,7 @@ static void fv_push(FieldVec *v, const char *s, int64_t len) {
 }
 
 static void fv_free_items(FieldVec *v) {
-    for (int i = 0; i < v->n; i++) free(v->items[i]);
+    for (int64_t i = 0; i < v->n; i++) free(v->items[i]);
     v->n = 0;
 }
 

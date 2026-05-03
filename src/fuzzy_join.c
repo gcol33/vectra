@@ -5,6 +5,7 @@
 #include "schema.h"
 #include "builder.h"
 #include "error.h"
+#include "grow.h"
 #include "string_distance.h"
 #include <stdlib.h>
 #include <string.h>
@@ -108,12 +109,8 @@ static void fmbuf_free(FuzzyMatchBuf *buf) {
 /* ------------------------------------------------------------------ */
 
 static void partition_push(FuzzyPartition *p, int64_t row) {
-    if (p->n_rows >= p->capacity) {
-        p->capacity = p->capacity ? p->capacity * 2 : 64;
-        p->rows = (int64_t *)realloc(p->rows,
-            (size_t)p->capacity * sizeof(int64_t));
-        if (!p->rows) vectra_error("realloc failed for FuzzyPartition");
-    }
+    vec_grow_to((void **)&p->rows, &p->capacity, p->n_rows + 1,
+                sizeof(int64_t), "FuzzyPartition");
     p->rows[p->n_rows++] = row;
 }
 
