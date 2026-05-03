@@ -19,6 +19,15 @@
 #define TIFF_PIXEL_UINT8    4
 #define TIFF_PIXEL_UINT16   5
 
+/* BigTIFF dispatch for the writer.
+     AUTO  — pick automatically based on expected raw size (~3.9 GB cutoff).
+     OFF   — always emit classic TIFF (will silently corrupt past 4 GB).
+     FORCE — always emit BigTIFF (useful for round-trip tests on small data).
+*/
+#define TIFF_BIGTIFF_AUTO   0
+#define TIFF_BIGTIFF_OFF    1
+#define TIFF_BIGTIFF_FORCE  2
+
 /* ---- Reader ---- */
 
 typedef struct TiffReader TiffReader;
@@ -84,11 +93,24 @@ typedef struct TiffWriter TiffWriter;
    gt: 6-element affine transform (NULL for default identity)
    nodata: nodata value (NaN = no GDAL_NODATA tag)
    use_deflate: 1 to DEFLATE-compress strips
-   pixel_type: one of TIFF_PIXEL_* constants */
+   pixel_type: one of TIFF_PIXEL_* constants
+
+   Auto-promotes to BigTIFF when the expected raw payload exceeds the
+   classic-TIFF 4 GB ceiling (minus a small header budget). Use
+   tiff_writer_open_ex to force a particular mode. */
 int tiff_writer_open(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
                            int use_deflate, int pixel_type);
+
+/* Like tiff_writer_open, but with explicit control over BigTIFF dispatch.
+   bigtiff_mode: TIFF_BIGTIFF_AUTO (default), TIFF_BIGTIFF_OFF, or
+                 TIFF_BIGTIFF_FORCE. */
+int tiff_writer_open_ex(const char *path, TiffWriter **out,
+                        int64_t width, int64_t height, int n_bands,
+                        const double *gt, double nodata,
+                        int use_deflate, int pixel_type,
+                        int bigtiff_mode);
 
 /* Attach GDAL_METADATA XML to be written into tag 42112.
    Must be called before tiff_writer_finish(). */

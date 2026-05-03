@@ -5,6 +5,7 @@
 #include "csv_scan.h"
 #include "sql_scan.h"
 #include "sql_write.h"
+#include "tiff_format.h"
 #include "tiff_scan.h"
 #include "tiff_write.h"
 #include "vtr_write.h"
@@ -65,14 +66,15 @@ typedef struct {
     int epsg_geographic;
     int epsg_projected;
     const char *crs_citation;
+    int bigtiff_mode;  /* TIFF_BIGTIFF_* */
 } TiffTypedCtx;
 
 static void tiff_typed_writer(VecNode *node, const char *path, void *ctx) {
     TiffTypedCtx *tc = (TiffTypedCtx *)ctx;
-    tiff_write_node_typed(node, path, tc->use_deflate, tc->pixel_type,
-                          tc->metadata_xml,
-                          tc->epsg_geographic, tc->epsg_projected,
-                          tc->crs_citation);
+    tiff_write_node_typed_ex(node, path, tc->use_deflate, tc->pixel_type,
+                             tc->metadata_xml,
+                             tc->epsg_geographic, tc->epsg_projected,
+                             tc->crs_citation, tc->bigtiff_mode);
 }
 
 typedef struct {
@@ -479,7 +481,8 @@ SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path_sexp,
                         SEXP compress_sexp, SEXP pixel_type_sexp,
                         SEXP metadata_sexp,
                         SEXP epsg_geog_sexp, SEXP epsg_proj_sexp,
-                        SEXP crs_citation_sexp) {
+                        SEXP crs_citation_sexp,
+                        SEXP bigtiff_sexp) {
     TiffTypedCtx ctx;
     ctx.use_deflate = Rf_asLogical(compress_sexp);
     ctx.pixel_type = Rf_asInteger(pixel_type_sexp);
@@ -493,6 +496,18 @@ SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path_sexp,
     if (ctx.epsg_projected  == NA_INTEGER) ctx.epsg_projected  = 0;
     ctx.crs_citation = (crs_citation_sexp == R_NilValue)
                         ? NULL : CHAR(STRING_ELT(crs_citation_sexp, 0));
+
+    /* bigtiff: integer 0/1/2 = AUTO/OFF/FORCE. Defaults to AUTO when NULL. */
+    ctx.bigtiff_mode = TIFF_BIGTIFF_AUTO;
+    if (bigtiff_sexp != R_NilValue) {
+        int bm = Rf_asInteger(bigtiff_sexp);
+        if (bm == NA_INTEGER) bm = TIFF_BIGTIFF_AUTO;
+        if (bm == TIFF_BIGTIFF_OFF || bm == TIFF_BIGTIFF_FORCE
+            || bm == TIFF_BIGTIFF_AUTO) {
+            ctx.bigtiff_mode = bm;
+        }
+    }
+
     return write_node_dispatch(node_xptr, path_sexp, tiff_typed_writer, &ctx);
 }
 

@@ -11,10 +11,19 @@ void tiff_write_node(VecNode *node, const char *path, int use_deflate);
 
 /* Write with explicit pixel type (TIFF_PIXEL_*) and optional GDAL_METADATA.
    metadata_xml may be NULL. epsg_geographic / epsg_projected are passed
-   to tiff_writer_set_crs (pass 0 for either to omit). citation may be NULL. */
+   to tiff_writer_set_crs (pass 0 for either to omit). citation may be NULL.
+   BigTIFF dispatch defaults to AUTO. */
 void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
                            int pixel_type, const char *metadata_xml,
                            int epsg_geographic, int epsg_projected,
                            const char *crs_citation);
+
+/* Like tiff_write_node_typed but with explicit BigTIFF dispatch
+   (TIFF_BIGTIFF_AUTO / TIFF_BIGTIFF_OFF / TIFF_BIGTIFF_FORCE). */
+void tiff_write_node_typed_ex(VecNode *node, const char *path, int use_deflate,
+                              int pixel_type, const char *metadata_xml,
+                              int epsg_geographic, int epsg_projected,
+                              const char *crs_citation,
+                              int bigtiff_mode);
 
 #endif /* VECTRA_TIFF_WRITE_H */

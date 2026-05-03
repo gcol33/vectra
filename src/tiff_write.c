@@ -101,6 +101,16 @@ void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
                            int pixel_type, const char *metadata_xml,
                            int epsg_geographic, int epsg_projected,
                            const char *crs_citation) {
+    tiff_write_node_typed_ex(node, path, use_deflate, pixel_type, metadata_xml,
+                             epsg_geographic, epsg_projected, crs_citation,
+                             TIFF_BIGTIFF_AUTO);
+}
+
+void tiff_write_node_typed_ex(VecNode *node, const char *path, int use_deflate,
+                              int pixel_type, const char *metadata_xml,
+                              int epsg_geographic, int epsg_projected,
+                              const char *crs_citation,
+                              int bigtiff_mode) {
     const VecSchema *schema = &node->output_schema;
     int n_cols = schema->n_cols;
 
@@ -218,9 +228,9 @@ void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
     else if (pixel_type == TIFF_PIXEL_UINT8)  nodata_val = 255.0;
     else if (pixel_type == TIFF_PIXEL_UINT16) nodata_val = 65535.0;
 
-    if (tiff_writer_open(path, &writer, width, height, n_bands,
-                                gt, nodata_val, use_deflate,
-                                pixel_type) != 0) {
+    if (tiff_writer_open_ex(path, &writer, width, height, n_bands,
+                            gt, nodata_val, use_deflate,
+                            pixel_type, bigtiff_mode) != 0) {
         const char *msg = writer ? tiff_writer_errmsg(writer) : "unknown";
         tiff_writer_close(writer);
         vectra_error("write_tiff failed: %s", msg);

@@ -11,6 +11,7 @@ write_tiff(
   pixel_type = "float64",
   metadata = NULL,
   crs = NULL,
+  bigtiff = "auto",
   ...
 )
 }
@@ -34,6 +35,13 @@ named fields \code{epsg}, \code{geographic} (\code{TRUE}/\code{FALSE}), and opti
 \code{citation}. Codes that are not auto-classified as projected/geographic
 default to projected; pass \code{geographic = TRUE} to override.
 Use \code{\link[=tiff_crs]{tiff_crs()}} to read it back.}
+
+\item{bigtiff}{Controls BigTIFF dispatch. \code{"auto"} (default) emits BigTIFF
+when the expected raw payload would exceed the classic-TIFF 4 GB
+ceiling, otherwise emits classic TIFF. \code{TRUE} forces BigTIFF (magic
+\code{0x002B}, 64-bit offsets), useful for round-trip tests on small data.
+\code{FALSE} forces classic TIFF — beware that classic TIFF will silently
+corrupt outputs larger than 4 GB.}
 
 \item{...}{Reserved for future use.}
 }

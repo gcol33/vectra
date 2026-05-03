@@ -33,7 +33,7 @@ SEXP C_write_tiff(SEXP node_xptr, SEXP path, SEXP compress);
 SEXP C_write_tiff_typed(SEXP node_xptr, SEXP path, SEXP compress,
                         SEXP pixel_type, SEXP metadata,
                         SEXP epsg_geographic, SEXP epsg_projected,
-                        SEXP crs_citation);
+                        SEXP crs_citation, SEXP bigtiff);
 SEXP C_tiff_read_metadata(SEXP path);
 SEXP C_tiff_read_crs(SEXP path);
 SEXP C_write_vtr_node(SEXP node_xptr, SEXP path, SEXP batch_size, SEXP compress,
