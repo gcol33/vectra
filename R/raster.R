@@ -313,6 +313,11 @@ vec_to_tiff <- function(r, path,
 #' @param path Output `.vec` path.
 #' @param dtype Storage dtype (see `vec_write_raster`).
 #' @param tile_size Tile edge in pixels.
+#' @param layout Tile layout — one of `"image"` (default; one tile per
+#'   `(band, time, ty, tx)`, optimal for "give me one full image at time
+#'   T" reads) or `"pixel"` (Phase 6b; one tile per `(band, ty, tx)`
+#'   holding the full time stack as `[tw*th, n_time]`, optimal for "give
+#'   me the time series at pixel `(x, y)`" reads).
 #' @param extent,gt,epsg,nodata,band_names,compression Same semantics as
 #'   `vec_write_raster()`.
 #' @return Invisible `NULL`.
@@ -320,6 +325,7 @@ vec_to_tiff <- function(r, path,
 vec_write_time_cube <- function(x, times, path,
                                 dtype       = "f32",
                                 tile_size   = 512L,
+                                layout      = c("image", "pixel"),
                                 extent      = NULL,
                                 gt          = NULL,
                                 epsg        = 0L,
@@ -358,20 +364,118 @@ vec_write_time_cube <- function(x, times, path,
 
   compression <- match.arg(compression)
   comp_code <- switch(compression, fast = 0L, balanced = 1L, max = 2L)
+  layout <- match.arg(layout)
 
-  .Call(C_vec_write_time_cube,
-        path,
-        data_vec,
-        c(width, height, n_bands, n_time),
-        as.numeric(times),
-        as.character(dtype),
-        as.integer(tile_size),
-        as.numeric(gt),
-        as.integer(epsg),
-        as.numeric(nodata),
-        band_names,
-        comp_code)
+  if (layout == "image") {
+    .Call(C_vec_write_time_cube,
+          path,
+          data_vec,
+          c(width, height, n_bands, n_time),
+          as.numeric(times),
+          as.character(dtype),
+          as.integer(tile_size),
+          as.numeric(gt),
+          as.integer(epsg),
+          as.numeric(nodata),
+          band_names,
+          comp_code)
+  } else {
+    .Call(C_vec_write_pixel_cube,
+          path,
+          data_vec,
+          c(width, height, n_bands, n_time),
+          as.numeric(times),
+          as.character(dtype),
+          as.integer(tile_size),
+          as.numeric(gt),
+          as.integer(epsg),
+          as.numeric(nodata),
+          band_names,
+          comp_code)
+  }
   invisible(NULL)
+}
+
+#' Read the full time series at a single pixel from a .vec time cube
+#'
+#' Returns a numeric vector of length `n_time` — one value per time step
+#' recorded in the file, in ascending time-stamp order.
+#'
+#' For pixel-major files (written with
+#' `vec_write_time_cube(layout = "pixel")`) this is the optimal access
+#' pattern: a single tile decode yields all time values for the pixel.
+#' For image-major files the reader scans the index for distinct time
+#' stamps, decodes one spatial tile per stamp, and extracts the pixel
+#' from each — correct but `n_time` slower than the optimal layout.
+#'
+#' @param r A `vectra_raster` from `vec_open_raster()`.
+#' @param x,y Pixel coordinates. Either both `x` and `y` (CRS units; the
+#'   geotransform is used to map to col/row) or both `col` and `row`
+#'   (1-based pixel indices).
+#' @param col,row 1-based pixel coordinates (alternative to x/y).
+#' @param band Band index (1-based).
+#' @param level Overview level. Default 0.
+#' @return A numeric vector of length `n_time`. NA marks pixels outside
+#'   the raster or matching nodata. The corresponding time stamps can
+#'   be obtained from `vec_raster_times(r, band, level)`.
+#' @export
+vec_read_pixel_series <- function(r, x = NULL, y = NULL,
+                                  col = NULL, row = NULL,
+                                  band = 1L, level = 0L) {
+  if (!inherits(r, "vectra_raster"))
+    stop("r must be a vectra_raster")
+
+  if (!is.null(x) && !is.null(y)) {
+    if (length(x) != 1L || length(y) != 1L)
+      stop("x and y must be scalars; use vapply() for multi-pixel reads")
+    gt <- r$gt
+    if (gt[2L] == 0 || gt[6L] == 0)
+      stop("geotransform missing scale terms; pass col/row directly")
+    col <- as.integer(floor((x - gt[1L]) / gt[2L])) + 1L
+    row <- as.integer(floor((y - gt[4L]) / gt[6L])) + 1L
+  }
+  if (is.null(col) || is.null(row))
+    stop("either (x, y) or (col, row) must be supplied")
+
+  .Call(C_vec_read_pixel_series,
+        r$ptr,
+        as.integer(col), as.integer(row),
+        as.integer(band), as.integer(level))
+}
+
+#' Distinct time stamps stored in a .vec time cube
+#'
+#' Returns the ascending vector of time stamps recorded for the given
+#' (band, level). Pixel-major files store one consolidated table; image-
+#' major files derive the list from the per-tile time field.
+#'
+#' @param r A `vectra_raster`.
+#' @param band 1-based band index.
+#' @param level Overview level.
+#' @return Numeric vector of stamps (length 0 when the file has no time
+#'   information).
+#' @export
+vec_raster_times <- function(r, band = 1L, level = 0L) {
+  if (!inherits(r, "vectra_raster"))
+    stop("r must be a vectra_raster")
+  out <- .Call(C_vec_raster_times, r$ptr,
+               as.integer(band), as.integer(level))
+  if (is.null(out)) numeric(0) else out
+}
+
+#' Tile layout of an open .vec raster
+#'
+#' Returns `"image"` (default Phase 6 layout — one tile per
+#' `(band, time, ty, tx)`) or `"pixel"` (Phase 6b transpose layout — one
+#' tile per `(band, ty, tx)` holding the full time stack).
+#'
+#' @param r A `vectra_raster`.
+#' @return Character(1) `"image"` or `"pixel"`.
+#' @export
+vec_raster_layout <- function(r) {
+  if (!inherits(r, "vectra_raster"))
+    stop("r must be a vectra_raster")
+  .Call(C_vec_raster_layout, r$ptr)
 }
 
 #' Read a single time slice from a .vec time cube

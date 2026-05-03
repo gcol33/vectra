@@ -590,3 +590,181 @@ test_that("terra can ingest pixel values via point extraction (smoke test)", {
   ## Both pipelines should report the f32-quantized matrix at pixel centers.
   expect_equal(ours, theirs, tolerance = 1e-6)
 })
+
+# ---------------------------------------------------------------------------
+# Phase 6b — pixel-time-series transpose layout
+# ---------------------------------------------------------------------------
+
+# Helper: build a 4D cube where each (row, col, band, time) cell has a
+# unique distinguishable value. We use the same formula in every test so
+# round-trip equality checks are easy to interpret.
+make_cube <- function(rows, cols, bands, n_time) {
+  arr <- array(0, dim = c(rows, cols, bands, n_time))
+  for (t in seq_len(n_time)) {
+    for (b in seq_len(bands)) {
+      arr[, , b, t] <- matrix(seq_len(rows * cols) * (10 * t + b),
+                              rows, cols)
+    }
+  }
+  arr
+}
+
+test_that("pixel-major time cube round-trips per slice", {
+  arr <- make_cube(rows = 8, cols = 10, bands = 2, n_time = 3)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(2020, 2021, 2022), path = tmp,
+                      dtype = "f64", layout = "pixel")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+
+  expect_equal(vec_raster_layout(r), "pixel")
+  expect_equal(vec_raster_times(r), c(2020, 2021, 2022))
+
+  for (t_val in c(2020, 2021, 2022)) {
+    for (b in 1:2) {
+      out <- vec_read_time_slice(r, time = t_val, band = b)
+      expect_equal(out, arr[, , b, t_val - 2019],
+                   info = sprintf("time=%d band=%d", t_val, b))
+    }
+  }
+})
+
+test_that("pixel-major default layout is 'image' (no opt-in -> image)", {
+  arr <- make_cube(rows = 6, cols = 6, bands = 1, n_time = 2)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(1, 2), path = tmp, dtype = "f64")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+  expect_equal(vec_raster_layout(r), "image")
+})
+
+test_that("vec_read_pixel_series matches vec_read_time_slice (pixel layout)", {
+  arr <- make_cube(rows = 7, cols = 9, bands = 2, n_time = 4)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = 1:4, path = tmp, dtype = "f64",
+                      layout = "pixel")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+
+  ## For every pixel, read_pixel_series should match the column of values
+  ## you'd assemble by calling vec_read_time_slice four times.
+  for (b in 1:2) {
+    for (rr in c(1L, 4L, 7L)) {
+      for (cc in c(1L, 5L, 9L)) {
+        series <- vec_read_pixel_series(r, col = cc, row = rr, band = b)
+        ## Direct check against the source array.
+        expect_equal(series, arr[rr, cc, b, ],
+                     info = sprintf("band=%d row=%d col=%d", b, rr, cc))
+        ## Cross-check: assemble the same vector from time-slice reads.
+        slice <- numeric(4)
+        for (t in 1:4) {
+          slice[t] <- vec_read_time_slice(r, time = t, band = b)[rr, cc]
+        }
+        expect_equal(series, slice, info = "slice consistency")
+      }
+    }
+  }
+})
+
+test_that("vec_read_pixel_series falls back to image-major files", {
+  ## For image-major, the function decodes one tile per distinct time
+  ## stamp and extracts a single sample. Slow-but-correct.
+  arr <- make_cube(rows = 5, cols = 5, bands = 1, n_time = 3)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(100, 200, 300), path = tmp,
+                      dtype = "f64", layout = "image")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+
+  expect_equal(vec_raster_layout(r), "image")
+  series <- vec_read_pixel_series(r, col = 3L, row = 2L, band = 1L)
+  expect_equal(series, arr[2, 3, 1, ])
+  expect_equal(vec_raster_times(r), c(100, 200, 300))
+})
+
+test_that("pixel-major edge tiles round-trip with non-square remainders", {
+  ## tile_size 4 against a 7x10 raster -> 2x3 tiles with edge tile widths
+  ## of 4, 4, 2 and edge tile heights of 4, 3.
+  arr <- make_cube(rows = 7, cols = 10, bands = 1, n_time = 2)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(1, 2), path = tmp,
+                      dtype = "f64", tile_size = 4L, layout = "pixel")
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+
+  ## Pixel in the bottom-right edge tile.
+  series <- vec_read_pixel_series(r, col = 10L, row = 7L, band = 1L)
+  expect_equal(series, arr[7, 10, 1, ])
+
+  ## Full-raster window at t=2.
+  out <- vec_read_time_slice(r, time = 2)
+  expect_equal(out, arr[, , 1, 2])
+})
+
+test_that("pixel-major nodata round-trips through the time stack", {
+  arr <- make_cube(rows = 5, cols = 5, bands = 1, n_time = 3)
+  arr[3, 3, 1, 2] <- -9999    # nodata at single (row, col, time)
+  arr[1, 1, 1, ] <- -9999     # nodata at all times for one pixel
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(1, 2, 3), path = tmp,
+                      dtype = "i32", layout = "pixel", nodata = -9999)
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+
+  ## The single-cell nodata becomes NA on read; the other two stamps
+  ## round-trip the original cube values.
+  s_centre <- vec_read_pixel_series(r, col = 3L, row = 3L, band = 1L)
+  expect_equal(s_centre[1], arr[3, 3, 1, 1])
+  expect_true(is.na(s_centre[2]))
+  expect_equal(s_centre[3], arr[3, 3, 1, 3])
+
+  ## All-nodata pixel returns NA at every time step.
+  s_corner <- vec_read_pixel_series(r, col = 1L, row = 1L, band = 1L)
+  expect_true(all(is.na(s_corner)))
+})
+
+test_that("pixel-major and image-major produce equivalent slices", {
+  arr <- make_cube(rows = 6, cols = 8, bands = 2, n_time = 3)
+  tmp_img <- tempfile(fileext = ".vec")
+  tmp_pix <- tempfile(fileext = ".vec")
+  on.exit(unlink(c(tmp_img, tmp_pix)))
+  vec_write_time_cube(arr, times = c(10, 20, 30), path = tmp_img,
+                      dtype = "f64", layout = "image")
+  vec_write_time_cube(arr, times = c(10, 20, 30), path = tmp_pix,
+                      dtype = "f64", layout = "pixel")
+  ri <- vec_open_raster(tmp_img)
+  rp <- vec_open_raster(tmp_pix)
+  on.exit({ vec_close_raster(ri); vec_close_raster(rp); unlink(c(tmp_img, tmp_pix)) },
+          add = TRUE)
+
+  for (t_val in c(10, 20, 30)) {
+    for (b in 1:2) {
+      img <- vec_read_time_slice(ri, time = t_val, band = b)
+      pix <- vec_read_time_slice(rp, time = t_val, band = b)
+      expect_equal(img, pix, info = sprintf("t=%d b=%d", t_val, b))
+    }
+  }
+})
+
+test_that("vec_read_pixel_series via x/y coordinates uses the geotransform", {
+  arr <- make_cube(rows = 4, cols = 5, bands = 1, n_time = 2)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp))
+  vec_write_time_cube(arr, times = c(1, 2), path = tmp,
+                      dtype = "f64", layout = "pixel",
+                      extent = c(0, 0, 5, 4))
+  r <- vec_open_raster(tmp)
+  on.exit({ vec_close_raster(r); unlink(tmp) }, add = TRUE)
+
+  ## Pixel center (2.5, 1.5) -> col = 3, row = 3 (R indexing) since y=1.5
+  ## maps to row = floor((1.5 - 4)/-1) + 1 = floor(2.5) + 1 = 3.
+  ## col = floor((2.5 - 0)/1) + 1 = 3.
+  series <- vec_read_pixel_series(r, x = 2.5, y = 1.5, band = 1L)
+  expect_equal(series, arr[3, 3, 1, ])
+})

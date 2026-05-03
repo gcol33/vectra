@@ -867,3 +867,178 @@ SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
     vecr_reader_close(r);
     return R_NilValue;
 }
+
+/* ====================================================================== */
+/*  Phase 6b — pixel-time-series transpose layout                          */
+/* ====================================================================== */
+
+/*
+ * C_vec_write_pixel_cube(path, data, dims, times, dtype, tile_size,
+ *                        gt, epsg, nodata, band_names, compression)
+ *
+ *   data : numeric vector of length width*height*n_bands*n_time, ordered
+ *          [time][band][row][col] (col fastest) — same layout the
+ *          time-cube R wrapper produces.
+ *   dims : integer(4) = c(width, height, n_bands, n_time)
+ *   times: numeric(n_time) — int64-friendly (truncated via (int64_t)).
+ *
+ * Writes a pixel-major .vec raster: each spatial tile holds the full
+ * (tw*th, n_time) time stack contiguously.
+ */
+SEXP C_vec_write_pixel_cube(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
+                            SEXP times_sexp, SEXP dtype_sexp,
+                            SEXP tile_size_sexp,
+                            SEXP gt_sexp, SEXP epsg_sexp, SEXP nodata_sexp,
+                            SEXP band_names_sexp, SEXP compression_sexp) {
+    const char *path = CHAR(STRING_ELT(path_sexp, 0));
+    int *dims = INTEGER(dims_sexp);
+    int64_t width   = (int64_t)dims[0];
+    int64_t height  = (int64_t)dims[1];
+    int     n_bands = dims[2];
+    int     n_time  = dims[3];
+
+    int64_t expected = width * height * (int64_t)n_bands * (int64_t)n_time;
+    if (Rf_xlength(data_sexp) != expected)
+        vectra_error("vec_write_pixel_cube: data length mismatch");
+    if (Rf_xlength(times_sexp) != n_time)
+        vectra_error("vec_write_pixel_cube: times length must match n_time");
+
+    uint8_t dt = dtype_from_string(CHAR(STRING_ELT(dtype_sexp, 0)));
+    if (dt == 0)
+        vectra_error("vec_write_pixel_cube: unknown dtype");
+
+    uint16_t tile_size = (uint16_t)Rf_asInteger(tile_size_sexp);
+    int32_t  epsg = (int32_t)Rf_asInteger(epsg_sexp);
+    double   nodata = Rf_asReal(nodata_sexp);
+
+    const double *gt = NULL;
+    if (TYPEOF(gt_sexp) == REALSXP && Rf_xlength(gt_sexp) == 6)
+        gt = REAL(gt_sexp);
+
+    char **band_names = NULL;
+    if (TYPEOF(band_names_sexp) == STRSXP &&
+        Rf_xlength(band_names_sexp) == n_bands) {
+        band_names = (char **)calloc((size_t)n_bands, sizeof(char *));
+        if (!band_names) vectra_error("alloc failed");
+        for (int i = 0; i < n_bands; ++i)
+            band_names[i] = (char *)CHAR(STRING_ELT(band_names_sexp, i));
+    }
+
+    /* Cast doubles -> sample dtype once for the whole array. */
+    int64_t total = expected;
+    size_t  esz   = vecr_dtype_size(dt);
+    void   *buf   = malloc((size_t)total * esz);
+    if (!buf) {
+        free(band_names);
+        vectra_error("alloc failed for cube buffer");
+    }
+    cast_doubles_to_dtype(REAL(data_sexp), total, dt, buf);
+
+    /* Times -> int64. */
+    int64_t *times = (int64_t *)malloc((size_t)n_time * sizeof(int64_t));
+    if (!times) {
+        free(buf); free(band_names);
+        vectra_error("alloc failed for times");
+    }
+    const double *tsrc = REAL(times_sexp);
+    for (int t = 0; t < n_time; ++t) times[t] = (int64_t)tsrc[t];
+
+    char errbuf[256] = {0};
+    int rc = vecr_write_pixel_cube(path, width, height, n_bands, tile_size, dt,
+                                   gt, epsg, nodata,
+                                   (const char *const *)band_names,
+                                   times, n_time, buf,
+                                   Rf_asInteger(compression_sexp),
+                                   errbuf, sizeof(errbuf));
+    free(times); free(buf); free(band_names);
+    if (rc != 0) {
+        vectra_error("vec_write_pixel_cube: %s",
+                     errbuf[0] ? errbuf : "unknown");
+    }
+    return R_NilValue;
+}
+
+/*
+ * C_vec_read_pixel_series(ptr, col, row, band, level)
+ *
+ * Returns a numeric vector of length n_time. For pixel-major files this
+ * is one tile decode; for image-major files it scans every distinct
+ * .time stamp matching (band, level) and decodes the spatial tile
+ * containing the pixel for each.
+ */
+SEXP C_vec_read_pixel_series(SEXP ptr_sexp,
+                             SEXP col_sexp, SEXP row_sexp,
+                             SEXP band_sexp, SEXP level_sexp) {
+    VecrReader *r = unwrap_vecr_reader(ptr_sexp);
+    int64_t col   = (int64_t)Rf_asInteger(col_sexp) - 1;
+    int64_t row   = (int64_t)Rf_asInteger(row_sexp) - 1;
+    int     band  = Rf_asInteger(band_sexp) - 1;
+    int     level = Rf_asInteger(level_sexp);
+
+    int n_time = vecr_reader_distinct_times(r, band, (uint8_t)level, NULL, 0);
+    if (n_time <= 0)
+        vectra_error("vec_read_pixel_series: no tiles match band/level");
+
+    uint8_t dt  = vecr_reader_dtype(r);
+    size_t  esz = vecr_dtype_size(dt);
+
+    void *raw = malloc((size_t)n_time * esz);
+    if (!raw) vectra_error("alloc failed");
+
+    if (vecr_reader_read_pixel_series(r, col, row, band, (uint8_t)level, raw) != 0) {
+        const char *msg = vecr_reader_errmsg(r);
+        free(raw);
+        vectra_error("vec_read_pixel_series: %s", msg);
+    }
+
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, n_time));
+    cast_dtype_to_doubles(raw, n_time, dt, REAL(out));
+    int has_nd = vecr_reader_has_nodata(r);
+    double nd  = vecr_reader_nodata(r);
+    double *p  = REAL(out);
+    for (int t = 0; t < n_time; ++t) {
+        double v = p[t];
+        if (has_nd) {
+            if (dt == VECR_DT_F64 || dt == VECR_DT_F32) {
+                if (isnan(nd) ? isnan(v) : v == nd) p[t] = NA_REAL;
+            } else if (v == nd) p[t] = NA_REAL;
+        } else if ((dt == VECR_DT_F64 || dt == VECR_DT_F32) && isnan(v)) {
+            p[t] = NA_REAL;
+        }
+    }
+    free(raw);
+    UNPROTECT(1);
+    return out;
+}
+
+/*
+ * C_vec_raster_times(ptr, band, level) -> numeric(n_time) of distinct
+ * time stamps for the given band/level. Pixel-major files always have
+ * one consolidated table; image-major files derive theirs from the
+ * tile index. Returns NULL when there are no tiles or no time stamps.
+ */
+SEXP C_vec_raster_times(SEXP ptr_sexp, SEXP band_sexp, SEXP level_sexp) {
+    VecrReader *r = unwrap_vecr_reader(ptr_sexp);
+    int band  = Rf_asInteger(band_sexp) - 1;
+    int level = Rf_asInteger(level_sexp);
+    if (band < 0) band = 0;
+    if (level < 0) level = 0;
+
+    int n = vecr_reader_distinct_times(r, band, (uint8_t)level, NULL, 0);
+    if (n <= 0) return R_NilValue;
+    int64_t *buf = (int64_t *)R_alloc(n, sizeof(int64_t));
+    int got = vecr_reader_distinct_times(r, band, (uint8_t)level, buf, n);
+    if (got <= 0) return R_NilValue;
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, got));
+    double *p = REAL(out);
+    for (int i = 0; i < got; ++i) p[i] = (double)buf[i];
+    UNPROTECT(1);
+    return out;
+}
+
+/* C_vec_raster_layout(ptr) -> character(1) "image" or "pixel". */
+SEXP C_vec_raster_layout(SEXP ptr_sexp) {
+    VecrReader *r = unwrap_vecr_reader(ptr_sexp);
+    return Rf_mkString(vecr_reader_layout(r) == VECR_LAYOUT_PIXEL
+                       ? "pixel" : "image");
+}

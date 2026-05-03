@@ -657,6 +657,10 @@ struct VecrReader {
     char  *band_names_blob;
     char **band_names;      /* pointers into band_names_blob; NULL if absent */
 
+    /* Pixel-major files only: int64 times[] table, length = hdr.n_time.
+     * NULL when layout=IMAGE. */
+    int64_t *times;
+
     /* Tile index, sorted as written. We also build a per-level 2-D lookup
      * table keyed by (level, band, ty, tx) -> entry to avoid a linear
      * scan per window read. */
@@ -770,6 +774,7 @@ void vecr_reader_close(VecrReader *r) {
     if (r->fp) fclose(r->fp);
     free(r->band_names_blob);
     free(r->band_names);
+    free(r->times);
     free(r->index);
     if (r->lookup) {
         for (int L = 0; L < r->hdr.n_levels; ++L) {
@@ -831,6 +836,23 @@ int vecr_reader_open(const char *path, VecrReader **out) {
         while (p < end && b < r->hdr.n_bands) {
             r->band_names[b++] = p;
             p += strlen(p) + 1;
+        }
+    }
+
+    /* Pixel-major time table (Phase 6b). Stored at hdr.times_offset, length
+     * = hdr.n_time int64 stamps. */
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL && r->hdr.n_time > 0) {
+        if (r->hdr.times_offset <= 0) {
+            vecr_reader_set_err(r, "pixel-layout: times_offset missing"); return -1;
+        }
+        r->times = (int64_t *)malloc((size_t)r->hdr.n_time * sizeof(int64_t));
+        if (!r->times) { vecr_reader_set_err(r, "alloc times"); return -1; }
+        if (vecr_fseek64(r->fp, r->hdr.times_offset, SEEK_SET) != 0) {
+            vecr_reader_set_err(r, "seek to times failed"); return -1;
+        }
+        size_t tb = (size_t)r->hdr.n_time * sizeof(int64_t);
+        if (fread(r->times, 1, tb, r->fp) != tb) {
+            vecr_reader_set_err(r, "short read on times"); return -1;
         }
     }
 
@@ -900,10 +922,73 @@ int vecr_reader_open(const char *path, VecrReader **out) {
 
 int vecr_reader_has_time(VecrReader *r) {
     if (!r) return 0;
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL && r->hdr.n_time > 0) return 1;
     for (int64_t i = 0; i < r->n_index; ++i) {
         if (r->index[i].time != 0) return 1;
     }
     return 0;
+}
+
+uint8_t vecr_reader_layout(VecrReader *r) {
+    return r ? r->hdr.layout : VECR_LAYOUT_IMAGE;
+}
+
+uint32_t vecr_reader_n_time(VecrReader *r) {
+    return r ? r->hdr.n_time : 0;
+}
+
+const int64_t *vecr_reader_times(VecrReader *r) {
+    return r ? r->times : NULL;
+}
+
+int vecr_reader_distinct_times(VecrReader *r, int band, uint8_t level,
+                               int64_t *out_times, int n_max) {
+    if (!r) return 0;
+    if (band < 0 || band >= r->hdr.n_bands) return 0;
+    if (level >= r->hdr.n_levels) return 0;
+
+    /* Pixel-major files store the time table at the file level. */
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL) {
+        int n = (int)r->hdr.n_time;
+        if (out_times) {
+            int copy = n < n_max ? n : n_max;
+            memcpy(out_times, r->times, (size_t)copy * sizeof(int64_t));
+        }
+        return n;
+    }
+
+    /* Image-major: dedupe scan of the index. Tiny n by construction. */
+    int64_t cap = 16;
+    int64_t *seen = (int64_t *)malloc((size_t)cap * sizeof(int64_t));
+    if (!seen) return 0;
+    int n = 0;
+    for (int64_t i = 0; i < r->n_index; ++i) {
+        VecrIndexEntry *e = &r->index[i];
+        if (e->level != level) continue;
+        if ((int)e->band != band) continue;
+        int hit = 0;
+        for (int t = 0; t < n; ++t) if (seen[t] == e->time) { hit = 1; break; }
+        if (hit) continue;
+        if (n == cap) {
+            cap *= 2;
+            int64_t *p = (int64_t *)realloc(seen, (size_t)cap * sizeof(int64_t));
+            if (!p) { free(seen); return n; }
+            seen = p;
+        }
+        seen[n++] = e->time;
+    }
+    /* Sort ascending. */
+    for (int i = 1; i < n; ++i) {
+        int64_t key = seen[i]; int j = i - 1;
+        while (j >= 0 && seen[j] > key) { seen[j + 1] = seen[j]; --j; }
+        seen[j + 1] = key;
+    }
+    if (out_times) {
+        int copy = n < n_max ? n : n_max;
+        memcpy(out_times, seen, (size_t)copy * sizeof(int64_t));
+    }
+    free(seen);
+    return n;
 }
 
 int64_t       vecr_reader_width(VecrReader *r)    { return r ? r->hdr.width : 0; }
@@ -1134,6 +1219,19 @@ static int vecr_reader_decode_window_entries(
     return rc_global;
 }
 
+/* Pixel-major helpers — full definitions live after the image-major
+ * read paths so they can share the codec helpers above. */
+static int vecr_reader_read_window_t_pixel(VecrReader *r,
+                                           int band, uint8_t level,
+                                           int64_t time,
+                                           int64_t col_min, int64_t row_min,
+                                           int64_t col_max, int64_t row_max,
+                                           void *out);
+static int vecr_decode_pixel_tile(VecrReader *r,
+                                  const VecrIndexEntry *e,
+                                  void *out_buf,
+                                  int64_t tw, int64_t th, int n_time);
+
 int vecr_reader_read_window(VecrReader *r,
                             int band, uint8_t level,
                             int64_t col_min, int64_t row_min,
@@ -1152,6 +1250,15 @@ int vecr_reader_read_window(VecrReader *r,
     if (col_min > col_max || row_min > row_max) {
         vecr_reader_set_err(r, "empty window");
         return -1;
+    }
+
+    /* Pixel-major files have no concept of "untimed"; vec_read_window
+     * defaults to the first time stamp. Callers wanting a specific stamp
+     * use vecr_reader_read_window_t. */
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL && r->hdr.n_time > 0) {
+        return vecr_reader_read_window_t_pixel(r, band, level, r->times[0],
+                                                col_min, row_min,
+                                                col_max, row_max, out);
     }
 
     uint8_t  dt  = r->hdr.sample_dtype;
@@ -1246,6 +1353,14 @@ int vecr_reader_read_window_t(VecrReader *r,
         vecr_reader_set_err(r, "empty window"); return -1;
     }
 
+    /* Pixel-major files: completely different decode path — every overlapping
+     * spatial tile holds the full time stack; we extract one time slice. */
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL) {
+        return vecr_reader_read_window_t_pixel(r, band, level, time,
+                                                col_min, row_min,
+                                                col_max, row_max, out);
+    }
+
     /* Mirror read_window's intersection / nodata-fill / tile-range setup,
      * then build the entries[] from a linear scan of the index. */
     uint8_t  dt  = r->hdr.sample_dtype;
@@ -1327,6 +1442,112 @@ int vecr_reader_read_window_t(VecrReader *r,
     return 0;
 }
 
+/* Pixel-major time-slice read.
+ *
+ * Each overlapping spatial tile holds a (tw*th, n_time) cube; for the
+ * requested time stamp we look up the time index, then decode the tile
+ * and copy column `t_idx` into the output. Slow relative to image-major
+ * (full tile decode for one slice) but correct.
+ */
+static int vecr_reader_read_window_t_pixel(VecrReader *r,
+                                           int band, uint8_t level,
+                                           int64_t time,
+                                           int64_t col_min, int64_t row_min,
+                                           int64_t col_max, int64_t row_max,
+                                           void *out) {
+    uint8_t  dt  = r->hdr.sample_dtype;
+    size_t   esz = vecr_dtype_size(dt);
+    int      has_nd = (r->hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
+    double   nd  = r->hdr.nodata;
+    uint16_t TS  = r->hdr.tile_size;
+    int      n_time = (int)r->hdr.n_time;
+    int64_t  W = (r->hdr.width  + ((int64_t)1 << level) - 1) >> level;
+    int64_t  H = (r->hdr.height + ((int64_t)1 << level) - 1) >> level;
+    if (W < 1) W = 1;
+    if (H < 1) H = 1;
+
+    /* Find the time index. */
+    int t_idx = -1;
+    for (int t = 0; t < n_time; ++t) {
+        if (r->times[t] == time) { t_idx = t; break; }
+    }
+    if (t_idx < 0) {
+        snprintf(r->errbuf, sizeof(r->errbuf),
+                 "no time index matches %lld", (long long)time);
+        return -1;
+    }
+
+    int64_t out_w = col_max - col_min + 1;
+    int64_t out_h = row_max - row_min + 1;
+    int64_t out_n = out_w * out_h;
+
+    /* Pre-fill nodata. */
+    double fill = has_nd ? nd : NAN;
+    if (vecr_dtype_is_float(dt)) {
+        if (dt == VECR_DT_F32) {
+            float ff = (float)fill;
+            float *p = (float *)out;
+            for (int64_t i = 0; i < out_n; ++i) p[i] = ff;
+        } else {
+            double *p = (double *)out;
+            for (int64_t i = 0; i < out_n; ++i) p[i] = fill;
+        }
+    } else if (has_nd) {
+        for (int64_t i = 0; i < out_n; ++i) vecr_store_double(out, i, dt, fill);
+    } else {
+        memset(out, 0, (size_t)out_n * esz);
+    }
+
+    int64_t cmin = col_min < 0 ? 0 : col_min;
+    int64_t rmin = row_min < 0 ? 0 : row_min;
+    int64_t cmax = col_max >= W ? W - 1 : col_max;
+    int64_t rmax = row_max >= H ? H - 1 : row_max;
+    if (cmin > cmax || rmin > rmax) return 0;
+
+    int64_t tx_lo = cmin / TS, tx_hi = cmax / TS;
+    int64_t ty_lo = rmin / TS, ty_hi = rmax / TS;
+
+    /* Per-tile decode, slice extraction. */
+    void *tile_buf = malloc((size_t)TS * (size_t)TS * (size_t)n_time * esz);
+    if (!tile_buf) { vecr_reader_set_err(r, "alloc pixel tile"); return -1; }
+
+    for (int64_t ty = ty_lo; ty <= ty_hi; ++ty) {
+        int64_t tile_r0 = ty * TS;
+        int64_t th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
+        for (int64_t tx = tx_lo; tx <= tx_hi; ++tx) {
+            int64_t tile_c0 = tx * TS;
+            int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
+
+            VecrIndexEntry *e = r->lookup[level][band][ty * r->tiles_x[level] + tx];
+            if (!e) continue;
+            if (vecr_decode_pixel_tile(r, e, tile_buf, tw, th, n_time) != 0) {
+                free(tile_buf);
+                return -1;
+            }
+            int64_t r_lo = tile_r0 > rmin ? tile_r0 : rmin;
+            int64_t r_hi = (tile_r0 + th - 1) < rmax ? (tile_r0 + th - 1) : rmax;
+            int64_t c_lo = tile_c0 > cmin ? tile_c0 : cmin;
+            int64_t c_hi = (tile_c0 + tw - 1) < cmax ? (tile_c0 + tw - 1) : cmax;
+            for (int64_t rr = r_lo; rr <= r_hi; ++rr) {
+                int64_t lr = rr - tile_r0;
+                int64_t dst_r = rr - row_min;
+                for (int64_t cc = c_lo; cc <= c_hi; ++cc) {
+                    int64_t lc = cc - tile_c0;
+                    int64_t k  = lr * tw + lc;
+                    int64_t dst_c = cc - col_min;
+                    const uint8_t *sp = (const uint8_t *)tile_buf
+                        + (size_t)(k * n_time + t_idx) * esz;
+                    uint8_t *dp = (uint8_t *)out
+                        + (size_t)(dst_r * out_w + dst_c) * esz;
+                    memcpy(dp, sp, esz);
+                }
+            }
+        }
+    }
+    free(tile_buf);
+    return 0;
+}
+
 /* Map (x, y) in CRS to (col, row) using the geotransform.
  *   col = (x - gt[0]) / gt[1]
  *   row = (y - gt[3]) / gt[5]
@@ -1359,10 +1580,16 @@ int vecr_reader_extract_points(VecrReader *r, int band,
     const double *gt = r->hdr.geotransform;
 
     /* Iterate points; cache the most recently decoded tile to amortize
-     * decode cost when many points fall in the same tile. */
+     * decode cost when many points fall in the same tile. Pixel-major
+     * files decode (tw*th, n_time) tiles and read column 0 (i.e. the
+     * first time stamp) — point extraction has no time argument. */
+    int is_pixel = (r->hdr.layout == VECR_LAYOUT_PIXEL && r->hdr.n_time > 0);
+    int n_time = is_pixel ? (int)r->hdr.n_time : 1;
+
     int64_t cached_tx = -1, cached_ty = -1;
     int64_t cached_tw = 0, cached_th = 0;
-    void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
+    size_t  tile_bytes = (size_t)TS * (size_t)TS * (size_t)n_time * esz;
+    void *tile_buf = malloc(tile_bytes);
     if (!tile_buf) { vecr_reader_set_err(r, "alloc tile buf"); return -1; }
 
     for (int64_t i = 0; i < n_points; ++i) {
@@ -1385,20 +1612,26 @@ int vecr_reader_extract_points(VecrReader *r, int band,
             int64_t tile_c0 = tx * TS, tile_r0 = ty * TS;
             cached_tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
             cached_th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
-            if (vecr_reader_decode_tile(r, e, tile_buf, cached_tw, cached_th) != 0) {
-                free(tile_buf);
-                return -1;
-            }
+            int decode_rc = is_pixel
+                ? vecr_decode_pixel_tile(r, e, tile_buf,
+                                          cached_tw, cached_th, n_time)
+                : vecr_reader_decode_tile(r, e, tile_buf,
+                                           cached_tw, cached_th);
+            if (decode_rc != 0) { free(tile_buf); return -1; }
             cached_tx = tx; cached_ty = ty;
         }
 
         int64_t lc = col - cached_tx * TS;
         int64_t lr = row - cached_ty * TS;
         int64_t k  = lr * cached_tw + lc;
-        if (vecr_is_nodata(tile_buf, k, dt, has_nd, nd)) {
+        /* Index into the tile buffer:
+         *   image-major:  k                  (one sample per pixel)
+         *   pixel-major:  k * n_time + 0     (first time stamp) */
+        int64_t buf_idx = is_pixel ? (k * n_time) : k;
+        if (vecr_is_nodata(tile_buf, buf_idx, dt, has_nd, nd)) {
             out[i] = NAN;
         } else {
-            double v = vecr_load_double(tile_buf, k, dt);
+            double v = vecr_load_double(tile_buf, buf_idx, dt);
             if (vecr_dtype_is_float(dt) && isnan(v)) out[i] = NAN;
             else                                     out[i] = v;
         }
@@ -1784,4 +2017,549 @@ int vecr_build_overviews(const char *path,
     }
     fclose(fp);
     return 0;
+}
+
+/* ====================================================================== */
+/*  Pixel-major time cube (Phase 6b)                                       */
+/* ====================================================================== */
+/*
+ * Pixel-major layout reorganises the time-cube so each on-disk tile holds
+ *   [tw*th, n_time]
+ * samples row-major (the time axis is the inner dim — a single pixel's
+ * full time series is one contiguous run of n_time samples).
+ *
+ * One index entry per (level, band, ty, tx); the per-tile .time field is
+ * always 0 because the tile spans every time stamp. The actual timestamps
+ * are stored once at the file level in a int64[n_time] table at
+ * hdr.times_offset.
+ *
+ * The encoder uses the same VecrCodec candidate set as image-major tiles
+ * but tags each block as TDC_LAYOUT_RASTER_2D with shape (tw*th, n_time).
+ * Predictor + byte-shuffle still help because adjacent rows of the encoded
+ * matrix correspond to neighbouring pixels at the same time step (i.e.
+ * 1-D spatial adjacency along the rows axis) — close to image-major in
+ * compressibility while granting O(1) pixel-time-series reads.
+ */
+
+/* Encode + write one pixel-major tile. Returns 0 on success. */
+static int vecr_emit_pixel_tile(FILE *fp,
+                                uint8_t dt, int compression,
+                                int level, int band,
+                                int64_t tx, int64_t ty,
+                                int64_t tw, int64_t th, int n_time,
+                                const void *tile_buf, /* (tw*th, n_time) */
+                                double t_min, double t_max, int64_t n_valid,
+                                VecrIndexEntry *out_entry,
+                                char *errbuf, size_t errbuf_size) {
+    tdc_block blk = {0};
+    blk.data = (void *)tile_buf;
+    blk.dtype = vecr_to_tdc(dt);
+    blk.layout = TDC_LAYOUT_RASTER_2D;
+    blk.shape.rank = 2;
+    blk.shape.dim[0] = tw * th;     /* "rows" = pixels in spatial block */
+    blk.shape.dim[1] = n_time;      /* "cols" = time steps */
+    tdc_shape_set_contiguous(&blk.shape);
+
+    VecrCodec cands[8];
+    int n_cands = 0;
+    vecr_build_candidates(dt, compression, cands, &n_cands);
+
+    int best = -1;
+    tdc_buffer best_buf = {0};
+    for (int i = 0; i < n_cands; ++i) {
+        tdc_buffer bb = {0};
+        tdc_status st = vecr_try_spec(&blk, &cands[i].spec, &bb);
+        if (st != TDC_OK) continue;
+        if (best < 0 || bb.size < best_buf.size) {
+            free(best_buf.data);
+            best_buf = bb;
+            best = i;
+        } else {
+            free(bb.data);
+        }
+    }
+    if (best < 0) {
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size, "all codec candidates failed (pixel tile)");
+        return -1;
+    }
+
+    int64_t off = vecr_ftell64(fp);
+    if (off < 0 || fwrite(best_buf.data, 1, best_buf.size, fp) != best_buf.size) {
+        free(best_buf.data);
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size, "write pixel tile failed");
+        return -1;
+    }
+
+    memset(out_entry, 0, sizeof(*out_entry));
+    out_entry->level   = (uint8_t)level;
+    out_entry->band    = (uint16_t)band;
+    out_entry->tile_x  = (int32_t)tx;
+    out_entry->tile_y  = (int32_t)ty;
+    out_entry->offset  = off;
+    out_entry->size    = (int64_t)best_buf.size;
+    out_entry->n_valid = n_valid;
+    out_entry->time    = 0;        /* layout=PIXEL: one tile spans all times */
+    if (n_valid > 0) {
+        vecr_pack_native(&out_entry->min_bits, t_min, dt);
+        vecr_pack_native(&out_entry->max_bits, t_max, dt);
+    }
+    free(best_buf.data);
+    return 0;
+}
+
+int vecr_write_pixel_cube(const char *path,
+                          int64_t width, int64_t height,
+                          int n_bands, uint16_t tile_size,
+                          uint8_t sample_dtype,
+                          const double *gt, int32_t epsg, double nodata,
+                          const char *const *band_names,
+                          const int64_t *times, int n_time,
+                          const void *data,
+                          int compression,
+                          char *errbuf, size_t errbuf_size) {
+    if (!path) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "null path");
+        return -1;
+    }
+    if (width <= 0 || height <= 0 || n_bands <= 0 || n_time <= 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "non-positive dim");
+        return -1;
+    }
+    size_t esz = vecr_dtype_size(sample_dtype);
+    if (esz == 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "unsupported dtype");
+        return -1;
+    }
+    if (tile_size == 0) tile_size = 512;
+    if (compression != VECR_COMPRESS_BALANCED && compression != VECR_COMPRESS_MAX)
+        compression = VECR_COMPRESS_FAST;
+
+    /* Prepare header. */
+    VecrHeader hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic        = VECR_MAGIC;
+    hdr.version      = VECR_VERSION;
+    hdr.width        = width;
+    hdr.height       = height;
+    hdr.n_bands      = n_bands;
+    hdr.tile_size    = tile_size;
+    hdr.sample_dtype = sample_dtype;
+    hdr.n_levels     = 1;
+    hdr.layout       = VECR_LAYOUT_PIXEL;
+    hdr.n_time       = (uint32_t)n_time;
+    if (gt) {
+        memcpy(hdr.geotransform, gt, sizeof(double) * 6);
+    } else {
+        hdr.geotransform[0] = 0.0; hdr.geotransform[1] = 1.0;
+        hdr.geotransform[2] = 0.0; hdr.geotransform[3] = 0.0;
+        hdr.geotransform[4] = 0.0; hdr.geotransform[5] = 1.0;
+    }
+    if (!isnan(nodata)) {
+        hdr.flags |= VECR_FLAG_HAS_NODATA;
+        hdr.nodata = nodata;
+    } else {
+        hdr.nodata = NAN;
+    }
+    if (epsg > 0) { hdr.flags |= VECR_FLAG_HAS_CRS; hdr.epsg = epsg; }
+
+    /* Band names blob */
+    char *band_names_blob = NULL;
+    int have_band_names = 0;
+    if (band_names) {
+        have_band_names = 1;
+        for (int i = 0; i < n_bands; ++i) if (!band_names[i]) { have_band_names = 0; break; }
+    }
+    if (have_band_names) {
+        size_t total = 0;
+        for (int i = 0; i < n_bands; ++i) total += strlen(band_names[i]) + 1;
+        band_names_blob = (char *)malloc(total ? total : 1);
+        if (!band_names_blob) {
+            if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "alloc band names");
+            return -1;
+        }
+        size_t off = 0;
+        for (int i = 0; i < n_bands; ++i) {
+            size_t L = strlen(band_names[i]) + 1;
+            memcpy(band_names_blob + off, band_names[i], L);
+            off += L;
+        }
+        hdr.band_names_size = (uint32_t)total;
+        hdr.flags |= VECR_FLAG_HAS_BAND_NAMES;
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "fopen failed");
+        free(band_names_blob);
+        return -1;
+    }
+
+    /* Write placeholder header + band names + times table. */
+    static const uint8_t zero_hdr[VECR_HEADER_SIZE] = {0};
+    if (fwrite(zero_hdr, 1, VECR_HEADER_SIZE, fp) != VECR_HEADER_SIZE) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "write header placeholder");
+        fclose(fp); free(band_names_blob); return -1;
+    }
+    if (hdr.band_names_size > 0 &&
+        fwrite(band_names_blob, 1, hdr.band_names_size, fp) != hdr.band_names_size) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "write band names");
+        fclose(fp); free(band_names_blob); return -1;
+    }
+
+    /* times[] table: remap any 0 to 1 to keep the per-tile .time = 0
+     * sentinel meaningful for image-major files (a 0 stamp inside times[]
+     * would be ambiguous). We store the remapped values. */
+    hdr.times_offset = vecr_ftell64(fp);
+    if (hdr.times_offset < 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "ftell failed");
+        fclose(fp); free(band_names_blob); return -1;
+    }
+    int64_t *times_remapped = (int64_t *)malloc((size_t)n_time * sizeof(int64_t));
+    if (!times_remapped) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "alloc times");
+        fclose(fp); free(band_names_blob); return -1;
+    }
+    for (int t = 0; t < n_time; ++t) {
+        int64_t v = times ? times[t] : (int64_t)(t + 1);
+        if (v == 0) v = 1;
+        times_remapped[t] = v;
+    }
+    size_t tb = (size_t)n_time * sizeof(int64_t);
+    if (fwrite(times_remapped, 1, tb, fp) != tb) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "write times");
+        free(times_remapped); fclose(fp); free(band_names_blob); return -1;
+    }
+    free(times_remapped);
+
+    /* Tile grid (level 0 only — overviews would need separate logic). */
+    int has_nd = (hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
+    double nd  = hdr.nodata;
+    uint16_t TS = tile_size;
+    int64_t tiles_x = (width  + TS - 1) / TS;
+    int64_t tiles_y = (height + TS - 1) / TS;
+    int64_t pix_max = (int64_t)TS * TS;
+
+    /* Tile scratch: one full tile of (TS*TS, n_time) samples. */
+    void *tile_buf = malloc((size_t)pix_max * (size_t)n_time * esz);
+    if (!tile_buf) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "alloc tile buf");
+        fclose(fp); free(band_names_blob); return -1;
+    }
+
+    /* Strides through the input data array. The data layout is
+     *   [time][band][row][col] (col fastest).
+     * A single (band, time) slice has band_n = width*height samples. */
+    int64_t band_n     = width * height;
+    int64_t stride_band = band_n;
+    int64_t stride_time = (int64_t)band_n * n_bands;
+
+    /* Index accumulator. */
+    int64_t cap = (int64_t)tiles_x * tiles_y * n_bands;
+    if (cap < 16) cap = 16;
+    VecrIndexEntry *index = (VecrIndexEntry *)malloc((size_t)cap * sizeof(*index));
+    int64_t n_idx = 0;
+    if (!index) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "alloc index");
+        free(tile_buf); fclose(fp); free(band_names_blob); return -1;
+    }
+
+    int rc = 0;
+    for (int b = 0; b < n_bands && rc == 0; ++b) {
+        for (int64_t ty = 0; ty < tiles_y && rc == 0; ++ty) {
+            int64_t r0 = ty * TS;
+            int64_t th = (r0 + TS <= height) ? TS : (height - r0);
+            for (int64_t tx = 0; tx < tiles_x && rc == 0; ++tx) {
+                int64_t c0 = tx * TS;
+                int64_t tw = (c0 + TS <= width) ? TS : (width - c0);
+                int64_t n_pix = tw * th;
+
+                /* Pack this spatial tile across all time steps into
+                 * tile_buf with shape (n_pix, n_time) row-major. The
+                 * source pixel for (band b, time t, local pixel (lr, lc))
+                 * lives at  data + t*stride_time + b*stride_band +
+                 *           (r0+lr)*width + c0+lc. */
+                int64_t n_valid = 0;
+                double t_min = INFINITY, t_max = -INFINITY;
+                int    saw_finite = 0;
+                for (int64_t lr = 0; lr < th; ++lr) {
+                    for (int64_t lc = 0; lc < tw; ++lc) {
+                        int64_t k = lr * tw + lc;          /* pixel index in tile */
+                        for (int t = 0; t < n_time; ++t) {
+                            const uint8_t *src_t = (const uint8_t *)data
+                                + (size_t)(t * stride_time + b * stride_band
+                                           + (r0 + lr) * width + c0 + lc) * esz;
+                            uint8_t *dst = (uint8_t *)tile_buf
+                                + (size_t)(k * n_time + t) * esz;
+                            memcpy(dst, src_t, esz);
+
+                            /* min/max/n_valid scan as we go. */
+                            if (vecr_is_nodata(src_t, 0, sample_dtype, has_nd, nd))
+                                continue;
+                            double v = vecr_load_double(src_t, 0, sample_dtype);
+                            if (vecr_dtype_is_float(sample_dtype) && isnan(v))
+                                continue;
+                            ++n_valid;
+                            if (!saw_finite || v < t_min) t_min = v;
+                            if (!saw_finite || v > t_max) t_max = v;
+                            saw_finite = 1;
+                        }
+                    }
+                }
+
+                if (n_idx == cap) {
+                    cap *= 2;
+                    VecrIndexEntry *p = (VecrIndexEntry *)realloc(
+                        index, (size_t)cap * sizeof(*index));
+                    if (!p) { rc = -1; break; }
+                    index = p;
+                }
+                if (vecr_emit_pixel_tile(fp, sample_dtype, compression,
+                                          0 /*level*/, b, tx, ty,
+                                          tw, th, n_time,
+                                          tile_buf,
+                                          t_min, t_max, n_valid,
+                                          &index[n_idx],
+                                          errbuf, errbuf_size) != 0) {
+                    rc = -1; break;
+                }
+                ++n_idx;
+            }
+        }
+    }
+    free(tile_buf);
+
+    if (rc != 0) { free(index); fclose(fp); free(band_names_blob); return -1; }
+
+    /* Write index, patch header. */
+    int64_t idx_off = vecr_ftell64(fp);
+    if (idx_off < 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "ftell on index");
+        free(index); fclose(fp); free(band_names_blob); return -1;
+    }
+    if (n_idx > 0) {
+        size_t bytes = (size_t)n_idx * sizeof(VecrIndexEntry);
+        if (fwrite(index, 1, bytes, fp) != bytes) {
+            if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "write index");
+            free(index); fclose(fp); free(band_names_blob); return -1;
+        }
+    }
+    free(index);
+
+    hdr.index_offset  = idx_off;
+    hdr.index_size    = (int64_t)n_idx * VECR_INDEX_ENTRY_SIZE;
+    hdr.n_tiles_total = n_idx;
+
+    if (vecr_fseek64(fp, 0, SEEK_SET) != 0 ||
+        fwrite(&hdr, 1, VECR_HEADER_SIZE, fp) != VECR_HEADER_SIZE ||
+        fflush(fp) != 0) {
+        if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "patch header");
+        fclose(fp); free(band_names_blob); return -1;
+    }
+    fclose(fp);
+    free(band_names_blob);
+    return 0;
+}
+
+/* ====================================================================== */
+/*  Pixel-time-series reader (Phase 6b)                                    */
+/* ====================================================================== */
+
+/* Decode a pixel-major tile: (tw*th, n_time) row-major. */
+static int vecr_decode_pixel_tile(VecrReader *r,
+                                  const VecrIndexEntry *e,
+                                  void *out_buf,
+                                  int64_t tw, int64_t th, int n_time) {
+    if (!e) return -1;
+    uint8_t *bytes = (uint8_t *)malloc((size_t)e->size);
+    if (!bytes) { vecr_reader_set_err(r, "alloc pixel tile bytes"); return -1; }
+    if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0 ||
+        fread(bytes, 1, (size_t)e->size, r->fp) != (size_t)e->size) {
+        free(bytes);
+        vecr_reader_set_err(r, "read pixel tile failed");
+        return -1;
+    }
+    tdc_block dst = {0};
+    dst.data = out_buf;
+    dst.dtype = vecr_to_tdc(r->hdr.sample_dtype);
+    dst.layout = TDC_LAYOUT_RASTER_2D;
+    dst.shape.rank = 2;
+    dst.shape.dim[0] = tw * th;
+    dst.shape.dim[1] = n_time;
+    tdc_shape_set_contiguous(&dst.shape);
+    tdc_status st = tdc_decode_block_into(bytes, (size_t)e->size, &dst);
+    free(bytes);
+    if (st != TDC_OK) {
+        snprintf(r->errbuf, sizeof(r->errbuf),
+                 "tdc_decode_block_into failed (pixel tile, status=%d)", (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+int vecr_reader_read_pixel_series(VecrReader *r,
+                                  int64_t col, int64_t row,
+                                  int band, uint8_t level,
+                                  void *out) {
+    if (!r || !out) return -1;
+    if (band < 0 || band >= r->hdr.n_bands) {
+        vecr_reader_set_err(r, "band out of range"); return -1;
+    }
+    if (level >= r->hdr.n_levels) {
+        vecr_reader_set_err(r, "level out of range"); return -1;
+    }
+
+    uint8_t  dt  = r->hdr.sample_dtype;
+    size_t   esz = vecr_dtype_size(dt);
+    uint16_t TS  = r->hdr.tile_size;
+    int64_t  W = (r->hdr.width  + ((int64_t)1 << level) - 1) >> level;
+    int64_t  H = (r->hdr.height + ((int64_t)1 << level) - 1) >> level;
+    if (W < 1) W = 1;
+    if (H < 1) H = 1;
+
+    /* How many time steps does the output have?
+     *   layout=PIXEL  -> hdr.n_time
+     *   layout=IMAGE  -> count of distinct stamps in the index for (level, band) */
+    int n_time = 0;
+    int64_t *image_times = NULL;   /* layout=IMAGE only: ascending stamps */
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL) {
+        n_time = (int)r->hdr.n_time;
+    } else {
+        /* Gather all distinct .time values for tiles at (band, level). 0
+         * stamps are valid (image-major files written without time). */
+        int64_t cap = 16;
+        image_times = (int64_t *)malloc((size_t)cap * sizeof(int64_t));
+        if (!image_times) { vecr_reader_set_err(r, "alloc image_times"); return -1; }
+        for (int64_t i = 0; i < r->n_index; ++i) {
+            VecrIndexEntry *e = &r->index[i];
+            if (e->level != level) continue;
+            if ((int)e->band != band) continue;
+            int seen = 0;
+            for (int t = 0; t < n_time; ++t)
+                if (image_times[t] == e->time) { seen = 1; break; }
+            if (seen) continue;
+            if (n_time == cap) {
+                cap *= 2;
+                int64_t *p = (int64_t *)realloc(image_times,
+                                                (size_t)cap * sizeof(int64_t));
+                if (!p) { free(image_times);
+                          vecr_reader_set_err(r, "alloc image_times grow");
+                          return -1; }
+                image_times = p;
+            }
+            image_times[n_time++] = e->time;
+        }
+        if (n_time == 0) {
+            free(image_times);
+            vecr_reader_set_err(r, "no tiles match band/level");
+            return -1;
+        }
+        /* Sort ascending so output ordering is deterministic. */
+        for (int i = 1; i < n_time; ++i) {
+            int64_t key = image_times[i]; int j = i - 1;
+            while (j >= 0 && image_times[j] > key) {
+                image_times[j + 1] = image_times[j]; --j;
+            }
+            image_times[j + 1] = key;
+        }
+    }
+
+    /* Out-of-extent or out-of-tile: nodata-fill output. */
+    int has_nd = (r->hdr.flags & VECR_FLAG_HAS_NODATA) ? 1 : 0;
+    double nd  = r->hdr.nodata;
+    double fill = has_nd ? nd : NAN;
+    if (col < 0 || col >= W || row < 0 || row >= H) {
+        if (vecr_dtype_is_float(dt)) {
+            if (dt == VECR_DT_F32) {
+                float ff = (float)fill;
+                float *p = (float *)out;
+                for (int t = 0; t < n_time; ++t) p[t] = ff;
+            } else {
+                double *p = (double *)out;
+                for (int t = 0; t < n_time; ++t) p[t] = fill;
+            }
+        } else if (has_nd) {
+            for (int t = 0; t < n_time; ++t) vecr_store_double(out, t, dt, fill);
+        } else {
+            memset(out, 0, (size_t)n_time * esz);
+        }
+        free(image_times);
+        return 0;
+    }
+
+    int64_t tx = col / TS, ty = row / TS;
+    int64_t tile_c0 = tx * TS, tile_r0 = ty * TS;
+    int64_t tw = (tile_c0 + TS <= W) ? TS : (W - tile_c0);
+    int64_t th = (tile_r0 + TS <= H) ? TS : (H - tile_r0);
+    int64_t local_c = col - tile_c0;
+    int64_t local_r = row - tile_r0;
+    int64_t k = local_r * tw + local_c;
+
+    if (r->hdr.layout == VECR_LAYOUT_PIXEL) {
+        VecrIndexEntry *e = r->lookup[level][band][ty * r->tiles_x[level] + tx];
+        if (!e) {
+            /* Missing tile -> fill nodata. */
+            if (vecr_dtype_is_float(dt)) {
+                if (dt == VECR_DT_F32) {
+                    float ff = (float)fill;
+                    float *p = (float *)out;
+                    for (int t = 0; t < n_time; ++t) p[t] = ff;
+                } else {
+                    double *p = (double *)out;
+                    for (int t = 0; t < n_time; ++t) p[t] = fill;
+                }
+            } else if (has_nd) {
+                for (int t = 0; t < n_time; ++t) vecr_store_double(out, t, dt, fill);
+            } else {
+                memset(out, 0, (size_t)n_time * esz);
+            }
+            return 0;
+        }
+        void *tile_buf = malloc((size_t)tw * th * (size_t)n_time * esz);
+        if (!tile_buf) { vecr_reader_set_err(r, "alloc pixel tile"); return -1; }
+        if (vecr_decode_pixel_tile(r, e, tile_buf, tw, th, n_time) != 0) {
+            free(tile_buf); return -1;
+        }
+        const uint8_t *src = (const uint8_t *)tile_buf
+            + (size_t)(k * n_time) * esz;
+        memcpy(out, src, (size_t)n_time * esz);
+        free(tile_buf);
+        return 0;
+    }
+
+    /* layout=IMAGE: decode one tile per distinct time stamp, extract one
+     * sample. Used for cross-layout compatibility — slow but correct. */
+    void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
+    if (!tile_buf) {
+        free(image_times);
+        vecr_reader_set_err(r, "alloc image tile"); return -1;
+    }
+    int rc = 0;
+    for (int t = 0; t < n_time; ++t) {
+        VecrIndexEntry *match = NULL;
+        for (int64_t i = 0; i < r->n_index; ++i) {
+            VecrIndexEntry *e = &r->index[i];
+            if (e->level != level) continue;
+            if ((int)e->band != band) continue;
+            if (e->time != image_times[t]) continue;
+            if (e->tile_x != (int32_t)tx || e->tile_y != (int32_t)ty) continue;
+            match = e; break;
+        }
+        if (!match) {
+            /* No tile at (tx, ty) for this stamp -> nodata sample. */
+            if (has_nd) vecr_store_double(out, t, dt, fill);
+            else if (vecr_dtype_is_float(dt)) vecr_store_double(out, t, dt, NAN);
+            else memset((uint8_t *)out + (size_t)t * esz, 0, esz);
+            continue;
+        }
+        if (vecr_reader_decode_tile(r, match, tile_buf, tw, th) != 0) {
+            rc = -1; break;
+        }
+        const uint8_t *sp = (const uint8_t *)tile_buf + (size_t)k * esz;
+        memcpy((uint8_t *)out + (size_t)t * esz, sp, esz);
+    }
+    free(tile_buf);
+    free(image_times);
+    return rc;
 }
