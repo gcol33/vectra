@@ -10,6 +10,7 @@ vec_write_time_cube(
   path,
   dtype = "f32",
   tile_size = 512L,
+  layout = c("image", "pixel"),
   extent = NULL,
   gt = NULL,
   epsg = 0L,
@@ -29,6 +30,12 @@ in the unit of your choice (epoch ms, year, step index).}
 \item{dtype}{Storage dtype (see \code{vec_write_raster}).}
 
 \item{tile_size}{Tile edge in pixels.}
+
+\item{layout}{Tile layout — one of \code{"image"} (default; one tile per
+\verb{(band, time, ty, tx)}, optimal for "give me one full image at time
+T" reads) or \code{"pixel"} (Phase 6b; one tile per \verb{(band, ty, tx)}
+holding the full time stack as \verb{[tw*th, n_time]}, optimal for "give
+me the time series at pixel \verb{(x, y)}" reads).}
 
 \item{extent, gt, epsg, nodata, band_names, compression}{Same semantics as
 \code{vec_write_raster()}.}

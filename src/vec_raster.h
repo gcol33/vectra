@@ -52,6 +52,22 @@
 #define VECR_FLAG_HAS_CRS         0x0002u
 #define VECR_FLAG_HAS_BAND_NAMES  0x0004u
 
+/* Tile layout (Phase 6b). Image-major is the default and matches every
+ * file written before Phase 6b — the reserved byte that holds the layout
+ * code was previously zero-filled, so old files read as VECR_LAYOUT_IMAGE
+ * without a format-version bump.
+ *
+ *   IMAGE  one tile per (level, band, time, ty, tx). Optimal for "give
+ *          me one full image at time T" queries.
+ *   PIXEL  one tile per (level, band, ty, tx); each tile holds the full
+ *          time stack for that spatial block, stored as
+ *          [tw*th, n_time] row-major (the time axis is the inner dim so
+ *          a single pixel's time series is one contiguous run). Optimal
+ *          for "give me the time series at pixel (x, y)" queries.
+ */
+#define VECR_LAYOUT_IMAGE  0
+#define VECR_LAYOUT_PIXEL  1
+
 /* Compression knobs.
  *
  *   FAST     One spec, no probing. PRED_2D + ZIGZAG/BYTE_SHUFFLE + LZ.
@@ -124,7 +140,12 @@ typedef struct {
  *         96     8  index_offset
  *        104     8  index_size
  *        112     8  n_tiles_total
- *        120    40  _reserved
+ *        120     1  layout           (Phase 6b; VECR_LAYOUT_IMAGE/PIXEL)
+ *        121     3  _pad_layout
+ *        124     4  n_time           (Phase 6b; 0 unless layout=PIXEL)
+ *        128     8  times_offset     (Phase 6b; file offset of the times[]
+ *                                     section when layout=PIXEL, else 0)
+ *        136    24  _reserved
  */
 typedef struct {
     uint32_t magic;
@@ -143,7 +164,11 @@ typedef struct {
     int64_t  index_offset;
     int64_t  index_size;
     int64_t  n_tiles_total;
-    uint8_t  _reserved[40];
+    uint8_t  layout;             /* VECR_LAYOUT_IMAGE (0) or VECR_LAYOUT_PIXEL (1) */
+    uint8_t  _pad_layout[3];
+    uint32_t n_time;             /* >0 only for layout=PIXEL */
+    int64_t  times_offset;       /* file offset of int64 times[] (PIXEL only) */
+    uint8_t  _reserved[24];
 } VecrHeader;
 
 /* Returns the size in bytes of one sample of the given VECR_DT_* dtype.
@@ -291,6 +316,73 @@ int vecr_reader_read_window_t(VecrReader *r,
 
 /* Returns 1 if the file has any tile with time != 0. */
 int vecr_reader_has_time(VecrReader *r);
+
+/* ---------- Pixel-major time cube (Phase 6b) ---------------------------- */
+
+/* Returns the file's layout code (VECR_LAYOUT_IMAGE / VECR_LAYOUT_PIXEL). */
+uint8_t vecr_reader_layout(VecrReader *r);
+
+/* Returns the number of time steps stored in a pixel-major file (>0 only
+ * when layout=VECR_LAYOUT_PIXEL). Image-major files return 0. */
+uint32_t vecr_reader_n_time(VecrReader *r);
+
+/* Returns a pointer to the int64 times[] table (length = n_time) for
+ * pixel-major files; NULL for image-major. Pointer is owned by the
+ * reader. */
+const int64_t *vecr_reader_times(VecrReader *r);
+
+/* Count distinct .time stamps in the index for the given (band, level).
+ * Used by image-major callers to size the output of read_pixel_series.
+ * Returns 0 if no tiles match. Each output slot in `out_times` (length
+ * n_max) gets the next ascending stamp; pass NULL for `out_times` to
+ * just count. */
+int vecr_reader_distinct_times(VecrReader *r, int band, uint8_t level,
+                               int64_t *out_times, int n_max);
+
+/* Read the full time series at a single pixel (col, row) for one band at
+ * the requested overview level. Output buffer must hold n_time samples
+ * in the file's sample dtype.
+ *
+ *   - Layout=PIXEL: decodes the single tile that contains the pixel and
+ *     copies n_time consecutive samples — the optimal path.
+ *   - Layout=IMAGE: scans the index for tiles matching the band+level
+ *     across all distinct time stamps, decodes one tile per time step,
+ *     extracts the pixel — slow but correct fall-through.
+ *
+ * Pixels outside the raster extent get nodata-filled (NaN for floats).
+ * Returns 0 on success, -1 on error. */
+int vecr_reader_read_pixel_series(VecrReader *r,
+                                  int64_t col, int64_t row,
+                                  int band, uint8_t level,
+                                  void *out);
+
+/* Write a 4D time cube using the pixel-major layout. Same arguments as
+ * vecr_writer_open + a times[] vector and the full (rows*cols*bands*time)
+ * data array (band-major then row-major within each band, time outer).
+ * The writer reorganises the data into one tile per spatial block holding
+ * [tw*th, n_time] samples row-major.
+ *
+ *   path,width,height,n_bands,tile_size,sample_dtype,gt,epsg,nodata,
+ *   band_names — same as vecr_writer_open.
+ *   times    : int64[n_time] time stamps (caller-supplied; not interpreted
+ *              other than 0 being remapped to 1 for parity with image-major).
+ *   n_time   : number of time steps.
+ *   data     : (n_bands * n_time * height * width) samples in sample_dtype,
+ *              ordered [time][band][row][col] — i.e. the same memory
+ *              layout the image-major time-cube writer expects.
+ *   compression : VECR_COMPRESS_* code.
+ *
+ * Returns 0 on success, -1 on error. */
+int vecr_write_pixel_cube(const char *path,
+                          int64_t width, int64_t height,
+                          int n_bands, uint16_t tile_size,
+                          uint8_t sample_dtype,
+                          const double *gt, int32_t epsg, double nodata,
+                          const char *const *band_names,
+                          const int64_t *times, int n_time,
+                          const void *data,
+                          int compression,
+                          char *errbuf, size_t errbuf_size);
 
 /* Extract values at n_points (xs, ys) from band b at level 0. Coordinates
  * are in CRS units (consumed via the geotransform). Output is doubles for
