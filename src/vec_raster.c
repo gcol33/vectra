@@ -1,5 +1,5 @@
 /*
- * vec_raster.c — VECR raster writer/reader (Phase 1).
+ * vec_raster.c — VECR raster writer/reader.
  *
  * Each tile becomes a self-describing tdc_block_record. The codec chain is
  * PRED_2D Paeth + (ZIGZAG for signed ints) + BYTE_SHUFFLE + LZ — chosen to
@@ -7,11 +7,16 @@
  * baseline before Phase 2 codec probing lands.
  *
  * The file layout, index entry layout, and header layout are documented in
- * vec_raster.h. The implementation here owns the file I/O (FILE*-based, not
- * mmap; mmap is a Phase 5 perf concern), the tile iteration, and the tdc
- * encode/decode bridge. Edge tiles smaller than tile_size are encoded at
- * their actual dimensions — the decoder reads the dim[] from the block
- * header rather than assuming square tiles.
+ * vec_raster.h. The writer owns FILE*-based stdio I/O. The reader memory-
+ * maps the entire file read-only (Phase 5b) so OpenMP threads can decode
+ * tiles in parallel via plain memcpy from the mapped region — no fread
+ * critical section, no per-thread seek/read serialisation. If mmap fails
+ * (e.g. file > 2 GiB on a 32-bit host) the reader falls back to fread+
+ * fseek under an OpenMP critical guard, matching the Phase 5a behaviour.
+ *
+ * Edge tiles smaller than tile_size are encoded at their actual dimensions
+ * — the decoder reads the dim[] from the block header rather than
+ * assuming square tiles.
  */
 
 #include "vec_raster.h"
@@ -27,6 +32,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#  include <io.h>
+#else
+#  include <fcntl.h>
+#  include <unistd.h>
+#  include <sys/mman.h>
+#  include <sys/stat.h>
+#endif
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(VecrHeader) == VECR_HEADER_SIZE,
@@ -624,6 +639,20 @@ struct VecrReader {
 
     VecrHeader hdr;
 
+    /* Phase 5b: whole-file memory map. mmap_base is the start of the file
+     * in process address space; mmap_len is the file size. When non-NULL
+     * the parallel decode path reads tile bytes via memcpy from
+     * mmap_base + entry->offset (no syscalls, no cross-thread fread
+     * critical section). NULL means mmap was not available for this file
+     * (e.g. > 2 GiB on a 32-bit host); the reader falls back to fread+
+     * fseek under an OpenMP critical region. */
+    void   *mmap_base;
+    size_t  mmap_len;
+#if defined(_WIN32)
+    HANDLE  win_file;     /* CreateFileA handle */
+    HANDLE  win_mapping;  /* CreateFileMappingA handle */
+#endif
+
     /* Band-name table built from the band-names blob. Indexed [0..n_bands). */
     char  *band_names_blob;
     char **band_names;      /* pointers into band_names_blob; NULL if absent */
@@ -643,6 +672,89 @@ struct VecrReader {
     VecrIndexEntry ****lookup; /* [level][band][...] */
 };
 
+/* Try to memory-map the open file pointed to by `r->fp` for read access
+ * over [0, file_len). On success populates r->mmap_base / r->mmap_len (and
+ * Windows handles). On failure leaves them NULL/0; the reader falls back
+ * to fread. Never modifies errbuf — mmap failure is a soft fallback. */
+static void vecr_reader_try_mmap(VecrReader *r) {
+    if (!r || !r->fp) return;
+
+    /* Determine file length. */
+    if (vecr_fseek64(r->fp, 0, SEEK_END) != 0) return;
+    int64_t flen = vecr_ftell64(r->fp);
+    if (flen <= 0) return;
+
+#if defined(_WIN32)
+    /* Re-open via Win32 (FILE* doesn't expose a HANDLE portably across
+     * MSVCRT vs UCRT; a fresh CreateFile is simpler and the read-only
+     * sharing flags let our existing FILE* keep working as the fallback
+     * path). */
+    /* We only have the FILE*; recover the path via CRT helpers is not
+     * portable. Instead, the caller passes the path through and we open
+     * a second handle in vecr_reader_open before this function is called.
+     * To keep this function self-contained, we use _get_osfhandle on the
+     * CRT FILE* file descriptor. */
+    int fd = _fileno(r->fp);
+    if (fd < 0) return;
+    HANDLE hfile = (HANDLE)_get_osfhandle(fd);
+    if (hfile == INVALID_HANDLE_VALUE) return;
+
+    /* Duplicate so we own the handle independently of the FILE* lifetime. */
+    HANDLE dup = INVALID_HANDLE_VALUE;
+    if (!DuplicateHandle(GetCurrentProcess(), hfile,
+                         GetCurrentProcess(), &dup,
+                         0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        return;
+    }
+
+    HANDLE hmap = CreateFileMappingA(dup, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hmap) {
+        CloseHandle(dup);
+        return;
+    }
+    void *base = MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, 0);
+    if (!base) {
+        CloseHandle(hmap);
+        CloseHandle(dup);
+        return;
+    }
+    r->win_file    = dup;
+    r->win_mapping = hmap;
+    r->mmap_base   = base;
+    r->mmap_len    = (size_t)flen;
+#else
+    int fd = fileno(r->fp);
+    if (fd < 0) return;
+    /* On 32-bit hosts size_t may not hold the full file length. Refuse to
+     * map in that case and let the fread fallback handle it. */
+    if ((uint64_t)flen > (uint64_t)SIZE_MAX) return;
+    void *base = mmap(NULL, (size_t)flen, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (base == MAP_FAILED) return;
+#  if defined(MADV_RANDOM)
+    /* Random-access advice: tile decode order is window-driven, not
+     * sequential. madvise is best-effort; ignore the return code. */
+    (void)madvise(base, (size_t)flen, MADV_RANDOM);
+#  endif
+    r->mmap_base = base;
+    r->mmap_len  = (size_t)flen;
+#endif
+}
+
+static void vecr_reader_unmap(VecrReader *r) {
+    if (!r || !r->mmap_base) return;
+#if defined(_WIN32)
+    UnmapViewOfFile(r->mmap_base);
+    if (r->win_mapping) CloseHandle(r->win_mapping);
+    if (r->win_file)    CloseHandle(r->win_file);
+    r->win_mapping = NULL;
+    r->win_file    = NULL;
+#else
+    munmap(r->mmap_base, r->mmap_len);
+#endif
+    r->mmap_base = NULL;
+    r->mmap_len  = 0;
+}
+
 static void vecr_reader_set_err(VecrReader *r, const char *msg) {
     if (!r) return;
     snprintf(r->errbuf, sizeof(r->errbuf), "%s", msg);
@@ -654,6 +766,7 @@ const char *vecr_reader_errmsg(VecrReader *r) {
 
 void vecr_reader_close(VecrReader *r) {
     if (!r) return;
+    vecr_reader_unmap(r);
     if (r->fp) fclose(r->fp);
     free(r->band_names_blob);
     free(r->band_names);
@@ -779,6 +892,9 @@ int vecr_reader_open(const char *path, VecrReader **out) {
         if (e->tile_y < 0 || e->tile_y >= r->tiles_y[L]) continue;
         r->lookup[L][e->band][e->tile_y * r->tiles_x[L] + e->tile_x] = e;
     }
+
+    /* Phase 5b: try to mmap the entire file. Soft failure -> fread fallback. */
+    vecr_reader_try_mmap(r);
     return 0;
 }
 
@@ -816,23 +932,37 @@ const char   *vecr_reader_band_name(VecrReader *r, int band) {
     return r->band_names[band];
 }
 
-/* Decode one tile from disk into a tile-sized buffer. Returns 0 on success. */
+/* Decode one tile from disk into a tile-sized buffer. Returns 0 on success.
+ * Uses the mmap region when available (zero-copy view of the encoded
+ * bytes); otherwise falls back to fread+fseek. */
 static int vecr_reader_decode_tile(VecrReader *r,
                                    const VecrIndexEntry *e,
                                    void *out_tile_buf,
                                    int64_t expected_w, int64_t expected_h) {
     if (!e) return -1;
-    uint8_t *bytes = (uint8_t *)malloc((size_t)e->size);
-    if (!bytes) { vecr_reader_set_err(r, "alloc tile bytes"); return -1; }
-    if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0) {
-        free(bytes);
-        vecr_reader_set_err(r, "seek to tile failed");
-        return -1;
-    }
-    if (fread(bytes, 1, (size_t)e->size, r->fp) != (size_t)e->size) {
-        free(bytes);
-        vecr_reader_set_err(r, "short read on tile");
-        return -1;
+
+    const uint8_t *src_bytes = NULL;
+    uint8_t *owned_bytes = NULL;
+    if (r->mmap_base) {
+        if ((uint64_t)e->offset + (uint64_t)e->size > (uint64_t)r->mmap_len) {
+            vecr_reader_set_err(r, "tile offset past mmap end");
+            return -1;
+        }
+        src_bytes = (const uint8_t *)r->mmap_base + (size_t)e->offset;
+    } else {
+        owned_bytes = (uint8_t *)malloc((size_t)e->size);
+        if (!owned_bytes) { vecr_reader_set_err(r, "alloc tile bytes"); return -1; }
+        if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0) {
+            free(owned_bytes);
+            vecr_reader_set_err(r, "seek to tile failed");
+            return -1;
+        }
+        if (fread(owned_bytes, 1, (size_t)e->size, r->fp) != (size_t)e->size) {
+            free(owned_bytes);
+            vecr_reader_set_err(r, "short read on tile");
+            return -1;
+        }
+        src_bytes = owned_bytes;
     }
 
     tdc_block dst = {0};
@@ -844,8 +974,8 @@ static int vecr_reader_decode_tile(VecrReader *r,
     dst.shape.dim[1] = expected_w;
     tdc_shape_set_contiguous(&dst.shape);
 
-    tdc_status st = tdc_decode_block_into(bytes, (size_t)e->size, &dst);
-    free(bytes);
+    tdc_status st = tdc_decode_block_into(src_bytes, (size_t)e->size, &dst);
+    free(owned_bytes);
     if (st != TDC_OK) {
         snprintf(r->errbuf, sizeof(r->errbuf),
                  "tdc_decode_block_into failed (status=%d, tile=(%d,%d))",
@@ -911,32 +1041,53 @@ static int vecr_reader_decode_window_entries(
                     VecrIndexEntry *e = entries[(ty - ty_lo) * n_tx + (tx - tx_lo)];
                     if (!e) continue;
 
-                    uint8_t *bytes = (uint8_t *)malloc((size_t)e->size);
-                    if (!bytes) {
+                    /* Phase 5b: read tile bytes either from mmap (zero-
+                     * syscall, no critical) or, if the file was too large
+                     * to map, fall back to a serialised fread. The
+                     * tdc_decode_block_into call below works the same way
+                     * either way. */
+                    const uint8_t *src_bytes = NULL;
+                    uint8_t *owned_bytes = NULL;
+                    if (r->mmap_base) {
+                        if ((uint64_t)e->offset + (uint64_t)e->size
+                                > (uint64_t)r->mmap_len) {
 #ifdef _OPENMP
-                        #pragma omp atomic write
+                            #pragma omp atomic write
 #endif
-                        rc_global = -1;
-                        continue;
-                    }
-                    int io_ok = 1;
-#ifdef _OPENMP
-                    #pragma omp critical (vecr_fread)
-#endif
-                    {
-                        if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0 ||
-                            fread(bytes, 1, (size_t)e->size, r->fp)
-                                != (size_t)e->size) {
-                            io_ok = 0;
+                            rc_global = -1;
+                            continue;
                         }
-                    }
-                    if (!io_ok) {
-                        free(bytes);
+                        src_bytes = (const uint8_t *)r->mmap_base
+                                    + (size_t)e->offset;
+                    } else {
+                        owned_bytes = (uint8_t *)malloc((size_t)e->size);
+                        if (!owned_bytes) {
 #ifdef _OPENMP
-                        #pragma omp atomic write
+                            #pragma omp atomic write
 #endif
-                        rc_global = -1;
-                        continue;
+                            rc_global = -1;
+                            continue;
+                        }
+                        int io_ok = 1;
+#ifdef _OPENMP
+                        #pragma omp critical (vecr_fread)
+#endif
+                        {
+                            if (vecr_fseek64(r->fp, e->offset, SEEK_SET) != 0 ||
+                                fread(owned_bytes, 1, (size_t)e->size, r->fp)
+                                    != (size_t)e->size) {
+                                io_ok = 0;
+                            }
+                        }
+                        if (!io_ok) {
+                            free(owned_bytes);
+#ifdef _OPENMP
+                            #pragma omp atomic write
+#endif
+                            rc_global = -1;
+                            continue;
+                        }
+                        src_bytes = owned_bytes;
                     }
 
                     tdc_block dst = {0};
@@ -947,9 +1098,9 @@ static int vecr_reader_decode_window_entries(
                     dst.shape.dim[0] = th;
                     dst.shape.dim[1] = tw;
                     tdc_shape_set_contiguous(&dst.shape);
-                    tdc_status st = tdc_decode_block_into(bytes,
+                    tdc_status st = tdc_decode_block_into(src_bytes,
                                                           (size_t)e->size, &dst);
-                    free(bytes);
+                    free(owned_bytes);
                     if (st != TDC_OK) {
 #ifdef _OPENMP
                         #pragma omp atomic write

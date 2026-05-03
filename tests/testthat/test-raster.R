@@ -328,6 +328,53 @@ test_that("parallel tile decode matches serial decode (sufficient tiles)", {
   expect_equal(out, m, tolerance = 0)
 })
 
+test_that("Phase 5b mmap reader: many parallel tile decodes, no race", {
+  ## Phase 5b: with the mmap reader the inner OpenMP loop reads tile
+  ## bytes via memcpy from the mapped region, no fread critical section.
+  ## Build a raster with enough tiles that >= 4 threads each get real
+  ## work (256 tiles via 16x16 grid at tile_size 64), then read multiple
+  ## windows back-to-back. Compares to the serial reference each time
+  ## so any concurrent corruption / off-by-one in the offset arithmetic
+  ## would be caught by an exact-match assertion.
+  prev <- Sys.getenv("OMP_NUM_THREADS", unset = NA)
+  Sys.setenv(OMP_NUM_THREADS = "4")
+  on.exit({
+    if (is.na(prev)) Sys.unsetenv("OMP_NUM_THREADS")
+    else             Sys.setenv(OMP_NUM_THREADS = prev)
+  }, add = TRUE)
+
+  set.seed(42)
+  rows <- 1024L; cols <- 1024L
+  m <- matrix(rnorm(rows * cols), rows, cols)
+  tmp <- tempfile(fileext = ".vec")
+  on.exit(unlink(tmp), add = TRUE)
+  vec_write_raster(m, tmp, dtype = "f64", tile_size = 64L)
+
+  r <- vec_open_raster(tmp)
+  on.exit(vec_close_raster(r), add = TRUE)
+
+  ## Full-window read drives the OpenMP parallel decode with 256 tiles.
+  for (rep in 1:5) {
+    out <- vec_read_window(r)
+    expect_equal(out, m, tolerance = 0)
+  }
+
+  ## Stagger overlapping sub-windows across multiple invocations to
+  ## stress the per-tile mmap pointer arithmetic.
+  windows <- list(
+    list(cols = c(  1L,  512L), rows = c(  1L,  512L)),
+    list(cols = c( 33L,  700L), rows = c(200L, 1024L)),
+    list(cols = c( 64L,  960L), rows = c( 64L,  960L)),
+    list(cols = c(100L,  800L), rows = c( 50L,  900L))
+  )
+  for (w in windows) {
+    sub <- vec_read_window(r, cols = w$cols, rows = w$rows)
+    ref <- m[w$rows[1]:w$rows[2], w$cols[1]:w$cols[2]]
+    expect_equal(dim(sub), dim(ref))
+    expect_equal(sub, ref, tolerance = 0)
+  }
+})
+
 test_that("vec_to_tiff round-trips a single-band raster via terra", {
   skip_if_not_installed("terra")
   m <- matrix(seq(-1, 1, length.out = 30 * 40), 30, 40)
