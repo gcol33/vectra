@@ -83,12 +83,23 @@ typedef struct TiffWriter TiffWriter;
    n_bands: samples per pixel
    gt: 6-element affine transform (NULL for default identity)
    nodata: nodata value (NaN = no GDAL_NODATA tag)
-   use_deflate: 1 to DEFLATE-compress strips
+   use_deflate: 1 to DEFLATE-compress strips/tiles
    pixel_type: one of TIFF_PIXEL_* constants */
 int tiff_writer_open(const char *path, TiffWriter **out,
                            int64_t width, int64_t height, int n_bands,
                            const double *gt, double nodata,
                            int use_deflate, int pixel_type);
+
+/* Create a tiled GeoTIFF writer.
+   tile_width, tile_height: positive multiples of 16 (TIFF spec).
+     Pass 0 for both to use strip layout (equivalent to tiff_writer_open).
+   Edge tiles at the right/bottom of the image are padded with NoData/NaN
+   to full tile size, as required by the TIFF spec. */
+int tiff_writer_open_tiled(const char *path, TiffWriter **out,
+                           int64_t width, int64_t height, int n_bands,
+                           const double *gt, double nodata,
+                           int use_deflate, int pixel_type,
+                           int tile_width, int tile_height);
 
 /* Attach GDAL_METADATA XML to be written into tag 42112.
    Must be called before tiff_writer_finish(). */

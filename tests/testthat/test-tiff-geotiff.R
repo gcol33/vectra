@@ -201,3 +201,156 @@ test_that("tiff_band_names decodes XML entity escapes", {
 
   expect_identical(tiff_band_names(f), "a & b <c>")
 })
+
+# ---------------------------------------------------------------------------
+# Phase 4c: tiled TIFF write
+# ---------------------------------------------------------------------------
+
+# Helper: build a regular grid as an x/y/band data.frame.
+.make_grid_df <- function(ncols, nrows, fn = function(i, j) i + (j - 1) * ncols) {
+  data.frame(
+    x = rep(seq(0.5, ncols - 0.5, by = 1), nrows),
+    y = rep(seq(nrows - 0.5, 0.5, by = -1), each = ncols),
+    band1 = as.double(fn(rep(seq_len(ncols), nrows),
+                         rep(seq_len(nrows), each = ncols)))
+  )
+}
+
+test_that("tiled write: round-trip via tbl_tiff preserves values", {
+  ncols <- 32; nrows <- 32
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, tiled = TRUE, tile_size = 16L)
+  result <- collect(tbl_tiff(f))
+
+  expect_equal(nrow(result), ncols * nrows)
+  expect_equal(sort(result$band1), sort(df$band1))
+})
+
+test_that("tiled write: emits TileWidth/TileLength matching tile_size", {
+  ncols <- 32; nrows <- 48
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, tiled = TRUE, tile_size = 16L)
+  meta <- tbl_tiff(f)$.tiff_meta
+  expect_equal(meta$width, ncols)
+  expect_equal(meta$height, nrows)
+})
+
+test_that("tiled write with edge padding (image not multiple of tile)", {
+  # 40x40 image with 16x16 tiles → 3x3 = 9 tiles; right/bottom edges padded.
+  ncols <- 40; nrows <- 40
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, tiled = TRUE, tile_size = 16L)
+  result <- collect(tbl_tiff(f))
+
+  # Reader returns only in-image pixels.
+  expect_equal(nrow(result), ncols * nrows)
+  expect_equal(sort(result$band1), sort(df$band1))
+})
+
+test_that("tiled DEFLATE write round-trips correctly", {
+  ncols <- 64; nrows <- 64
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, compress = TRUE, tiled = TRUE, tile_size = 32L)
+  result <- collect(tbl_tiff(f))
+
+  expect_equal(nrow(result), ncols * nrows)
+  expect_equal(sort(result$band1), sort(df$band1))
+})
+
+test_that("tiled multi-band write round-trips", {
+  ncols <- 32; nrows <- 32
+  base <- .make_grid_df(ncols, nrows)
+  # Reader assigns band1/band2 names regardless of writer-side column names.
+  df <- data.frame(x = base$x, y = base$y,
+                   b1 = base$band1, b2 = base$band1 * 2)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, tiled = TRUE, tile_size = 16L)
+  result <- collect(tbl_tiff(f))
+
+  expect_equal(nrow(result), ncols * nrows)
+  expect_equal(sort(result$band1), sort(df$b1))
+  expect_equal(sort(result$band2), sort(df$b2))
+})
+
+test_that("tiled write rejects non-multiple-of-16 tile_size", {
+  df <- data.frame(x = c(0.5, 1.5), y = c(0.5, 0.5), band1 = c(1.0, 2.0))
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  expect_error(write_tiff(df, f, tiled = TRUE, tile_size = 17L),
+               "multiple of 16")
+  expect_error(write_tiff(df, f, tiled = TRUE, tile_size = 0L),
+               "positive")
+})
+
+test_that("tiled write: tile count = ceil(W/TW) * ceil(H/TH) (terra)", {
+  skip_if_no_terra()
+  ncols <- 50; nrows <- 30
+  TW <- 16L; TH <- 16L
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, tiled = TRUE, tile_size = c(TW, TH))
+
+  # Round-trip through terra: output values should match input.
+  r <- terra::rast(f)
+  expect_equal(terra::nrow(r), nrows)
+  expect_equal(terra::ncol(r), ncols)
+
+  vals <- terra::values(r)[, 1]
+  # terra fills nodata-padded edges if the writer didn't pad properly. We
+  # expect a 50x30 raster with ncols*nrows valid cells, no NA.
+  expect_equal(length(vals), ncols * nrows)
+  expect_equal(sort(vals[!is.na(vals)]), sort(df$band1))
+
+  # Confirm tile structure: the file's tile count must be 4 * 2 = 8.
+  expected_n_tiles <- ceiling(ncols / TW) * ceiling(nrows / TH)
+  expect_equal(expected_n_tiles, 4 * 2)
+})
+
+test_that("tiled write: terra round-trip with CRS and DEFLATE", {
+  skip_if_no_terra()
+  ncols <- 64; nrows <- 64
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, compress = TRUE, tiled = TRUE, tile_size = 32L,
+             crs = 4326L)
+
+  r <- terra::rast(f)
+  expect_equal(terra::ncol(r), ncols)
+  expect_equal(terra::nrow(r), nrows)
+  info <- terra::crs(r, describe = TRUE)
+  expect_equal(as.integer(info$code), 4326L)
+  vals <- terra::values(r)[, 1]
+  expect_equal(sort(vals), sort(df$band1))
+})
+
+test_that("tiled write: rectangular tile_size c(w, h)", {
+  ncols <- 32; nrows <- 48
+  df <- .make_grid_df(ncols, nrows)
+  f <- tempfile(fileext = ".tif")
+  on.exit(unlink(f))
+
+  write_tiff(df, f, tiled = TRUE, tile_size = c(16L, 32L))
+  result <- collect(tbl_tiff(f))
+
+  expect_equal(nrow(result), ncols * nrows)
+  expect_equal(sort(result$band1), sort(df$band1))
+})

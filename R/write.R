@@ -123,6 +123,14 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #'   `citation`. Codes that are not auto-classified as projected/geographic
 #'   default to projected; pass `geographic = TRUE` to override.
 #'   Use [tiff_crs()] to read it back.
+#' @param tiled Logical; write a tiled GeoTIFF (TIFF tags 322/323/324/325)
+#'   instead of strips. Default `FALSE`. Tiled layout enables random-access
+#'   block reads and is required for Cloud-Optimized GeoTIFF (COG).
+#' @param tile_size Integer; tile edge length in pixels. Must be a positive
+#'   multiple of 16 (TIFF spec). Either a single value (square tiles) or a
+#'   length-2 vector `c(width, height)`. Default `256`. Edge tiles at the
+#'   right and bottom of the image are padded to full tile size with the
+#'   NoData / NaN value.
 #' @param ... Reserved for future use.
 #'
 #' @return Invisible `NULL`.
@@ -139,7 +147,8 @@ write_sqlite.data.frame <- function(x, path, table, ...) {
 #'
 #' @export
 write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
-                       metadata = NULL, crs = NULL, ...) {
+                       metadata = NULL, crs = NULL,
+                       tiled = FALSE, tile_size = 256L, ...) {
   UseMethod("write_tiff")
 }
 
@@ -195,10 +204,34 @@ write_tiff <- function(x, path, compress = FALSE, pixel_type = "float64",
     list(epsg_g = 0L, epsg_p = epsg, cit = cit)
 }
 
+# Translate (tiled, tile_size) into integer (tile_w, tile_h) for the C side.
+# tile_size accepts a single integer (square tiles) or length-2 c(w, h).
+.parse_tile_size <- function(tiled, tile_size) {
+  if (!isTRUE(tiled)) return(list(w = 0L, h = 0L))
+
+  if (is.null(tile_size))
+    stop("tile_size must be supplied when tiled = TRUE")
+  if (!is.numeric(tile_size) || any(is.na(tile_size)))
+    stop("tile_size must be a positive integer")
+  if (length(tile_size) == 1L) {
+    w <- as.integer(tile_size); h <- w
+  } else if (length(tile_size) == 2L) {
+    w <- as.integer(tile_size[1]); h <- as.integer(tile_size[2])
+  } else {
+    stop("tile_size must have length 1 or 2")
+  }
+  if (w <= 0 || h <= 0)
+    stop("tile_size must be positive")
+  if (w %% 16L != 0L || h %% 16L != 0L)
+    stop("tile_size must be a multiple of 16 (TIFF spec)")
+  list(w = w, h = h)
+}
+
 #' @export
 write_tiff.vectra_node <- function(x, path, compress = FALSE,
                                    pixel_type = "float64",
-                                   metadata = NULL, crs = NULL, ...) {
+                                   metadata = NULL, crs = NULL,
+                                   tiled = FALSE, tile_size = 256L, ...) {
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
 
@@ -211,19 +244,22 @@ write_tiff.vectra_node <- function(x, path, compress = FALSE,
     stop("metadata must be a single character string or NULL")
 
   cs <- .parse_crs(crs)
+  ts <- .parse_tile_size(tiled, tile_size)
 
   # Always use the typed path — it handles all pixel types including float64
   .Call(C_write_tiff_typed, x$.node, path, as.logical(compress), pt, metadata,
-        cs$epsg_g, cs$epsg_p, cs$cit)
+        cs$epsg_g, cs$epsg_p, cs$cit, ts$w, ts$h)
   invisible(NULL)
 }
 
 #' @export
 write_tiff.data.frame <- function(x, path, compress = FALSE,
                                   pixel_type = "float64",
-                                  metadata = NULL, crs = NULL, ...) {
+                                  metadata = NULL, crs = NULL,
+                                  tiled = FALSE, tile_size = 256L, ...) {
   write_tiff.vectra_node(df_to_node(x), path, compress, pixel_type,
-                         metadata, crs, ...)
+                         metadata, crs, tiled = tiled, tile_size = tile_size,
+                         ...)
 }
 
 #' Write data to a .vtr file

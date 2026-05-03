@@ -94,13 +94,14 @@ static double find_resolution(const double *uniq, int64_t n) {
 
 void tiff_write_node(VecNode *node, const char *path, int use_deflate) {
     tiff_write_node_typed(node, path, use_deflate, TIFF_PIXEL_FLOAT64, NULL,
-                          0, 0, NULL);
+                          0, 0, NULL, 0, 0);
 }
 
 void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
                            int pixel_type, const char *metadata_xml,
                            int epsg_geographic, int epsg_projected,
-                           const char *crs_citation) {
+                           const char *crs_citation,
+                           int tile_width, int tile_height) {
     const VecSchema *schema = &node->output_schema;
     int n_cols = schema->n_cols;
 
@@ -218,9 +219,15 @@ void tiff_write_node_typed(VecNode *node, const char *path, int use_deflate,
     else if (pixel_type == TIFF_PIXEL_UINT8)  nodata_val = 255.0;
     else if (pixel_type == TIFF_PIXEL_UINT16) nodata_val = 65535.0;
 
-    if (tiff_writer_open(path, &writer, width, height, n_bands,
-                                gt, nodata_val, use_deflate,
-                                pixel_type) != 0) {
+    int tw = tile_width  > 0 ? tile_width  : 0;
+    int th = tile_height > 0 ? tile_height : 0;
+    int open_rc = (tw > 0 && th > 0)
+        ? tiff_writer_open_tiled(path, &writer, width, height, n_bands,
+                                 gt, nodata_val, use_deflate, pixel_type,
+                                 tw, th)
+        : tiff_writer_open(path, &writer, width, height, n_bands,
+                           gt, nodata_val, use_deflate, pixel_type);
+    if (open_rc != 0) {
         const char *msg = writer ? tiff_writer_errmsg(writer) : "unknown";
         tiff_writer_close(writer);
         vectra_error("write_tiff failed: %s", msg);

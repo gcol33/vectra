@@ -11,6 +11,8 @@ write_tiff(
   pixel_type = "float64",
   metadata = NULL,
   crs = NULL,
+  tiled = FALSE,
+  tile_size = 256L,
   ...
 )
 }
@@ -34,6 +36,16 @@ named fields \code{epsg}, \code{geographic} (\code{TRUE}/\code{FALSE}), and opti
 \code{citation}. Codes that are not auto-classified as projected/geographic
 default to projected; pass \code{geographic = TRUE} to override.
 Use \code{\link[=tiff_crs]{tiff_crs()}} to read it back.}
+
+\item{tiled}{Logical; write a tiled GeoTIFF (TIFF tags 322/323/324/325)
+instead of strips. Default \code{FALSE}. Tiled layout enables random-access
+block reads and is required for Cloud-Optimized GeoTIFF (COG).}
+
+\item{tile_size}{Integer; tile edge length in pixels. Must be a positive
+multiple of 16 (TIFF spec). Either a single value (square tiles) or a
+length-2 vector \code{c(width, height)}. Default \code{256}. Edge tiles at the
+right and bottom of the image are padded to full tile size with the
+NoData / NaN value.}
 
 \item{...}{Reserved for future use.}
 }
