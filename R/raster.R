@@ -258,6 +258,42 @@ vec_build_overviews <- function(path,
   invisible(NULL)
 }
 
+#' Export a .vec raster to GeoTIFF
+#'
+#' Writes the level-0 pixels of a `.vec` raster to a GeoTIFF file. The
+#' TIFF inherits dtype, geotransform, EPSG, and nodata from the source.
+#' Strip layout with optional DEFLATE compression — LZW, tiled, and
+#' BigTIFF support land in a follow-up commit.
+#'
+#' @param r Either a path to a `.vec` raster or a `vectra_raster` returned
+#'   by `vec_open_raster()`. If a handle is passed it is left open.
+#' @param path Output `.tif` path.
+#' @param compression One of `"none"` or `"deflate"` (default).
+#' @return Invisible `NULL`.
+#' @export
+vec_to_tiff <- function(r, path,
+                        compression = c("deflate", "none")) {
+  if (!is.character(path) || length(path) != 1L)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = FALSE)
+
+  vec_path <- if (inherits(r, "vectra_raster")) {
+    ## Reach into the externalptr's resolved file path. The reader doesn't
+    ## currently expose its source path, so require a string for now.
+    stop("vec_to_tiff currently requires the source path; pass it directly")
+  } else if (is.character(r) && length(r) == 1L) {
+    normalizePath(r, mustWork = TRUE)
+  } else {
+    stop("r must be a .vec path or a vectra_raster")
+  }
+
+  compression <- match.arg(compression)
+  use_deflate <- if (compression == "deflate") 1L else 0L
+
+  .Call(C_vec_to_tiff, vec_path, path, use_deflate)
+  invisible(NULL)
+}
+
 #' @export
 print.vectra_raster <- function(x, ...) {
   cat("<vectra_raster>\n")

@@ -314,6 +314,67 @@ test_that("vec_build_overviews refuses to add fewer levels than already exist", 
   unlink(tmp)
 })
 
+test_that("vec_to_tiff round-trips a single-band raster via terra", {
+  skip_if_not_installed("terra")
+  m <- matrix(seq(-1, 1, length.out = 30 * 40), 30, 40)
+  vec_path <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(m, vec_path, dtype = "f32",
+                   extent = c(0, 0, 40, 30), epsg = 4326L)
+  vec_to_tiff(vec_path, tiff_path, compression = "deflate")
+
+  tr <- terra::rast(tiff_path)
+  expect_equal(terra::nlyr(tr), 1L)
+  expect_equal(terra::ncol(tr), 40L)
+  expect_equal(terra::nrow(tr), 30L)
+  ## Compare a sample of pixels.
+  px <- terra::values(tr)
+  expect_equal(as.numeric(px), as.numeric(as.single(t(m))),
+               tolerance = 1e-6)
+})
+
+test_that("vec_to_tiff exports a 4-band raster terra reads correctly", {
+  skip_if_not_installed("terra")
+  arr <- array(0, dim = c(20, 25, 4))
+  for (b in 1:4) arr[, , b] <- matrix(seq_len(20 * 25) * b, 20, 25)
+  vec_path <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(arr, vec_path, dtype = "f32",
+                   extent = c(0, 0, 25, 20))
+  vec_to_tiff(vec_path, tiff_path, compression = "deflate")
+
+  tr <- terra::rast(tiff_path)
+  expect_equal(terra::nlyr(tr), 4L)
+  for (b in 1:4) {
+    layer <- terra::values(tr[[b]])
+    expect_equal(as.numeric(layer),
+                 as.numeric(as.single(t(arr[, , b]))),
+                 tolerance = 1e-6,
+                 info = sprintf("band %d", b))
+  }
+})
+
+test_that("vec_to_tiff propagates nodata", {
+  skip_if_not_installed("terra")
+  m <- matrix(1:25, 5, 5)
+  m[3, 3] <- -9999L
+  vec_path <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(m, vec_path, dtype = "i32", nodata = -9999)
+  vec_to_tiff(vec_path, tiff_path, compression = "none")
+
+  tr <- terra::rast(tiff_path)
+  vals <- terra::values(tr)[, 1]
+  ## terra reads NoData as NA when GDAL_NODATA is recognised.
+  expect_true(any(is.na(vals)))
+})
+
 test_that("terra can ingest pixel values via point extraction (smoke test)", {
   skip_if_not_installed("terra")
   ## Build a known raster, write to .vec, sample at known points and

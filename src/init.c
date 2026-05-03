@@ -40,6 +40,8 @@ SEXP C_vec_extract_points(SEXP ptr_sexp, SEXP x_sexp, SEXP y_sexp);
 SEXP C_vec_close_raster(SEXP ptr_sexp);
 SEXP C_vec_build_overviews(SEXP path_sexp, SEXP n_levels_sexp,
                            SEXP resampling_sexp, SEXP compression_sexp);
+SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
+                   SEXP use_deflate_sexp);
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
@@ -89,6 +91,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_vec_extract_points",       (DL_FUNC) &C_vec_extract_points,       3},
     {"C_vec_close_raster",         (DL_FUNC) &C_vec_close_raster,         1},
     {"C_vec_build_overviews",      (DL_FUNC) &C_vec_build_overviews,      4},
+    {"C_vec_to_tiff",              (DL_FUNC) &C_vec_to_tiff,              3},
     {NULL, NULL, 0}
 };
 

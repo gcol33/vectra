@@ -553,3 +553,144 @@ SEXP C_vec_build_overviews(SEXP path_sexp, SEXP n_levels_sexp,
     }
     return R_NilValue;
 }
+
+/* ====================================================================== */
+/*  C_vec_to_tiff                                                          */
+/* ====================================================================== */
+
+#include "tiff_format.h"
+
+static int pixel_type_from_dtype(uint8_t dt) {
+    switch (dt) {
+    case VECR_DT_F64: return TIFF_PIXEL_FLOAT64;
+    case VECR_DT_F32: return TIFF_PIXEL_FLOAT32;
+    case VECR_DT_I16: return TIFF_PIXEL_INT16;
+    case VECR_DT_I32: return TIFF_PIXEL_INT32;
+    case VECR_DT_U8:  return TIFF_PIXEL_UINT8;
+    case VECR_DT_U16: return TIFF_PIXEL_UINT16;
+    }
+    /* Other dtypes (i8/u32/i64/u64) widen to f64 in TIFF output. */
+    return TIFF_PIXEL_FLOAT64;
+}
+
+/*
+ * C_vec_to_tiff(vec_path, tiff_path, use_deflate)
+ *
+ *   vec_path     : character(1) — source .vec raster
+ *   tiff_path    : character(1) — output .tif
+ *   use_deflate  : integer(1)   — 0 = no compression, 1 = DEFLATE
+ *
+ * The exported TIFF uses the same dtype as the source .vec raster (with
+ * a fallback to f64 for dtypes TIFF doesn't natively carry — i8/u32/i64).
+ * Geotransform, EPSG, and nodata are forwarded from the .vec header.
+ */
+SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
+                   SEXP use_deflate_sexp) {
+    const char *vpath = CHAR(STRING_ELT(vec_path_sexp,  0));
+    const char *tpath = CHAR(STRING_ELT(tiff_path_sexp, 0));
+    int use_deflate = Rf_asInteger(use_deflate_sexp);
+
+    VecrReader *r = NULL;
+    if (vecr_reader_open(vpath, &r) != 0) {
+        const char *m = r ? vecr_reader_errmsg(r) : "open failed";
+        vecr_reader_close(r);
+        vectra_error("vec_to_tiff: %s", m);
+    }
+
+    int64_t width  = vecr_reader_width(r);
+    int64_t height = vecr_reader_height(r);
+    int     n_bands = vecr_reader_nbands(r);
+    uint8_t dt = vecr_reader_dtype(r);
+    int pix = pixel_type_from_dtype(dt);
+    double nodata = vecr_reader_has_nodata(r) ? vecr_reader_nodata(r) : NAN;
+
+    TiffWriter *w = NULL;
+    if (tiff_writer_open(tpath, &w, width, height, n_bands,
+                         vecr_reader_geotransform(r), nodata,
+                         use_deflate, pix) != 0) {
+        const char *m = w ? tiff_writer_errmsg(w) : "open failed";
+        tiff_writer_close(w);
+        vecr_reader_close(r);
+        vectra_error("vec_to_tiff: %s", m);
+    }
+
+    int32_t epsg = vecr_reader_epsg(r);
+    if (epsg > 0) {
+        /* The TIFF writer takes geographic vs projected as separate args.
+         * We can't classify EPSG by code alone (3xxx may still be projected
+         * via a non-standard CRS), so default to projected — that matches
+         * the typical climate / DEM / land-cover use cases. */
+        tiff_writer_set_crs(w, 0, epsg, NULL);
+    }
+
+    /* Decode each band as doubles and hand to the TIFF writer in one shot. */
+    int64_t n_pixels = width * height;
+    size_t  esz = vecr_dtype_size(dt);
+
+    double **bands = (double **)malloc((size_t)n_bands * sizeof(double *));
+    if (!bands) {
+        tiff_writer_close(w); vecr_reader_close(r);
+        vectra_error("alloc failed for band table");
+    }
+    void *raw = malloc((size_t)n_pixels * esz);
+    if (!raw) {
+        free(bands);
+        tiff_writer_close(w); vecr_reader_close(r);
+        vectra_error("alloc failed for raw buffer");
+    }
+
+    int rc = 0;
+    int has_nd = vecr_reader_has_nodata(r);
+    double nd = vecr_reader_nodata(r);
+
+    for (int b = 0; b < n_bands; ++b) {
+        bands[b] = (double *)malloc((size_t)n_pixels * sizeof(double));
+        if (!bands[b]) { rc = -1; break; }
+
+        if (vecr_reader_read_window(r, b, 0, 0, 0, width - 1, height - 1, raw)
+              != 0) { rc = -1; break; }
+
+        cast_dtype_to_doubles(raw, n_pixels, dt, bands[b]);
+
+        /* For float dtypes the reader may have left NaN in nodata cells;
+         * the TIFF writer maps NaN to nodata via the writer's tag. For
+         * integer dtypes we leave the cast value and rely on TIFF's
+         * GDAL_NODATA tag to flag it on read. NaN-fill nodata cells when
+         * writing to a float TIFF so terra etc. recognise them. */
+        if (has_nd && (pix == TIFF_PIXEL_FLOAT32 || pix == TIFF_PIXEL_FLOAT64)) {
+            for (int64_t i = 0; i < n_pixels; ++i) {
+                if (bands[b][i] == nd) bands[b][i] = NAN;
+            }
+        }
+    }
+    free(raw);
+
+    if (rc != 0) {
+        for (int b = 0; b < n_bands; ++b) free(bands[b]);
+        free(bands);
+        tiff_writer_close(w); vecr_reader_close(r);
+        vectra_error("vec_to_tiff: failed to decode bands");
+    }
+
+    if (tiff_writer_write_rows(w, 0, height,
+                                (const double *const *)bands) != 0) {
+        const char *m = tiff_writer_errmsg(w);
+        for (int b = 0; b < n_bands; ++b) free(bands[b]);
+        free(bands);
+        tiff_writer_close(w); vecr_reader_close(r);
+        vectra_error("vec_to_tiff write error: %s", m);
+    }
+    if (tiff_writer_finish(w) != 0) {
+        const char *m = tiff_writer_errmsg(w);
+        for (int b = 0; b < n_bands; ++b) free(bands[b]);
+        free(bands);
+        tiff_writer_close(w); vecr_reader_close(r);
+        vectra_error("vec_to_tiff finish error: %s", m);
+    }
+
+    for (int b = 0; b < n_bands; ++b) free(bands[b]);
+    free(bands);
+    tiff_writer_close(w);
+    vecr_reader_close(r);
+    return R_NilValue;
+}
