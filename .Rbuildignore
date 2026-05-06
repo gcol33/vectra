@@ -48,3 +48,5 @@
 ^src/.*\.so$
 ^src/.*\.dll$
 ^src/.*\.a$
+^dev_notes$
+^raster-plan\.md$

@@ -30,6 +30,7 @@ jobs:
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_KEEP_PKG_SOURCE: yes
+      TDC: ${{ github.workspace }}/tdc
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +39,7 @@ jobs:
         with:
           repository: gcol33/tdc
           token: ${{ secrets.GITHUB_TOKEN }}
-          path: ../tdc
+          path: tdc
 
       - uses: r-lib/actions/setup-pandoc@v2
 
