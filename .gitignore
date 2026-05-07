@@ -25,6 +25,20 @@ src/tdc/
 /run_*.R
 /build_install.R
 /notes.md
+/todo.md
 /todo-*.md
 /.cran_check.R
 /.cran_check.log
+
+# Internal dev notes (not for GitHub)
+/AGENTS.md
+/RELEASE.md
+/extension.md
+/raster-plan.md
+/plan.md
+/dev_notes/build_tarball.R
+/dev_notes/build_tarball.log
+/dev_notes/run_check.R
+/dev_notes/run_check.log
+/dev_notes/*.tar.gz
+/dev_notes/0.6.2_worklist.md
