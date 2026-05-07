@@ -54,6 +54,12 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
+      - name: Vendor tdc into src/tdc before build
+        shell: bash
+        run: |
+          chmod +x configure configure.win tools/vendor_tdc.sh
+          sh tools/vendor_tdc.sh
+
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true

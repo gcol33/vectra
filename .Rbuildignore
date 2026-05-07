@@ -50,3 +50,5 @@
 ^src/.*\.a$
 ^dev_notes$
 ^raster-plan\.md$
+^tdc$
+^AGENTS\.md$

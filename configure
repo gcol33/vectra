@@ -1,9 +1,14 @@
 #!/bin/sh
 # configure — auto-vendor tdc before compilation
 #
-# If the sibling tdc repo exists (../tdc relative to package root),
-# vendor the latest snapshot into src/tdc/. Otherwise fall back to
-# a pre-vendored copy (e.g. CRAN source tarball).
+# Resolution order:
+#  1. Sibling tdc tree + tools/vendor_tdc.sh both present → re-vendor fresh.
+#     (Development workflow.)
+#  2. Pre-vendored src/tdc/ exists → use it as-is.
+#     (CRAN tarball install — tools/ is .Rbuildignore'd, so vendor_tdc.sh
+#     is absent here even when the TDC env var still points somewhere
+#     valid in the surrounding CI environment.)
+#  3. Otherwise → error out.
 #
 # POSIX sh only — bash is not guaranteed on all CRAN build hosts.
 
@@ -12,10 +17,11 @@ set -eu
 PKG_ROOT=`cd "\`dirname "$0"\`" && pwd`
 TDC=${TDC-"$PKG_ROOT/../tdc"}
 
-if [ -d "$TDC/include/tdc" ] && [ -d "$TDC/src" ]; then
+if [ -f "$PKG_ROOT/tools/vendor_tdc.sh" ] \
+   && [ -d "$TDC/include/tdc" ] && [ -d "$TDC/src" ]; then
   sh "$PKG_ROOT/tools/vendor_tdc.sh"
 elif [ -d "$PKG_ROOT/src/tdc/include/tdc" ]; then
-  echo "configure: tdc sibling not found, using pre-vendored src/tdc/"
+  echo "configure: using pre-vendored src/tdc/"
 else
   echo "configure: ERROR - no tdc source found" >&2
   echo "  expected sibling repo at $TDC" >&2
