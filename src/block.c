@@ -434,9 +434,14 @@ static SEXP block_array_gather_sexp(const VecArray *arr,
             } else {
                 int64_t start = arr->buf.str.offsets[r];
                 int64_t end   = arr->buf.str.offsets[r + 1];
-                SET_STRING_ELT(col, (R_xlen_t)i,
-                    Rf_mkCharLenCE(arr->buf.str.data + start,
-                                   (int)(end - start), CE_UTF8));
+                int slen = (int)(end - start);
+                if (slen == 0) {
+                    SET_STRING_ELT(col, (R_xlen_t)i, R_BlankString);
+                } else {
+                    SET_STRING_ELT(col, (R_xlen_t)i,
+                        Rf_mkCharLenCE(arr->buf.str.data + start,
+                                       slen, CE_UTF8));
+                }
             }
         }
         UNPROTECT(1);

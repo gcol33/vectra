@@ -252,9 +252,13 @@ static SEXP array_col_to_sexp(const VecArray *arr) {
                 int64_t s    = arr->buf.str.offsets[i];
                 int64_t e    = arr->buf.str.offsets[i + 1];
                 int64_t slen = e - s;
-                SET_STRING_ELT(out, (R_xlen_t)i,
-                    Rf_mkCharLenCE(arr->buf.str.data + s,
-                                   (int)slen, CE_UTF8));
+                if (slen == 0) {
+                    SET_STRING_ELT(out, (R_xlen_t)i, R_BlankString);
+                } else {
+                    SET_STRING_ELT(out, (R_xlen_t)i,
+                        Rf_mkCharLenCE(arr->buf.str.data + s,
+                                       (int)slen, CE_UTF8));
+                }
             }
         }
         UNPROTECT(1);
