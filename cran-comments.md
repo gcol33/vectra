@@ -49,9 +49,9 @@ word. Replaced with "raster".
 * local Windows 11, R 4.6.0 (GCC 14.3.0 via Rtools 46) -- 0/0/0
 * GitHub Actions: ubuntu-latest, macos-latest, windows-latest,
   R-devel + R-release
-* GitHub Actions: ASAN/UBSAN job on r-devel-ubsan-clang, including a
-  vignette-render pass under sanitizers
-* GitHub Actions: rchk job
+* GitHub Actions: ASAN/UBSAN job on Linux (gcc -fsanitize=address,undefined),
+  now including a vignette-render pass that exercises the same code path
+  CRAN's BDR memcheck runs
 
 ## R CMD check results
 
