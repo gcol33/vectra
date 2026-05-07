@@ -168,7 +168,7 @@ pak::pak("gcol33/vectra")
 
 ## Support
 
-> "Software is like sex: it's better when it's free." -- Linus Torvalds
+> "Software is like sex: it's better when it's free." — Linus Torvalds
 
 If this package saved you some time, buying me a coffee is a nice way to say thanks.
 
