@@ -106,10 +106,11 @@ jobs:
           LD_PRELOAD: ${{ steps.asan.outputs.lib }}
         run: |
           library(vectra)
+          out_dir <- tempfile("ex"); dir.create(out_dir)
           tools::testInstalledPackage(
             "vectra",
-            outDir   = tempfile("ex"),
-            types    = "examples",
+            outDir         = out_dir,
+            types          = "examples",
             errorsAreFatal = TRUE
           )
         shell: Rscript {0}
