@@ -1,10 +1,17 @@
-## Release summary
+## Hotfix superseding 0.6.1
 
-This is a feature + archive-fix release (0.5.1 -> 0.6.2). Carries the
-0.6.0 raster work (tiled .vec format with overview pyramids and time
-cubes, parallel tile decode, tiled / BigTIFF / LZW GeoTIFF write,
-GeoKey CRS round-trip, GDAL_METADATA band-name parser, UBSAN
-empty-string fix) and the 0.6.1 clang 21 omp.h wrapper fix forward.
+This is a hotfix release on top of the 0.6.1 submission already in the
+incoming queue. 0.6.1 cleared the original archive trigger (clang 21
+omp.h wrapper) but its incoming pretest flagged "gridded" as
+possibly-misspelled, and the auto-check email also surfaced the
+gcc-ASAN heap-buffer-overflow and rchk PROTECT findings carried over
+from archived 0.5.1. 0.6.2 closes all three before the human review
+of 0.6.1 begins, so please use 0.6.2 in place of 0.6.1.
+
+Carries forward all 0.6.0 work (tiled .vec format with overview
+pyramids and time cubes, parallel tile decode, tiled / BigTIFF / LZW
+GeoTIFF write, GeoKey CRS round-trip, GDAL_METADATA band-name parser,
+UBSAN empty-string fix) and the 0.6.1 clang 21 omp.h wrapper fix.
 
 ## Resolution of 0.5.1 archive issues
 
