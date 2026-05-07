@@ -1,18 +1,92 @@
+# vectra 0.6.0
+
+## Raster format (`.vec`)
+
+A new tiled raster format and accompanying API for larger-than-RAM gridded
+data. Each tile is encoded as a self-describing tdc block (PRED_2D +
+BYTE_SHUFFLE + LZ); decoding is parallel across tiles.
+
+* `vec_write_raster(x, path, ...)`: write a numeric matrix or 3D
+  `(rows, cols, bands)` array to `.vec`. Storage dtypes: `f64`, `f32`,
+  `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, `i64`/`u64`. `compression` controls
+  per-tile codec probing — `"fast"`, `"balanced"`, or `"max"` (six-spec probe
+  per tile). Decode cost is unchanged across levels because each tile records
+  its own codec spec.
+* `vec_open_raster(path)` / `vec_close_raster(r)`: lazy open returning a
+  metadata + handle list (`vectra_raster`). The handle is auto-finalized on
+  garbage collection.
+* `vec_read_window(r, band, level, cols, rows)`: decode a window of a chosen
+  band, with overview-level support. Pixels outside the raster come back as
+  `NA`. Tile decode is parallelized across worker threads (Phase 5a).
+* `vec_extract_points(r, x, y)`: sample band values at `(x, y)` points.
+* `vec_build_overviews(path, levels, resampling)`: append `n_levels - 1`
+  reduced-resolution copies in place. Resampling kernels: `"nearest"`,
+  `"average"`, `"bilinear"`, `"mode"`, `"gauss"`. The file's `n_levels` is
+  updated atomically.
+* `vec_to_tiff(path, output, compression)`: export `.vec` level-0 pixels to
+  GeoTIFF. Compression is `"none"`, `"deflate"`, or `"lzw"`; LZW also applies
+  horizontal differencing (Predictor 2) for integer pixel types, matching the
+  layout libtiff/GDAL produce by default. Inherits dtype, geotransform,
+  EPSG, and nodata from the source.
+
+## Time cubes
+
+* `vec_write_time_cube(x, times, path, layout, ...)`: write a 4D
+  `(rows, cols, bands, time)` array. Two layouts:
+  - `"image"` (default): one tile per `(band, time, ty, tx)` — optimal for
+    "give me one full image at time T" reads.
+  - `"pixel"`: one tile per `(band, ty, tx)` holding the full time stack as
+    `[tw*th, n_time]` — optimal for "give me the time series at pixel
+    `(x, y)`" reads.
+* `vec_read_pixel_series(r, x, y, band)`: full time series at a single
+  pixel as a numeric vector. On pixel-major files this is one tile decode;
+  on image-major files the reader scans the index for distinct time stamps
+  and decodes one tile per stamp.
+* `vec_read_time_slice(r, time, band, level, cols, rows)`: read a single
+  time slice as a matrix.
+* `vec_raster_times(r, band, level)`: distinct time stamps, in ascending
+  order.
+* `vec_raster_layout(r)`: query whether an open raster is `"image"` or
+  `"pixel"` layout.
+* `print.vectra_raster()`: prints dimensions, dtype, geotransform, EPSG,
+  nodata, and band names.
+
+## GeoTIFF reader and writer
+
+* Reader: tiled and Cloud-Optimized GeoTIFF (COG) inputs go through the same
+  block abstraction as strip TIFFs (strips collapse to `n_blocks_x = 1`).
+  Edge-block padding is handled in `block_stored_rows()`.
+* `tiff_band_names()`: parse `<Item role="description">` entries from
+  `GDAL_METADATA` (tag 42112). Pure-R scanner, no `xml2` dependency.
+* `tiff_crs(path)`: read the EPSG code, geographic-vs-projected flag, and
+  citation string from the GeoKey directory (tags 34735/34737).
+* `write_tiff()` gains `tiled`, `tile_size`, `bigtiff`, and `crs` arguments.
+  - `tiled = TRUE` emits TIFF tags 322/323/324/325 in place of strip tags.
+    `tile_size` accepts a single integer (square) or a length-2 `c(w, h)`;
+    both dimensions must be positive multiples of 16. Default 256. Tiled
+    output is the layout required for Cloud-Optimized GeoTIFF.
+  - `bigtiff = "auto"` (default) auto-promotes to BigTIFF (magic `0x002B`,
+    64-bit offsets) when the expected raw payload exceeds the classic-TIFF
+    4 GB ceiling; `TRUE` forces BigTIFF; `FALSE` forces classic TIFF. Tiled
+    BigTIFF is not yet supported.
+  - `crs` accepts an integer EPSG code, an `"EPSG:xxxx"` string, or a list
+    with `$epsg`, `$geographic`, and optional `$citation`. Outputs round-trip
+    through `terra::rast()` for 4326, 3857, and 31287.
+
+## Fixes
+
+* `collect()` / `block_array_gather`: empty-string slots now shortcut to
+  `R_BlankString`. Previously the gather paths called `Rf_mkCharLenCE(NULL,
+  0, ...)` and the dedup cache called `memcmp(NULL, ...)` when a batch
+  happened to contain only empty/`NA` strings, tripping UBSAN's nonnull
+  check even though the length was zero.
+
+## Internal
+
+* C-side `*_push` helpers (`vec_buf_push`, `vec_array_push`, ...)
+  consolidated into a single `vec_grow_to` growth primitive.
+
 # vectra 0.5.1
-
-## Tiled GeoTIFF write (Phase 4c)
-
-* `write_tiff()` gains `tiled` and `tile_size` arguments. When `tiled = TRUE`,
-  the writer emits TIFF tags 322 (TileWidth), 323 (TileLength), 324
-  (TileOffsets) and 325 (TileByteCounts) in place of the strip tags
-  (273/278/279). Each tile is independently compressed (DEFLATE or none), and
-  edge tiles at the right/bottom of the image are padded to full tile size
-  with the NoData / NaN value as required by the TIFF spec.
-* `tile_size` accepts a single integer (square tiles) or a length-2 vector
-  `c(width, height)`. Both dimensions must be positive multiples of 16.
-  Default is 256.
-* Tiled output is the layout required for Cloud-Optimized GeoTIFF (COG) and
-  enables random-access block reads from `terra::rast()` and friends.
 
 ## CRAN resubmission fixes (0.5.0 incoming pretest feedback)
 

@@ -1,37 +1,32 @@
-## Resubmission
+## Release summary
 
-This is a resubmission of vectra after the 0.5.0 incoming pretest flagged
-three items (2026-04-18 Debian flavor, r-devel-linux-x86_64-debian-gcc).
-All three have been addressed:
+This is a feature release (0.5.1 -> 0.6.0) introducing a new tiled raster
+format (`.vec`) with overview pyramids and time cubes, parallel tile decode,
+plus GeoTIFF read/write enhancements (tiled, BigTIFF, LZW + Predictor 2,
+GeoKey CRS round-trip, `GDAL_METADATA` band-name parser).
 
-* `src/window.c`: removed the `-Wunneeded-internal-declaration` warning by
-  guarding the OpenMP task-parallel merge-sort helper (`win_merge_sort_par`)
-  with `#ifdef _OPENMP`, matching its call sites. Local clang build with
-  `-Wunneeded-internal-declaration -Werror` and no OpenMP is now clean.
+## UBSAN nonnull fix
 
-* `configure` / `configure.win`: rewritten as POSIX `/bin/sh` (previously
-  `#!/usr/bin/env bash` with `set -o pipefail` and `[[ ... ]]`). No bash-isms
-  remain, so the "`env bash` is not portable" NOTE no longer applies.
-
-* Compiled-code `stderr` reference: the vendored tdc codec had debug/timing
-  `fprintf(stderr, ...)` calls in six translation units (all guarded by
-  runtime flags, never reached in normal use). These are now routed through
-  a `TDC_LOG(...)` macro that is a no-op unless `TDC_ENABLE_STDERR_LOG` is
-  defined at build time. `#include <stdio.h>` was removed from files that no
-  longer needed it. `nm` on the built `.so` confirms no `fprintf` / `stderr`
-  symbols in `tdc/src/api/decode_impl.o`, `tdc/src/api/encode.o`,
-  `tdc/src/core/decode_profile.o`, `tdc/src/entropy/lz_opt.o`,
-  `tdc/src/entropy/lz_streams.o`, or `tdc/src/model/plane2d.o`.
-
-No other user-visible changes since 0.5.0 apart from the `collect()`
-use-after-free fix described in NEWS.md.
+Addresses a UBSAN nonnull-attribute trap that affected `collect()` and the
+internal `block_array_gather` path when a `.vtr` batch contained only empty
+or `NA` strings: the gather code called `Rf_mkCharLenCE(NULL, 0, CE_UTF8)`
+and the dedup-cache called `memcmp(NULL, ...)` even though the length was
+zero. Empty strings are now shortcut to `R_BlankString` before either call.
 
 ## Test environments
 
-* local Windows 11, R 4.5.2 (GCC 14.3.0 via Rtools 45)
+* local Windows 11, R 4.6.0 (GCC 14.3.0 via Rtools 46)
+* GitHub Actions: ubuntu-latest, macos-latest, windows-latest, R-devel +
+  R-release
+* GitHub Actions: ASAN/UBSAN job on r-devel-ubsan-clang
+* GitHub Actions: rchk job
 
 ## R CMD check results
 
 0 errors, 0 warnings, 0 NOTEs related to the package.
 (One local-environment NOTE "unable to verify current time" appears on this
 Windows machine; it does not occur on CRAN's builders.)
+
+## Reverse dependencies
+
+vectra has no reverse dependencies on CRAN.
