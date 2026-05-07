@@ -1144,9 +1144,14 @@ SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
     int n_cols = LENGTH(df_sexp);
     if (n_cols <= 0) Rf_error("df must have at least one column");
 
-    SEXP names_sexp = Rf_getAttrib(df_sexp, R_NamesSymbol);
-    if (TYPEOF(names_sexp) != STRSXP || LENGTH(names_sexp) != n_cols)
+    /* PROTECT names_sexp: R_alloc inside the schema-build block below
+     * can trigger GC, and rchk treats getAttrib results as fresh-allocated
+     * even though they're rooted via df_sexp. */
+    SEXP names_sexp = PROTECT(Rf_getAttrib(df_sexp, R_NamesSymbol));
+    if (TYPEOF(names_sexp) != STRSXP || LENGTH(names_sexp) != n_cols) {
+        UNPROTECT(1);
         Rf_error("df must have a names attribute of length n_cols");
+    }
 
     /* annotations may be NULL or a character vector of length n_cols; NA_string
      * or "" entries are recorded as no-annotation. */
@@ -1236,6 +1241,7 @@ SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
 
     vtr1_close_tdc_writer(w);
     vec_schema_free(&schema);
+    UNPROTECT(1); /* names_sexp */
     return R_NilValue;
 }
 

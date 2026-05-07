@@ -1,6 +1,6 @@
 Package: vectra
 Title: Columnar Query Engine for Larger-than-RAM Data
-Version: 0.6.1
+Version: 0.6.2
 Authors@R: person("Gilles", "Colling", email = "gilles.colling051@gmail.com",
     role = c("aut", "cre", "cph"),
     comment = c(ORCID = "0000-0003-3070-6066"))
@@ -11,7 +11,7 @@ Description: A minimal columnar query engine with lazy execution on datasets
     pure C11 pull-based execution engine and a custom on-disk format ('.vtr').
     Reads and writes 'GeoTIFF' (including tiled and 'BigTIFF' layouts) and a
     tiled raster format ('.vec') with overview pyramids and time cubes for
-    larger-than-RAM gridded data.
+    larger-than-RAM raster data.
 License: MIT + file LICENSE
 Depends: R (>= 4.1.0)
 SystemRequirements: GNU make

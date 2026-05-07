@@ -154,13 +154,19 @@ VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols) 
     int n_q = Rf_length(quantize_sexp);
     if (n_q == 0) return NULL;
 
-    SEXP q_names = Rf_getAttrib(quantize_sexp, R_NamesSymbol);
-    if (q_names == R_NilValue || TYPEOF(q_names) != STRSXP)
+    /* PROTECT q_names: rchk treats getAttrib results as fresh-allocated
+     * SEXPs even when they're rooted via `quantize_sexp`'s attribute
+     * pairlist. The Rf_warning / Rf_asReal calls inside the loop below
+     * can allocate. */
+    SEXP q_names = PROTECT(Rf_getAttrib(quantize_sexp, R_NamesSymbol));
+    if (q_names == R_NilValue || TYPEOF(q_names) != STRSXP) {
+        UNPROTECT(1);
         return NULL;
+    }
 
     VtrQuantizeSpec *qspecs = (VtrQuantizeSpec *)calloc((size_t)n_cols,
                                                         sizeof(VtrQuantizeSpec));
-    if (!qspecs) return NULL;
+    if (!qspecs) { UNPROTECT(1); return NULL; }
 
     for (int qi = 0; qi < n_q; qi++) {
         const char *qcol = CHAR(STRING_ELT(q_names, qi));
@@ -196,7 +202,10 @@ VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols) 
         VecType target = VEC_INT16; /* default */
         int has_scale = 0;
 
-        SEXP snames = Rf_getAttrib(spec, R_NamesSymbol);
+        /* PROTECT snames per iteration: balanced UNPROTECT before continue
+         * or end-of-iteration. The Rf_asReal / Rf_warning calls below can
+         * trigger GC. */
+        SEXP snames = PROTECT(Rf_getAttrib(spec, R_NamesSymbol));
         int slen = Rf_length(spec);
 
         for (int si = 0; si < slen; si++) {
@@ -232,6 +241,7 @@ VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols) 
         }
 
         if (!has_scale || scale <= 0) {
+            UNPROTECT(1); /* snames */
             Rf_warning("quantize: column '%s' needs positive scale or precision", qcol);
             continue;
         }
@@ -240,8 +250,11 @@ VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols) 
         qspecs[ci].scale = scale;
         qspecs[ci].offset = offset;
         qspecs[ci].target_type = target;
+
+        UNPROTECT(1); /* snames */
     }
 
+    UNPROTECT(1); /* q_names */
     return qspecs;
 }
 
@@ -254,7 +267,10 @@ VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols) {
     if (spatial_sexp == R_NilValue || TYPEOF(spatial_sexp) != VECSXP)
         return NULL;
 
-    SEXP s_names = Rf_getAttrib(spatial_sexp, R_NamesSymbol);
+    /* PROTECT s_names: rchk treats getAttrib results as fresh-allocated
+     * SEXPs even when they're rooted via spatial_sexp. The Rf_asReal /
+     * Rf_asInteger calls below can allocate. */
+    SEXP s_names = PROTECT(Rf_getAttrib(spatial_sexp, R_NamesSymbol));
 
     /* Check if this is a global spec (has nx/ny at top level) or per-column */
     int is_global = 0;
@@ -270,7 +286,7 @@ VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols) {
 
     VtrSpatialSpec *sspecs = (VtrSpatialSpec *)calloc((size_t)n_cols,
                                                        sizeof(VtrSpatialSpec));
-    if (!sspecs) return NULL;
+    if (!sspecs) { UNPROTECT(1); return NULL; }
 
     if (is_global) {
         /* Apply to all numeric columns */
@@ -292,6 +308,7 @@ VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols) {
 
         if (nx == 0 || ny == 0) {
             free(sspecs);
+            UNPROTECT(1); /* s_names */
             return NULL;
         }
 
@@ -319,7 +336,8 @@ VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols) {
             }
             if (ci < 0) continue;
 
-            SEXP sn = Rf_getAttrib(spec, R_NamesSymbol);
+            /* PROTECT sn per iteration; balanced UNPROTECT at end. */
+            SEXP sn = PROTECT(Rf_getAttrib(spec, R_NamesSymbol));
             uint32_t nx = 0, ny = 0;
             int predictor = -1;
             uint16_t tile_size = 32;
@@ -344,9 +362,12 @@ VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols) {
                 sspecs[ci].predictor = predictor;
                 sspecs[ci].tile_size = tile_size;
             }
+
+            UNPROTECT(1); /* sn */
         }
     }
 
+    UNPROTECT(1); /* s_names */
     return sspecs;
 }
 

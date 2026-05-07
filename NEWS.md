@@ -1,3 +1,29 @@
+# vectra 0.6.2
+
+## CRAN archive-issue fixes
+
+Resolves the three findings the auto-check email surfaced for the
+2026-05-06 archived 0.5.1 release.
+
+* DESCRIPTION: replaced "gridded" (flagged as a possibly-misspelled word
+  in the CRAN incoming pretest) with "raster".
+* gcc-ASAN heap-buffer-overflow in the LZ decode path
+  (`tdc/src/api/decode_impl.c`, surfaced through `read_rg_tdc_with_fp` in
+  `vtr1_tdc.c`): the consolidated decode pipeline now always allocates
+  scratch buffers with a +16-byte wildcopy slack, so `tdc_match_copy`'s
+  SIMD overshoot stays within the allocation. The `decode_ex.c` variant
+  that was missing this slack on 0.5.1 is gone (folded into the shared
+  `driver_decode_block_impl`). The ASAN-under-vignettes regression check
+  is now part of the GitHub Actions sanitizer workflow so a future
+  drift would be caught locally instead of at CRAN's BDR memcheck.
+* rchk PROTECT findings in `src/r_bridge.c`, `src/r_bridge_io.c`,
+  `src/vtr1_tdc.c`, and `src/collect.c`: every `Rf_getAttrib` /
+  `Rf_mkString` result that crossed an allocating call (`R_alloc`,
+  `Rf_warning`, `Rf_setAttrib`, `Rf_asReal`, `Rf_asInteger`,
+  `parse_*`) is now `PROTECT`ed and balanced with a matching
+  `UNPROTECT`. Touches `apply_annotation`, `C_write_vtr`,
+  `C_write_vtr_tdc`, `parse_quantize`, and `parse_spatial`.
+
 # vectra 0.6.1
 
 ## Fixes

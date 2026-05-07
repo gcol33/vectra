@@ -165,8 +165,11 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
     SEXP first_col = VECTOR_ELT(df, 0);
     int64_t n_rows = (int64_t)XLENGTH(first_col);
 
-    /* Parse col_types overrides */
-    SEXP df_names = Rf_getAttrib(df, R_NamesSymbol);
+    /* Parse col_types overrides. df_names is PROTECTed across the
+     * parse_col_types / parse_quantize / parse_spatial calls below
+     * because rchk treats getAttrib results as fresh-allocated SEXPs
+     * even though they're rooted via `df`'s attribute pairlist. */
+    SEXP df_names = PROTECT(Rf_getAttrib(df, R_NamesSymbol));
     VecType *col_type_overrides = parse_col_types(col_types_sexp, df_names, n_cols);
 
     /* Parse quantize + spatial specs */
@@ -213,8 +216,9 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
         /* Multiple row groups */
         uint32_t n_rg = (uint32_t)((n_rows + bs - 1) / bs);
 
-        /* Build schema from first few elements */
-        SEXP names = Rf_getAttrib(df, R_NamesSymbol);
+        /* Build schema from first few elements. names is PROTECTed
+         * across the r_col_type allocating call inside the loop. */
+        SEXP names = PROTECT(Rf_getAttrib(df, R_NamesSymbol));
         char **col_names = (char **)malloc((size_t)n_cols * sizeof(char *));
         VecType *col_types = (VecType *)malloc((size_t)n_cols * sizeof(VecType));
         for (int i = 0; i < n_cols; i++) {
@@ -402,6 +406,10 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
     free(qspecs);
     free(sspecs);
 
+    /* df_names + (multi-rg branch's) names. Both branches PROTECT df_names
+     * once; the multi-rg branch additionally PROTECTs `names`. We track
+     * the count so this UNPROTECT is correct in both paths. */
+    UNPROTECT(bs <= 0 || (int64_t)bs >= n_rows ? 1 : 2);
     return R_NilValue;
 }
 

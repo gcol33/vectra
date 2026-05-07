@@ -114,7 +114,9 @@ static SEXP apply_annotation(SEXP col, const char *ann) {
     if (!ann) return col;
 
     if (strcmp(ann, "Date") == 0) {
-        Rf_setAttrib(col, R_ClassSymbol, Rf_mkString("Date"));
+        SEXP cls = PROTECT(Rf_mkString("Date"));
+        Rf_setAttrib(col, R_ClassSymbol, cls);
+        UNPROTECT(1);
         return col;
     }
     if (strncmp(ann, "POSIXct|", 8) == 0) {
@@ -123,8 +125,11 @@ static SEXP apply_annotation(SEXP col, const char *ann) {
         SET_STRING_ELT(cls, 0, Rf_mkChar("POSIXct"));
         SET_STRING_ELT(cls, 1, Rf_mkChar("POSIXt"));
         Rf_setAttrib(col, R_ClassSymbol, cls);
-        if (tz[0] != '\0')
-            Rf_setAttrib(col, Rf_install("tzone"), Rf_mkString(tz));
+        if (tz[0] != '\0') {
+            SEXP tzv = PROTECT(Rf_mkString(tz));
+            Rf_setAttrib(col, Rf_install("tzone"), tzv);
+            UNPROTECT(1);
+        }
         UNPROTECT(1);
         return col;
     }
@@ -154,8 +159,9 @@ static SEXP apply_annotation(SEXP col, const char *ann) {
                                          levels, n_levels);
         }
         Rf_setAttrib(icol, R_LevelsSymbol, levels);
-        Rf_setAttrib(icol, R_ClassSymbol, Rf_mkString("factor"));
-        UNPROTECT(2);
+        SEXP fcls = PROTECT(Rf_mkString("factor"));
+        Rf_setAttrib(icol, R_ClassSymbol, fcls);
+        UNPROTECT(3);
         return icol;
     }
     return col;
