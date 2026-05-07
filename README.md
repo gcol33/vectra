@@ -17,24 +17,24 @@ Point vectra at any file and query it with dplyr verbs. Nothing runs until `coll
 ```r
 library(vectra)
 
-# CSV — lazy scan with type inference
+# CSV: lazy scan with type inference
 tbl_csv("measurements.csv") |>
   filter(temperature > 30, year >= 2020) |>
   group_by(station) |>
   summarise(avg_temp = mean(temperature), n = n()) |>
   collect()
 
-# GeoTIFF — climate rasters as tidy data
+# GeoTIFF: climate rasters as tidy data
 tbl_tiff("worldclim_bio1.tif") |>
   filter(band1 > 0) |>
   mutate(temp_c = band1 / 10) |>
   collect()
 
-# Point extraction — sample raster values at coordinates, no terra needed
+# Point extraction: sample raster values at coordinates, no terra needed
 tiff_extract_points("worldclim_bio1.tif",
                     x = c(10.5, 11.2), y = c(47.1, 47.3))
 
-# SQLite — zero-dependency, no DBI required
+# SQLite: zero-dependency, no DBI required
 tbl_sqlite("survey.db", "responses") |>
   filter(year == 2025) |>
   left_join(tbl_sqlite("survey.db", "sites"), by = "site_id") |>
@@ -56,7 +56,7 @@ tbl("data.vtr") |>
 Append new data without rewriting the file, or do a key-based diff between two snapshots:
 
 ```r
-# Append new rows as a new row group — existing data untouched
+# Append new rows as a new row group; existing data untouched
 append_vtr(new_rows_df, "data.vtr")
 
 # Logical diff: what was added or deleted between two snapshots?
@@ -84,7 +84,7 @@ s <- vtr_schema(
   site    = link("site_id", tbl("sites.vtr"))
 )
 
-# Pull columns from any dimension — joins are built automatically
+# Pull columns from any dimension; joins are built automatically
 lookup(s, count, species$name, site$habitat) |> collect()
 #> species: all 500 keys matched
 #> site: 3/500 unmatched keys (X1, X2, X3)
@@ -117,7 +117,7 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 - **Streaming execution**: data flows one row group at a time, never fully in memory
 - **Zero-copy filtering**: selection vectors avoid row duplication
 - **Query optimizer**: column pruning skips unneeded columns at scan; predicate pushdown uses per-rowgroup min/max statistics to skip entire row groups
-- **Hash joins**: build right, stream left --- join a 50 GB fact table against a lookup without materializing both
+- **Hash joins**: build right, stream left; join a 50 GB fact table against a lookup without materializing both
 - **External sort**: 1 GB memory budget with automatic spill-to-disk
 - **Window functions**: `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`
 - **String expressions**: `nchar()`, `substr()`, `grepl()` evaluated in the engine without round-tripping to R
@@ -135,10 +135,10 @@ vectra is a self-contained C11 engine compiled as a standard R extension. No ext
 | **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`, `ntile()`, `percent_rank()`, `cume_dist()` |
 | **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `as.Date()` (in `filter()`/`mutate()`) |
 | **String** | `nchar()`, `substr()`, `grepl()`, `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()` (in `filter()`/`mutate()`) |
-| **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()` — fuzzy matching in `filter()`/`mutate()`, with optional `max_dist` early termination |
+| **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()`: fuzzy matching in `filter()`/`mutate()`, with optional `max_dist` early termination |
 | **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()`, `resolve()`, `propagate()` (in `filter()`/`mutate()`) |
 | **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
-| **Schema** | `vtr_schema()`, `link()`, `lookup()` — star schema definition and dimension lookup with match reporting |
+| **Schema** | `vtr_schema()`, `link()`, `lookup()`: star schema definition and dimension lookup with match reporting |
 | **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()`, `tiff_extract_points()`, `tiff_metadata()`, `append_vtr()`, `delete_vtr()`, `diff_vtr()` |
 | **Inspect** | `explain()`, `glimpse()`, `print()`, `pull()` |
 
@@ -156,14 +156,14 @@ pak::pak("gcol33/vectra")
 
 ## Documentation
 
-- [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html) — Full walkthrough with runnable examples
-- [Format Backends](https://gillescolling.com/vectra/articles/formats.html) — CSV, SQLite, Excel, GeoTIFF, and streaming conversion pipelines
-- [Joins](https://gillescolling.com/vectra/articles/joins.html) — All join types, fuzzy joins, key coercion, and memory model
-- [Star Schemas](https://gillescolling.com/vectra/articles/schema.html) — Dimension lookups, match reporting, and avoiding flat-table column creep
-- [String Operations](https://gillescolling.com/vectra/articles/string-ops.html) — Pattern matching, fuzzy matching, and block lookups
-- [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html) — Hash indexes, zone-map pruning, column pruning, and reading `explain()` output
-- [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html) — Streaming pipelines, append/delete/diff, external sort, and memory budgeting
-- [Engine Reference](https://gillescolling.com/vectra/articles/engine.html) — Execution model, types, coercion, .vtr format, and limitations
+- [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html): full walkthrough with runnable examples
+- [Format Backends](https://gillescolling.com/vectra/articles/formats.html): CSV, SQLite, Excel, GeoTIFF, and streaming conversion pipelines
+- [Joins](https://gillescolling.com/vectra/articles/joins.html): all join types, fuzzy joins, key coercion, and memory model
+- [Star Schemas](https://gillescolling.com/vectra/articles/schema.html): dimension lookups, match reporting, and avoiding flat-table column creep
+- [String Operations](https://gillescolling.com/vectra/articles/string-ops.html): pattern matching, fuzzy matching, and block lookups
+- [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html): hash indexes, zone-map pruning, column pruning, and reading `explain()` output
+- [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html): streaming pipelines, append/delete/diff, external sort, and memory budgeting
+- [Engine Reference](https://gillescolling.com/vectra/articles/engine.html): execution model, types, coercion, .vtr format, and limitations
 - [Function Reference](https://gillescolling.com/vectra/reference/)
 
 ## Support
