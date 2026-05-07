@@ -1,3 +1,20 @@
+# vectra 0.6.1
+
+## Fixes
+
+* `src/vec_omp.h` and call sites: stop including `<omp.h>` and forward-declare
+  the three OpenMP runtime functions vectra calls (`omp_get_max_threads`,
+  `omp_get_thread_num`, `omp_in_parallel`). clang 21's bundled omp.h wrapper
+  contains an unbalanced `#pragma omp end declare variant` that breaks
+  compilation of `block.c` (and any other vectra TU that includes the
+  wrapper) under r-devel-linux-x86_64-debian-clang. The bug is in the wrapper
+  itself, so an `#ifdef _OPENMP` guard around `#include <omp.h>` is not
+  enough — when `-fopenmp` is on the compile line, `_OPENMP` is defined and
+  the broken wrapper is pulled in. Skipping the wrapper avoids the bug; the
+  `#pragma omp ...` directives elsewhere in `src/` are still recognised and
+  the runtime symbols resolve at link time via `libomp`. Fixes the
+  compilation error that caused vectra 0.5.1 to be archived from CRAN.
+
 # vectra 0.6.0
 
 ## Raster format (`.vec`)

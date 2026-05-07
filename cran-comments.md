@@ -1,9 +1,21 @@
 ## Release summary
 
-This is a feature release (0.5.1 -> 0.6.0) introducing a new tiled raster
+This is a feature release (0.5.1 -> 0.6.1) introducing a new tiled raster
 format (`.vec`) with overview pyramids and time cubes, parallel tile decode,
 plus GeoTIFF read/write enhancements (tiled, BigTIFF, LZW + Predictor 2,
 GeoKey CRS round-trip, `GDAL_METADATA` band-name parser).
+
+## clang 21 / r-devel-linux-x86_64-debian-clang archive fix
+
+vectra 0.5.1 was archived after `block.c` failed to compile on the
+r-devel-clang flavor: clang 21's bundled `omp.h` wrapper contains an
+unbalanced `#pragma omp end declare variant`, which trips on any TU that
+includes the wrapper, even with the include guarded by `#ifdef _OPENMP`
+(when `-fopenmp` is on the compile line, `_OPENMP` is defined and the
+broken wrapper is pulled in). 0.6.1 fixes this by forward-declaring the
+three OpenMP runtime functions vectra uses and skipping the wrapper
+entirely. The `#pragma omp ...` directives elsewhere in `src/` are still
+recognised, and the runtime symbols resolve at link time via libomp.
 
 ## UBSAN nonnull fix
 

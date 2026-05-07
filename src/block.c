@@ -14,9 +14,7 @@
 #include <ctype.h>
 #include <math.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 /* ------------------------------------------------------------------ */
 /* FNV-1a hashing (same constants as hash.c)                          */
