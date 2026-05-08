@@ -1,6 +1,8 @@
 # vectra
 
 [![CRAN status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra)
+[![CRAN downloads](https://cranlogs.r-pkg.org/badges/grand-total/vectra)](https://cran.r-project.org/package=vectra)
+[![Monthly downloads](https://cranlogs.r-pkg.org/badges/vectra)](https://cran.r-project.org/package=vectra)
 [![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
 [![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml)
 [![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
