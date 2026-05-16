@@ -18,12 +18,6 @@ and the clean error path for an unknown `pkg::nope()`) is in
 
 No other code, documentation, or DESCRIPTION changes since 0.6.2.
 
-## Submission cadence
-
-0.6.2 went up on CRAN 2026-05-08; this submission is on
-2026-05-22 (14 days later). The change is one R-side helper and three
-test cases -- no compiled code, no new dependencies, no API changes.
-
 ## Test environments
 
 * local Windows 11, R 4.6.0 (GCC 14.3.0 via Rtools 46) -- 0/0/0
