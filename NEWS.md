@@ -1,3 +1,16 @@
+# vectra 0.6.3
+
+## Fixes
+
+* `summarise()` / `summarize()` now accept namespace-qualified
+  aggregation calls (`vectra::n()`, `vectra::sum(x)`,
+  `vectra:::mean(x)`). Previously `parse_agg_expr` ran
+  `as.character()` on the call head and dispatched on its result; for
+  a `pkg::fn` call that yielded the length-3 vector
+  `c("::", "pkg", "fn")`, and the subsequent `if (!fn %in% valid_aggs)`
+  triggered "the condition has length > 1" under R >= 4.2. The parser
+  now unwraps `::` / `:::` and uses the bare function name.
+
 # vectra 0.6.2
 
 ## CRAN archive-issue fixes

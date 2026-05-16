@@ -296,7 +296,18 @@ parse_agg_expr <- function(expr, output_name) {
   if (!is.call(expr))
     stop(sprintf("summarise expression '%s' must be a function call", output_name))
 
-  fn <- as.character(expr[[1]])
+  fn_call <- expr[[1]]
+  # Accept namespace-qualified calls like vectra::n() or dplyr:::sum()
+  if (is.call(fn_call) && length(fn_call) == 3L && is.name(fn_call[[1L]]) &&
+      as.character(fn_call[[1L]]) %in% c("::", ":::")) {
+    fn <- as.character(fn_call[[3L]])
+  } else if (is.name(fn_call)) {
+    fn <- as.character(fn_call)
+  } else {
+    stop(sprintf(
+      "summarise expression '%s' must call a named aggregation function, got %s",
+      output_name, deparse(fn_call)))
+  }
   valid_aggs <- c("n", "sum", "mean", "min", "max", "sd", "var", "first", "last",
                    "any", "all", "median", "n_distinct")
   if (!fn %in% valid_aggs)

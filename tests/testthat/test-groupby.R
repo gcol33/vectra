@@ -147,3 +147,26 @@ test_that("filter then group_by then summarise", {
   expect_equal(result$s[result$g == "a"], 8)
   expect_equal(result$s[result$g == "b"], 4)
 })
+
+test_that("summarise accepts namespace-qualified aggregation calls", {
+  df <- data.frame(g = c("a", "a", "b"), x = c(1.0, 2.0, 3.0),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+
+  # vectra::n() and vectra::sum() should work the same as bare n() / sum()
+  r1 <- tbl(f) |> vectra::summarize(n = vectra::n()) |> collect()
+  expect_equal(r1$n, 3)
+
+  r2 <- tbl(f) |> group_by(g) |>
+    summarise(cnt = vectra::n(), total = vectra::sum(x)) |> collect()
+  expect_equal(r2$cnt, c(2, 1))
+  expect_equal(r2$total, c(3, 3))
+
+  # Unknown namespace-qualified function still errors with a clean message
+  expect_error(
+    tbl(f) |> summarise(z = vectra::nope(x)) |> collect(),
+    "unknown aggregation function: nope"
+  )
+})
