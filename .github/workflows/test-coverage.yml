@@ -15,6 +15,17 @@ jobs:
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       TDC: ${{ github.workspace }}/tdc
+      # Suppress ASan's initial-library-order check. covr rebuilds vectra
+      # with --coverage on top of whatever flags Ubuntu noble's R toolchain
+      # injects, and the resulting test process triggers
+      #   ==PID==ASan runtime does not come first in initial library list
+      # at shutdown -- after tests have already passed -- because some
+      # transitive object registers an ASan initializer although we never
+      # asked for -fsanitize=address. The real ASan/UBSAN job (see
+      # sanitizers.yml) owns sanitizer coverage with proper LD_PRELOAD, so
+      # for test-coverage the check is purely spurious. verify_asan_link_order
+      # is the documented LLVM ASan flag for disabling this exact check.
+      ASAN_OPTIONS: verify_asan_link_order=0
 
     steps:
       - uses: actions/checkout@v4
