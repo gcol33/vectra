@@ -1,5 +1,7 @@
 # vectra
 
+*querying data that won't fit in memory*
+
 [![CRAN status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra)
 [![CRAN downloads](https://cranlogs.r-pkg.org/badges/grand-total/vectra)](https://cran.r-project.org/package=vectra)
 [![Monthly downloads](https://cranlogs.r-pkg.org/badges/vectra)](https://cran.r-project.org/package=vectra)
@@ -8,42 +10,45 @@
 [![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-vectra is an R-native columnar query engine for datasets larger than RAM.
+**dplyr-style queries on larger-than-RAM data, backed by a pull-based columnar engine written in C11.**
 
-Write dplyr-style pipelines against multi-GB files on a laptop. Data streams through a C11 pull-based engine one row group at a time, so peak memory stays bounded regardless of file size.
-
-## Quick Start
-
-Point vectra at any file and query it with dplyr verbs. Nothing runs until `collect()`.
+Point vectra at a file too big to load and query it with the verbs you already use.
+Data flows through the engine one row group at a time, so peak memory stays bounded
+no matter how large the file gets. Arrow needs compiled binaries that match your
+platform, DuckDB links a bundled library, Spark wants a JVM. vectra is a standard R
+extension with no external dependencies: it compiles where R compiles.
 
 ```r
 library(vectra)
 
-# CSV: lazy scan with type inference
+# Lazy scan over a multi-GB CSV; nothing runs until collect()
 tbl_csv("measurements.csv") |>
   filter(temperature > 30, year >= 2020) |>
   group_by(station) |>
   summarise(avg_temp = mean(temperature), n = n()) |>
   collect()
+```
 
-# GeoTIFF: climate rasters as tidy data
+## One engine, several file formats
+
+`.vtr` (vectra's own columnar format), CSV, SQLite, and GeoTIFF all open into the same
+lazy query nodes, so the same pipeline runs against any of them:
+
+```r
+# GeoTIFF climate raster as tidy data
 tbl_tiff("worldclim_bio1.tif") |>
   filter(band1 > 0) |>
   mutate(temp_c = band1 / 10) |>
   collect()
 
-# Point extraction: sample raster values at coordinates, no terra needed
-tiff_extract_points("worldclim_bio1.tif",
-                    x = c(10.5, 11.2), y = c(47.1, 47.3))
-
-# SQLite: zero-dependency, no DBI required
+# SQLite without DBI
 tbl_sqlite("survey.db", "responses") |>
   filter(year == 2025) |>
   left_join(tbl_sqlite("survey.db", "sites"), by = "site_id") |>
   collect()
 ```
 
-For repeated queries, convert to vectra's native `.vtr` format for faster reads:
+Convert to `.vtr` once for repeated queries, then read it back fast:
 
 ```r
 write_vtr(big_df, "data.vtr", batch_size = 100000)
@@ -55,44 +60,18 @@ tbl("data.vtr") |>
   collect()
 ```
 
-Append new data without rewriting the file, or do a key-based diff between two snapshots:
+## How the engine stays bounded
 
-```r
-# Append new rows as a new row group; existing data untouched
-append_vtr(new_rows_df, "data.vtr")
+The optimizer rewrites the plan before any data moves, and execution streams the
+result rather than materializing it:
 
-# Logical diff: what was added or deleted between two snapshots?
-d <- diff_vtr("snapshot_old.vtr", "snapshot_new.vtr", key_col = "id")
-collect(d$added)   # rows present in new but not old
-d$deleted          # key values present in old but not new
-```
+- **Streaming execution**: one row group flows through at a time, never the whole file
+- **Column pruning**: columns you never reference are skipped at the scan
+- **Predicate pushdown**: per-rowgroup min/max statistics skip row groups that cannot match a filter
+- **Hash joins**: build the right side, stream the left; join a fact table against a lookup without holding both in memory
+- **External sort**: a memory budget with automatic spill to disk
 
-Fuzzy string matching runs inside the C engine, no round-trip to R:
-
-```r
-tbl("taxa.vtr") |>
-  filter(levenshtein(species, "Quercus robur") <= 2) |>
-  mutate(similarity = jaro_winkler(species, "Quercus robur")) |>
-  arrange(desc(similarity)) |>
-  collect()
-```
-
-Register a star schema to avoid flat-table column creep. Define the links once, then pull only what you need:
-
-```r
-s <- vtr_schema(
-  fact    = tbl("observations.vtr"),
-  species = link("sp_id", tbl("species.vtr")),
-  site    = link("site_id", tbl("sites.vtr"))
-)
-
-# Pull columns from any dimension; joins are built automatically
-lookup(s, count, species$name, site$habitat) |> collect()
-#> species: all 500 keys matched
-#> site: 3/500 unmatched keys (X1, X2, X3)
-```
-
-Use `explain()` to inspect the optimized plan:
+`explain()` shows the optimized plan, including which columns and row groups were pruned:
 
 ```r
 tbl("data.vtr") |>
@@ -104,75 +83,97 @@ tbl("data.vtr") |>
 #> ProjectNode [streaming]
 #>   FilterNode [streaming]
 #>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
-#>
-#> Output columns (2):
-#>   id <int64>
-#>   x <double>
 ```
 
-## Why vectra
+## Fuzzy matching in the engine
 
-Querying large datasets in R usually means Arrow (requires compiled binaries matching your platform), DuckDB (links a 30 MB bundled library), or Spark (requires a JVM and cluster configuration).
+String distance runs inside the C engine, with no round-trip to R per row:
 
-vectra is a self-contained C11 engine compiled as a standard R extension. No external libraries, no JVM, no runtime configuration. It provides:
+```r
+tbl("taxa.vtr") |>
+  filter(levenshtein(species, "Quercus robur") <= 2) |>
+  mutate(similarity = jaro_winkler(species, "Quercus robur")) |>
+  arrange(desc(similarity)) |>
+  collect()
+```
 
-- **Streaming execution**: data flows one row group at a time, never fully in memory
-- **Zero-copy filtering**: selection vectors avoid row duplication
-- **Query optimizer**: column pruning skips unneeded columns at scan; predicate pushdown uses per-rowgroup min/max statistics to skip entire row groups
-- **Hash joins**: build right, stream left; join a 50 GB fact table against a lookup without materializing both
-- **External sort**: 1 GB memory budget with automatic spill-to-disk
-- **Window functions**: `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`
-- **String expressions**: `nchar()`, `substr()`, `grepl()` evaluated in the engine without round-tripping to R
-- **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF --- all produce the same lazy query nodes
-- **Integer TIFF output**: write rasters as `int16`/`int32`/`uint8`/`uint16`/`float32` with embedded GDAL metadata for 5-10x smaller files
+`levenshtein()`, `dl_dist()` (Damerau-Levenshtein), and `jaro_winkler()` are available in
+`filter()` and `mutate()`, alongside `nchar()`, `substr()`, `grepl()`, `gsub()` and the rest
+of the string toolkit.
 
-## Features
+## Star schemas instead of flat-table column creep
 
-| Category | Verbs |
-|:---------|:------|
-| **Transform** | `filter()`, `select()`, `mutate()`, `transmute()`, `rename()`, `relocate()` |
-| **Aggregate** | `group_by()`, `summarise()` (`n`, `sum`, `mean`, `min`, `max`, `sd`, `var`, `first`, `last`, `any`, `all`, `median`, `n_distinct`), `count()`, `tally()`, `distinct()` |
-| **Join** | `left_join()`, `inner_join()`, `right_join()`, `full_join()`, `semi_join()`, `anti_join()`, `cross_join()`, `lookup()` |
-| **Order** | `arrange()`, `slice_head()`, `slice_tail()`, `slice_min()`, `slice_max()`, `slice()` |
-| **Window** | `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`, `cumsum()`, `cummean()`, `cummin()`, `cummax()`, `ntile()`, `percent_rank()`, `cume_dist()` |
-| **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `as.Date()` (in `filter()`/`mutate()`) |
-| **String** | `nchar()`, `substr()`, `grepl()`, `tolower()`, `toupper()`, `trimws()`, `paste0()`, `gsub()`, `sub()`, `startsWith()`, `endsWith()` (in `filter()`/`mutate()`) |
-| **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()`: fuzzy matching in `filter()`/`mutate()`, with optional `max_dist` early termination |
-| **Expression** | `abs()`, `sqrt()`, `log()`, `exp()`, `floor()`, `ceiling()`, `round()`, `log2()`, `log10()`, `sign()`, `trunc()`, `if_else()`, `between()`, `%in%`, `as.numeric()`, `pmin()`, `pmax()`, `resolve()`, `propagate()` (in `filter()`/`mutate()`) |
-| **Combine** | `bind_rows()`, `bind_cols()`, `across()` |
-| **Schema** | `vtr_schema()`, `link()`, `lookup()`: star schema definition and dimension lookup with match reporting |
-| **I/O** | `tbl()`, `tbl_csv()`, `tbl_sqlite()`, `tbl_tiff()`, `write_vtr()`, `write_csv()`, `write_sqlite()`, `write_tiff()`, `tiff_extract_points()`, `tiff_metadata()`, `append_vtr()`, `delete_vtr()`, `diff_vtr()` |
-| **Inspect** | `explain()`, `glimpse()`, `print()`, `pull()` |
+Register dimension tables once, then pull columns from any of them; joins are built for
+you, and unmatched keys are reported:
 
-Full tidyselect support in `select()`, `rename()`, `relocate()`, and `across()`: `starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`, `everything()`, `all_of()`, `any_of()`.
+```r
+s <- vtr_schema(
+  fact    = tbl("observations.vtr"),
+  species = link("sp_id", tbl("species.vtr")),
+  site    = link("site_id", tbl("sites.vtr"))
+)
+
+lookup(s, count, species$name, site$habitat) |> collect()
+#> species: all 500 keys matched
+#> site: 3/500 unmatched keys (X1, X2, X3)
+```
+
+## Incremental updates
+
+Append new rows as a new row group without rewriting the file, or take a key-based diff
+between two snapshots:
+
+```r
+append_vtr(new_rows_df, "data.vtr")
+
+d <- diff_vtr("snapshot_old.vtr", "snapshot_new.vtr", key_col = "id")
+collect(d$added)   # rows present in new but not old
+d$deleted          # key values present in old but not new
+```
+
+## Verbs
+
+vectra covers the dplyr surface most analysis pipelines use: `filter()`, `select()`,
+`mutate()`, `group_by()` / `summarise()` with the common aggregations, all the joins
+(`left_join()` through `cross_join()`, plus `fuzzy_join()`), `arrange()` and the
+`slice_*()` family, and window functions (`row_number()`, `rank()`, `lag()`, `lead()`,
+`cumsum()`, `ntile()`, and more). Date/time and string functions evaluate in the engine.
+`select()`, `rename()`, `relocate()`, and `across()` accept the full tidyselect helper set
+(`starts_with()`, `where()`, `all_of()`, and the rest).
+
+The [Function Reference](https://gillescolling.com/vectra/reference/) lists every verb and
+expression with examples.
 
 ## Installation
 
 ```r
-# CRAN
-install.packages("vectra")
+install.packages("vectra")            # CRAN
 
-# Development version
+install.packages("pak")               # development version
 pak::pak("gcol33/vectra")
 ```
 
 ## Documentation
 
-- [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html): full walkthrough with runnable examples
-- [Format Backends](https://gillescolling.com/vectra/articles/formats.html): CSV, SQLite, Excel, GeoTIFF, and streaming conversion pipelines
-- [Joins](https://gillescolling.com/vectra/articles/joins.html): all join types, fuzzy joins, key coercion, and memory model
-- [Star Schemas](https://gillescolling.com/vectra/articles/schema.html): dimension lookups, match reporting, and avoiding flat-table column creep
-- [String Operations](https://gillescolling.com/vectra/articles/string-ops.html): pattern matching, fuzzy matching, and block lookups
-- [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html): hash indexes, zone-map pruning, column pruning, and reading `explain()` output
-- [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html): streaming pipelines, append/delete/diff, external sort, and memory budgeting
-- [Engine Reference](https://gillescolling.com/vectra/articles/engine.html): execution model, types, coercion, .vtr format, and limitations
-- [Function Reference](https://gillescolling.com/vectra/reference/)
+- [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html)
+- [Engine Reference](https://gillescolling.com/vectra/articles/engine.html)
+- [Format Backends](https://gillescolling.com/vectra/articles/formats.html)
+- [Joins](https://gillescolling.com/vectra/articles/joins.html)
+- [Star Schemas](https://gillescolling.com/vectra/articles/schema.html)
+- [String Operations](https://gillescolling.com/vectra/articles/string-ops.html)
+- [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html)
+- [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html)
 
 ## Support
 
 > "Software is like sex: it's better when it's free." — Linus Torvalds
 
+I'm a PhD student who builds R packages in my free time because I believe good tools
+should be free and open. I started these projects for my own work and figured others
+might find them useful too.
+
 If this package saved you some time, buying me a coffee is a nice way to say thanks.
+It helps with my coffee addiction.
 
 [![Buy Me A Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
 
@@ -185,8 +186,8 @@ MIT (see the LICENSE.md file)
 ```bibtex
 @software{vectra,
   author = {Colling, Gilles},
-  title = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
-  year = {2026},
-  url = {https://github.com/gcol33/vectra}
+  title  = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
+  year   = {2026},
+  url    = {https://github.com/gcol33/vectra}
 }
 ```
