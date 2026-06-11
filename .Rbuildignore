@@ -44,6 +44,7 @@
 ^todo-.*\.md$
 ^\.cran_check\.R$
 ^\.cran_check\.log$
+^\..*\.log$
 ^src/.*\.o$
 ^src/.*\.so$
 ^src/.*\.dll$
