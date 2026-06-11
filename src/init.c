@@ -5,6 +5,7 @@
 #include <Rinternals.h>
 #include "r_bridge.h"
 #include "vtr_append.h"
+#include "vec_omp.h"
 
 /* block.c R bridge functions */
 SEXP C_block_materialize(SEXP node_xptr);
@@ -124,4 +125,5 @@ static const R_CallMethodDef CallEntries[] = {
 void R_init_vectra(DllInfo *dll) {
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
+    vec_omp_apply_core_limit();
 }

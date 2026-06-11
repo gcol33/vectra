@@ -343,7 +343,10 @@ static void fuzzy_match_phase(FuzzyJoinNode *fj) {
     int n_threads = fj->n_threads;
     if (n_threads < 1) n_threads = 1;
 
-#ifndef _OPENMP
+#ifdef _OPENMP
+    if (n_threads > omp_get_max_threads())
+        n_threads = omp_get_max_threads();
+#else
     n_threads = 1;
 #endif
 

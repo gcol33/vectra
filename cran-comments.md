@@ -1,3 +1,13 @@
+## Resubmission
+
+The 0.7.0 incoming check produced one NOTE on
+r-devel-linux-x86_64-debian-gcc: the test run used CPU time 2.9 times
+elapsed time. The package's OpenMP kernels were spawning more than two
+threads during the check. 0.7.1 caps the OpenMP team to two threads when
+`_R_CHECK_LIMIT_CORES_` is set, so tests, examples, and vignettes stay
+within the two-core limit; outside a check the package uses every
+available core. No other changes.
+
 ## Feature release
 
 0.7.0 is a feature update to the version currently published on CRAN

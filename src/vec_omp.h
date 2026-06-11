@@ -20,7 +20,10 @@
 extern int omp_get_max_threads(void);
 extern int omp_get_thread_num(void);
 extern int omp_in_parallel(void);
+extern void omp_set_num_threads(int);
 #endif
+
+#include <stdlib.h> /* getenv */
 
 /* Minimum elements before spawning OpenMP threads */
 #define VEC_OMP_THRESHOLD 32768
@@ -32,6 +35,24 @@ static inline int vec_omp_threads(void) {
     return n > 1 ? n : 1;
 #else
     return 1;
+#endif
+}
+
+/* Clamp the OpenMP team to two threads under R CMD check.
+ *
+ * CRAN's check farm is shared and forbids using more than two cores at
+ * once; it signals this by setting _R_CHECK_LIMIT_CORES_. When that is
+ * present we lower the default team size to 2. Every parallel region in
+ * the package derives its width from omp_get_max_threads() (directly, or
+ * via the global default after this call), so the clamp reaches all of
+ * them and keeps tests, examples, and vignettes under the two-core
+ * ceiling. Outside a check the variable is unset and the package uses
+ * every available core. Called once from R_init_vectra. */
+static inline void vec_omp_apply_core_limit(void) {
+#ifdef _OPENMP
+    const char *limit = getenv("_R_CHECK_LIMIT_CORES_");
+    if (limit != NULL && *limit != '\0' && omp_get_max_threads() > 2)
+        omp_set_num_threads(2);
 #endif
 }
 

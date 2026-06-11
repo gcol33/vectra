@@ -1,3 +1,13 @@
+# vectra 0.7.1
+
+* Cap the OpenMP team to two threads under `R CMD check`. When CRAN's
+  `_R_CHECK_LIMIT_CORES_` is set, the package now lowers its default team size
+  to two so the parallel string, fuzzy-join, sort, and window kernels stay
+  within the check farm's two-core limit. The fuzzy-join match phase also
+  clamps its requested thread count to the available maximum, matching the
+  blocked fuzzy-lookup path. Outside a check the package still uses every
+  available core.
+
 # vectra 0.7.0
 
 ## Streaming consumption
