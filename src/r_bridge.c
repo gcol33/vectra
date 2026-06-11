@@ -428,6 +428,24 @@ SEXP C_collect(SEXP node_xptr) {
     return vec_collect(node);
 }
 
+/* --- C_node_optimize / C_node_next_batch ---
+   Streaming pull interface backing collect_chunked() and chunk_feeder().
+   The R cursor calls C_node_optimize once when opened, then C_node_next_batch
+   repeatedly: each call returns the next non-empty batch as a data.frame, or
+   NULL at end of stream. The node carries the pull cursor between calls, so the
+   node is consumed and cannot be reused once the stream is drained. */
+
+SEXP C_node_optimize(SEXP node_xptr) {
+    VecNode *node = unwrap_node(node_xptr);
+    vec_optimize(node);
+    return R_NilValue;
+}
+
+SEXP C_node_next_batch(SEXP node_xptr) {
+    VecNode *node = unwrap_node(node_xptr);
+    return vec_collect_next(node);
+}
+
 /* --- C_node_schema --- */
 
 SEXP C_node_schema(SEXP node_xptr) {

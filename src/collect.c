@@ -439,6 +439,64 @@ static int64_t batch_to_sexp_direct(const VecBatch *batch, int col_idx,
     return n;
 }
 
+/* Convert one VecBatch into a standalone R data.frame, applying the schema's
+   per-column annotations (Date/POSIXct/factor). A selection vector, if present,
+   is compacted away first so the result is dense. Per-column conversion reuses
+   array_to_sexp() — the same converter the builder path uses — so the row-group
+   and chunk paths share one source of truth. The batch is consumed (freed)
+   before returning; the data.frame holds independent copies of every column. */
+static SEXP batch_to_dataframe(VecBatch *batch, const VecSchema *schema,
+                               int want_bit64) {
+    batch = vec_batch_compact(batch);   /* dense; frees+replaces if sel set */
+    int n_cols = schema->n_cols;
+    int64_t n_rows = batch->n_rows;
+
+    SEXP df = PROTECT(Rf_allocVector(VECSXP, n_cols));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, n_cols));
+
+    for (int i = 0; i < n_cols; i++) {
+        /* Protect across apply_annotation: it allocates (and the factor path
+           returns a fresh SEXP), which could otherwise collect this column. */
+        SEXP col = PROTECT(array_to_sexp(&batch->columns[i], want_bit64));
+        const char *ann = (schema->col_annotations)
+                          ? schema->col_annotations[i] : NULL;
+        col = apply_annotation(col, ann);
+        SET_VECTOR_ELT(df, i, col);
+        SET_STRING_ELT(names, i, Rf_mkCharCE(schema->col_names[i], CE_UTF8));
+        UNPROTECT(1);   /* col — now reachable through df */
+    }
+
+    Rf_setAttrib(df, R_NamesSymbol, names);
+    SEXP row_names = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(row_names)[0] = NA_INTEGER;
+    INTEGER(row_names)[1] = -(int)n_rows;
+    Rf_setAttrib(df, R_RowNamesSymbol, row_names);
+    Rf_setAttrib(df, R_ClassSymbol, Rf_mkString("data.frame"));
+
+    vec_batch_free(batch);
+    UNPROTECT(3);   /* df, names, row_names */
+    return df;
+}
+
+/* Pull the next non-empty batch from an already-optimized plan and return it
+   as an R data.frame, or R_NilValue at end of stream. Empty batches (e.g. an
+   input batch whose rows were all filtered out) are skipped rather than
+   returned, so consumers that treat a zero-row frame as end-of-stream — such
+   as biglm::bigglm's data() protocol — are never tripped mid-stream.
+
+   The caller must run vec_optimize() once before the first call; thereafter
+   each call advances the plan's pull cursor by one batch. */
+SEXP vec_collect_next(VecNode *root) {
+    int want_bit64 = use_bit64();
+    VecBatch *batch;
+    while ((batch = root->next_batch(root)) != NULL) {
+        if (vec_batch_logical_rows(batch) > 0)
+            return batch_to_dataframe(batch, &root->output_schema, want_bit64);
+        vec_batch_free(batch);
+    }
+    return R_NilValue;
+}
+
 SEXP vec_collect(VecNode *root) {
     /* Optimize plan tree before execution */
     vec_optimize(root);

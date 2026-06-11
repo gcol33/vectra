@@ -28,6 +28,8 @@ articles:
   - string-ops
   - indexing
   - large-data
+  - sdm
+  - offload
 reference:
 - title: Data sources
   desc: Open files for lazy query execution
@@ -110,6 +112,17 @@ reference:
   - materialize
   - block_lookup
   - block_fuzzy_lookup
+- title: Streaming consumption
+  desc: Reduce or feed a query one batch at a time, for larger-than-RAM results
+  contents:
+  - collect_chunked
+  - chunk_feeder
+- title: Offloading
+  desc: Spill a query to disk and stream it back, for out-of-core fits
+  contents:
+  - offload
+  - group_map
+  - group_modify
 - title: Diagnostics
   contents:
   - explain

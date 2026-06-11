@@ -13,6 +13,7 @@ print.vectra_node <- function(x, ...) {
   for (i in seq_along(schema$name)) {
     cat(sprintf("  %s <%s>\n", schema$name[i], schema$type[i]))
   }
+  if (!is.null(x$.grade)) print(x$.grade)
   invisible(x)
 }
 

@@ -1,6 +1,6 @@
 Package: vectra
 Title: Columnar Query Engine for Larger-than-RAM Data
-Version: 0.6.3
+Version: 0.7.0
 Authors@R: person("Gilles", "Colling", email = "gilles.colling051@gmail.com",
     role = c("aut", "cre", "cph"),
     comment = c(ORCID = "0000-0003-3070-6066"))
@@ -20,8 +20,8 @@ Imports:
     tidyselect,
     rlang
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
 Suggests:
+    biglm,
     bit64,
     knitr,
     openxlsx2,
@@ -32,3 +32,4 @@ VignetteBuilder: knitr
 Config/testthat/edition: 3
 URL: https://gillescolling.com/vectra/, https://github.com/gcol33/vectra
 BugReports: https://github.com/gcol33/vectra/issues
+Config/roxygen2/version: 8.0.0

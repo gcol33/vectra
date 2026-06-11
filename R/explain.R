@@ -34,5 +34,7 @@ explain.vectra_node <- function(x, ...) {
   for (i in seq_along(schema$name)) {
     cat(sprintf("  %s <%s>\n", schema$name[i], schema$type[i]))
   }
+  cat("\n")
+  print(grade_of(x))
   invisible(x)
 }

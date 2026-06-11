@@ -1,3 +1,50 @@
+# vectra 0.7.0
+
+## Streaming consumption
+
+* `collect_chunked(x, f, .init)` folds a function over a query one batch at a
+  time. The engine pulls a single batch into R, applies `f(acc, chunk)`, frees
+  the batch, and moves on, so a result larger than RAM can be reduced to a
+  small summary (a running count, per-group sufficient statistics, the
+  cross-products behind a linear fit) in one bounded-memory pass.
+* `chunk_feeder(.source)` turns a query into a resettable generator following
+  the `data(reset)` protocol that `biglm::bigglm()` expects, so a generalized
+  linear model can be fitted out-of-core: each iteratively reweighted pass
+  streams through the engine without ever holding the full design matrix.
+  `.source` is a factory returning a fresh node, replayed on every reset.
+* New C pull interface (`C_node_optimize`, `C_node_next_batch`) backs both
+  verbs; per-batch conversion reuses the existing column converter, so the
+  chunked and materializing paths share one code path.
+
+## Offloading and out-of-core fits
+
+* `offload()` is one verb with two return shapes. `offload(x)` materializes a
+  query once to a `.vtr` and returns a node that streams from that file: it
+  holds the same rows as `x` (an identity on values) and changes only the cost
+  profile, since replaying it is a disk scan instead of a re-run of the upstream
+  pipeline. `chunk_feeder()` accepts an offloaded node directly, so an iterative
+  consumer such as `biglm::bigglm()` reads the prepared columns from disk on
+  every reweighted pass rather than rebuilding them each time.
+* `offload(x, by = ...)` splits a query into disjoint shards in a single
+  streaming pass, one per key value (`method = "level"`), per value range
+  (`"range"`), or per hash bucket (`"hash"`); `"auto"` picks level for a
+  discrete key and range for a numeric one. The result is list-like: `length()`,
+  `names()` (the keys), `p[["key"]]`, and `lapply(p, ...)` all work, turning a
+  model that couples within a group into independent per-shard fits. The union
+  of the shards reproduces the input; row totals are checked.
+* `group_map()` and `group_modify()` run a function on each shard of a
+  partition. `group_map()` reads each shard into a data.frame, hands it to the
+  function with its key, and returns the results keyed by shard (one fit per
+  group). `group_modify()` binds per-shard data.frames into one table and
+  restores the key as a column. A purrr-style `~` formula works for either.
+* `collect_chunked()` is now a generic and gains a `combine` argument: supplying
+  it declares the reduction a monoid (with `.init` as identity), which lets the
+  fold run over the shards of a partition and merge the partial results. A
+  `commutative` flag declares the merge order-free.
+* Offloaded streams carry a cost grade (passes over the data, peak memory, I/O
+  class), shown by `print()` and `explain()` -- the label a plan reads to choose
+  between a one-pass fold, an external sort (`arrange()`), and a partition.
+
 # vectra 0.6.3
 
 ## Fixes

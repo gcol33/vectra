@@ -131,6 +131,59 @@ collect(d$added)   # rows present in new but not old
 d$deleted          # key values present in old but not new
 ```
 
+## Streaming results into a model fit
+
+`collect()` brings the whole result into memory. `collect_chunked()` folds a
+function over a query one batch at a time, holding a single batch plus the
+accumulator, so a result larger than memory reduces to a small summary in one
+pass: a running count, per-group sufficient statistics, or the cross-products
+behind a linear fit.
+
+```r
+# Accumulate X'X and X'y for an exact OLS fit, one streaming batch at a time
+acc <- tbl("survey.vtr") |>
+  select(mpg, wt, hp) |>
+  collect_chunked(
+    function(acc, chunk) {
+      X <- cbind(1, chunk$wt, chunk$hp)
+      list(XtX = acc$XtX + crossprod(X),
+           Xty = acc$Xty + crossprod(X, chunk$mpg))
+    },
+    .init = list(XtX = matrix(0, 3, 3), Xty = matrix(0, 3, 1))
+  )
+solve(acc$XtX, acc$Xty)
+```
+
+For models that re-read the data on every iteration, `chunk_feeder()` exposes a
+query as a resettable generator that `biglm::bigglm()` drives directly, fitting
+a GLM on data too large to hold in memory:
+
+```r
+src <- function() tbl("occurrences.vtr") |> select(presence, bio1, bio12)
+biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(src),
+              family = binomial())
+```
+
+`offload()` spills a prepared query to disk once and streams it back, so each
+reweighted pass reads the prepared columns from a file rather than rebuilding
+the pipeline. With a `by` key it instead splits the query into per-key shards on
+disk, turning a model that couples within a group into a set of independent
+per-shard fits. `group_map()` runs a function on each shard and returns the
+results keyed by shard; `group_modify()` recombines per-shard data.frames into
+one table.
+
+```r
+# Prepare once, then let bigglm re-read the spill on every pass
+s <- offload(tbl("occurrences.vtr") |> select(presence, bio1, bio12))
+biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(s),
+              family = binomial())
+
+# Per-region fits: each shard fits in memory on its own
+p <- offload(tbl("occurrences.vtr"), by = "region")
+fits <- group_map(p, function(d, region)
+  glm(presence ~ bio1 + bio12, data = d, family = binomial()))
+```
+
 ## Verbs
 
 vectra covers the dplyr surface most analysis pipelines use: `filter()`, `select()`,
@@ -163,6 +216,7 @@ pak::pak("gcol33/vectra")
 - [String Operations](https://gillescolling.com/vectra/articles/string-ops.html)
 - [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html)
 - [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html)
+- [Species Distribution Models](https://gillescolling.com/vectra/articles/sdm.html)
 
 ## Support
 
