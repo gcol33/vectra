@@ -34,14 +34,14 @@ both guarded by `requireNamespace()`.
 ## Test environments
 
 * local Windows 11, R 4.6.0 (GCC 14.3.0 via Rtools 46) -- 0/0/0
-* win-builder, R-devel (x86_64)
+* win-builder, R-devel and R-release (x86_64) -- Status: OK
 * GitHub Actions: macOS, Windows, ubuntu-latest (R-devel, R-release,
   R-oldrel-1)
 * GitHub Actions: ASAN/UBSAN job on Linux (gcc -fsanitize=address,undefined)
 
 ## R CMD check results
 
-0 errors, 0 warnings, 0 NOTEs related to the package.
+0 errors, 0 warnings, 0 notes.
 
 ## Reverse dependencies
 
