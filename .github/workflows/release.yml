@@ -22,7 +22,7 @@ jobs:
         with:
           repository: gcol33/tdc
           token: ${{ secrets.GITHUB_TOKEN }}
-          path: ../tdc
+          path: tdc
 
       - uses: r-lib/actions/setup-r@v2
         with:
@@ -36,7 +36,7 @@ jobs:
 
       - name: Vendor tdc and build tarball
         run: |
-          bash tools/vendor_tdc.sh
+          TDC="$PWD/tdc" bash tools/vendor_tdc.sh
           R CMD build .
         shell: bash
 
