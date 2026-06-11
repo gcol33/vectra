@@ -51,6 +51,23 @@ reference:
   contents:
   - tiff_extract_points
   - tiff_metadata
+  - tiff_band_names
+  - tiff_crs
+- title: Raster data cubes
+  desc: Read and write .vec rasters and time cubes out of core
+  contents:
+  - vec_open_raster
+  - vec_close_raster
+  - vec_raster_layout
+  - vec_raster_times
+  - vec_read_window
+  - vec_read_time_slice
+  - vec_read_pixel_series
+  - vec_extract_points
+  - vec_build_overviews
+  - vec_write_raster
+  - vec_write_time_cube
+  - vec_to_tiff
 - title: File operations
   desc: Incremental updates to .vtr files
   contents:

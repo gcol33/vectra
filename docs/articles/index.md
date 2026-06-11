@@ -17,3 +17,7 @@
   Optimization](https://gillescolling.com/vectra/articles/indexing.md):
 - [Working with Large
   Data](https://gillescolling.com/vectra/articles/large-data.md):
+- [Species Distribution
+  Models](https://gillescolling.com/vectra/articles/sdm.md):
+- [Offloading: streaming, monoids, and out-of-core
+  fits](https://gillescolling.com/vectra/articles/offload.md):

@@ -222,7 +222,7 @@ predicates.
 R’s 32-bit `integer` is widened to 64-bit `int64` on write. On read,
 `int64` is returned as `double` by default (R has no native 64-bit
 integer). Set `options(vectra.int64 = "bit64")` to get
-[`bit64::integer64`](https://rdrr.io/pkg/bit64/man/bit64-package.html)
+[`bit64::integer64`](https://bit64.r-lib.org/reference/bit64-package.html)
 output instead.
 
 ### Annotated types

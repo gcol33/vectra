@@ -305,6 +305,12 @@ tbl(f) |>
 #>   mpg <double>
 #>   cyl <double>
 #>   hp <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The ProjectNode prunes columns before the data reaches R. The FilterNode
@@ -1987,6 +1993,12 @@ tbl(f) |>
 #>   mpg <double>
 #>   cyl <double>
 #>   hp <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Several things to look for in the plan:

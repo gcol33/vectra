@@ -1,5 +1,265 @@
 # Changelog
 
+## vectra 0.7.0
+
+### Streaming consumption
+
+- `collect_chunked(x, f, .init)` folds a function over a query one batch
+  at a time. The engine pulls a single batch into R, applies
+  `f(acc, chunk)`, frees the batch, and moves on, so a result larger
+  than RAM can be reduced to a small summary (a running count, per-group
+  sufficient statistics, the cross-products behind a linear fit) in one
+  bounded-memory pass.
+- `chunk_feeder(.source)` turns a query into a resettable generator
+  following the `data(reset)` protocol that
+  [`biglm::bigglm()`](https://rdrr.io/pkg/biglm/man/bigglm.html)
+  expects, so a generalized linear model can be fitted out-of-core: each
+  iteratively reweighted pass streams through the engine without ever
+  holding the full design matrix. `.source` is a factory returning a
+  fresh node, replayed on every reset.
+- New C pull interface (`C_node_optimize`, `C_node_next_batch`) backs
+  both verbs; per-batch conversion reuses the existing column converter,
+  so the chunked and materializing paths share one code path.
+
+### Offloading and out-of-core fits
+
+- [`offload()`](https://gillescolling.com/vectra/reference/offload.md)
+  is one verb with two return shapes. `offload(x)` materializes a query
+  once to a `.vtr` and returns a node that streams from that file: it
+  holds the same rows as `x` (an identity on values) and changes only
+  the cost profile, since replaying it is a disk scan instead of a
+  re-run of the upstream pipeline.
+  [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)
+  accepts an offloaded node directly, so an iterative consumer such as
+  [`biglm::bigglm()`](https://rdrr.io/pkg/biglm/man/bigglm.html) reads
+  the prepared columns from disk on every reweighted pass rather than
+  rebuilding them each time.
+- `offload(x, by = ...)` splits a query into disjoint shards in a single
+  streaming pass, one per key value (`method = "level"`), per value
+  range (`"range"`), or per hash bucket (`"hash"`); `"auto"` picks level
+  for a discrete key and range for a numeric one. The result is
+  list-like: [`length()`](https://rdrr.io/r/base/length.html),
+  [`names()`](https://rdrr.io/r/base/names.html) (the keys),
+  `p[["key"]]`, and `lapply(p, ...)` all work, turning a model that
+  couples within a group into independent per-shard fits. The union of
+  the shards reproduces the input; row totals are checked.
+- [`group_map()`](https://gillescolling.com/vectra/reference/group_map.md)
+  and
+  [`group_modify()`](https://gillescolling.com/vectra/reference/group_map.md)
+  run a function on each shard of a partition.
+  [`group_map()`](https://gillescolling.com/vectra/reference/group_map.md)
+  reads each shard into a data.frame, hands it to the function with its
+  key, and returns the results keyed by shard (one fit per group).
+  [`group_modify()`](https://gillescolling.com/vectra/reference/group_map.md)
+  binds per-shard data.frames into one table and restores the key as a
+  column. A purrr-style `~` formula works for either.
+- [`collect_chunked()`](https://gillescolling.com/vectra/reference/collect_chunked.md)
+  is now a generic and gains a `combine` argument: supplying it declares
+  the reduction a monoid (with `.init` as identity), which lets the fold
+  run over the shards of a partition and merge the partial results. A
+  `commutative` flag declares the merge order-free.
+- Offloaded streams carry a cost grade (passes over the data, peak
+  memory, I/O class), shown by
+  [`print()`](https://rdrr.io/r/base/print.html) and
+  [`explain()`](https://gillescolling.com/vectra/reference/explain.md) –
+  the label a plan reads to choose between a one-pass fold, an external
+  sort
+  ([`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)),
+  and a partition.
+
+## vectra 0.6.3
+
+### Fixes
+
+- [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  /
+  [`summarize()`](https://gillescolling.com/vectra/reference/summarise.md)
+  now accept namespace-qualified aggregation calls (`vectra::n()`,
+  `vectra::sum(x)`, `vectra:::mean(x)`). Previously `parse_agg_expr` ran
+  [`as.character()`](https://rdrr.io/r/base/character.html) on the call
+  head and dispatched on its result; for a `pkg::fn` call that yielded
+  the length-3 vector `c("::", "pkg", "fn")`, and the subsequent
+  `if (!fn %in% valid_aggs)` triggered “the condition has length \> 1”
+  under R \>= 4.2. The parser now unwraps `::` / `:::` and uses the bare
+  function name.
+
+## vectra 0.6.2
+
+CRAN release: 2026-05-08
+
+### CRAN archive-issue fixes
+
+Resolves the three findings the auto-check email surfaced for the
+2026-05-06 archived 0.5.1 release.
+
+- DESCRIPTION: replaced “gridded” (flagged as a possibly-misspelled word
+  in the CRAN incoming pretest) with “raster”.
+- gcc-ASAN heap-buffer-overflow in the LZ decode path
+  (`tdc/src/api/decode_impl.c`, surfaced through `read_rg_tdc_with_fp`
+  in `vtr1_tdc.c`): the consolidated decode pipeline now always
+  allocates scratch buffers with a +16-byte wildcopy slack, so
+  `tdc_match_copy`’s SIMD overshoot stays within the allocation. The
+  `decode_ex.c` variant that was missing this slack on 0.5.1 is gone
+  (folded into the shared `driver_decode_block_impl`). The
+  ASAN-under-vignettes regression check is now part of the GitHub
+  Actions sanitizer workflow so a future drift would be caught locally
+  instead of at CRAN’s BDR memcheck.
+- rchk PROTECT findings in `src/r_bridge.c`, `src/r_bridge_io.c`,
+  `src/vtr1_tdc.c`, and `src/collect.c`: every `Rf_getAttrib` /
+  `Rf_mkString` result that crossed an allocating call (`R_alloc`,
+  `Rf_warning`, `Rf_setAttrib`, `Rf_asReal`, `Rf_asInteger`, `parse_*`)
+  is now `PROTECT`ed and balanced with a matching `UNPROTECT`. Touches
+  `apply_annotation`, `C_write_vtr`, `C_write_vtr_tdc`,
+  `parse_quantize`, and `parse_spatial`.
+
+## vectra 0.6.1
+
+### Fixes
+
+- `src/vec_omp.h` and call sites: stop including `<omp.h>` and
+  forward-declare the three OpenMP runtime functions vectra calls
+  (`omp_get_max_threads`, `omp_get_thread_num`, `omp_in_parallel`).
+  clang 21’s bundled omp.h wrapper contains an unbalanced
+  `#pragma omp end declare variant` that breaks compilation of `block.c`
+  (and any other vectra TU that includes the wrapper) under
+  r-devel-linux-x86_64-debian-clang. The bug is in the wrapper itself,
+  so an `#ifdef _OPENMP` guard around `#include <omp.h>` is not enough —
+  when `-fopenmp` is on the compile line, `_OPENMP` is defined and the
+  broken wrapper is pulled in. Skipping the wrapper avoids the bug; the
+  `#pragma omp ...` directives elsewhere in `src/` are still recognised
+  and the runtime symbols resolve at link time via `libomp`. Fixes the
+  compilation error that caused vectra 0.5.1 to be archived from CRAN.
+
+## vectra 0.6.0
+
+### Raster format (`.vec`)
+
+A new tiled raster format and accompanying API for larger-than-RAM
+gridded data. Each tile is encoded as a self-describing tdc block
+(PRED_2D + BYTE_SHUFFLE + LZ); decoding is parallel across tiles.
+
+- `vec_write_raster(x, path, ...)`: write a numeric matrix or 3D
+  `(rows, cols, bands)` array to `.vec`. Storage dtypes: `f64`, `f32`,
+  `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, `i64`/`u64`. `compression`
+  controls per-tile codec probing — `"fast"`, `"balanced"`, or `"max"`
+  (six-spec probe per tile). Decode cost is unchanged across levels
+  because each tile records its own codec spec.
+- `vec_open_raster(path)` / `vec_close_raster(r)`: lazy open returning a
+  metadata + handle list (`vectra_raster`). The handle is auto-finalized
+  on garbage collection.
+- `vec_read_window(r, band, level, cols, rows)`: decode a window of a
+  chosen band, with overview-level support. Pixels outside the raster
+  come back as `NA`. Tile decode is parallelized across worker threads
+  (Phase 5a).
+- `vec_extract_points(r, x, y)`: sample band values at `(x, y)` points.
+- `vec_build_overviews(path, levels, resampling)`: append `n_levels - 1`
+  reduced-resolution copies in place. Resampling kernels: `"nearest"`,
+  `"average"`, `"bilinear"`, `"mode"`, `"gauss"`. The file’s `n_levels`
+  is updated atomically.
+- `vec_to_tiff(path, output, compression)`: export `.vec` level-0 pixels
+  to GeoTIFF. Compression is `"none"`, `"deflate"`, or `"lzw"`; LZW also
+  applies horizontal differencing (Predictor 2) for integer pixel types,
+  matching the layout libtiff/GDAL produce by default. Inherits dtype,
+  geotransform, EPSG, and nodata from the source.
+
+### Time cubes
+
+- `vec_write_time_cube(x, times, path, layout, ...)`: write a 4D
+  `(rows, cols, bands, time)` array. Two layouts:
+  - `"image"` (default): one tile per `(band, time, ty, tx)` — optimal
+    for “give me one full image at time T” reads.
+  - `"pixel"`: one tile per `(band, ty, tx)` holding the full time stack
+    as `[tw*th, n_time]` — optimal for “give me the time series at pixel
+    `(x, y)`” reads.
+- `vec_read_pixel_series(r, x, y, band)`: full time series at a single
+  pixel as a numeric vector. On pixel-major files this is one tile
+  decode; on image-major files the reader scans the index for distinct
+  time stamps and decodes one tile per stamp.
+- `vec_read_time_slice(r, time, band, level, cols, rows)`: read a single
+  time slice as a matrix.
+- `vec_raster_times(r, band, level)`: distinct time stamps, in ascending
+  order.
+- `vec_raster_layout(r)`: query whether an open raster is `"image"` or
+  `"pixel"` layout.
+- `print.vectra_raster()`: prints dimensions, dtype, geotransform, EPSG,
+  nodata, and band names.
+
+### GeoTIFF reader and writer
+
+- Reader: tiled and Cloud-Optimized GeoTIFF (COG) inputs go through the
+  same block abstraction as strip TIFFs (strips collapse to
+  `n_blocks_x = 1`). Edge-block padding is handled in
+  `block_stored_rows()`.
+- [`tiff_band_names()`](https://gillescolling.com/vectra/reference/tiff_band_names.md):
+  parse `<Item role="description">` entries from `GDAL_METADATA` (tag
+  42112). Pure-R scanner, no `xml2` dependency.
+- `tiff_crs(path)`: read the EPSG code, geographic-vs-projected flag,
+  and citation string from the GeoKey directory (tags 34735/34737).
+- [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md)
+  gains `tiled`, `tile_size`, `bigtiff`, and `crs` arguments.
+  - `tiled = TRUE` emits TIFF tags 322/323/324/325 in place of strip
+    tags. `tile_size` accepts a single integer (square) or a length-2
+    `c(w, h)`; both dimensions must be positive multiples of 16.
+    Default 256. Tiled output is the layout required for Cloud-Optimized
+    GeoTIFF.
+  - `bigtiff = "auto"` (default) auto-promotes to BigTIFF (magic
+    `0x002B`, 64-bit offsets) when the expected raw payload exceeds the
+    classic-TIFF 4 GB ceiling; `TRUE` forces BigTIFF; `FALSE` forces
+    classic TIFF. Tiled BigTIFF is not yet supported.
+  - `crs` accepts an integer EPSG code, an `"EPSG:xxxx"` string, or a
+    list with `$epsg`, `$geographic`, and optional `$citation`. Outputs
+    round-trip through
+    [`terra::rast()`](https://rspatial.github.io/terra/reference/rast.html)
+    for 4326, 3857, and 31287.
+
+### Fixes
+
+- [`collect()`](https://gillescolling.com/vectra/reference/collect.md) /
+  `block_array_gather`: empty-string slots now shortcut to
+  `R_BlankString`. Previously the gather paths called
+  `Rf_mkCharLenCE(NULL, 0, ...)` and the dedup cache called
+  `memcmp(NULL, ...)` when a batch happened to contain only empty/`NA`
+  strings, tripping UBSAN’s nonnull check even though the length was
+  zero.
+
+### Internal
+
+- C-side `*_push` helpers (`vec_buf_push`, `vec_array_push`, …)
+  consolidated into a single `vec_grow_to` growth primitive.
+
+## vectra 0.5.1
+
+CRAN release: 2026-04-21
+
+### CRAN resubmission fixes (0.5.0 incoming pretest feedback)
+
+- `configure` / `configure.win`: rewritten as POSIX `/bin/sh`
+  (previously `#!/usr/bin/env bash` with `set -o pipefail` and
+  `[[ ... ]]`). Bash is not guaranteed on all CRAN build hosts.
+- `src/window.c`: the OpenMP task-parallel merge sort helper was defined
+  unconditionally but called only from `#ifdef _OPENMP` branches,
+  producing a clang `-Wunneeded-internal-declaration` warning under
+  Debian’s no-OpenMP build. The definition now shares the guard.
+- Vendored `tdc`: all `fprintf(stderr, ...)` debug/timing prints are
+  routed through a `TDC_LOG(...)` macro that is a no-op unless
+  `TDC_ENABLE_STDERR_LOG` is defined at build time, so the released
+  `.so` contains no `stderr` / `fprintf` symbols. Addresses the WRE
+  §1.6.4 policy forbidding compiled code from writing to stdout/stderr.
+
+### Fixes
+
+- [`collect()`](https://gillescolling.com/vectra/reference/collect.md):
+  fix use-after-free in the cross-batch CHARSXP dedup cache. Each slot
+  stored a raw pointer into the decoder’s heap buffer, which is freed
+  when the batch is consumed; the next batch’s hash-collision `memcmp`
+  then dereferenced freed memory. Manifested as segfaults on the second
+  consecutive
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+  of a large multi-rowgroup string-heavy `.vtr` (register, backbones),
+  more likely under the parallel reader where batches accumulate before
+  the serial consumer loop. Now verifies cache hits against
+  `CHAR(sexp)`, which points into the still-alive interned CHARSXP body.
+
 ## vectra 0.5.0
 
 ### Compression backend rewire

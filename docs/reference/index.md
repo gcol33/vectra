@@ -36,6 +36,39 @@ Metadata and point-sampling for GeoTIFF rasters
   : Extract raster values at point coordinates
 - [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md)
   : Read GDAL_METADATA from a GeoTIFF
+- [`tiff_band_names()`](https://gillescolling.com/vectra/reference/tiff_band_names.md)
+  : Read per-band names from a GeoTIFF
+- [`tiff_crs()`](https://gillescolling.com/vectra/reference/tiff_crs.md)
+  : Read CRS metadata from a GeoTIFF
+
+## Raster data cubes
+
+Read and write .vec rasters and time cubes out of core
+
+- [`vec_open_raster()`](https://gillescolling.com/vectra/reference/vec_open_raster.md)
+  : Open a .vec raster
+- [`vec_close_raster()`](https://gillescolling.com/vectra/reference/vec_close_raster.md)
+  : Close a .vec raster handle
+- [`vec_raster_layout()`](https://gillescolling.com/vectra/reference/vec_raster_layout.md)
+  : Tile layout of an open .vec raster
+- [`vec_raster_times()`](https://gillescolling.com/vectra/reference/vec_raster_times.md)
+  : Distinct time stamps stored in a .vec time cube
+- [`vec_read_window()`](https://gillescolling.com/vectra/reference/vec_read_window.md)
+  : Read a window of pixels from a .vec raster
+- [`vec_read_time_slice()`](https://gillescolling.com/vectra/reference/vec_read_time_slice.md)
+  : Read a single time slice from a .vec time cube
+- [`vec_read_pixel_series()`](https://gillescolling.com/vectra/reference/vec_read_pixel_series.md)
+  : Read the full time series at a single pixel from a .vec time cube
+- [`vec_extract_points()`](https://gillescolling.com/vectra/reference/vec_extract_points.md)
+  : Extract band values at (x, y) points from a .vec raster
+- [`vec_build_overviews()`](https://gillescolling.com/vectra/reference/vec_build_overviews.md)
+  : Build overview pyramids for a .vec raster
+- [`vec_write_raster()`](https://gillescolling.com/vectra/reference/vec_write_raster.md)
+  : Write a raster matrix or 3D array to a .vec raster file
+- [`vec_write_time_cube()`](https://gillescolling.com/vectra/reference/vec_write_time_cube.md)
+  : Write a 4D time-cube raster to .vec
+- [`vec_to_tiff()`](https://gillescolling.com/vectra/reference/vec_to_tiff.md)
+  : Export a .vec raster to GeoTIFF
 
 ## File operations
 
@@ -145,6 +178,25 @@ In-memory materialization and lookup
   : Probe a materialized block by column value
 - [`block_fuzzy_lookup()`](https://gillescolling.com/vectra/reference/block_fuzzy_lookup.md)
   : Fuzzy-match query keys against a materialized block
+
+## Streaming consumption
+
+Reduce or feed a query one batch at a time, for larger-than-RAM results
+
+- [`collect_chunked()`](https://gillescolling.com/vectra/reference/collect_chunked.md)
+  : Fold a function over a query, one batch at a time
+- [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)
+  : Turn a query into a resettable chunk generator
+
+## Offloading
+
+Spill a query to disk and stream it back, for out-of-core fits
+
+- [`offload()`](https://gillescolling.com/vectra/reference/offload.md) :
+  Spill a query to disk and stream it back (the offload functor)
+- [`group_map()`](https://gillescolling.com/vectra/reference/group_map.md)
+  [`group_modify()`](https://gillescolling.com/vectra/reference/group_map.md)
+  : Apply a function to each shard of a partition
 
 ## Diagnostics
 

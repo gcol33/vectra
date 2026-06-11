@@ -7,8 +7,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <title>Working with Large Data • vectra</title>
 <script src="../lightswitch.js"></script><script src="../deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<link href="../deps/bootstrap-5.3.1/bootstrap.min.css" rel="stylesheet">
-<script src="../deps/bootstrap-5.3.1/bootstrap.bundle.min.js"></script><link href="../deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
+<link href="../deps/bootstrap-5.3.8/bootstrap.min.css" rel="stylesheet">
+<script src="../deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="../deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="../deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="../pkgdown.js"></script><link href="../extra.css" rel="stylesheet">
 <meta property="og:title" content="Working with Large Data">
@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.7.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -55,6 +55,8 @@
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
+    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
+    <li><a class="dropdown-item" href="../articles/offload.html">Offloading: streaming, monoids, and out-of-core fits</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
@@ -82,7 +84,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-04-18</h4>
+            <h4 data-toc-skip class="date">2026-06-11</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/large-data.Rmd" class="external-link"><code>vignettes/large-data.Rmd</code></a></small>
       <div class="d-none name"><code>large-data.Rmd</code></div>
@@ -352,7 +354,13 @@ small-batch file can prune most groups using zone maps:</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   abundance &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   cover_pct &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
+<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
+<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
+<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
+<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
 <p>CSV and SQLite sources also have a <code>batch_size</code> parameter,
 but it controls how many rows the scanner reads per pull rather than how
 the file is structured on disk. The default of 65,536 works well for

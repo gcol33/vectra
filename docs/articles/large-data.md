@@ -319,6 +319,12 @@ tbl(small_groups) |>
 #>   abundance <int64>
 #>   cover_pct <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 CSV and SQLite sources also have a `batch_size` parameter, but it

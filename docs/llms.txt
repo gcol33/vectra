@@ -1,7 +1,13 @@
 # vectra
 
+*querying data that won’t fit in memory*
+
 [![CRAN
 status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra)
+[![CRAN
+downloads](https://cranlogs.r-pkg.org/badges/grand-total/vectra)](https://cran.r-project.org/package=vectra)
+[![Monthly
+downloads](https://cranlogs.r-pkg.org/badges/vectra)](https://cran.r-project.org/package=vectra)
 [![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
 [![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml)
 [![Codecov test
@@ -9,49 +15,50 @@ coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.code
 [![License:
 MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-vectra is an R-native columnar query engine for datasets larger than
-RAM.
+**dplyr-style queries on larger-than-RAM data, backed by a pull-based
+columnar engine written in C11.**
 
-Write dplyr-style pipelines against multi-GB files on a laptop. Data
-streams through a C11 pull-based engine one row group at a time, so peak
-memory stays bounded regardless of file size.
-
-## Quick Start
-
-Point vectra at any file and query it with dplyr verbs. Nothing runs
-until
-[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
+Point vectra at a file too big to load and query it with the verbs you
+already use. Data flows through the engine one row group at a time, so
+peak memory stays bounded no matter how large the file gets. Arrow needs
+compiled binaries that match your platform, DuckDB links a bundled
+library, Spark wants a JVM. vectra is a standard R extension with no
+external dependencies: it compiles where R compiles.
 
 ``` r
 
 library(vectra)
 
-# CSV — lazy scan with type inference
+# Lazy scan over a multi-GB CSV; nothing runs until collect()
 tbl_csv("measurements.csv") |>
   filter(temperature > 30, year >= 2020) |>
   group_by(station) |>
   summarise(avg_temp = mean(temperature), n = n()) |>
   collect()
+```
 
-# GeoTIFF — climate rasters as tidy data
+## One engine, several file formats
+
+`.vtr` (vectra’s own columnar format), CSV, SQLite, and GeoTIFF all open
+into the same lazy query nodes, so the same pipeline runs against any of
+them:
+
+``` r
+
+# GeoTIFF climate raster as tidy data
 tbl_tiff("worldclim_bio1.tif") |>
   filter(band1 > 0) |>
   mutate(temp_c = band1 / 10) |>
   collect()
 
-# Point extraction — sample raster values at coordinates, no terra needed
-tiff_extract_points("worldclim_bio1.tif",
-                    x = c(10.5, 11.2), y = c(47.1, 47.3))
-
-# SQLite — zero-dependency, no DBI required
+# SQLite without DBI
 tbl_sqlite("survey.db", "responses") |>
   filter(year == 2025) |>
   left_join(tbl_sqlite("survey.db", "sites"), by = "site_id") |>
   collect()
 ```
 
-For repeated queries, convert to vectra’s native `.vtr` format for
-faster reads:
+Convert to `.vtr` once for repeated queries, then read it back fast:
 
 ``` r
 
@@ -64,50 +71,24 @@ tbl("data.vtr") |>
   collect()
 ```
 
-Append new data without rewriting the file, or do a key-based diff
-between two snapshots:
+## How the engine stays bounded
 
-``` r
+The optimizer rewrites the plan before any data moves, and execution
+streams the result rather than materializing it:
 
-# Append new rows as a new row group — existing data untouched
-append_vtr(new_rows_df, "data.vtr")
+- **Streaming execution**: one row group flows through at a time, never
+  the whole file
+- **Column pruning**: columns you never reference are skipped at the
+  scan
+- **Predicate pushdown**: per-rowgroup min/max statistics skip row
+  groups that cannot match a filter
+- **Hash joins**: build the right side, stream the left; join a fact
+  table against a lookup without holding both in memory
+- **External sort**: a memory budget with automatic spill to disk
 
-# Logical diff: what was added or deleted between two snapshots?
-d <- diff_vtr("snapshot_old.vtr", "snapshot_new.vtr", key_col = "id")
-collect(d$added)   # rows present in new but not old
-d$deleted          # key values present in old but not new
-```
-
-Fuzzy string matching runs inside the C engine, no round-trip to R:
-
-``` r
-
-tbl("taxa.vtr") |>
-  filter(levenshtein(species, "Quercus robur") <= 2) |>
-  mutate(similarity = jaro_winkler(species, "Quercus robur")) |>
-  arrange(desc(similarity)) |>
-  collect()
-```
-
-Register a star schema to avoid flat-table column creep. Define the
-links once, then pull only what you need:
-
-``` r
-
-s <- vtr_schema(
-  fact    = tbl("observations.vtr"),
-  species = link("sp_id", tbl("species.vtr")),
-  site    = link("site_id", tbl("sites.vtr"))
-)
-
-# Pull columns from any dimension — joins are built automatically
-lookup(s, count, species$name, site$habitat) |> collect()
-#> species: all 500 keys matched
-#> site: 3/500 unmatched keys (X1, X2, X3)
-```
-
-Use [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
-to inspect the optimized plan:
+[`explain()`](https://gillescolling.com/vectra/reference/explain.md)
+shows the optimized plan, including which columns and row groups were
+pruned:
 
 ``` r
 
@@ -120,121 +101,196 @@ tbl("data.vtr") |>
 #> ProjectNode [streaming]
 #>   FilterNode [streaming]
 #>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
-#>
-#> Output columns (2):
-#>   id <int64>
-#>   x <double>
 ```
 
-## Why vectra
+## Fuzzy matching in the engine
 
-Querying large datasets in R usually means Arrow (requires compiled
-binaries matching your platform), DuckDB (links a 30 MB bundled
-library), or Spark (requires a JVM and cluster configuration).
+String distance runs inside the C engine, with no round-trip to R per
+row:
 
-vectra is a self-contained C11 engine compiled as a standard R
-extension. No external libraries, no JVM, no runtime configuration. It
-provides:
+``` r
 
-- **Streaming execution**: data flows one row group at a time, never
-  fully in memory
-- **Zero-copy filtering**: selection vectors avoid row duplication
-- **Query optimizer**: column pruning skips unneeded columns at scan;
-  predicate pushdown uses per-rowgroup min/max statistics to skip entire
-  row groups
-- **Hash joins**: build right, stream left — join a 50 GB fact table
-  against a lookup without materializing both
-- **External sort**: 1 GB memory budget with automatic spill-to-disk
-- **Window functions**: `row_number()`,
-  [`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`,
-  [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`,
-  [`cumsum()`](https://rdrr.io/r/base/cumsum.html), `cummean()`,
-  [`cummin()`](https://rdrr.io/r/base/cumsum.html),
-  [`cummax()`](https://rdrr.io/r/base/cumsum.html)
-- **String expressions**:
-  [`nchar()`](https://rdrr.io/r/base/nchar.html),
-  [`substr()`](https://rdrr.io/r/base/substr.html),
-  [`grepl()`](https://rdrr.io/r/base/grep.html) evaluated in the engine
-  without round-tripping to R
-- **Multiple data sources**: `.vtr`, CSV, SQLite, GeoTIFF — all produce
-  the same lazy query nodes
-- **Integer TIFF output**: write rasters as
-  `int16`/`int32`/`uint8`/`uint16`/`float32` with embedded GDAL metadata
-  for 5-10x smaller files
+tbl("taxa.vtr") |>
+  filter(levenshtein(species, "Quercus robur") <= 2) |>
+  mutate(similarity = jaro_winkler(species, "Quercus robur")) |>
+  arrange(desc(similarity)) |>
+  collect()
+```
 
-## Features
+`levenshtein()`, `dl_dist()` (Damerau-Levenshtein), and `jaro_winkler()`
+are available in
+[`filter()`](https://gillescolling.com/vectra/reference/filter.md) and
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+alongside [`nchar()`](https://rdrr.io/r/base/nchar.html),
+[`substr()`](https://rdrr.io/r/base/substr.html),
+[`grepl()`](https://rdrr.io/r/base/grep.html),
+[`gsub()`](https://rdrr.io/r/base/grep.html) and the rest of the string
+toolkit.
 
-| Category | Verbs |
-|:---|:---|
-| **Transform** | [`filter()`](https://gillescolling.com/vectra/reference/filter.md), [`select()`](https://gillescolling.com/vectra/reference/select.md), [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md), [`transmute()`](https://gillescolling.com/vectra/reference/transmute.md), [`rename()`](https://gillescolling.com/vectra/reference/rename.md), [`relocate()`](https://gillescolling.com/vectra/reference/relocate.md) |
-| **Aggregate** | [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md), [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md) (`n`, `sum`, `mean`, `min`, `max`, `sd`, `var`, `first`, `last`, `any`, `all`, `median`, `n_distinct`), [`count()`](https://gillescolling.com/vectra/reference/count.md), [`tally()`](https://gillescolling.com/vectra/reference/count.md), [`distinct()`](https://gillescolling.com/vectra/reference/distinct.md) |
-| **Join** | [`left_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`inner_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`right_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`full_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`semi_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`anti_join()`](https://gillescolling.com/vectra/reference/left_join.md), [`cross_join()`](https://gillescolling.com/vectra/reference/cross_join.md), [`lookup()`](https://gillescolling.com/vectra/reference/lookup.md) |
-| **Order** | [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md), [`slice_head()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice_tail()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md), [`slice()`](https://gillescolling.com/vectra/reference/slice.md) |
-| **Window** | `row_number()`, [`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`, [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`, [`cumsum()`](https://rdrr.io/r/base/cumsum.html), `cummean()`, [`cummin()`](https://rdrr.io/r/base/cumsum.html), [`cummax()`](https://rdrr.io/r/base/cumsum.html), `ntile()`, `percent_rank()`, `cume_dist()` |
-| **Date/Time** | `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, [`as.Date()`](https://rdrr.io/r/base/as.Date.html) (in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)) |
-| **String** | [`nchar()`](https://rdrr.io/r/base/nchar.html), [`substr()`](https://rdrr.io/r/base/substr.html), [`grepl()`](https://rdrr.io/r/base/grep.html), [`tolower()`](https://rdrr.io/r/base/chartr.html), [`toupper()`](https://rdrr.io/r/base/chartr.html), [`trimws()`](https://rdrr.io/r/base/trimws.html), [`paste0()`](https://rdrr.io/r/base/paste.html), [`gsub()`](https://rdrr.io/r/base/grep.html), [`sub()`](https://rdrr.io/r/base/grep.html), [`startsWith()`](https://rdrr.io/r/base/startsWith.html), [`endsWith()`](https://rdrr.io/r/base/startsWith.html) (in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)) |
-| **String similarity** | `levenshtein()`, `levenshtein_norm()`, `dl_dist()`, `dl_dist_norm()`, `jaro_winkler()` — fuzzy matching in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md), with optional `max_dist` early termination |
-| **Expression** | [`abs()`](https://rdrr.io/r/base/MathFun.html), [`sqrt()`](https://rdrr.io/r/base/MathFun.html), [`log()`](https://rdrr.io/r/base/Log.html), [`exp()`](https://rdrr.io/r/base/Log.html), [`floor()`](https://rdrr.io/r/base/Round.html), [`ceiling()`](https://rdrr.io/r/base/Round.html), [`round()`](https://rdrr.io/r/base/Round.html), [`log2()`](https://rdrr.io/r/base/Log.html), [`log10()`](https://rdrr.io/r/base/Log.html), [`sign()`](https://rdrr.io/r/base/sign.html), [`trunc()`](https://rdrr.io/r/base/Round.html), `if_else()`, `between()`, `%in%`, [`as.numeric()`](https://rdrr.io/r/base/numeric.html), [`pmin()`](https://rdrr.io/r/base/Extremes.html), [`pmax()`](https://rdrr.io/r/base/Extremes.html), `resolve()`, `propagate()` (in [`filter()`](https://gillescolling.com/vectra/reference/filter.md)/[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)) |
-| **Combine** | [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md), [`bind_cols()`](https://gillescolling.com/vectra/reference/bind_rows.md), [`across()`](https://gillescolling.com/vectra/reference/across.md) |
-| **Schema** | [`vtr_schema()`](https://gillescolling.com/vectra/reference/vtr_schema.md), [`link()`](https://gillescolling.com/vectra/reference/link.md), [`lookup()`](https://gillescolling.com/vectra/reference/lookup.md) — star schema definition and dimension lookup with match reporting |
-| **I/O** | [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md), [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md), [`tbl_sqlite()`](https://gillescolling.com/vectra/reference/tbl_sqlite.md), [`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md), [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md), [`write_csv()`](https://gillescolling.com/vectra/reference/write_csv.md), [`write_sqlite()`](https://gillescolling.com/vectra/reference/write_sqlite.md), [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md), [`tiff_extract_points()`](https://gillescolling.com/vectra/reference/tiff_extract_points.md), [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md), [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md), [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md), [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md) |
-| **Inspect** | [`explain()`](https://gillescolling.com/vectra/reference/explain.md), [`glimpse()`](https://gillescolling.com/vectra/reference/glimpse.md), [`print()`](https://rdrr.io/r/base/print.html), [`pull()`](https://gillescolling.com/vectra/reference/pull.md) |
+## Star schemas instead of flat-table column creep
 
-Full tidyselect support in
+Register dimension tables once, then pull columns from any of them;
+joins are built for you, and unmatched keys are reported:
+
+``` r
+
+s <- vtr_schema(
+  fact    = tbl("observations.vtr"),
+  species = link("sp_id", tbl("species.vtr")),
+  site    = link("site_id", tbl("sites.vtr"))
+)
+
+lookup(s, count, species$name, site$habitat) |> collect()
+#> species: all 500 keys matched
+#> site: 3/500 unmatched keys (X1, X2, X3)
+```
+
+## Incremental updates
+
+Append new rows as a new row group without rewriting the file, or take a
+key-based diff between two snapshots:
+
+``` r
+
+append_vtr(new_rows_df, "data.vtr")
+
+d <- diff_vtr("snapshot_old.vtr", "snapshot_new.vtr", key_col = "id")
+collect(d$added)   # rows present in new but not old
+d$deleted          # key values present in old but not new
+```
+
+## Streaming results into a model fit
+
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+brings the whole result into memory.
+[`collect_chunked()`](https://gillescolling.com/vectra/reference/collect_chunked.md)
+folds a function over a query one batch at a time, holding a single
+batch plus the accumulator, so a result larger than memory reduces to a
+small summary in one pass: a running count, per-group sufficient
+statistics, or the cross-products behind a linear fit.
+
+``` r
+
+# Accumulate X'X and X'y for an exact OLS fit, one streaming batch at a time
+acc <- tbl("survey.vtr") |>
+  select(mpg, wt, hp) |>
+  collect_chunked(
+    function(acc, chunk) {
+      X <- cbind(1, chunk$wt, chunk$hp)
+      list(XtX = acc$XtX + crossprod(X),
+           Xty = acc$Xty + crossprod(X, chunk$mpg))
+    },
+    .init = list(XtX = matrix(0, 3, 3), Xty = matrix(0, 3, 1))
+  )
+solve(acc$XtX, acc$Xty)
+```
+
+For models that re-read the data on every iteration,
+[`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)
+exposes a query as a resettable generator that
+[`biglm::bigglm()`](https://rdrr.io/pkg/biglm/man/bigglm.html) drives
+directly, fitting a GLM on data too large to hold in memory:
+
+``` r
+
+src <- function() tbl("occurrences.vtr") |> select(presence, bio1, bio12)
+biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(src),
+              family = binomial())
+```
+
+[`offload()`](https://gillescolling.com/vectra/reference/offload.md)
+spills a prepared query to disk once and streams it back, so each
+reweighted pass reads the prepared columns from a file rather than
+rebuilding the pipeline. With a `by` key it instead splits the query
+into per-key shards on disk, turning a model that couples within a group
+into a set of independent per-shard fits.
+[`group_map()`](https://gillescolling.com/vectra/reference/group_map.md)
+runs a function on each shard and returns the results keyed by shard;
+[`group_modify()`](https://gillescolling.com/vectra/reference/group_map.md)
+recombines per-shard data.frames into one table.
+
+``` r
+
+# Prepare once, then let bigglm re-read the spill on every pass
+s <- offload(tbl("occurrences.vtr") |> select(presence, bio1, bio12))
+biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(s),
+              family = binomial())
+
+# Per-region fits: each shard fits in memory on its own
+p <- offload(tbl("occurrences.vtr"), by = "region")
+fits <- group_map(p, function(d, region)
+  glm(presence ~ bio1 + bio12, data = d, family = binomial()))
+```
+
+## Verbs
+
+vectra covers the dplyr surface most analysis pipelines use:
+[`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+[`select()`](https://gillescolling.com/vectra/reference/select.md),
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+[`group_by()`](https://gillescolling.com/vectra/reference/group_by.md) /
+[`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+with the common aggregations, all the joins
+([`left_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+through
+[`cross_join()`](https://gillescolling.com/vectra/reference/cross_join.md),
+plus
+[`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)),
+[`arrange()`](https://gillescolling.com/vectra/reference/arrange.md) and
+the `slice_*()` family, and window functions (`row_number()`,
+[`rank()`](https://rdrr.io/r/base/rank.html),
+[`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`,
+[`cumsum()`](https://rdrr.io/r/base/cumsum.html), `ntile()`, and more).
+Date/time and string functions evaluate in the engine.
 [`select()`](https://gillescolling.com/vectra/reference/select.md),
 [`rename()`](https://gillescolling.com/vectra/reference/rename.md),
 [`relocate()`](https://gillescolling.com/vectra/reference/relocate.md),
-and [`across()`](https://gillescolling.com/vectra/reference/across.md):
-`starts_with()`, `ends_with()`, `contains()`, `matches()`, `where()`,
-`everything()`, `all_of()`, `any_of()`.
+and [`across()`](https://gillescolling.com/vectra/reference/across.md)
+accept the full tidyselect helper set (`starts_with()`, `where()`,
+`all_of()`, and the rest).
+
+The [Function Reference](https://gillescolling.com/vectra/reference/)
+lists every verb and expression with examples.
 
 ## Installation
 
 ``` r
 
-# CRAN
-install.packages("vectra")
+install.packages("vectra")            # CRAN
 
-# Development version
+install.packages("pak")               # development version
 pak::pak("gcol33/vectra")
 ```
 
 ## Documentation
 
 - [Getting
-  Started](https://gillescolling.com/vectra/articles/quickstart.html) —
-  Full walkthrough with runnable examples
+  Started](https://gillescolling.com/vectra/articles/quickstart.html)
+- [Engine
+  Reference](https://gillescolling.com/vectra/articles/engine.html)
 - [Format
-  Backends](https://gillescolling.com/vectra/articles/formats.html) —
-  CSV, SQLite, Excel, GeoTIFF, and streaming conversion pipelines
-- [Joins](https://gillescolling.com/vectra/articles/joins.html) — All
-  join types, fuzzy joins, key coercion, and memory model
+  Backends](https://gillescolling.com/vectra/articles/formats.html)
+- [Joins](https://gillescolling.com/vectra/articles/joins.html)
 - [Star Schemas](https://gillescolling.com/vectra/articles/schema.html)
-  — Dimension lookups, match reporting, and avoiding flat-table column
-  creep
 - [String
   Operations](https://gillescolling.com/vectra/articles/string-ops.html)
-  — Pattern matching, fuzzy matching, and block lookups
 - [Indexing and
   Optimization](https://gillescolling.com/vectra/articles/indexing.html)
-  — Hash indexes, zone-map pruning, column pruning, and reading
-  [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
-  output
 - [Working with Large
-  Data](https://gillescolling.com/vectra/articles/large-data.html) —
-  Streaming pipelines, append/delete/diff, external sort, and memory
-  budgeting
-- [Engine
-  Reference](https://gillescolling.com/vectra/articles/engine.html) —
-  Execution model, types, coercion, .vtr format, and limitations
-- [Function Reference](https://gillescolling.com/vectra/reference/)
+  Data](https://gillescolling.com/vectra/articles/large-data.html)
+- [Species Distribution
+  Models](https://gillescolling.com/vectra/articles/sdm.html)
 
 ## Support
 
-> “Software is like sex: it’s better when it’s free.” – Linus Torvalds
+> “Software is like sex: it’s better when it’s free.” — Linus Torvalds
+
+I’m a PhD student who builds R packages in my free time because I
+believe good tools should be free and open. I started these projects for
+my own work and figured others might find them useful too.
 
 If this package saved you some time, buying me a coffee is a nice way to
-say thanks.
+say thanks. It helps with my coffee addiction.
 
 [![Buy Me A
 Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
@@ -248,9 +304,9 @@ MIT (see the LICENSE.md file)
 ``` bibtex
 @software{vectra,
   author = {Colling, Gilles},
-  title = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
-  year = {2026},
-  url = {https://github.com/gcol33/vectra}
+  title  = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
+  year   = {2026},
+  url    = {https://github.com/gcol33/vectra}
 }
 ```
 
@@ -292,6 +348,39 @@ Metadata and point-sampling for GeoTIFF rasters
   : Extract raster values at point coordinates
 - [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md)
   : Read GDAL_METADATA from a GeoTIFF
+- [`tiff_band_names()`](https://gillescolling.com/vectra/reference/tiff_band_names.md)
+  : Read per-band names from a GeoTIFF
+- [`tiff_crs()`](https://gillescolling.com/vectra/reference/tiff_crs.md)
+  : Read CRS metadata from a GeoTIFF
+
+## Raster data cubes
+
+Read and write .vec rasters and time cubes out of core
+
+- [`vec_open_raster()`](https://gillescolling.com/vectra/reference/vec_open_raster.md)
+  : Open a .vec raster
+- [`vec_close_raster()`](https://gillescolling.com/vectra/reference/vec_close_raster.md)
+  : Close a .vec raster handle
+- [`vec_raster_layout()`](https://gillescolling.com/vectra/reference/vec_raster_layout.md)
+  : Tile layout of an open .vec raster
+- [`vec_raster_times()`](https://gillescolling.com/vectra/reference/vec_raster_times.md)
+  : Distinct time stamps stored in a .vec time cube
+- [`vec_read_window()`](https://gillescolling.com/vectra/reference/vec_read_window.md)
+  : Read a window of pixels from a .vec raster
+- [`vec_read_time_slice()`](https://gillescolling.com/vectra/reference/vec_read_time_slice.md)
+  : Read a single time slice from a .vec time cube
+- [`vec_read_pixel_series()`](https://gillescolling.com/vectra/reference/vec_read_pixel_series.md)
+  : Read the full time series at a single pixel from a .vec time cube
+- [`vec_extract_points()`](https://gillescolling.com/vectra/reference/vec_extract_points.md)
+  : Extract band values at (x, y) points from a .vec raster
+- [`vec_build_overviews()`](https://gillescolling.com/vectra/reference/vec_build_overviews.md)
+  : Build overview pyramids for a .vec raster
+- [`vec_write_raster()`](https://gillescolling.com/vectra/reference/vec_write_raster.md)
+  : Write a raster matrix or 3D array to a .vec raster file
+- [`vec_write_time_cube()`](https://gillescolling.com/vectra/reference/vec_write_time_cube.md)
+  : Write a 4D time-cube raster to .vec
+- [`vec_to_tiff()`](https://gillescolling.com/vectra/reference/vec_to_tiff.md)
+  : Export a .vec raster to GeoTIFF
 
 ## File operations
 
@@ -402,6 +491,25 @@ In-memory materialization and lookup
 - [`block_fuzzy_lookup()`](https://gillescolling.com/vectra/reference/block_fuzzy_lookup.md)
   : Fuzzy-match query keys against a materialized block
 
+## Streaming consumption
+
+Reduce or feed a query one batch at a time, for larger-than-RAM results
+
+- [`collect_chunked()`](https://gillescolling.com/vectra/reference/collect_chunked.md)
+  : Fold a function over a query, one batch at a time
+- [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)
+  : Turn a query into a resettable chunk generator
+
+## Offloading
+
+Spill a query to disk and stream it back, for out-of-core fits
+
+- [`offload()`](https://gillescolling.com/vectra/reference/offload.md) :
+  Spill a query to disk and stream it back (the offload functor)
+- [`group_map()`](https://gillescolling.com/vectra/reference/group_map.md)
+  [`group_modify()`](https://gillescolling.com/vectra/reference/group_map.md)
+  : Apply a function to each shard of a partition
+
 ## Diagnostics
 
 - [`explain()`](https://gillescolling.com/vectra/reference/explain.md) :
@@ -432,3 +540,7 @@ In-memory materialization and lookup
   Optimization](https://gillescolling.com/vectra/articles/indexing.md):
 - [Working with Large
   Data](https://gillescolling.com/vectra/articles/large-data.md):
+- [Species Distribution
+  Models](https://gillescolling.com/vectra/articles/sdm.md):
+- [Offloading: streaming, monoids, and out-of-core
+  fits](https://gillescolling.com/vectra/articles/offload.md):

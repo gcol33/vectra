@@ -117,6 +117,12 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan output shows `v4 stats` on the ScanNode, indicating that
@@ -159,6 +165,12 @@ tbl(f_sorted) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Row group size is a trade-off. Smaller row groups give finer-grained
@@ -242,6 +254,12 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Without an index, the plan shows a FilterNode above a ScanNode with
@@ -273,6 +291,12 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan now shows `hash index` (or equivalent annotation) on the
@@ -307,9 +331,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.06 s
+#> Without index: 0.09 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.35 s
+#> With index:    0.39 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -357,6 +381,12 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The engine detects that both predicates in the AND-combination match the
@@ -440,6 +470,12 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The scan node probes the site index four times and builds a bitmap of
@@ -468,7 +504,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.36 s
+#> With index, %in% filter: 0.41 s
 ```
 
 Without an index, the same query reads all row groups and filters in
@@ -497,6 +533,12 @@ tbl(f) |>
 #> Output columns (2):
 #>   site <string>
 #>   value <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The ScanNode annotation shows something like `2/5 cols (pruned)` or
@@ -531,6 +573,12 @@ tbl(f_wide) |>
 #>   id <int64>
 #>   v1 <double>
 #>   v2 <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan shows that only 3 of 21 columns are read. The remaining 18
@@ -561,6 +609,12 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan annotates the ScanNode with `predicate pushdown`, indicating
@@ -594,6 +648,12 @@ tbl(f) |>
 #>   value <double>
 #>   quality <string>
 #>   scaled <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Here the filter references `scaled`, which is created by the mutate. The
@@ -621,6 +681,12 @@ tbl(f) |>
 #>   value <double>
 #>   quality <string>
 #>   scaled <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Now the filter on `value` pushes down to the scan, and the mutate
@@ -652,6 +718,12 @@ tbl(f) |>
 #>   year <int64>
 #>   value <double>
 #>   decade <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The tree reads bottom-up (scan at the bottom, output at the top). Each
@@ -766,6 +838,12 @@ tbl(f) |>
 #>   site <string>
 #>   avg <double>
 #>   n <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 This plan shows a GroupAggNode above a FilterNode above a ScanNode. The
@@ -978,6 +1056,12 @@ tbl(f_by_site) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 When data is sorted by `site`, each site occupies a contiguous range of
@@ -1055,6 +1139,12 @@ tbl(f) |>
 #>   site <string>
 #>   year <int64>
 #>   value <double>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 This plan uses the hash index on `site` to identify candidate row
