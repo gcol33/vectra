@@ -382,7 +382,7 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Without index: 0.16 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.53 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.52 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a
@@ -535,7 +535,7 @@ site, or sample ID.</p>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index, %in% filter:"</span>, <span class="va">t_in_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index, %in% filter: 0.69 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index, %in% filter: 0.65 s</span></span></code></pre></div>
 <p>Without an index, the same query reads all row groups and filters in
 memory. The difference grows with file size.</p>
 </div>

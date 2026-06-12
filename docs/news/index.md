@@ -2,6 +2,8 @@
 
 ## vectra 0.7.1
 
+CRAN release: 2026-06-11
+
 - Cap the OpenMP team to two threads under `R CMD check`. When CRAN’s
   `_R_CHECK_LIMIT_CORES_` is set, the package now lowers its default
   team size to two so the parallel string, fuzzy-join, sort, and window

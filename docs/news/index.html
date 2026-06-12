@@ -59,7 +59,7 @@
     </div>
 
     <div class="section level2">
-<h2 class="pkg-version" data-toc-text="0.7.1" id="vectra-071">vectra 0.7.1<a class="anchor" aria-label="anchor" href="#vectra-071"></a></h2>
+<h2 class="pkg-version" data-toc-text="0.7.1" id="vectra-071">vectra 0.7.1<a class="anchor" aria-label="anchor" href="#vectra-071"></a></h2><p class="text-muted">CRAN release: 2026-06-11</p>
 <ul><li>Cap the OpenMP team to two threads under <code>R CMD check</code>. When CRAN’s <code>_R_CHECK_LIMIT_CORES_</code> is set, the package now lowers its default team size to two so the parallel string, fuzzy-join, sort, and window kernels stay within the check farm’s two-core limit. The fuzzy-join match phase also clamps its requested thread count to the available maximum, matching the blocked fuzzy-lookup path. Outside a check the package still uses every available core.</li>
 </ul></div>
     <div class="section level2">
