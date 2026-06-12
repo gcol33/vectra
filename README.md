@@ -1,5 +1,7 @@
 # vectra
 
+> Small exact engines for scientific computing in R.
+
 *querying data that won't fit in memory*
 
 [![CRAN status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra)
