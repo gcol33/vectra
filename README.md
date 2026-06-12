@@ -166,11 +166,13 @@ biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(src),
 
 `offload()` spills a prepared query to disk once and streams it back, so each
 reweighted pass reads the prepared columns from a file rather than rebuilding
-the pipeline. With a `by` key it instead splits the query into per-key shards on
-disk, turning a model that couples within a group into a set of independent
-per-shard fits. `group_map()` runs a function on each shard and returns the
-results keyed by shard; `group_modify()` recombines per-shard data.frames into
-one table.
+the pipeline. With a `by` key it splits the query into per-key shards on disk,
+each small enough to pull into memory on its own. `group_map()` then runs your
+function on each shard, passing the shard as an ordinary data.frame along with
+its group key, and returns the results keyed by shard. That function is
+arbitrary R: a model fit, a clustering call, a custom summary, or any
+computation that needs the whole group in memory at once. `group_modify()`
+recombines per-shard data.frames into one table.
 
 ```r
 # Prepare once, then let bigglm re-read the spill on every pass
@@ -178,7 +180,7 @@ s <- offload(tbl("occurrences.vtr") |> select(presence, bio1, bio12))
 biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(s),
               family = binomial())
 
-# Per-region fits: each shard fits in memory on its own
+# Per-region: group_map runs any function on each in-memory shard (here a GLM)
 p <- offload(tbl("occurrences.vtr"), by = "region")
 fits <- group_map(p, function(d, region)
   glm(presence ~ bio1 + bio12, data = d, family = binomial()))
