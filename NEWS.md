@@ -1,3 +1,18 @@
+# vectra 0.8.1
+
+## Polygon self-overlay
+
+* `spatial_overlay(x)` splits a polygon `sf` layer along all its own overlaps
+  into disjoint pieces (the "Union (single layer)" overlay), returning a lazy
+  node with one row per piece per covering polygon. Resolve the duplicates with
+  a grouped `slice_min()`/`slice_max()` -- e.g. earliest designation year wins,
+  `group_by(piece_id) |> slice_min(year)`. The topology is tiled over connected
+  overlap clusters (exact, bounded memory) and the exploded pieces stream to a
+  `.vtr`. The overlay runs on a fixed-precision model derived from the data's
+  own coordinate magnitude, so pieces come out disjoint and their areas
+  reconstruct the union, instead of drifting by the sub-percent that
+  floating-point sliver artefacts on invalid input otherwise introduce.
+
 # vectra 0.8.0
 
 ## Group-aware slicing

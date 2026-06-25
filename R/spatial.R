@@ -99,6 +99,34 @@
   .coerce_for_vtr(df)
 }
 
+# -- self-overlay (QGIS-style Union) ------------------------------------------
+
+# Connected components of the polygon overlap graph, via union-find over the
+# sparse adjacency from sf::st_intersects(). Only overlapping polygons can share
+# an overlay piece, so each component is overlaid independently -- exact tiling
+# with no tile-edge artefacts, and bounded memory.
+.overlap_components <- function(hits, n) {
+  parent <- seq_len(n)
+  find <- function(i) { while (parent[i] != i) i <- parent[i]; i }
+  for (i in seq_len(n)) for (j in hits[[i]]) if (j > i) {
+    ri <- find(i); rj <- find(j)
+    if (ri != rj) parent[rj] <- ri
+  }
+  vapply(seq_len(n), find, integer(1L))
+}
+
+# Robust fixed-precision grid for the overlay. Snapping coordinates to ~1e-7 of
+# their magnitude leaves about seven significant digits -- well inside double
+# precision, so GEOS overlays on a fixed-precision model and the pieces come out
+# exactly disjoint, while staying fine enough not to distort features. Magnitude
+# (not extent) keeps it stable against far-flung outliers. Returns NULL when no
+# sensible grid exists (degenerate or all-zero coordinates).
+.robust_precision <- function(x) {
+  mag <- max(abs(sf::st_bbox(x)))
+  if (!is.finite(mag) || mag == 0) return(NULL)
+  1 / (mag * 1e-7)
+}
+
 # -- the streaming engine -----------------------------------------------------
 
 # Pull `x` one batch at a time, run `batch_fn` (an sf-in / sf-out function) on
@@ -344,4 +372,143 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
   g <- sf::st_set_crs(g, crs)
   rest <- df[setdiff(names(df), geom)]
   sf::st_sf(rest, geometry = g)
+}
+
+#' Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)
+#'
+#' Splits a polygon layer along all its own overlaps into disjoint pieces and
+#' returns a lazy node with one row per piece per covering polygon: where `k`
+#' polygons overlap, that piece appears `k` times, each row carrying one source
+#' polygon's attributes. This is the union overlay GIS tools expose as
+#' "Union (single layer)", with the overlap retained once per contributing
+#' feature rather than dissolved. Resolve the duplicates with a grouped
+#' [slice_min()] / [slice_max()] -- for example earliest designation year wins:
+#' `group_by(piece_id) |> slice_min(year)`.
+#'
+#' The topology is done once with \pkg{sf}/GEOS and tiled over connected overlap
+#' clusters (disjoint clusters never share a piece, so the tiling is exact and
+#' bounded in memory), then the exploded pieces are streamed to a `.vtr` and
+#' handed back as a lazy node. Geometry rides through the engine as hex-encoded
+#' WKB in a string column; the CRS is carried on the node for [collect_sf()].
+#'
+#' The overlay runs on a fixed-precision model: coordinates are snapped to a
+#' grid derived from their own magnitude so the pieces come out disjoint and
+#' their areas reconstruct the union of the inputs, instead of drifting by the
+#' fraction of a percent that floating-point sliver artefacts on invalid input
+#' otherwise introduce. Inputs are also passed through [sf::st_make_valid()].
+#'
+#' The input `x` must be a resident `sf` object: building the overlap graph and
+#' intersecting needs the geometries in memory. The exploded result, which is
+#' typically several times larger, is what streams to disk.
+#'
+#' @param x An `sf` object with polygon or multipolygon geometry.
+#' @param vars Character vector of attribute columns of `x` to carry onto each
+#'   piece. Default `NULL` keeps them all; name a subset to keep the streamed
+#'   output narrow.
+#' @param piece Name of the integer piece-id column added to the output (the key
+#'   you group by to resolve overlaps). Default `"piece_id"`.
+#' @param geom Name of the output hex-WKB geometry column. Default `"geometry"`.
+#' @param flush_rows Exploded rows buffered before a spill flush. Defaults to
+#'   `getOption("vectra.spatial_flush", 5e5)`.
+#' @param quiet If `FALSE`, show a text progress bar over the overlap clusters.
+#'
+#' @return A `vectra_node` over the exploded overlay (one row per piece per
+#'   covering polygon), backed by temporary `.vtr` spills removed when the node
+#'   is garbage-collected, carrying the CRS of `x` for [collect_sf()].
+#'
+#' @seealso [slice_min()] / [slice_max()] to resolve each piece to one winner,
+#'   [collect_sf()] to materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' # Two overlapping squares designated in different years.
+#' sq <- function(a, b) sf::st_polygon(list(rbind(
+#'   c(a, 0), c(b, 0), c(b, 1), c(a, 1), c(a, 0))))
+#' polys <- sf::st_sf(year = c(1990L, 2010L),
+#'                    geometry = sf::st_sfc(sq(0, 2), sq(1, 3)))
+#'
+#' # Split into disjoint pieces; earliest year wins where they overlap.
+#' first <- spatial_overlay(polys) |>
+#'   group_by(piece_id) |>
+#'   slice_min(year, n = 1, with_ties = FALSE) |>
+#'   collect_sf()
+#' first
+#'
+#' @export
+spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
+                            geom = "geometry", flush_rows = NULL,
+                            quiet = TRUE) {
+  .check_sf()
+  if (!inherits(x, "sf"))
+    stop("`x` must be an sf object (the polygon layer to self-overlay)")
+  crs  <- sf::st_crs(x)
+  prec <- .robust_precision(x)
+  if (!is.null(prec)) x <- sf::st_set_precision(x, prec)
+  x <- sf::st_make_valid(x)
+  x <- x[!sf::st_is_empty(x), , drop = FALSE]
+  n <- nrow(x)
+  if (n == 0L) stop("`x` has no non-empty geometries to overlay")
+
+  g     <- sf::st_geometry(x)
+  attrs <- as.data.frame(sf::st_drop_geometry(x))
+  if (!is.null(vars)) {
+    miss <- setdiff(vars, names(attrs))
+    if (length(miss))
+      stop(sprintf("vars not found in `x`: %s", paste(miss, collapse = ", ")))
+    attrs <- attrs[, vars, drop = FALSE]
+  }
+  if (piece %in% names(attrs))
+    stop(sprintf("piece column '%s' already exists in `x`; pass piece=", piece))
+
+  groups <- split(seq_len(n), .overlap_components(sf::st_intersects(x), n))
+
+  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  runs <- character(0); buf <- list(); buffered <- 0L; piece_off <- 0L
+  pb <- if (!quiet) utils::txtProgressBar(0, length(groups), style = 3) else NULL
+  flush <- function() {
+    if (!length(buf)) return(invisible())
+    df <- if (length(buf) == 1L) buf[[1]] else do.call(rbind, buf)
+    rf <- tempfile(fileext = ".vtr"); write_vtr(df, rf)
+    runs[[length(runs) + 1L]] <<- rf
+    buf <<- list(); buffered <<- 0L
+  }
+
+  for (gi in seq_along(groups)) {
+    rows <- groups[[gi]]
+    if (length(rows) == 1L) {
+      pg <- g[rows]; origins <- list(1L)
+    } else {
+      sub   <- sf::st_sf(.ovl = seq_along(rows), geometry = g[rows])
+      parts <- sf::st_intersection(sub)
+      d     <- sf::st_dimension(parts)
+      parts <- parts[!is.na(d) & d == 2, ]       # drop point/line touch pieces
+      if (nrow(parts) &&
+          any(sf::st_geometry_type(parts) == "GEOMETRYCOLLECTION"))
+        parts <- sf::st_collection_extract(parts, "POLYGON")
+      if (!nrow(parts)) { if (!is.null(pb)) utils::setTxtProgressBar(pb, gi); next }
+      pg <- sf::st_geometry(parts); origins <- parts$origins
+    }
+    np  <- length(pg)
+    idx <- rep(seq_len(np), lengths(origins))
+    src <- rows[unlist(origins)]
+    df  <- attrs[src, , drop = FALSE]
+    df[[piece]] <- piece_off + idx
+    df[[geom]]  <- sf::st_as_binary(pg[idx], hex = TRUE)
+    rownames(df) <- NULL
+    buf[[length(buf) + 1L]] <- .coerce_for_vtr(df)
+    buffered  <- buffered + length(idx)
+    piece_off <- piece_off + np
+    if (buffered >= fr) flush()
+    if (!is.null(pb)) utils::setTxtProgressBar(pb, gi)
+  }
+  flush()
+  if (!is.null(pb)) close(pb)
+  if (!length(runs)) stop("overlay produced no polygonal pieces")
+
+  node <- .concat_runs(runs)
+  reg  <- new.env(parent = emptyenv()); reg$paths <- runs
+  reg.finalizer(reg, function(e) try(unlink(e$paths), silent = TRUE),
+                onexit = TRUE)
+  node$.reg <- reg
+  node$.crs <- crs
+  node
 }
