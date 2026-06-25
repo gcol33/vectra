@@ -1,3 +1,37 @@
+# vectra 0.8.0
+
+## Group-aware slicing
+
+* `slice_min()` and `slice_max()` now respect `group_by()`: they keep the n
+  smallest/largest rows *within each group* and return the whole winning row
+  (every column, including geometry carried as a string), rather than a global
+  top-n. `with_ties = FALSE` returns exactly n per group via a deterministic
+  ordered `row_number()`; `with_ties = TRUE` keeps rows tied at the nth value.
+  Previously a grouped `slice_min()`/`slice_max()` silently ignored the grouping
+  and returned a single global result.
+* `row_number()` accepts an order column: `row_number(col)` and
+  `row_number(desc(col))` assign a deterministic 1..n within each partition,
+  ordered by the column (the unordered `row_number()` is unchanged).
+  `rank(desc(col))` is also supported.
+
+## Streamed spatial operations
+
+* `spatial_map(x, fn)` streams a lazy query through an `sf` transform (buffer,
+  centroid, CRS transform, simplify, ...) one batch at a time and returns a new
+  lazy node, so a per-feature geometry operation runs on a table larger than
+  RAM at one-batch peak memory.
+* `spatial_join(x, y, join)` joins a streamed left side `x` against a small
+  resident `sf` object `y` with an `sf` binary predicate (`st_intersects` by
+  default): the spatial analogue of a hash join with the small side resident.
+  The dominant use is tagging a huge point set with the polygon it falls in.
+  Both-sides-huge joins compose with `offload(by = ...)`: partition on a spatial
+  grid key, join each shard, recombine.
+* `collect_sf(x)` materializes a spatial query as an `sf` object.
+* Geometry rides through the engine as hex-encoded WKB in an ordinary string
+  column (no new column type), losslessly round-tripped; the CRS is carried on
+  the node. Topology stays with `sf`/GEOS — `sf` is an optional dependency
+  (Suggests).
+
 # vectra 0.7.1
 
 * Cap the OpenMP team to two threads under `R CMD check`. When CRAN's
