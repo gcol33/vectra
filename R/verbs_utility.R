@@ -298,8 +298,17 @@ head.vectra_node <- function(x, n = 6L, ...) {
 #' @param with_ties If `TRUE` (default), includes all rows that tie with the
 #'   nth value. If `FALSE`, returns exactly `n` rows.
 #'
-#' @return A `vectra_node` for `slice_head()` and `slice_min/max(...,
-#'   with_ties = FALSE)`. A data.frame for `slice_tail()` and
+#' @details
+#' When `slice_min()`/`slice_max()` follow [group_by()], the n smallest/largest
+#' rows are taken within each group and the whole winning row is kept (every
+#' column, including geometry carried as a string). `with_ties = FALSE` returns
+#' exactly `n` rows per group via a deterministic ordered `row_number()`;
+#' `with_ties = TRUE` keeps rows tied at the nth value via min-rank. The grouped
+#' path buffers its input (like all window operations) rather than streaming.
+#'
+#' @return A `vectra_node` for `slice_head()`, for grouped
+#'   `slice_min()`/`slice_max()`, and for ungrouped `slice_min/max(...,
+#'   with_ties = FALSE)`. A data.frame for `slice_tail()` and ungrouped
 #'   `slice_min/max(..., with_ties = TRUE)` (the default), since these must
 #'   materialize all rows.
 #'
@@ -309,6 +318,8 @@ head.vectra_node <- function(x, n = 6L, ...) {
 #' tbl(f) |> slice_head(n = 3) |> collect()
 #' tbl(f) |> slice_min(order_by = mpg, n = 3) |> collect()
 #' tbl(f) |> slice_max(order_by = mpg, n = 3) |> collect()
+#' # earliest row per group, geometry/attrs preserved:
+#' tbl(f) |> group_by(cyl) |> slice_min(mpg, n = 1, with_ties = FALSE) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -341,6 +352,28 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
   df[(nr - n + 1):nr, , drop = FALSE]
 }
 
+# Group-aware slice: keep the n rows with the smallest (desc = FALSE) or largest
+# (desc = TRUE) order_col within each group. with_ties = FALSE uses an ordered
+# row_number (exactly n per group, deterministic); with_ties = TRUE uses min-rank
+# (includes rows tied at the nth value). Runs through the window node, so the
+# winning whole row -- geometry and all attributes -- is preserved.
+.grouped_slice_topn <- function(.data, order_col, n, with_ties, desc) {
+  schema <- .Call(C_node_schema, .data$.node)
+  orig_names <- schema$name
+  rank_col <- ".__vtr_slice_rank"
+  kind <- if (with_ties) "rank" else "row_number"
+  spec <- list(list(name = rank_col, kind = kind, col = order_col,
+                    offset = 1L, default = NULL, desc = desc))
+  win <- create_window_node(.data, spec)
+  pred <- combine_predicates(list(bquote(.(as.name(rank_col)) <= .(n))),
+                             environment(), c(orig_names, rank_col))
+  filt <- .Call(C_filter_node, win$.node, pred)
+  proj <- .Call(C_project_node, filt, orig_names,
+                vector("list", length(orig_names)))
+  structure(list(.node = proj, .path = .data$.path,
+                 .groups = .data$.groups), class = "vectra_node")
+}
+
 #' @rdname slice_head
 #' @export
 slice_min <- function(.data, order_by, n = 1L, with_ties = TRUE) {
@@ -354,6 +387,8 @@ slice_min.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   if (!is.logical(with_ties) || length(with_ties) != 1 || is.na(with_ties))
     stop(sprintf("with_ties must be TRUE or FALSE, got %s", deparse(with_ties)))
   order_col <- as.character(substitute(order_by))
+  if (!is.null(.data$.groups) && length(.data$.groups) > 0)
+    return(.grouped_slice_topn(.data, order_col, n, with_ties, desc = FALSE))
   if (!with_ties) {
     new_xptr <- .Call(C_topn_node, .data$.node, order_col, FALSE,
                       as.double(n))
@@ -394,6 +429,8 @@ slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   if (!is.logical(with_ties) || length(with_ties) != 1 || is.na(with_ties))
     stop(sprintf("with_ties must be TRUE or FALSE, got %s", deparse(with_ties)))
   order_col <- as.character(substitute(order_by))
+  if (!is.null(.data$.groups) && length(.data$.groups) > 0)
+    return(.grouped_slice_topn(.data, order_col, n, with_ties, desc = TRUE))
   if (!with_ties) {
     new_xptr <- .Call(C_topn_node, .data$.node, order_col, TRUE,
                       as.double(n))

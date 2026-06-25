@@ -15,18 +15,39 @@ is_window_call <- function(expr) {
   fn %in% .win_fns
 }
 
+# Resolve an order argument that may be wrapped in desc(): returns col + desc.
+.parse_order_arg <- function(a) {
+  if (is.call(a) && identical(as.character(a[[1]]), "desc"))
+    list(col = as.character(a[[2]]), desc = TRUE)
+  else
+    list(col = as.character(a), desc = FALSE)
+}
+
 # Parse a window function call into a spec list for C
 parse_window_spec <- function(expr, output_name) {
   fn <- as.character(expr[[1]])
 
   if (fn == "row_number") {
+    # row_number() -> input order; row_number(col) / row_number(desc(col)) ->
+    # ordered, deterministic 1..n within each partition.
+    if (length(expr) >= 2) {
+      pa <- .parse_order_arg(expr[[2]])
+      return(list(name = output_name, kind = "row_number", col = pa$col,
+                  offset = 1L, default = NULL, desc = pa$desc))
+    }
     return(list(name = output_name, kind = "row_number", col = NULL,
-                offset = 1L, default = NULL))
+                offset = 1L, default = NULL, desc = FALSE))
   }
 
-  if (fn %in% c("rank", "dense_rank")) {
+  if (fn == "rank") {
+    pa <- .parse_order_arg(expr[[2]])
+    return(list(name = output_name, kind = "rank", col = pa$col,
+                offset = 1L, default = NULL, desc = pa$desc))
+  }
+
+  if (fn == "dense_rank") {
     col <- as.character(expr[[2]])
-    return(list(name = output_name, kind = fn, col = col,
+    return(list(name = output_name, kind = "dense_rank", col = col,
                 offset = 1L, default = NULL))
   }
 

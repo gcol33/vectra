@@ -288,7 +288,7 @@ static void win_eval_cume_dist(const VecArray *input, int64_t start,
 static VecArray win_eval_segment(WinKind kind, const VecArray *input,
                                  int64_t start, int64_t end, int64_t n_total,
                                  int offset, double default_val, int has_default,
-                                 VecArray *result) {
+                                 int desc, VecArray *result) {
     (void)n_total;
     int64_t seg_len = end - start;
 
@@ -304,9 +304,22 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         break;
 
     case WIN_ROW_NUMBER:
-        for (int64_t i = start; i < end; i++) {
-            vec_array_set_valid(result, i);
-            result->buf.dbl[i] = (double)(i - start + 1);
+        if (input) {
+            /* Ordered row_number: 1..n by input column (deterministic, no ties) */
+            int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
+            for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
+            win_sort_indices(idx, seg_len, input);
+            for (int64_t i = 0; i < seg_len; i++) {
+                vec_array_set_valid(result, idx[i]);
+                result->buf.dbl[idx[i]] =
+                    desc ? (double)(seg_len - i) : (double)(i + 1);
+            }
+            free(idx);
+        } else {
+            for (int64_t i = start; i < end; i++) {
+                vec_array_set_valid(result, i);
+                result->buf.dbl[i] = (double)(i - start + 1);
+            }
         }
         break;
 
@@ -316,11 +329,22 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
         win_sort_indices(idx, seg_len, input);
         int64_t rank = 1;
-        for (int64_t i = 0; i < seg_len; i++) {
-            if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
-                rank = i + 1;
-            vec_array_set_valid(result, idx[i]);
-            result->buf.dbl[idx[i]] = (double)rank;
+        if (!desc) {
+            for (int64_t i = 0; i < seg_len; i++) {
+                if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
+                    rank = i + 1;
+                vec_array_set_valid(result, idx[i]);
+                result->buf.dbl[idx[i]] = (double)rank;
+            }
+        } else {
+            /* Descending min_rank: largest value gets rank 1 */
+            for (int64_t p = 0; p < seg_len; p++) {
+                int64_t i = seg_len - 1 - p;
+                if (p > 0 && vec_compare_values(input, idx[i], idx[i + 1]) != 0)
+                    rank = p + 1;
+                vec_array_set_valid(result, idx[i]);
+                result->buf.dbl[idx[i]] = (double)rank;
+            }
         }
         free(idx);
         break;
@@ -622,8 +646,20 @@ static VecBatch *window_next_batch(VecNode *self) {
 
                 switch (ws->kind) {
                 case WIN_ROW_NUMBER:
-                    for (int64_t j = 0; j < glen; j++) {
-                        out.buf.dbl[rows[j]] = (double)(j + 1);
+                    if (in_arr) {
+                        /* Ordered row_number: 1..glen by input column, no ties */
+                        int64_t *sorted = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                        int64_t *stmp   = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+                        for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
+                        win_merge_sort(sorted, stmp, glen, in_arr);
+                        for (int64_t j = 0; j < glen; j++)
+                            out.buf.dbl[sorted[j]] =
+                                ws->desc ? (double)(glen - j) : (double)(j + 1);
+                        free(stmp);
+                        free(sorted);
+                    } else {
+                        for (int64_t j = 0; j < glen; j++)
+                            out.buf.dbl[rows[j]] = (double)(j + 1);
                     }
                     break;
 
@@ -633,11 +669,22 @@ static VecBatch *window_next_batch(VecNode *self) {
                     for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
                     win_merge_sort(sorted, stmp, glen, in_arr);
                     int64_t rank = 1;
-                    for (int64_t j = 0; j < glen; j++) {
-                        if (j > 0 && vec_compare_values(in_arr,
-                                sorted[j], sorted[j - 1]) != 0)
-                            rank = j + 1;
-                        out.buf.dbl[sorted[j]] = (double)rank;
+                    if (!ws->desc) {
+                        for (int64_t j = 0; j < glen; j++) {
+                            if (j > 0 && vec_compare_values(in_arr,
+                                    sorted[j], sorted[j - 1]) != 0)
+                                rank = j + 1;
+                            out.buf.dbl[sorted[j]] = (double)rank;
+                        }
+                    } else {
+                        /* Descending min_rank: largest value gets rank 1 */
+                        for (int64_t p = 0; p < glen; p++) {
+                            int64_t j = glen - 1 - p;
+                            if (p > 0 && vec_compare_values(in_arr,
+                                    sorted[j], sorted[j + 1]) != 0)
+                                rank = p + 1;
+                            out.buf.dbl[sorted[j]] = (double)rank;
+                        }
                     }
                     free(stmp);
                     free(sorted);
@@ -837,7 +884,7 @@ static VecBatch *window_next_batch(VecNode *self) {
         win_eval_segment(ws->kind, in_col >= 0 ? &cols[in_col] : NULL,
                          0, n_rows, n_rows,
                          ws->offset, ws->default_val, ws->has_default,
-                         &out);
+                         ws->desc, &out);
         result->columns[n_cols + w] = out;
         result->col_names[n_cols + w] = (char *)malloc(
             strlen(ws->output_name) + 1);

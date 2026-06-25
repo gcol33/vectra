@@ -283,6 +283,7 @@ SEXP C_window_node(SEXP node_xptr, SEXP key_names_sexp, SEXP win_specs_sexp) {
         const char *col = list_get_string(spec, "col");
         SEXP offset_sexp = list_get(spec, "offset");
         SEXP default_sexp = list_get(spec, "default");
+        SEXP desc_sexp = list_get(spec, "desc");
 
         specs[w].output_name = (char *)malloc(strlen(name) + 1);
         strcpy(specs[w].output_name, name);
@@ -296,6 +297,8 @@ SEXP C_window_node(SEXP node_xptr, SEXP key_names_sexp, SEXP win_specs_sexp) {
             specs[w].default_val = Rf_asReal(default_sexp);
             specs[w].has_default = 1;
         }
+        specs[w].desc = (desc_sexp != R_NilValue && !Rf_isNull(desc_sexp))
+                        ? Rf_asLogical(desc_sexp) : 0;
     }
 
     WindowNode *wn = window_node_create(child, n_keys, key_names, n_wins, specs);

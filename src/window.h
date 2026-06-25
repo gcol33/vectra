@@ -22,10 +22,11 @@ typedef enum {
 typedef struct {
     char      *output_name;
     WinKind    kind;
-    char      *input_col;    /* NULL for row_number */
+    char      *input_col;    /* order/value column; NULL for unordered row_number */
     int        offset;       /* for lag/lead: n positions */
     double     default_val;  /* for lag/lead: fill value */
     int        has_default;
+    int        desc;         /* row_number/rank: descending order when nonzero */
 } WinSpec;
 
 typedef struct {

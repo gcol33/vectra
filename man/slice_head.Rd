@@ -26,12 +26,21 @@ slice_max(.data, order_by, n = 1L, with_ties = TRUE)
 nth value. If \code{FALSE}, returns exactly \code{n} rows.}
 }
 \value{
-A \code{vectra_node} for \code{slice_head()} and \code{slice_min/max(..., with_ties = FALSE)}. A data.frame for \code{slice_tail()} and
+A \code{vectra_node} for \code{slice_head()}, for grouped
+\code{slice_min()}/\code{slice_max()}, and for ungrouped \code{slice_min/max(..., with_ties = FALSE)}. A data.frame for \code{slice_tail()} and ungrouped
 \code{slice_min/max(..., with_ties = TRUE)} (the default), since these must
 materialize all rows.
 }
 \description{
 Select first or last rows
+}
+\details{
+When \code{slice_min()}/\code{slice_max()} follow \code{\link[=group_by]{group_by()}}, the n smallest/largest
+rows are taken within each group and the whole winning row is kept (every
+column, including geometry carried as a string). \code{with_ties = FALSE} returns
+exactly \code{n} rows per group via a deterministic ordered \code{row_number()};
+\code{with_ties = TRUE} keeps rows tied at the nth value via min-rank. The grouped
+path buffers its input (like all window operations) rather than streaming.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")
@@ -39,6 +48,8 @@ write_vtr(mtcars, f)
 tbl(f) |> slice_head(n = 3) |> collect()
 tbl(f) |> slice_min(order_by = mpg, n = 3) |> collect()
 tbl(f) |> slice_max(order_by = mpg, n = 3) |> collect()
+# earliest row per group, geometry/attrs preserved:
+tbl(f) |> group_by(cyl) |> slice_min(mpg, n = 1, with_ties = FALSE) |> collect()
 unlink(f)
 
 }
