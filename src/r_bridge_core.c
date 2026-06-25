@@ -493,7 +493,14 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->cond = parse_expr(list_get(lst, "cond"), schema);
         e->then_expr = parse_expr(list_get(lst, "then_expr"), schema);
         e->else_expr = parse_expr(list_get(lst, "else_expr"), schema);
-        e->result_type = e->then_expr->result_type;
+        /* Must match the common type the evaluator coerces both branches to
+           (string > double > int64 > bool); otherwise the column schema and the
+           produced array disagree and int64/double bits get reinterpreted -- e.g.
+           ifelse(int64_col, NA) where the NA literal is typed double. */
+        VecType tt = e->then_expr->result_type, et = e->else_expr->result_type;
+        if (tt == VEC_STRING || et == VEC_STRING)      e->result_type = VEC_STRING;
+        else if (tt == VEC_DOUBLE || et == VEC_DOUBLE) e->result_type = VEC_DOUBLE;
+        else                                           e->result_type = tt;
         return e;
     }
     if (strcmp(kind, "cast") == 0) {

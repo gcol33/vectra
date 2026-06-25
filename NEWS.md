@@ -1,3 +1,15 @@
+# vectra 0.8.2
+
+## Bug fixes
+
+* `ifelse()` (and `if_else()`) now returns the correct type when its two
+  branches differ. Previously `ifelse(int64_col, x, y)` with a `double` or `NA`
+  other branch labelled the result column int64 while the evaluator produced
+  doubles, so the kept int64 values came back as ~4.6e18 garbage (and triggered
+  a spurious "int64 value exceeds 2^53" warning). The result column now adopts
+  the common type of the two branches, matching the evaluator. In particular
+  `ifelse(year > 0, year, NA)` is a clean way to blank out sentinel years.
+
 # vectra 0.8.1
 
 ## Polygon self-overlay

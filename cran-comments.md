@@ -1,9 +1,10 @@
 ## Feature release
 
-0.8.1 is a feature update to the version currently published on CRAN
+0.8.2 is a feature update to the version currently published on CRAN
 (0.7.1). It adds streamed spatial operations and group-aware row slicing
 on top of the existing columnar engine, with no breaking changes to the
-public verbs or the `.vtr` / `.vec` on-disk formats.
+public verbs or the `.vtr` / `.vec` on-disk formats. It also fixes an
+`ifelse()` result-type bug for branches of differing type.
 
 New user-visible functions:
 
