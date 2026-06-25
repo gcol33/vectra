@@ -1,0 +1,390 @@
+---
+title: "Out-of-core GIS with vectra"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Out-of-core GIS with vectra}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+```{r va-engine, echo = FALSE, results = "asis", eval = TRUE}
+cat('
+<style>
+pre, pre.sourceCode, div.sourceCode { overflow-x: auto; max-width: 100%; }
+canvas { display:block; margin: 6px auto; }
+</style>
+<script>
+window.VA = {
+  ease:function(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;},
+  easeOut:function(t){return 1-Math.pow(1-t,3);},
+  lerp:function(a,b,t){return a+(b-a)*t;},
+  clamp:function(v,a,b){return Math.max(a,Math.min(b,v));},
+  C:{bg:"#0b0d17",grid:"#19203a",green:"#33ff8a",red:"#ff3b6b",cyan:"#3ad7ff",amber:"#ffc24b",purple:"#b388ff",ink:"#d7def7",mut:"#7f8bb5",off:"#1d2540"},
+  F:function(sz,bold){return (bold?"bold ":"")+Math.round(sz*1.25)+"px monospace";},
+  bg:function(c,w,h){c.fillStyle=this.C.bg;c.fillRect(0,0,w,h);c.strokeStyle=this.C.grid;c.lineWidth=1;for(var gx=26;gx<w;gx+=26){c.beginPath();c.moveTo(gx+0.5,0);c.lineTo(gx+0.5,h);c.stroke();}for(var gy=26;gy<h;gy+=26){c.beginPath();c.moveTo(0,gy+0.5);c.lineTo(w,gy+0.5);c.stroke();}},
+  scan:function(c,w,h){c.save();c.globalAlpha=0.07;c.fillStyle="#000";for(var y=0;y<h;y+=3)c.fillRect(0,y,w,1);c.restore();},
+  glow:function(c,col,b){c.shadowColor=col;c.shadowBlur=b;},
+  noglow:function(c){c.shadowBlur=0;c.shadowColor="transparent";},
+  setup:function(id){var cv=document.getElementById(id);if(!cv)return null;var ctx=cv.getContext("2d");var w=cv.width,h=cv.height,d=window.devicePixelRatio||1;cv.width=w*d;cv.height=h*d;cv.style.width=w+"px";cv.style.height="auto";ctx.scale(d,d);return {ctx:ctx,w:w,h:h};},
+  run:function(drawAt,period,btnId,key,cvId){var fz=(window.__FREEZE&&(key in window.__FREEZE))?window.__FREEZE[key]:null;if(fz!=null){drawAt(((fz%period)+period)%period);return;}var start=performance.now();function loop(now){var e=(now-start)/1000;if(e<0)e=0;drawAt(e%period);requestAnimationFrame(loop);}requestAnimationFrame(loop);function restart(){start=performance.now();}if(btnId){var b=document.getElementById(btnId);if(b)b.onclick=restart;}if(cvId){var cv=document.getElementById(cvId);if(cv){cv.style.cursor="pointer";cv.title="click to replay";cv.onclick=restart;}}}
+};
+</script>
+')
+```
+
+## The streaming envelope
+
+Every desktop GIS runs its toolbox one in-memory layer at a time. Open a layer,
+run the tool, write the result. The working layer has to fit in RAM, and a
+country-scale point set or a national DEM often does not.
+
+vectra runs the same toolbox one batch at a time. A query is pulled through the
+C engine in fixed-size row groups, each spatial step works on the batch in front
+of it, and the transformed batch spills back to disk as a fresh lazy node. Peak
+memory is one batch and whatever small resident layer the step needs, so a
+billion-row layer flows past a fixed memory budget.
+
+Topology stays with [sf](https://r-spatial.github.io/sf/) and
+[terra](https://rspatial.github.io/terra/): vectra adds no GEOS or GDAL link.
+Geometry rides through the engine as hex-encoded WKB in an ordinary string
+column, and the coordinate reference system is carried on the node. What vectra
+contributes is the streaming envelope around the operations a desktop GIS keeps
+resident.
+
+```{r}
+library(vectra)
+```
+
+## From a raster to one row per cell
+
+A raster is a dense grid of values. To feed it into a tabular pipeline, read it
+as one row per cell, each cell a record of its coordinate and value. That is the
+bridge between the raster cube and every verb in the engine.
+
+```{r raster-to-points-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('m2p-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var GX=26,GY=72,COLS=8,ROWS=5,TW=44,TH=44,GW=COLS*TW,GH=ROWS*TH;
+var N=COLS*ROWS;
+var LX=GX+GW+70, LY=86, RH=15;
+var seed=20260625;function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;}
+var V=[];for(var i=0;i<N;i++){V.push(VA.clamp(0.18+0.62*((i%COLS)/(COLS-1))+0.18*(rnd()-0.5),0,1));}
+var PER=0.3, PERIOD=N*PER+1.8;
+function cell(i){var c=i%COLS,r=Math.floor(i/COLS);return {c:c,r:r,cx:GX+c*TW+TW/2,cy:GY+r*TH+TH/2};}
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('RASTER  ->  ONE ROW PER CELL',16,30);VA.noglow(x);
+  var done=Math.floor(tc/PER);
+  for(var i=0;i<N;i++){var p=cell(i);var lit=i<done;
+    x.fillStyle=lit?'rgba(51,255,138,'+(0.22+0.62*V[i]).toFixed(3)+')':C.off;
+    x.fillRect(p.cx-TW/2+2,p.cy-TH/2+2,TW-4,TH-4);
+    x.strokeStyle=C.grid;x.strokeRect(p.cx-TW/2+2,p.cy-TH/2+2,TW-4,TH-4);}
+  if(done<N){var pc=cell(done);var f=(tc/PER)-done;
+    VA.glow(x,C.amber,10);x.strokeStyle=C.amber;x.lineWidth=2;x.strokeRect(pc.cx-TW/2+2,pc.cy-TH/2+2,TW-4,TH-4);x.lineWidth=1;VA.noglow(x);
+    var ty=LY+Math.min(done,15)*RH;
+    var tx=VA.lerp(pc.cx,LX-12,VA.easeOut(f)),tyy=VA.lerp(pc.cy,ty,VA.easeOut(f));
+    VA.glow(x,C.green,8);x.fillStyle=C.green;x.beginPath();x.arc(tx,tyy,4,0,6.2832);x.fill();VA.noglow(x);}
+  x.fillStyle=C.cyan;x.font=VA.F(12,true);x.textAlign='left';x.fillText('x     y     value',LX,LY-16);
+  x.strokeStyle=C.grid;x.beginPath();x.moveTo(LX,LY-9);x.lineTo(W-16,LY-9);x.stroke();
+  var show=Math.min(done,15);
+  for(var k=0;k<show;k++){var idx=done-show+k;if(idx<0)continue;var p2=cell(idx);
+    x.fillStyle=C.ink;x.font=VA.F(11);x.textAlign='left';
+    x.fillText(p2.c+'     '+(ROWS-1-p2.r)+'     '+V[idx].toFixed(2),LX,LY+6+k*RH);}
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='left';x.fillText(done+' / '+N+' cells read',LX,H-18);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'m2p','m2p-cv');
+"
+cat(paste0(
+  "<canvas id='m2p-cv' width='860' height='380' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+`vec_open_raster()` opens a `.vec` raster
+cube, and `vec_extract_points()` samples
+it at coordinates. A whole national climate grid stays on disk while the
+occurrence points it is queried at stay in memory.
+
+```{r}
+clim <- vec_open_raster("worldclim_bio.vec")
+
+occ <- read.csv("occurrences.csv")          # species, x, y
+occ <- cbind(occ, vec_extract_points(clim, occ$x, occ$y))
+head(occ)
+```
+
+For a GeoTIFF the same sampling is
+`tiff_extract_points()`. From here the
+points are an ordinary vectra table, ready for any verb.
+
+## Select by location
+
+The most-used vector tool keeps the features that stand in a spatial relation to
+another layer: points inside a study region, parcels touching a road, patches
+within a buffer. `spatial_filter()` streams
+the large layer and tests each batch against a small resident locator with an sf
+predicate, keeping or dropping whole features.
+
+```{r select-by-location-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('sbl-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var PER=6.0,HOLD=1.6,PERIOD=PER+HOLD;
+var poly=[[330,128],[470,116],[548,214],[472,322],[332,332],[262,216]];
+var seed=77;function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;}
+var P=[];for(var i=0;i<56;i++){P.push([60+rnd()*(W-120),64+rnd()*(H-118)]);}
+P.sort(function(a,b){return a[0]-b[0];});
+function inPoly(px,py){var inside=false;for(var i=0,j=poly.length-1;i<poly.length;j=i++){var xi=poly[i][0],yi=poly[i][1],xj=poly[j][0],yj=poly[j][1];var hit=((yi>py)!=(yj>py))&&(px<(xj-xi)*(py-yi)/(yj-yi)+xi);if(hit)inside=!inside;}return inside;}
+function drawPoly(){x.save();VA.glow(x,C.amber,8);x.strokeStyle=C.amber;x.lineWidth=2;x.beginPath();x.moveTo(poly[0][0],poly[0][1]);for(var i=1;i<poly.length;i++)x.lineTo(poly[i][0],poly[i][1]);x.closePath();x.stroke();x.fillStyle='rgba(255,194,75,0.06)';x.fill();VA.noglow(x);x.restore();}
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('SELECT BY LOCATION',16,28);VA.noglow(x);
+  drawPoly();
+  x.fillStyle=C.amber;x.font=VA.F(12,true);x.textAlign='left';x.fillText('study region',poly[5][0]-2,212);
+  var sweep=VA.clamp(tc/PER,0,1)*W;
+  var kept=0,seen=0;
+  for(var i=0;i<P.length;i++){var px=P[i][0],py=P[i][1];var reached=px<=sweep;var ins=inPoly(px,py);
+    if(reached){seen++;if(ins)kept++;}
+    var col,a;
+    if(!reached){col=C.mut;a=0.5;} else if(ins){col=C.green;a=1;} else {col=C.red;a=0.26;}
+    if(reached&&ins)VA.glow(x,C.green,7);
+    x.globalAlpha=a;x.fillStyle=col;x.beginPath();x.arc(px,py,4.2,0,6.2832);x.fill();x.globalAlpha=1;VA.noglow(x);}
+  if(tc<PER){x.strokeStyle=C.cyan;x.lineWidth=2;VA.glow(x,C.cyan,6);x.beginPath();x.moveTo(sweep,46);x.lineTo(sweep,H-34);x.stroke();VA.noglow(x);x.lineWidth=1;}
+  x.fillStyle=C.green;x.font=VA.F(13,true);x.textAlign='left';x.fillText('kept '+kept,16,H-20);
+  x.fillStyle=C.red;x.fillText('dropped '+(seen-kept),110,H-20);
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='right';x.fillText('spatial_filter(points, region)',W-16,H-18);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'sbl','sbl-cv');
+"
+cat(paste0(
+  "<canvas id='sbl-cv' width='860' height='400' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+```{r}
+region <- sf::st_read("study_area.gpkg", quiet = TRUE)
+
+inside <- tbl("occurrences.vtr") |>
+  spatial_filter(region, coords = c("x", "y"), crs = 4326)
+```
+
+The result carries the same schema as the input, with the outside features
+removed. `negate = TRUE` keeps the outside features instead. To cut geometry
+along the region rather than keep whole features,
+`spatial_clip()` intersects each batch with the
+mask, and `erase = TRUE` keeps the part outside it.
+
+```{r}
+clipped <- tbl("rivers.vtr") |> spatial_clip(region, crs = 4326)
+```
+
+To tag each feature with the polygon it falls in rather than filter,
+`spatial_join()` appends the polygon
+attributes. When both layers are larger than RAM, `partition = grid(cellsize)`
+bins them to a grid and joins one shard at a time, with the right layer itself a
+streamed node.
+
+```{r}
+tagged <- tbl("gbif_points.vtr") |>
+  spatial_join(tbl("countries.vtr"), coords = c("x", "y"),
+               crs = 4326, partition = grid(1))
+```
+
+## Rasterize a streamed point set
+
+Folding a point set into a grid is the headline larger-than-RAM operation: the
+grid fits in memory, the points do not.
+`rasterize()` maps each point to its cell through
+the geotransform and accumulates a per-cell value in C, one batch at a time, no
+spill. This is the monoid-fold tier: bounded memory, a single pass.
+
+```{r rasterize-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('rz-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var GX=44,GW=W-88,COLS=16,ROWS=8,TW=GW/COLS,GY=150,TH=27,GH=ROWS*TH;
+var PERIOD=9.0;
+var seed=531;function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;}
+var D=[];var cxC=10.5,cyC=4.5;
+for(var i=0;i<150;i++){var c=Math.round(VA.clamp(cxC+(rnd()-0.5)*9+(rnd()-0.5)*5,0,COLS-1));var r=Math.round(VA.clamp(cyC+(rnd()-0.5)*5+(rnd()-0.5)*3,0,ROWS-1));D.push([c,r,rnd()]);}
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('RASTERIZE  ::  POINTS  ->  DENSITY GRID',16,28);VA.noglow(x);
+  var cnt=new Array(COLS*ROWS).fill(0),maxc=1;
+  for(var i=0;i<D.length;i++){var rt=D[i][2]*PERIOD*0.82;if(tc>=rt+0.7){var k=D[i][1]*COLS+D[i][0];cnt[k]++;if(cnt[k]>maxc)maxc=cnt[k];}}
+  for(var r=0;r<ROWS;r++)for(var c=0;c<COLS;c++){var k=r*COLS+c;var v=cnt[k]/maxc;
+    x.fillStyle=v>0?'rgba(58,215,255,'+(0.14+0.78*v).toFixed(3)+')':C.off;
+    x.fillRect(GX+c*TW+1,GY+r*TH+1,TW-2,TH-2);}
+  x.strokeStyle=C.grid;for(var c2=0;c2<=COLS;c2++){x.beginPath();x.moveTo(GX+c2*TW,GY);x.lineTo(GX+c2*TW,GY+GH);x.stroke();}
+  for(var r2=0;r2<=ROWS;r2++){x.beginPath();x.moveTo(GX,GY+r2*TH);x.lineTo(GX+GW,GY+r2*TH);x.stroke();}
+  for(var i=0;i<D.length;i++){var rt=D[i][2]*PERIOD*0.82;var fall=tc-rt;
+    if(fall>=0&&fall<0.7){var f=fall/0.7;var tcx=GX+(D[i][0]+0.5)*TW,tcy=GY+(D[i][1]+0.5)*TH;var py=VA.lerp(62,tcy,VA.ease(f));
+      VA.glow(x,C.green,7);x.fillStyle=C.green;x.globalAlpha=1-0.25*f;x.beginPath();x.arc(tcx,py,3.4,0,6.2832);x.fill();x.globalAlpha=1;VA.noglow(x);}}
+  x.fillStyle=C.cyan;x.font=VA.F(12,true);x.textAlign='right';x.fillText('brighter = more points per cell',W-16,GY-12);
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='left';x.fillText('one batch streams past; the grid stays resident',16,H-18);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'rz','rz-cv');
+"
+cat(paste0(
+  "<canvas id='rz-cv' width='860' height='400' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+```{r}
+# Point density on a continental grid, streamed from a billion-row file.
+density <- tbl("gbif_points.vtr") |>
+  rasterize(extent = c(-180, -90, 180, 90), res = 0.1,
+            fun = "count", path = "density.vec")
+```
+
+`fun` is the per-cell reduction: `"count"`, `"sum"`, `"mean"`, `"min"`, `"max"`.
+With a `field` it aggregates that column rather than tallies points. The output
+is a `.vec` cube or an in-memory matrix.
+
+Going the other way, `zonal()` summarises a raster
+within zones, streaming the grid one tile-row strip at a time and folding
+per-zone moments in memory.
+
+```{r}
+admin <- sf::st_read("regions.gpkg", quiet = TRUE)
+zonal(clim, admin, fun = c("mean", "sd"), zone_field = "region_id")
+```
+
+## Terrain on a streamed DEM
+
+Moving-window operations read each output tile expanded by the kernel radius (a
+halo read), so a national DEM never has to be resident.
+`focal()` applies an arbitrary weight window, and
+`terrain()` derives slope, aspect, hillshade, TPI,
+roughness, and TRI with Horn's method, matching `terra::terrain()`. When `path`
+is given the result streams straight back to a new `.vec`, so neither the input
+nor the output band is ever fully in memory.
+
+```{r}
+terrain("dem.vec", v = c("slope", "aspect", "hillshade"),
+        path = "dem_derivatives.vec")
+```
+
+To resample or reproject, `warp()` walks the output one
+tile-row strip at a time, projects each strip's pixel centres into the source CRS
+(via PROJ when the two CRSs differ), and samples the bounded source window with
+nearest, bilinear, or cubic interpolation, matching `terra::project()`.
+
+```{r}
+warp("dem.vec", list(crs = 3035, res = 25),
+     method = "bilinear", path = "dem_laea.vec")
+```
+
+## Back from raster to vector
+
+`rasterize()` carries points onto a grid; `polygonize()` carries a grid back to
+vector. It reads one tile-row strip at a time and dissolves equal-valued cells
+into one polygon per value, so a classified land-cover raster becomes a polygon
+layer out of core.
+
+```{r}
+habitat <- polygonize("landcover.vec")       # one polygon per class
+```
+
+`contours()` traces iso-lines from a continuous surface with marching squares
+over the same haloed strip pass, then joins each level's segments into
+continuous lines.
+
+```{r}
+isolines <- contours("dem.vec", levels = seq(0, 3000, by = 200))
+```
+
+## Masking and raster math
+
+`mask()` clips a raster to a polygon layer one strip at a time, keeping the
+pixels whose centre falls inside it, the raster counterpart of `spatial_clip()`.
+
+```{r}
+study <- mask("dem.vec", region, path = "dem_study.vec")
+```
+
+`rast_calc()` evaluates a cellwise expression across aligned rasters, reading
+each input strip by strip. A vegetation index, a reclassification, or arithmetic
+across layers is one expression over the named rasters.
+
+```{r}
+ndvi <- rast_calc(list(nir = "nir.vec", red = "red.vec"),
+                  (nir - red) / (nir + red), path = "ndvi.vec")
+```
+
+`mosaic()` merges rasters that share a resolution and cell grid onto their union,
+resolving overlap with `mean`, `first`, `last`, `min`, `max`, or `sum`, one
+output strip at a time.
+
+```{r}
+tile_merge <- mosaic(list("n50.vec", "n51.vec", "n52.vec"), fun = "mean")
+```
+
+## The cost model
+
+Each operation states its memory tier, so the toolbox reads as a cost model
+rather than a grab-bag. The tier tells you what a run holds resident.
+
+```{r cost-tiers-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('ct-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var PERIOD=8.0;
+var rows=[
+ {name:'monoid fold',sub:'spatial_filter, rasterize, zonal',col:C.green,f:function(t){return 0.15+0.02*Math.sin(t*9);}},
+ {name:'sort / partition',sub:'focal, terrain, warp, partitioned join',col:C.amber,f:function(t){return 0.16+0.2*(0.5-0.5*Math.cos(t*6.5));}},
+ {name:'all-to-all',sub:'self-overlay, voronoi, neighbour graphs',col:C.red,f:function(t){return VA.clamp(t,0,1)*0.9+0.05;}}
+];
+var PX=212,PW=W-212-92,BH=56,GAP=36,TOP=74;
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('COST-MODEL TIERS  ::  MEMORY OVER A RUN',16,28);VA.noglow(x);
+  var t=tc/PERIOD;
+  for(var i=0;i<3;i++){var y=TOP+i*(BH+GAP);var rw=rows[i];
+    x.strokeStyle=C.red;x.setLineDash([5,4]);x.beginPath();x.moveTo(PX,y-7);x.lineTo(PX+PW,y-7);x.stroke();x.setLineDash([]);
+    x.fillStyle=C.off;x.fillRect(PX,y,PW,BH);x.strokeStyle=C.grid;x.strokeRect(PX,y,PW,BH);
+    var cursor=VA.clamp(t,0,1),steps=Math.floor(cursor*PW);
+    x.fillStyle=rw.col;x.globalAlpha=0.82;
+    for(var px=0;px<steps;px++){var hv=VA.clamp(rw.f(px/PW),0,1);x.fillRect(PX+px,y+BH-hv*BH,1.4,hv*BH);}
+    x.globalAlpha=1;
+    if(t<1){var cx2=PX+steps;x.strokeStyle=C.cyan;VA.glow(x,C.cyan,5);x.beginPath();x.moveTo(cx2,y);x.lineTo(cx2,y+BH);x.stroke();VA.noglow(x);}
+    x.fillStyle=rw.col;x.font=VA.F(14,true);x.textAlign='right';x.fillText(rw.name,PX-14,y+24);
+    x.fillStyle=C.mut;x.font=VA.F(10);x.fillText(rw.sub,PX-14,y+40);
+    x.fillStyle=C.red;x.font=VA.F(10);x.textAlign='left';x.fillText('RAM',PX+PW+8,y-3);}
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='center';x.fillText('fold and partition stay under the RAM line; all-to-all reaches it',W/2,H-16);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'ct','ct-cv');
+"
+cat(paste0(
+  "<canvas id='ct-cv' width='860' height='400' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+- **Monoid fold.** One batch at a time, bounded memory, no spill:
+  `spatial_filter()`, `spatial_clip()`, `rasterize()`, `zonal()`, and every
+  `spatial_map()` recipe.
+- **Sort / partition.** Spatial locality first: `focal()`, `terrain()`,
+  `warp()` over tile-and-halo reads, `spatial_dissolve()`, and the partitioned
+  `spatial_join()`.
+- **All-to-all.** Inherently resident: `spatial_overlay()` and operations such
+  as Voronoi, Delaunay, convex hull, and global neighbour graphs. For these,
+  collect the result and run sf or terra on it; vectra does not pretend to
+  stream what is global by nature.
+
+That boundary is the honest part. The streaming envelope covers the operations
+whose memory can be bounded, and names the ones it cannot.
+
+## Where to go next
+
+- [Larger-than-RAM strategy](large-data.html) for the spill and partition tiers
+  in depth.
+- [Offloading](offload.html) for the cost grades the spatial tiers reuse.
+- [Species distribution modelling](sdm.html) for an end-to-end ecological
+  workflow.
+- The function reference for every spatial verb and its arguments.

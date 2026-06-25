@@ -16,21 +16,165 @@ knitr::opts_chunk$set(
 )
 ```
 
+```{r va-engine, echo = FALSE, results = "asis", eval = TRUE}
+cat('
+<style>
+pre, pre.sourceCode, div.sourceCode { overflow-x: auto; max-width: 100%; }
+canvas { display:block; margin: 6px auto; }
+</style>
+<script>
+window.VA = {
+  ease:function(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;},
+  easeOut:function(t){return 1-Math.pow(1-t,3);},
+  lerp:function(a,b,t){return a+(b-a)*t;},
+  clamp:function(v,a,b){return Math.max(a,Math.min(b,v));},
+  C:{bg:"#0b0d17",grid:"#19203a",green:"#33ff8a",red:"#ff3b6b",cyan:"#3ad7ff",amber:"#ffc24b",purple:"#b388ff",ink:"#d7def7",mut:"#7f8bb5",off:"#1d2540"},
+  F:function(sz,bold){return (bold?"bold ":"")+Math.round(sz*1.25)+"px monospace";},
+  bg:function(c,w,h){c.fillStyle=this.C.bg;c.fillRect(0,0,w,h);c.strokeStyle=this.C.grid;c.lineWidth=1;for(var gx=26;gx<w;gx+=26){c.beginPath();c.moveTo(gx+0.5,0);c.lineTo(gx+0.5,h);c.stroke();}for(var gy=26;gy<h;gy+=26){c.beginPath();c.moveTo(0,gy+0.5);c.lineTo(w,gy+0.5);c.stroke();}},
+  scan:function(c,w,h){c.save();c.globalAlpha=0.07;c.fillStyle="#000";for(var y=0;y<h;y+=3)c.fillRect(0,y,w,1);c.restore();},
+  glow:function(c,col,b){c.shadowColor=col;c.shadowBlur=b;},
+  noglow:function(c){c.shadowBlur=0;c.shadowColor="transparent";},
+  setup:function(id){var cv=document.getElementById(id);if(!cv)return null;var ctx=cv.getContext("2d");var w=cv.width,h=cv.height,d=window.devicePixelRatio||1;cv.width=w*d;cv.height=h*d;cv.style.width=w+"px";cv.style.height="auto";ctx.scale(d,d);return {ctx:ctx,w:w,h:h};},
+  run:function(drawAt,period,btnId,key,cvId){var fz=(window.__FREEZE&&(key in window.__FREEZE))?window.__FREEZE[key]:null;if(fz!=null){drawAt(((fz%period)+period)%period);return;}var start=performance.now();function loop(now){var e=(now-start)/1000;if(e<0)e=0;drawAt(e%period);requestAnimationFrame(loop);}requestAnimationFrame(loop);function restart(){start=performance.now();}if(btnId){var b=document.getElementById(btnId);if(b)b.onclick=restart;}if(cvId){var cv=document.getElementById(cvId);if(cv){cv.style.cursor="pointer";cv.title="click to replay";cv.onclick=restart;}}}
+};
+</script>
+')
+```
+
 ## Introduction
 
-vectra is a columnar query engine for R. It stores data in a custom binary format (`.vtr`), reads it lazily, and processes it batch-by-batch through a C11 execution engine. The user-facing API looks like dplyr: you chain `filter()`, `mutate()`, `group_by()`, `summarise()`, and the rest. But nothing actually runs until you call `collect()`. That call pulls row groups through a tree of plan nodes, each consuming and producing fixed-size batches. Memory use stays roughly constant regardless of how large the file is.
+vectra is a columnar query engine for R. It stores data in a binary columnar
+format (`.vtr`), reads it lazily, and processes it batch by batch through a C11
+execution engine. The API mirrors dplyr: chain `filter()`, `mutate()`,
+`group_by()`, `summarise()`, and the rest, and nothing runs until `collect()`.
+That call pulls row groups through a tree of plan nodes, each consuming and
+producing fixed-size batches, so memory use stays roughly constant as the file
+grows.
 
-The execution model is pull-based. When `collect()` fires, the root node calls `next_batch()` on its child, which calls its own child, and so on down to the scan node that reads from disk. Each node transforms one batch and passes it upstream. Filtering uses selection vectors rather than copying rows, so a filter over a billion-row file touches only the matching indices. Sorting spills to temporary files and merges via a k-way min-heap when data exceeds 1 GB. Aggregation uses hash tables that grow proportionally to the number of groups, not the number of input rows. The engine knows four column types: 64-bit integers, doubles, booleans, and variable-length strings, each with a separate validity bitmap for NA tracking.
+The execution model is pull-based. When `collect()` fires, the root node calls
+`next_batch()` on its child, down to the scan node that reads from disk; each
+node transforms one batch and passes it upstream. Filtering uses selection
+vectors, so a filter over a billion-row file touches only the matching indices.
+Sorting spills to temporary files and merges with a k-way heap. Aggregation uses
+hash tables sized to the number of groups. The engine carries four column types
+(64-bit integers, doubles, booleans, variable-length strings), each with a
+validity bitmap for NA.
 
-The question of when to reach for vectra over base R, dplyr, data.table, or arrow comes down to working set size and workflow. If your data fits comfortably in RAM and you prefer in-memory semantics, dplyr and data.table are mature, fast, and well-supported. Arrow's `open_dataset()` handles partitioned Parquet and multi-file scans well and interoperates with the broader Arrow ecosystem (Spark, DuckDB, Flight). vectra fills a different niche: dplyr syntax on single-file storage with memory-bounded execution and no heavy compiled dependencies. The entire C codebase compiles from C11 source with no external library dependencies — compression and deflate support are vendored in the package itself. There is no C++ compiler requirement, no Boost, no protobuf. A 20 GB `.vtr` file processes on a laptop with 8 GB of RAM because the scan node reads one row group at a time and the downstream pipeline never holds more than two batches in memory simultaneously.
+Compression and encoding run through the vendored tdc codec at write time, per
+column per row group. Per-row-group statistics (min, max, null count) are
+attached to the container index, so the scan node skips row groups a predicate
+excludes before decoding them. Optional `.vtri` hash indexes accelerate equality
+predicates to O(1) row-group lookup. The whole C codebase compiles from C11 with
+no external library link, so a 20 GB `.vtr` processes on a laptop because the
+scan reads one row group at a time and the pipeline holds at most two batches at
+once.
 
-The on-disk format uses dictionary encoding for low-cardinality string columns, delta encoding for monotonic integer sequences, and Zstandard compression at the byte level. File sizes are competitive with Parquet for typical tabular workloads. Zone-map statistics (per-row-group min/max) are stored in the header, enabling the scan node to skip irrelevant row groups before decompressing any column data. Optional hash indexes stored as `.vtri` sidecar files accelerate equality predicates to O(1) row group lookup.
+Three pictures before the code: what streaming buys, what has to fit in RAM, and
+how a lazy plan pulls one batch through.
 
-This vignette is a taste test. Each section introduces a feature area with runnable examples, then points to the relevant deep-dive vignette for full coverage. All code uses tempfiles and built-in datasets, so you can run every chunk on any machine with vectra installed.
+```{r streaming-memory-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('sm-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var PX=72,PY=58,PW=W-72-36,PH=H-58-66,RAM=0.74;
+var PERIOD=8.0;
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('MEMORY  AS  ROWS  ARE  PROCESSED',16,28);VA.noglow(x);
+  x.strokeStyle=C.mut;x.lineWidth=1;x.beginPath();x.moveTo(PX,PY);x.lineTo(PX,PY+PH);x.lineTo(PX+PW,PY+PH);x.stroke();
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='right';x.fillText('memory',PX-6,PY+10);x.textAlign='center';x.fillText('rows processed',PX+PW/2,PY+PH+24);
+  var ry=PY+PH*(1-RAM);x.strokeStyle=C.red;x.setLineDash([6,4]);x.beginPath();x.moveTo(PX,ry);x.lineTo(PX+PW,ry);x.stroke();x.setLineDash([]);x.fillStyle=C.red;x.font=VA.F(11,true);x.textAlign='left';x.fillText('RAM limit',PX+6,ry-6);
+  var t=VA.clamp(tc/(PERIOD-1.2),0,1),le=Math.floor(t*PW);
+  var redMax=1.16;
+  x.strokeStyle=C.red;x.lineWidth=2.5;VA.glow(x,C.red,6);x.beginPath();
+  for(var i=0;i<=le;i++){var v=(i/PW)*redMax;x.lineTo(PX+i,PY+PH*(1-Math.min(v,1.02)));}x.stroke();VA.noglow(x);
+  var g=0.16;x.strokeStyle=C.green;x.lineWidth=2.5;VA.glow(x,C.green,6);x.beginPath();
+  for(var i=0;i<=le;i++){x.lineTo(PX+i,PY+PH*(1-g-0.012*Math.sin(i/13)));}x.stroke();VA.noglow(x);
+  x.fillStyle=C.green;x.font=VA.F(12,true);x.textAlign='left';x.fillText('streaming',PX+Math.min(le,PW-96),PY+PH*(1-g)-9);
+  var redv=t*redMax,ly=PY+PH*(1-Math.min(redv,1.02));x.fillStyle=C.red;x.fillText('in memory',PX+Math.min(le,PW-96),Math.max(PY+13,ly-9));
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='center';x.fillText('streaming keeps the footprint flat as the file grows',W/2,H-14);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'sm','sm-cv');
+"
+cat(paste0(
+  "<canvas id='sm-cv' width='760' height='340' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+The in-memory route holds the whole working set, so its footprint climbs with
+the file and eventually meets the RAM limit. The streamed route holds one batch,
+so the line stays flat. What has to fit at once is the difference.
+
+```{r ram-box-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('rb-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var BX=150,BW=W-150-40,RAM=0.7,ramX=BX+BW*RAM,BH=52,PERIOD=7.0;
+var rows=[
+ {y:88,name:'in memory',over:true,segs:[['data',0.44,C.cyan],['working copy',0.34,C.amber],['R',0.15,C.purple]]},
+ {y:176,name:'streaming',over:false,segs:[['batch',0.09,C.green],['R',0.15,C.purple]]}
+];
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('WHAT  HAS  TO  FIT  IN  RAM',16,28);VA.noglow(x);
+  x.strokeStyle=C.red;x.setLineDash([6,4]);x.beginPath();x.moveTo(ramX,58);x.lineTo(ramX,H-46);x.stroke();x.setLineDash([]);x.fillStyle=C.red;x.font=VA.F(12,true);x.textAlign='left';x.fillText('RAM',ramX+8,70);
+  var t=VA.clamp(tc/(PERIOD-1.6),0,1);
+  for(var r=0;r<2;r++){var rw=rows[r],X=BX;
+    x.fillStyle=C.ink;x.font=VA.F(13,true);x.textAlign='right';x.fillText(rw.name,BX-14,rw.y+BH/2+5);
+    for(var k=0;k<rw.segs.length;k++){var seg=rw.segs[k],w=seg[1]*BW*t;
+      x.fillStyle=seg[2];x.globalAlpha=0.85;x.fillRect(X,rw.y,w,BH);x.globalAlpha=1;x.strokeStyle=C.bg;x.lineWidth=1.5;x.strokeRect(X,rw.y,w,BH);
+      if(w>40){x.fillStyle=C.bg;x.font=VA.F(11,true);x.textAlign='center';x.fillText(seg[0],X+w/2,rw.y+BH/2+4);}
+      X+=w;}
+    if(rw.over&&X>ramX){VA.glow(x,C.red,8);x.fillStyle=C.red;x.font=VA.F(12,true);x.textAlign='left';x.fillText('overflow',ramX+8,rw.y+BH/2+5);VA.noglow(x);}
+    if(!rw.over){VA.glow(x,C.green,6);x.fillStyle=C.green;x.font=VA.F(12,true);x.textAlign='left';x.fillText('fits',X+12,rw.y+BH/2+5);VA.noglow(x);}}
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='center';x.fillText('streaming holds one batch and R at a time',W/2,H-14);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'rb','rb-cv');
+"
+cat(paste0(
+  "<canvas id='rb-cv' width='760' height='300' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+An in-memory pipeline keeps the source, a working copy, and the R session live
+together. A streamed pipeline keeps one batch and the R session. The plan that
+decides which one you get is lazy until `collect()`.
+
+```{r lazy-pipeline-anim, echo = FALSE, results = "asis", eval = TRUE}
+body <- "
+var s=VA.setup('lp-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
+var nodes=[{n:'scan',d:'read row group',c:C.cyan},{n:'filter',d:'cyl > 4',c:C.amber},{n:'project',d:'mpg, hp',c:C.green},{n:'collect',d:'data.frame',c:C.purple}];
+var NN=nodes.length,BX=W/2-94,BW=188,BH=44,GAPY=22,TOP=70;
+var BUILD=0.55,buildEnd=NN*BUILD+0.3,PERIOD=buildEnd+8.8;
+function ny(i){return TOP+i*(BH+GAPY);}
+function box(i,active){var y=ny(i),nd=nodes[i];if(active)VA.glow(x,nd.c,12);x.fillStyle=active?'rgba(58,215,255,0.08)':C.bg;x.strokeStyle=active?nd.c:C.off;x.lineWidth=active?2:1;x.beginPath();x.rect(BX,y,BW,BH);x.fill();x.stroke();VA.noglow(x);x.lineWidth=1;x.fillStyle=active?C.ink:C.mut;x.font=VA.F(13,true);x.textAlign='left';x.fillText(nd.n+'()',BX+14,y+19);x.fillStyle=nd.c;x.font=VA.F(11);x.fillText(nd.d,BX+14,y+35);}
+function arrow(i){var y0=ny(i)+BH,y1=ny(i+1);x.strokeStyle=C.grid;x.lineWidth=1;x.beginPath();x.moveTo(BX+BW/2,y0);x.lineTo(BX+BW/2,y1);x.stroke();}
+function token(tx,ty,col,lab){VA.glow(x,col,9);x.fillStyle=col;x.beginPath();x.arc(tx,ty,6,0,6.2832);x.fill();VA.noglow(x);x.fillStyle=col;x.font=VA.F(10,true);x.textAlign='center';x.fillText(lab,tx,ty-12);}
+function draw(tc){VA.bg(x,W,H);
+  VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('LAZY PLAN, THEN ONE BATCH PULLED THROUGH',16,28);VA.noglow(x);
+  var built=tc<buildEnd?Math.min(NN,Math.floor(tc/BUILD)+1):NN;
+  for(var i=0;i<built-1;i++)arrow(i);
+  var pulling=tc>=buildEnd,reqPos=-1,batchPos=-1;
+  if(pulling){var pt=((tc-buildEnd)%4.4)/4.4;if(pt<0.4)reqPos=(NN-1)-(pt/0.4)*(NN-1);else batchPos=((pt-0.4)/0.6)*(NN-1);}
+  for(var i=0;i<built;i++){var lit=pulling?((reqPos>=0&&Math.abs(i-reqPos)<0.55)||(batchPos>=0&&Math.abs(i-batchPos)<0.55)):true;box(i,lit);}
+  if(reqPos>=0)token(BX-26,ny(0)+BH/2+reqPos*(BH+GAPY),C.cyan,'pull');
+  if(batchPos>=0)token(BX+BW+26,ny(0)+BH/2+batchPos*(BH+GAPY),C.green,'batch');
+  x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='center';x.fillText(pulling?'collect() requests; one batch flows back up the tree':'building the plan, no data moves yet',W/2,H-16);
+  VA.scan(x,W,H);
+}
+VA.run(draw,PERIOD,null,'lp','lp-cv');
+"
+cat(paste0(
+  "<canvas id='lp-cv' width='760' height='360' style='max-width:100%'></canvas>\n",
+  "<script>\n(function(){\n", body, "\n})();\n</script>\n"))
+```
+
+The verbs below build that plan. Each section introduces a feature area with
+runnable examples, then points to the deep-dive vignette for full coverage. All
+code uses tempfiles and built-in datasets, so every chunk runs on any machine
+with vectra installed.
 
 ## Writing and reading data
 
-vectra uses a binary columnar format with the `.vtr` extension. A `.vtr` file contains a header (format version, column schema, and row group count), a row group index for fast seeking, and then the actual column data per row group. Each column within a row group is stored as a typed array with a validity bitmap for NA values. The current format version (v4) applies a two-stage encoding stack per column per row group. The first stage is a logical encoding: DICTIONARY for string columns where fewer than 50% of values are unique (the dictionary itself is stored once, and index runs are RLE-compressed), DELTA for int64 columns with monotonically increasing values (storing first value plus deltas), or PLAIN for everything else. The second stage is byte-level compression: Zstandard when the compressed output is smaller than the input and the raw data exceeds 64 bytes, or NONE otherwise. The file reader handles v1 through v4 transparently; the writer always produces v4.
+vectra uses a binary columnar format with the `.vtr` extension. A `.vtr` file is a typed container: a magic header, an attached column schema, one self-describing record per column per row group, and a trailing row-group index for fast seeking. Each column within a row group is stored as a typed array with a validity bitmap for NA values. Encoding and compression are handled per column per row group by the vendored tdc codec, which derives a specification (a model, a transform chain, and an entropy stage) from the requested compression level and emits one self-describing record. Per-row-group statistics (min, max, null count) are attached to the index so the scan node can prune row groups a predicate excludes before decoding them.
 
 Write any data.frame to `.vtr` with `write_vtr()`. Open it lazily with `tbl()`, which returns a `vectra_node` object. No data is read at this point. The `tbl()` call reads only the file header to learn the schema and row group layout.
 
@@ -955,6 +1099,19 @@ Several things to look for in the plan:
 ```{r glimpse}
 tbl(f) |> glimpse()
 ```
+
+## Where to go next
+
+This vignette is the fast path through the engine. Each area has a dedicated
+vignette with full coverage:
+
+- [Out-of-core GIS](spatial.html) for the streamed spatial toolbox (filter,
+  clip, rasterize, zonal, focal, terrain, warp, partitioned spatial join).
+- [The execution engine](engine.html) for the pull-based plan in depth.
+- [Joins](joins.html), [string operations](string-ops.html),
+  [indexing](indexing.html), and [larger-than-RAM strategy](large-data.html) for
+  the verb families this tour samples.
+- The function reference for the full API.
 
 ## Cleanup
 

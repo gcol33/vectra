@@ -7,9 +7,13 @@
 # hex-encoded WKB in an ordinary string column, so no new VecType is needed; the
 # CRS is carried on the returned node (the .vtr file stores no CRS).
 #
-# One engine (.spatial_stream) drives both front doors:
-#   spatial_map(x, fn)        per-feature transforms (buffer, transform, area, ...)
-#   spatial_join(x, y, join)  big-x streamed against a resident small-y sf object
+# A shared run-file accumulator (.run_accumulator) plus the .spatial_stream
+# engine drive the front doors:
+#   spatial_map(x, fn)          per-feature transforms (buffer, transform, ...)
+#   spatial_join(x, y, join)    big-x streamed against a resident small-y sf
+#   spatial_filter(x, y, pred)  select-by-location: keep big-x rows matching y
+#   spatial_clip(x, mask)       clip / erase big-x geometry against a mask
+#   spatial_overlay(x)          self-overlay a resident polygon layer into pieces
 # This mirrors offload(by = ...): batch cursor -> per-batch work -> run-files ->
 # a ConcatNode with a finalizer that clears the temp spills.
 
@@ -39,6 +43,74 @@
 # object, since sf rejects a bare logical NA where it wants NA_crs_.
 .as_crs <- function(crs) {
   if (identical(crs, NA) || is.null(crs)) sf::st_crs(NA) else sf::st_crs(crs)
+}
+
+# Give a resident sf/sfc the stream's CRS when it carries none, so a per-batch
+# predicate or overlay does not reject on an NA-vs-known CRS mismatch. When both
+# sides already carry a CRS they are left untouched and sf enforces the match.
+.align_resident_crs <- function(y, crs) {
+  cc <- .as_crs(crs)
+  if (is.na(sf::st_crs(y)) && !is.na(cc)) y <- sf::st_set_crs(y, cc)
+  y
+}
+
+# Reduce a CRS (an EPSG integer, an sf crs object, a WKT/proj string) to an
+# EPSG code for the raster header, or 0 when none is known. Only touches sf when
+# the input is not already a bare integer, so the coordinate-only rasterize path
+# stays sf-free.
+.crs_to_epsg <- function(crs) {
+  if (is.null(crs) || (length(crs) == 1L && is.na(crs))) return(0L)
+  if (is.numeric(crs) && length(crs) == 1L) return(as.integer(crs))
+  if (requireNamespace("sf", quietly = TRUE)) {
+    e <- tryCatch(sf::st_crs(crs)$epsg, error = function(e) NA_integer_)
+    if (!is.null(e) && !is.na(e)) return(as.integer(e))
+  }
+  0L
+}
+
+# Resolve the target grid for rasterize() into width/height + a north-up GDAL
+# geotransform. A `vectra_raster` template borrows its geometry and CRS; an
+# explicit extent is paired with either `dims = c(nrow, ncol)` or `res` (a
+# scalar or c(xres, yres)). With `res`, the cell counts are rounded to fit the
+# extent exactly, so the extent stays authoritative and cells stay uniform.
+.rasterize_grid <- function(template, extent, res, dims, crs) {
+  if (inherits(template, "vectra_raster")) {
+    gt   <- template$gt
+    w    <- as.integer(template$width)
+    h    <- as.integer(template$height)
+    tcrs <- if (!is.null(template$epsg) && template$epsg > 0L)
+      as.integer(template$epsg) else NA
+    if (is.null(crs) || (length(crs) == 1L && is.na(crs))) crs <- tcrs
+    xres <- gt[2L]; yres <- -gt[6L]
+    ext  <- c(gt[1L], gt[4L] - yres * h, gt[1L] + xres * w, gt[4L])
+    return(list(width = w, height = h, gt = gt, crs = crs,
+                epsg = .crs_to_epsg(crs), extent = ext, res = c(xres, yres)))
+  }
+  if (is.numeric(template) && length(template) == 4L && is.null(extent))
+    extent <- template
+  if (is.null(extent) || !is.numeric(extent) || length(extent) != 4L)
+    stop("supply `template` (a vectra_raster) or ",
+         "`extent = c(xmin, ymin, xmax, ymax)`")
+  xmin <- extent[1L]; ymin <- extent[2L]; xmax <- extent[3L]; ymax <- extent[4L]
+  if (!(xmax > xmin) || !(ymax > ymin))
+    stop("extent must have xmax > xmin and ymax > ymin")
+  if (!is.null(dims)) {
+    if (length(dims) != 2L) stop("dims must be c(nrow, ncol)")
+    h <- as.integer(dims[1L]); w <- as.integer(dims[2L])
+  } else if (!is.null(res)) {
+    if (length(res) == 1L) res <- c(res, res)
+    w <- as.integer(round((xmax - xmin) / res[1L]))
+    h <- as.integer(round((ymax - ymin) / res[2L]))
+  } else {
+    stop("supply either `res` or `dims` together with `extent`")
+  }
+  if (is.na(w) || is.na(h) || w <= 0L || h <= 0L)
+    stop("the derived grid has non-positive dimensions")
+  xres <- (xmax - xmin) / w
+  yres <- (ymax - ymin) / h
+  gt <- c(xmin, xres, 0, ymax, 0, -yres)
+  list(width = w, height = h, gt = gt, crs = crs, epsg = .crs_to_epsg(crs),
+       extent = c(xmin, ymin, xmax, ymax), res = c(xres, yres))
 }
 
 .sf_decode_chunk <- function(chunk, geom, coords, crs) {
@@ -127,63 +199,76 @@
   1 / (mag * 1e-7)
 }
 
-# -- the streaming engine -----------------------------------------------------
+# -- run-file accumulator (shared spill machinery) ----------------------------
 
-# Pull `x` one batch at a time, run `batch_fn` (an sf-in / sf-out function) on
-# each, encode the result, and accumulate to run-files flushed at `flush_rows`.
-# Returns a lazy ConcatNode over the run-files, carrying the output CRS and a
-# finalizer that removes the spills when the node is garbage-collected.
-.spatial_stream <- function(x, batch_fn, geom, coords, crs, out_geom,
-                            flush_rows) {
-  nxt <- .batch_cursor(x)
+# Buffer writable data.frames, flush them to `.vtr` spill files once `flush_rows`
+# rows are pending, and finalize into a lazy ConcatNode whose temporary spills
+# are removed when the node is garbage-collected. This is the single place the
+# streamed spatial verbs (map / join / filter / clip / overlay) turn a sequence
+# of per-batch data.frames into a lazy node. `push()` records the schema from the
+# first frame it sees (even an empty one), so `finish()` can emit a correctly
+# typed empty node when nothing matched. Returns a list of `push` and `finish`.
+.run_accumulator <- function(flush_rows) {
   st <- new.env(parent = emptyenv())
-  st$buf <- list(); st$buffered <- 0; st$runs <- character(0)
-  st$template <- NULL; st$out_crs <- NULL
+  st$buf <- list(); st$buffered <- 0L; st$runs <- character(0); st$template <- NULL
 
-  do_flush <- function() {
+  flush <- function() {
     if (!length(st$buf)) return(invisible())
-    df <- if (length(st$buf) == 1) st$buf[[1]] else do.call(rbind, st$buf)
-    rf <- tempfile(fileext = ".vtr")
-    write_vtr(df, rf)
-    st$runs <- c(st$runs, rf)
-    st$buf <- list(); st$buffered <- 0
+    df <- if (length(st$buf) == 1L) st$buf[[1]] else do.call(rbind, st$buf)
+    rf <- tempfile(fileext = ".vtr"); write_vtr(df, rf)
+    st$runs <- c(st$runs, rf); st$buf <- list(); st$buffered <- 0L
   }
 
-  repeat {
-    chunk <- nxt(); if (is.null(chunk)) break
-    sb  <- .sf_decode_chunk(chunk, geom, coords, crs)
-    res <- batch_fn(sb)
-    if (is.null(st$out_crs) && (inherits(res, "sf") || inherits(res, "sfc")))
-      st$out_crs <- sf::st_crs(res)
-    df <- .sf_encode_result(res, out_geom)
+  push <- function(df) {
     if (is.null(st$template)) st$template <- df[0, , drop = FALSE]
     if (nrow(df)) {
       st$buf <- c(st$buf, list(df))
       st$buffered <- st$buffered + nrow(df)
-      if (st$buffered >= flush_rows) do_flush()
+      if (st$buffered >= flush_rows) flush()
     }
-  }
-  do_flush()
-
-  # Empty result: still return a valid node with the right schema.
-  if (!length(st$runs)) {
-    tmpl <- st$template
-    if (is.null(tmpl))
-      tmpl <- stats::setNames(
-        data.frame(character(0), stringsAsFactors = FALSE), out_geom)
-    rf <- tempfile(fileext = ".vtr")
-    write_vtr(tmpl, rf)
-    st$runs <- rf
+    invisible()
   }
 
-  node <- .concat_runs(st$runs)
-  reg <- new.env(parent = emptyenv())
-  reg$paths <- st$runs
-  reg.finalizer(reg, function(e) try(unlink(e$paths), silent = TRUE),
-                onexit = TRUE)
-  node$.reg <- reg
-  node$.crs <- if (!is.null(st$out_crs)) st$out_crs else crs
-  node
+  finish <- function(crs, empty_geom = "geometry") {
+    flush()
+    if (!length(st$runs)) {
+      tmpl <- st$template
+      if (is.null(tmpl))
+        tmpl <- stats::setNames(
+          data.frame(character(0), stringsAsFactors = FALSE), empty_geom)
+      rf <- tempfile(fileext = ".vtr"); write_vtr(tmpl, rf); st$runs <- rf
+    }
+    node <- .concat_runs(st$runs)
+    reg <- new.env(parent = emptyenv()); reg$paths <- st$runs
+    reg.finalizer(reg, function(e) try(unlink(e$paths), silent = TRUE),
+                  onexit = TRUE)
+    node$.reg <- reg
+    node$.crs <- crs
+    node
+  }
+
+  list(push = push, finish = finish)
+}
+
+# -- the streaming engine -----------------------------------------------------
+
+# Pull `x` one batch at a time, run `batch_fn` (an sf-in / sf-out function) on
+# each, encode the result, and accumulate to run-files. Returns a lazy ConcatNode
+# carrying the output CRS (the first sf/sfc result's CRS, else the input `crs`).
+.spatial_stream <- function(x, batch_fn, geom, coords, crs, out_geom,
+                            flush_rows) {
+  nxt <- .batch_cursor(x)
+  acc <- .run_accumulator(flush_rows)
+  out_crs <- NULL
+  repeat {
+    chunk <- nxt(); if (is.null(chunk)) break
+    sb  <- .sf_decode_chunk(chunk, geom, coords, crs)
+    res <- batch_fn(sb)
+    if (is.null(out_crs) && (inherits(res, "sf") || inherits(res, "sfc")))
+      out_crs <- sf::st_crs(res)
+    acc$push(.sf_encode_result(res, out_geom))
+  }
+  acc$finish(crs = if (!is.null(out_crs)) out_crs else crs, empty_geom = out_geom)
 }
 
 # -- front doors --------------------------------------------------------------
@@ -271,18 +356,40 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
 #' RAM. The dominant real workload it serves is tagging huge point sets with the
 #' polygon they fall in.
 #'
-#' Both sides huge is out of scope for a single resident `y`; partition the
-#' inputs first with [offload()] on a spatial grid key and join within each
-#' shard. Topology and CRS handling are \pkg{sf}'s; vectra supplies the stream.
+#' When both sides are larger than RAM, pass `partition = grid(cellsize)` and a
+#' streamed `vectra_node` as `y`: both inputs are binned to a uniform spatial
+#' grid, then joined one shard at a time. Each left feature is assigned to the
+#' single grid cell of its reference point while each right feature is
+#' replicated to every cell its bounding box overlaps, so a left row is emitted
+#' exactly once and the result equals the resident join. This is exact for point
+#' left geometries (the dominant case -- tagging a huge point set with the
+#' polygon it falls in) and finds, for an extended left feature, the matches
+#' whose right bounding box overlaps the left reference cell; choose a `cellsize`
+#' larger than the left features for an extended-on-extended join. The partition
+#' path serves topological predicates (intersects, within, contains, overlaps,
+#' covers, covered by). It also serves [sf::st_nearest_feature]: because nearest
+#' is not local to one cell, each left feature then searches its own cell and the
+#' eight around it, so the true nearest is found when it lies within one cell of
+#' the left reference cell (pick a `cellsize` at least the largest expected
+#' nearest distance). Topology and CRS handling are \pkg{sf}'s; vectra supplies
+#' the stream and the grid partition.
 #'
 #' @inheritParams spatial_map
-#' @param y An `sf` object: the resident right side of the join.
+#' @param y The right side of the join: an `sf` object held resident (the
+#'   default), or -- when `partition` is given -- a streamed `vectra_node`.
 #' @param join An \pkg{sf} binary predicate function, e.g. [sf::st_intersects]
 #'   (default), [sf::st_within], [sf::st_contains], [sf::st_nearest_feature].
 #' @param left If `TRUE` (default) keep every left row (left join); if `FALSE`
 #'   keep only matches (inner join).
 #' @param suffix Length-2 character vector disambiguating columns present on
 #'   both sides. Default `c(".x", ".y")`.
+#' @param partition Optional [grid()] specification enabling the two-sided
+#'   streamed path, in which `y` is itself a `vectra_node`. Default `NULL` keeps
+#'   the resident-`y` path.
+#' @param y_geom,y_coords Geometry transport for a streamed `y` under
+#'   `partition`: the name of `y`'s hex-WKB geometry column (`y_geom`, default
+#'   the left `geom`), or a length-2 character vector of `y`'s coordinate columns
+#'   (`y_coords`). Ignored without `partition`.
 #' @param ... Further arguments passed to [sf::st_join()].
 #'
 #' @return A `vectra_node` of the joined stream, backed by temporary `.vtr`
@@ -305,26 +412,1339 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
 #'   spatial_join(nc["NAME"], join = sf::st_intersects,
 #'                coords = c("x", "y"), crs = sf::st_crs(nc))
 #' head(collect(tagged))
-#' unlink(f)
+#'
+#' # Both sides streamed: bin to a grid and join per shard. Here y is a
+#' # vectra_node rather than a resident sf object.
+#' g <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   NAME = nc$NAME,
+#'   geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)
+#' ), g)
+#' tagged2 <- tbl(f) |>
+#'   spatial_join(tbl(g), coords = c("x", "y"), crs = sf::st_crs(nc),
+#'                partition = grid(0.5))
+#' head(collect(tagged2))
+#' unlink(c(f, g))
 #'
 #' @export
 spatial_join <- function(x, y, join = NULL, geom = "geometry", coords = NULL,
                          crs = NA, left = TRUE, suffix = c(".x", ".y"),
+                         partition = NULL, y_geom = NULL, y_coords = NULL,
                          out_geom = NULL, flush_rows = NULL, ...) {
   .check_sf()
   if (!inherits(x, "vectra_node"))
     stop("`x` must be a vectra_node (the streamed left side)")
-  if (!inherits(y, "sf"))
-    stop("`y` must be an sf object (the resident right side of the join)")
   if (is.null(join)) join <- sf::st_intersects
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
   dots <- list(...)
+
+  if (!is.null(partition)) {
+    if (!inherits(partition, "vectra_grid"))
+      stop("`partition` must be a grid() specification, or NULL")
+    if (!inherits(y, "vectra_node"))
+      stop("with `partition`, `y` must be a vectra_node (the streamed right side)")
+    if (is.null(y_geom)) y_geom <- geom
+    return(.spatial_join_partition(x, y, join, partition, geom, coords,
+                                   y_geom, y_coords, crs, left, suffix,
+                                   out_geom, fr, dots))
+  }
+
+  if (!inherits(y, "sf"))
+    stop("`y` must be an sf object (the resident right side of the join)")
   batch_fn <- function(sb)
     do.call(sf::st_join,
             c(list(sb, y, join = join, left = left, suffix = suffix), dots))
+  .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
+}
+
+# -- two-sided partitioned spatial join (grid partition) ----------------------
+
+#' Define a uniform grid for a partitioned spatial join
+#'
+#' Describes the regular grid that [spatial_join()] uses to partition two
+#' streamed layers for the both-sides-larger-than-RAM case. Cell `(cx, cy)`
+#' covers `[origin_x + cx * cellsize_x, origin_x + (cx + 1) * cellsize_x)` and
+#' likewise in y, so a coordinate maps to the cell `floor((coord - origin) /
+#' cellsize)`. Pick a `cellsize` comparable to the scale of the join (large
+#' enough that most cells hold a workable shard, small enough that one cell's
+#' features fit in memory); for an extended-on-extended join choose it larger
+#' than the left features.
+#'
+#' @param cellsize Cell size: a single number for square cells, or
+#'   `c(cellsize_x, cellsize_y)`.
+#' @param origin Grid origin `c(x0, y0)` (a cell corner). Default `c(0, 0)`.
+#'
+#' @return A `vectra_grid` specification to pass as `spatial_join(partition =)`.
+#'
+#' @seealso [spatial_join()] for the join it partitions.
+#'
+#' @examples
+#' grid(1000)
+#' grid(c(0.5, 0.25), origin = c(-180, -90))
+#'
+#' @export
+grid <- function(cellsize, origin = c(0, 0)) {
+  if (!is.numeric(cellsize) || !length(cellsize) %in% 1:2 ||
+      any(!is.finite(cellsize)) || any(cellsize <= 0))
+    stop("`cellsize` must be one or two positive numbers")
+  if (length(cellsize) == 1L) cellsize <- c(cellsize, cellsize)
+  if (!is.numeric(origin) || length(origin) != 2L || any(!is.finite(origin)))
+    stop("`origin` must be a length-2 numeric c(x0, y0)")
+  structure(list(cellsize = as.numeric(cellsize[1:2]),
+                 origin = as.numeric(origin)),
+            class = "vectra_grid")
+}
+
+#' @export
+print.vectra_grid <- function(x, ...) {
+  cat(sprintf("<vectra grid: cellsize %g x %g, origin (%g, %g)>\n",
+              x$cellsize[1L], x$cellsize[2L], x$origin[1L], x$origin[2L]))
+  invisible(x)
+}
+
+# Integer cell index of a coordinate along one axis.
+.grid_ix <- function(v, o, s) as.integer(floor((v - o) / s))
+
+# Cell label "cx:cy" from integer cell indices.
+.grid_label <- function(cx, cy) paste(cx, cy, sep = ":")
+
+# Per-feature bounding boxes of an sf/sfc batch as a 4-column matrix, derived
+# from the flattened vertices (sf returns the feature index in the last
+# st_coordinates column for lines/polygons/multipoints), so the whole batch is
+# one vectorized pass. POINT geometry carries no index column (just X, Y), so
+# each row is its own degenerate bbox.
+.feature_bbox <- function(g) {
+  co <- sf::st_coordinates(sf::st_geometry(g))
+  if (ncol(co) <= 2L)
+    return(cbind(xmin = co[, "X"], xmax = co[, "X"],
+                 ymin = co[, "Y"], ymax = co[, "Y"]))
+  fid <- co[, ncol(co)]
+  cbind(xmin = tapply(co[, "X"], fid, min), xmax = tapply(co[, "X"], fid, max),
+        ymin = tapply(co[, "Y"], fid, min), ymax = tapply(co[, "Y"], fid, max))
+}
+
+# Reference-cell label (one per row) for the left side: the cell each point or
+# bbox centre falls in. Coordinate columns stay sf-free; WKB geometry is decoded.
+.left_cell_labels <- function(chunk, geom, coords, crs, g) {
+  if (!is.null(coords)) {
+    x <- as.numeric(chunk[[coords[1L]]]); y <- as.numeric(chunk[[coords[2L]]])
+  } else {
+    bb <- .feature_bbox(.sf_decode_chunk(chunk, geom, NULL, crs))
+    x <- (bb[, "xmin"] + bb[, "xmax"]) / 2
+    y <- (bb[, "ymin"] + bb[, "ymax"]) / 2
+  }
+  .grid_label(.grid_ix(x, g$origin[1L], g$cellsize[1L]),
+              .grid_ix(y, g$origin[2L], g$cellsize[2L]))
+}
+
+# Replicate right-side rows to every grid cell their geometry's bounding box
+# overlaps, returning the augmented data.frame (original columns plus `.cell`).
+# A point geometry hits one cell; a polygon spanning several is repeated once
+# per cell so the per-shard join is complete.
+.right_replicate <- function(chunk, geom, coords, crs, g) {
+  if (!is.null(coords)) {
+    x <- as.numeric(chunk[[coords[1L]]]); y <- as.numeric(chunk[[coords[2L]]])
+    xmin <- x; xmax <- x; ymin <- y; ymax <- y
+  } else {
+    bb <- .feature_bbox(.sf_decode_chunk(chunk, geom, NULL, crs))
+    xmin <- bb[, "xmin"]; xmax <- bb[, "xmax"]
+    ymin <- bb[, "ymin"]; ymax <- bb[, "ymax"]
+  }
+  cx0 <- .grid_ix(xmin, g$origin[1L], g$cellsize[1L])
+  cx1 <- .grid_ix(xmax, g$origin[1L], g$cellsize[1L])
+  cy0 <- .grid_ix(ymin, g$origin[2L], g$cellsize[2L])
+  cy1 <- .grid_ix(ymax, g$origin[2L], g$cellsize[2L])
+  nx  <- cx1 - cx0 + 1L; ny <- cy1 - cy0 + 1L
+  reps <- as.numeric(nx) * as.numeric(ny)
+  row <- rep.int(seq_len(nrow(chunk)), reps)
+  lab <- character(sum(reps))
+  at <- 0L
+  for (i in seq_len(nrow(chunk))) {
+    cxs <- cx0[i]:cx1[i]; cys <- cy0[i]:cy1[i]
+    li  <- .grid_label(rep(cxs, times = length(cys)),
+                       rep(cys, each = length(cxs)))
+    lab[(at + 1L):(at + length(li))] <- li
+    at <- at + length(li)
+  }
+  out <- chunk[row, , drop = FALSE]
+  out[[".cell"]] <- lab
+  rownames(out) <- NULL
+  out
+}
+
+# Stream a cursor, augment each batch into rows carrying a `.cell` label, and
+# route them to per-cell run-files flushed when the budget is crossed. Returns
+# the named list of run-file paths per cell label. Handles the row replication
+# the right side needs (augment may return more rows than it received).
+.cell_router <- function(cursor, augment, budget) {
+  st <- new.env(parent = emptyenv())
+  st$buffers <- list(); st$runs <- list(); st$buffered <- 0
+  flush_one <- function(lab) {
+    bufs <- st$buffers[[lab]]
+    if (is.null(bufs) || !length(bufs)) return(invisible())
+    df <- if (length(bufs) == 1L) bufs[[1L]] else do.call(rbind, bufs)
+    rf <- tempfile(fileext = ".vtr"); write_vtr(df, rf)
+    st$runs[[lab]] <- c(st$runs[[lab]], rf); st$buffers[[lab]] <- NULL
+  }
+  flush_all <- function() {
+    for (lab in names(st$buffers)) flush_one(lab); st$buffered <- 0
+  }
+  repeat {
+    chunk <- cursor(); if (is.null(chunk)) break
+    aug <- augment(chunk)
+    if (!nrow(aug)) next
+    idx <- split(seq_len(nrow(aug)), aug[[".cell"]])
+    for (lab in names(idx))
+      st$buffers[[lab]] <- c(st$buffers[[lab]],
+                             list(aug[idx[[lab]], , drop = FALSE]))
+    st$buffered <- st$buffered + nrow(aug)
+    if (st$buffered >= budget) flush_all()
+  }
+  flush_all()
+  st$runs
+}
+
+# Drop the internal `.cell` routing column before a shard is decoded to sf.
+.drop_cell <- function(df) df[setdiff(names(df), ".cell")]
+
+# Right-side run files for a left cell, gathered over the 3x3 neighbourhood. The
+# nearest-feature join is not local to a single cell, so a left point searches
+# its own cell and the eight around it; the true nearest is found when it lies
+# within one cell of the left reference cell (pick a cellsize at least the
+# largest expected nearest distance).
+.halo_runs <- function(rruns, lab) {
+  cc <- as.integer(strsplit(lab, ":", fixed = TRUE)[[1L]])
+  labs <- character(0)
+  for (dx in -1:1) for (dy in -1:1)
+    labs <- c(labs, .grid_label(cc[1L] + dx, cc[2L] + dy))
+  unlist(rruns[intersect(labs, names(rruns))], use.names = FALSE)
+}
+
+.spatial_join_partition <- function(x, y, join, g, geom, coords,
+                                    y_geom, y_coords, crs, left, suffix,
+                                    out_geom, fr, dots) {
+  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
+  halo <- identical(join, sf::st_nearest_feature)
+
+  lruns <- .cell_router(
+    .batch_cursor(x),
+    function(chunk) {
+      chunk[[".cell"]] <- .left_cell_labels(chunk, geom, coords, crs, g)
+      .coerce_for_vtr(chunk)
+    }, budget)
+  on.exit(unlink(unlist(lruns, use.names = FALSE)), add = TRUE)
+
+  # An empty right sf with y's attribute schema, for left cells with no right
+  # shard (so a left-join still pads them with NA right columns).
+  ytmpl <- new.env(parent = emptyenv()); ytmpl$sf <- NULL
+  rruns <- .cell_router(
+    .batch_cursor(y),
+    function(chunk) {
+      if (is.null(ytmpl$sf))
+        ytmpl$sf <- .sf_decode_chunk(chunk, y_geom, y_coords, crs)[0, ]
+      .coerce_for_vtr(.right_replicate(chunk, y_geom, y_coords, crs, g))
+    }, budget)
+  on.exit(unlink(unlist(rruns, use.names = FALSE)), add = TRUE)
+
+  acc <- .run_accumulator(fr)
+  for (lab in names(lruns)) {
+    lsf <- .sf_decode_chunk(.drop_cell(collect(.concat_runs(lruns[[lab]]))),
+                            geom, coords, crs)
+    rpaths <- if (halo) .halo_runs(rruns, lab) else rruns[[lab]]
+    rsf <- if (!is.null(rpaths) && length(rpaths))
+      .sf_decode_chunk(.drop_cell(collect(.concat_runs(rpaths))),
+                       y_geom, y_coords, crs)
+    else ytmpl$sf
+    if (is.null(rsf)) {
+      if (!left) next
+      rsf <- sf::st_sf(geometry = sf::st_sfc(crs = .as_crs(crs)))
+    }
+    if (!left && !nrow(rsf)) next
+    res <- do.call(sf::st_join,
+                   c(list(lsf, rsf, join = join, left = left, suffix = suffix),
+                     dots))
+    acc$push(.sf_encode_result(res, out_geom))
+  }
+  acc$finish(crs = crs, empty_geom = out_geom)
+}
+
+#' Keep streamed rows by their spatial relation to a resident layer
+#'
+#' Streams a large left side `x` through the engine and keeps each row whose
+#' geometry satisfies an \pkg{sf} binary predicate against a small resident
+#' layer `y` (select by location). This is the spatial counterpart to a
+#' [semi_join()]: rows are filtered, never duplicated, and no columns are added,
+#' so the output carries `x`'s schema unchanged. With `negate = TRUE` it keeps
+#' the rows that do *not* match (select by location, inverted). The billion-row
+#' left stream never materializes; `y` (a study region, habitat patches, a
+#' coastline buffer, ...) stays resident.
+#'
+#' Topology and CRS handling are \pkg{sf}'s; vectra supplies the stream. When
+#' `y` carries no CRS it inherits the stream's so the predicate does not reject
+#' on a mismatch.
+#'
+#' @inheritParams spatial_map
+#' @param y An `sf` or `sfc` object: the resident locator layer to test against.
+#' @param predicate An \pkg{sf} binary predicate function, e.g.
+#'   [sf::st_intersects] (default), [sf::st_within], [sf::st_covered_by],
+#'   [sf::st_is_within_distance]. A left row is kept when the predicate reports
+#'   at least one match against `y`.
+#' @param negate If `TRUE`, keep the rows with no match instead (the inverted
+#'   select-by-location). Default `FALSE`.
+#'
+#' @return A `vectra_node` of the kept rows with `x`'s schema, backed by
+#'   temporary `.vtr` spills and carrying the input CRS.
+#'
+#' @seealso [spatial_join()] to tag rows with `y`'s attributes, [spatial_clip()]
+#'   to cut geometry against a mask, [filter()] for attribute predicates.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
+#' region <- nc[nc$NAME %in% c("Ashe", "Alleghany", "Surry"), "NAME"]
+#'
+#' set.seed(1)
+#' pts <- sf::st_coordinates(sf::st_sample(nc, 300))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f)
+#'
+#' # Keep only the points that fall inside the three-county region, streaming.
+#' inside <- tbl(f) |>
+#'   spatial_filter(region, coords = c("x", "y"), crs = sf::st_crs(nc))
+#' nrow(collect(inside))
+#' unlink(f)
+#'
+#' @export
+spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
+                           geom = "geometry", coords = NULL, crs = NA,
+                           flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed left side)")
+  if (!inherits(y, "sf") && !inherits(y, "sfc"))
+    stop("`y` must be an sf or sfc object (the resident locator layer)")
+  if (is.null(predicate)) predicate <- sf::st_intersects
+  crs <- .resolve_crs(x, crs)
+  y   <- .align_resident_crs(y, crs)
+  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+
+  nxt <- .batch_cursor(x)
+  acc <- .run_accumulator(fr)
+  repeat {
+    chunk <- nxt(); if (is.null(chunk)) break
+    sb  <- .sf_decode_chunk(chunk, geom, coords, crs)
+    hit <- lengths(predicate(sb, y)) > 0L
+    if (negate) hit <- !hit
+    acc$push(.coerce_for_vtr(chunk[hit, , drop = FALSE]))
+  }
+  acc$finish(crs = crs, empty_geom = if (is.null(coords)) geom else "geometry")
+}
+
+#' Clip or erase a streamed layer against a resident mask
+#'
+#' Streams a large layer `x` through the engine and cuts each batch's geometry
+#' against a small resident `mask` (a study boundary, a buffer, a set of
+#' patches). By default this clips -- the intersection with the mask, the GIS
+#' "Clip" tool -- keeping only the parts of `x` that fall inside `mask`. With
+#' `erase = TRUE` it instead erases -- the difference, the "Erase"/"Difference"
+#' tool -- keeping the parts of `x` outside `mask`. The mask is dissolved to a
+#' single geometry once and held resident while the billion-row left stream
+#' flows past one batch at a time.
+#'
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' Topology is \pkg{sf}/GEOS's; vectra supplies the streaming. When `mask`
+#' carries no CRS it inherits the stream's.
+#'
+#' @inheritParams spatial_map
+#' @param mask An `sf` or `sfc` object whose dissolved geometry clips (or, with
+#'   `erase = TRUE`, erases) the stream.
+#' @param erase If `TRUE`, keep the parts of `x` *outside* `mask` (difference)
+#'   rather than inside (intersection). Default `FALSE`.
+#'
+#' @return A `vectra_node` of the cut geometry with `x`'s attributes, backed by
+#'   temporary `.vtr` spills and carrying the input CRS.
+#'
+#' @seealso [spatial_filter()] to keep whole features by location without
+#'   cutting them, [spatial_map()] for per-feature transforms, [collect_sf()].
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
+#' mask <- sf::st_union(nc[nc$NAME %in% c("Ashe", "Alleghany"), ])
+#'
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   NAME = nc$NAME,
+#'   geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)
+#' ), f)
+#'
+#' # Clip every county polygon to the two-county mask, streaming.
+#' clipped <- tbl(f) |> spatial_clip(mask, crs = sf::st_crs(nc))
+#' collect_sf(clipped)
+#' unlink(f)
+#'
+#' @export
+spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
+                         coords = NULL, crs = NA, out_geom = NULL,
+                         flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to clip)")
+  if (!inherits(mask, "sf") && !inherits(mask, "sfc"))
+    stop("`mask` must be an sf or sfc object (the resident clip/erase mask)")
+  crs    <- .resolve_crs(x, crs)
+  mask   <- .align_resident_crs(mask, crs)
+  mask_u <- sf::st_union(sf::st_geometry(mask))   # one resident mask geometry
+  op     <- if (erase) sf::st_difference else sf::st_intersection
+  # st_intersection/st_difference warn once per batch that attributes are
+  # assumed spatially constant; that is the intended behaviour here, so mute
+  # just that warning rather than letting it repeat for every streamed batch.
+  batch_fn <- function(sb)
+    withCallingHandlers(
+      op(sb, mask_u),
+      warning = function(w) {
+        if (grepl("assumed.*spatially constant", conditionMessage(w)))
+          invokeRestart("muffleWarning")
+      })
+  if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
   fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
+}
+
+# -- dissolve (aggregate geometries by group) ---------------------------------
+
+# Composite group label for a batch: one string per row joining the `by`
+# column values (unit separator, unlikely to collide), or a constant when no
+# `by` is given (dissolve the whole layer into one feature).
+.dissolve_assign <- function(by) {
+  if (is.null(by)) return(function(chunk) rep("all", nrow(chunk)))
+  function(chunk) {
+    parts <- lapply(by, function(b) as.character(chunk[[b]]))
+    do.call(paste, c(parts, sep = ""))
+  }
+}
+
+#' Dissolve geometries by group
+#'
+#' Unions the geometries within each `by` group into a single feature (the GIS
+#' "Dissolve" tool), optionally summarising attributes. Unlike the streamed
+#' per-batch verbs, dissolve needs every geometry of a group together to union
+#' them, so it rides the **partition tier**: `x` is spilled once and routed into
+#' one disjoint shard per group in a single bounded pass, then each shard is read
+#' in and unioned with \pkg{sf}. Peak memory is the routing budget during the
+#' pass, then one group's geometries while it is unioned -- partition the input
+#' on a key whose groups fit in memory. With no `by`, the whole layer dissolves
+#' into one feature.
+#'
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' Topology is \pkg{sf}/GEOS's; vectra supplies the streaming partition. The
+#' \pkg{sf} package is an optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param by Character vector of attribute columns to dissolve within: one
+#'   output feature per distinct combination of their values. `NULL` (default)
+#'   dissolves the entire layer into a single feature.
+#' @param ... Further arguments passed to [sf::st_union()] (e.g.
+#'   `is_coverage = TRUE`).
+#' @param .fun Optional named list of attribute summaries. Each element is a
+#'   function taking the group's data.frame and returning a length-1 value; the
+#'   list name becomes the output column (e.g.
+#'   `.fun = list(total = function(d) sum(d$pop))`). Default `NULL` keeps only
+#'   the `by` columns and the dissolved geometry.
+#'
+#' @return A `vectra_node` of one row per group -- the `by` columns, any `.fun`
+#'   summaries, and the dissolved geometry -- backed by temporary `.vtr` spills
+#'   removed when the node is garbage-collected, carrying the input CRS for
+#'   [collect_sf()].
+#'
+#' @seealso [spatial_overlay()] to split overlaps apart rather than merge them,
+#'   [offload()] for the partition tier this rides on, [collect_sf()].
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
+#' nc$band <- nc$SID74 > 5            # an attribute to dissolve within
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   band = nc$band, BIR74 = nc$BIR74,
+#'   geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)
+#' ), f)
+#'
+#' # Merge the counties into two features by `band`, summing births.
+#' merged <- tbl(f) |>
+#'   spatial_dissolve(by = "band", crs = sf::st_crs(nc),
+#'                    .fun = list(births = function(d) sum(d$BIR74)))
+#' collect_sf(merged)
+#' unlink(f)
+#'
+#' @export
+spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
+                             .fun = NULL, flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to dissolve)")
+  if (!is.null(by) && !is.character(by))
+    stop("`by` must be a character vector of column names, or NULL")
+  if (!is.null(.fun) && (!is.list(.fun) || is.null(names(.fun)) ||
+                         any(names(.fun) == "")))
+    stop("`.fun` must be a named list of functions, or NULL")
+  crs <- .resolve_crs(x, crs)
+  dots <- list(...)
+
+  spill <- tempfile(fileext = ".vtr")
+  on.exit(unlink(spill), add = TRUE)
+  write_vtr(x, spill)
+
+  schema <- .Call(C_node_schema, tbl(spill)$.node)
+  miss <- setdiff(c(by, geom), schema$name)
+  if (length(miss))
+    stop(sprintf("column(s) not found in the stream: %s",
+                 paste(miss, collapse = ", ")))
+
+  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
+  res <- .partition_router(spill, .dissolve_assign(by), budget)
+  on.exit(unlink(unlist(res$runs, use.names = FALSE)), add = TRUE)
+
+  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  acc <- .run_accumulator(fr)
+  for (lab in sort(names(res$runs))) {
+    df <- collect(.concat_runs(res$runs[[lab]]))
+    sb <- .sf_decode_chunk(df, geom, NULL, crs)
+    u  <- do.call(sf::st_union, c(list(sf::st_geometry(sb)), dots))
+    row <- if (is.null(by)) df[1, character(0), drop = FALSE]
+           else df[1, by, drop = FALSE]
+    if (!is.null(.fun))
+      for (nm in names(.fun)) row[[nm]] <- .fun[[nm]](df)
+    row[[geom]] <- sf::st_as_binary(u, hex = TRUE)
+    rownames(row) <- NULL
+    acc$push(.coerce_for_vtr(row))
+  }
+  acc$finish(crs = crs, empty_geom = geom)
+}
+
+#' Rasterize a streamed point layer onto a fixed grid
+#'
+#' Folds a larger-than-RAM stream of points into a fixed raster grid one batch
+#' at a time. The grid (`template`) is held resident in memory while the points
+#' flow past the engine, so peak memory is the grid plus one batch regardless of
+#' how many points there are -- the streaming counterpart to running
+#' `terra::rasterize()` on a point set that has to fit in RAM. Each point's
+#' coordinate is mapped to its grid cell through the raster geotransform and the
+#' per-cell value is accumulated in C.
+#'
+#' The reduction `fun` is a monoid over the points falling in each cell:
+#' `"count"` tallies points (no `field` needed); `"sum"`, `"mean"`, `"min"`,
+#' `"max"` aggregate a numeric `field`. Cells that receive no point take the
+#' `background` value (`NA` by default). This is the *monoid fold* tier of the
+#' spatial toolbox: bounded memory, a single streaming pass, no spill.
+#'
+#' Points arrive either as two numeric coordinate columns (`coords`, the default
+#' and fully \pkg{sf}-free path -- the headline larger-than-RAM case) or decoded
+#' from a hex-WKB point-geometry column (`geom`, which needs \pkg{sf}). Geometry
+#' input is expected to be points (one coordinate per row); line and polygon
+#' coverage rasterization is out of scope here.
+#'
+#' @param x A `vectra_node` streaming the points (from [tbl()], [tbl_csv()], any
+#'   verb chain). It is consumed by the stream.
+#' @param template Optional grid to borrow geometry and CRS from: a
+#'   `vectra_raster` (from [vec_open_raster()]), or a numeric
+#'   `c(xmin, ymin, xmax, ymax)` extent. When omitted, supply `extent` with
+#'   `res` or `dims`.
+#' @param field Name of a numeric column to aggregate. Required for every `fun`
+#'   except `"count"` (which ignores it).
+#' @param fun Reduction over the points in each cell: one of `"count"`, `"sum"`,
+#'   `"mean"`, `"min"`, `"max"`. `NA` values in `field` are skipped.
+#' @param extent Numeric `c(xmin, ymin, xmax, ymax)` defining the grid extent
+#'   when no `template` is given.
+#' @param res Cell size: a single number for square cells, or `c(xres, yres)`.
+#'   The cell counts are rounded to fit `extent` exactly. Supply `res` or `dims`.
+#' @param dims Grid shape `c(nrow, ncol)`, an alternative to `res`.
+#' @param coords Length-2 character vector naming the x and y coordinate
+#'   columns. Default `c("x", "y")`. Ignored when `geom` is supplied.
+#' @param geom Name of a hex-WKB point-geometry column to rasterize instead of
+#'   coordinate columns. Requires \pkg{sf}.
+#' @param crs Coordinate reference system recorded on the output, in any form
+#'   [sf::st_crs()] accepts or a bare EPSG integer. Defaults to the template's,
+#'   then the node's, else unknown.
+#' @param background Value for cells that receive no point. Default `NA_real_`.
+#' @param path Optional output path. When given, the grid is written to a `.vec`
+#'   raster via [vec_write_raster()] and the opened [vec_open_raster()] handle is
+#'   returned invisibly. When `NULL`, the grid is returned in memory.
+#' @param dtype Storage dtype for the `.vec` output (see [vec_write_raster()]).
+#'   Default `"f32"`.
+#'
+#' @return When `path` is `NULL`, a numeric matrix with `nrow` grid rows
+#'   (row 1 northmost) and `ncol` grid columns, carrying `gt`, `extent`, `res`,
+#'   `crs`, and `fun` attributes. When `path` is given, the written
+#'   `vectra_raster` handle (invisibly).
+#'
+#' @seealso [vec_write_raster()] and [vec_to_tiff()] for raster output,
+#'   [spatial_join()] to instead tag points with polygon attributes.
+#'
+#' @examples
+#' set.seed(1)
+#' n <- 1e4
+#' pts <- data.frame(x = runif(n, 0, 10), y = runif(n, 0, 10), z = rnorm(n))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(pts, f)
+#'
+#' # Point density on a 10x10 grid, streamed: the grid is resident, the
+#' # points are not.
+#' counts <- tbl(f) |> rasterize(extent = c(0, 0, 10, 10), dims = c(10, 10))
+#' counts
+#'
+#' # Mean of z per cell.
+#' zmean <- tbl(f) |>
+#'   rasterize(extent = c(0, 0, 10, 10), dims = c(10, 10),
+#'             field = "z", fun = "mean")
+#' unlink(f)
+#'
+#' @export
+rasterize <- function(x, template = NULL, field = NULL,
+                      fun = c("count", "sum", "mean", "min", "max"),
+                      extent = NULL, res = NULL, dims = NULL,
+                      coords = c("x", "y"), geom = NULL, crs = NA,
+                      background = NA_real_, path = NULL, dtype = "f32") {
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (build one with tbl(), tbl_csv(), ...)")
+  fun <- match.arg(fun)
+  fun_code <- switch(fun, count = 0L, sum = 1L, mean = 2L, min = 3L, max = 4L)
+  if (fun != "count" && is.null(field))
+    stop(sprintf("fun = \"%s\" needs a `field` column to aggregate", fun))
+
+  crs  <- .resolve_crs(x, crs)
+  grid <- .rasterize_grid(template, extent, res, dims, crs)
+  crs  <- grid$crs
+
+  use_geom <- !is.null(geom)
+  if (use_geom) .check_sf()
+
+  acc <- .Call(C_rasterize_new,
+               c(as.integer(grid$width), as.integer(grid$height)),
+               as.numeric(grid$gt), fun_code)
+
+  nxt <- .batch_cursor(x)
+  repeat {
+    chunk <- nxt(); if (is.null(chunk)) break
+    if (use_geom) {
+      sb <- .sf_decode_chunk(chunk, geom, NULL, crs)
+      xy <- sf::st_coordinates(sf::st_geometry(sb))
+      if (nrow(xy) != nrow(chunk))
+        stop("geom rasterize expects point geometry (one coordinate per row)")
+      xs <- as.numeric(xy[, "X"]); ys <- as.numeric(xy[, "Y"])
+    } else {
+      miss <- setdiff(coords, names(chunk))
+      if (length(miss))
+        stop(sprintf("coords column(s) not found: %s",
+                     paste(miss, collapse = ", ")))
+      xs <- as.numeric(chunk[[coords[1L]]])
+      ys <- as.numeric(chunk[[coords[2L]]])
+    }
+    vals <- NULL
+    if (!is.null(field)) {
+      if (!field %in% names(chunk))
+        stop(sprintf("field column '%s' not found", field))
+      vals <- as.numeric(chunk[[field]])
+    }
+    .Call(C_rasterize_push, acc, xs, ys, vals)
+  }
+
+  m <- .Call(C_rasterize_finish, acc, as.numeric(background))
+  attr(m, "gt")     <- grid$gt
+  attr(m, "extent") <- grid$extent
+  attr(m, "res")    <- grid$res
+  attr(m, "crs")    <- crs
+  attr(m, "fun")    <- fun
+
+  if (!is.null(path)) {
+    vec_write_raster(m, path, dtype = dtype, gt = grid$gt,
+                     epsg = grid$epsg, nodata = as.numeric(background))
+    return(invisible(vec_open_raster(path)))
+  }
+  m
+}
+
+# -- zonal statistics (per-zone raster summaries) -----------------------------
+
+# Per-zone running moments, keyed by zone label. n / s (sum) / ss (sum of
+# squares) combine additively across strips; mn / mx combine by pmin / pmax;
+# `na` records zones tainted by an NA value when na.rm = FALSE. Each is a named
+# numeric vector indexed by the zone label, grown by union as new zones appear.
+.zonal_acc <- function() {
+  e <- new.env(parent = emptyenv())
+  e$n <- e$s <- e$ss <- e$mn <- e$mx <- stats::setNames(numeric(0), character(0))
+  e$na <- character(0)
+  e
+}
+
+.zonal_merge_add <- function(a, b) {
+  if (!length(a)) return(b)
+  nm  <- union(names(a), names(b))
+  out <- stats::setNames(numeric(length(nm)), nm)
+  out[names(a)] <- out[names(a)] + a
+  out[names(b)] <- out[names(b)] + b
+  out
+}
+
+.zonal_merge_fun <- function(a, b, f) {
+  if (!length(a)) return(b)
+  nm <- union(names(a), names(b))
+  oa <- stats::setNames(rep(NA_real_, length(nm)), nm); oa[names(a)] <- a
+  ob <- stats::setNames(rep(NA_real_, length(nm)), nm); ob[names(b)] <- b
+  stats::setNames(f(oa, ob, na.rm = TRUE), nm)
+}
+
+# Fold one strip's (zone, value) pixels into the accumulator. `z` and `v` are
+# aligned vectors; NA handling has already split out tainted zones for the
+# na.rm = FALSE path via `tainted`.
+.zonal_update <- function(e, z, v, tainted = character(0)) {
+  if (length(tainted)) e$na <- union(e$na, tainted)
+  keep <- !is.na(z) & !is.na(v)
+  z <- z[keep]; v <- v[keep]
+  if (!length(z)) return(invisible())
+  zc  <- as.character(z)
+  agg <- rowsum(cbind(rep.int(1, length(v)), v, v * v), zc)
+  labs <- rownames(agg)
+  e$n  <- .zonal_merge_add(e$n,  stats::setNames(agg[, 1L], labs))
+  e$s  <- .zonal_merge_add(e$s,  stats::setNames(agg[, 2L], labs))
+  e$ss <- .zonal_merge_add(e$ss, stats::setNames(agg[, 3L], labs))
+  e$mn <- .zonal_merge_fun(e$mn, tapply(v, zc, min), pmin)
+  e$mx <- .zonal_merge_fun(e$mx, tapply(v, zc, max), pmax)
+  invisible()
+}
+
+# Resolve a value/zone raster argument that may be a path or an open handle.
+# Returns list(r, close) so the caller closes only handles it opened.
+.zonal_open <- function(x, what) {
+  if (inherits(x, "vectra_raster")) return(list(r = x, close = FALSE))
+  if (is.character(x) && length(x) == 1L)
+    return(list(r = vec_open_raster(x), close = TRUE))
+  stop(sprintf("`%s` must be a vectra_raster or a path to a .vec raster", what))
+}
+
+# Pixel-centre coordinates for a strip of rows r0:r1 over the full width, in the
+# column-major order that as.vector() of the read window produces (row within
+# strip varies fastest). gt is the value raster's north-up geotransform.
+.zonal_strip_xy <- function(gt, r0, r1, width) {
+  h <- r1 - r0 + 1L
+  rows_idx <- rep.int(r0:r1, width)
+  cols_idx <- rep(seq_len(width), each = h)
+  list(x = gt[1L] + (cols_idx - 0.5) * gt[2L],
+       y = gt[4L] + (rows_idx - 0.5) * gt[6L])
+}
+
+#' Summarise raster values within zones
+#'
+#' Reduces a raster to one summary row per zone, streaming the raster one
+#' tile-row strip at a time so the whole grid never has to be resident. Zones
+#' come either from a second raster aligned to the value grid (each pixel's zone
+#' is that raster's value, the \code{terra::zonal} pattern) or from an \pkg{sf}
+#' polygon layer (each pixel is assigned the polygon its centre falls in). The
+#' per-zone running moments (count, sum, sum of squares, min, max) are folded in
+#' memory as strips arrive, so peak memory is one strip plus the small per-zone
+#' table regardless of raster size. This is the *monoid fold* tier of the
+#' spatial toolbox: bounded memory, a single streaming pass, no spill.
+#'
+#' `sd` is derived from the streamed moments
+#' (`sqrt((sum2 - sum^2 / n) / (n - 1))`), so it needs no second pass. With
+#' `na.rm = TRUE` (the default) nodata pixels are skipped; with `na.rm = FALSE`
+#' any nodata pixel in a zone makes that zone's `sum`/`mean`/`min`/`max`/`sd`
+#' `NA`, matching the resident behaviour. `count` always reports the number of
+#' non-nodata cells in the zone.
+#'
+#' Polygon zones delegate point-in-polygon to \pkg{sf} (an optional
+#' dependency); raster zones are fully \pkg{sf}-free. The zone raster must share
+#' the value raster's dimensions and geotransform.
+#'
+#' @param raster A `vectra_raster` (from [vec_open_raster()]) or a path to a
+#'   `.vec` raster holding the values to summarise.
+#' @param zones The zones to summarise within: a `vectra_raster` / `.vec` path
+#'   aligned to `raster` (zone id per pixel), or an `sf`/`sfc` polygon layer.
+#' @param fun One or more of `"mean"`, `"sum"`, `"count"`, `"min"`, `"max"`,
+#'   `"sd"`. Each becomes a column in the result. Default `"mean"`.
+#' @param band Band of the value `raster` to summarise (1-based). Default 1.
+#' @param zone_band Band of a raster `zones` holding the zone ids. Default 1.
+#' @param zone_field For an `sf` `zones` layer, the column giving each polygon's
+#'   zone id. Default `NULL` uses the polygon row index `1:n`.
+#' @param na.rm If `TRUE` (default) skip nodata pixels; if `FALSE` let a nodata
+#'   pixel propagate `NA` to its zone's statistics.
+#'
+#' @return A data.frame with a `zone` column (sorted) followed by one column per
+#'   `fun`, one row per zone.
+#'
+#' @seealso [rasterize()] to build a value raster from streamed points,
+#'   [vec_open_raster()] to open the inputs.
+#'
+#' @examples
+#' # A value raster and an aligned 2x2-block zone raster on a 4x4 grid.
+#' vals <- matrix(1:16, 4, 4, byrow = TRUE)
+#' zone <- matrix(c(1, 1, 2, 2, 1, 1, 2, 2,
+#'                  3, 3, 4, 4, 3, 3, 4, 4), 4, 4, byrow = TRUE)
+#' fv <- tempfile(fileext = ".vec"); fz <- tempfile(fileext = ".vec")
+#' vec_write_raster(vals, fv, dtype = "f64", extent = c(0, 0, 4, 4))
+#' vec_write_raster(zone, fz, dtype = "f64", extent = c(0, 0, 4, 4))
+#'
+#' zonal(fv, fz, fun = c("mean", "sum", "count"))
+#' unlink(c(fv, fz))
+#'
+#' @export
+zonal <- function(raster, zones, fun = "mean", band = 1L, zone_band = 1L,
+                  zone_field = NULL, na.rm = TRUE) {
+  fun <- match.arg(fun, c("mean", "sum", "count", "min", "max", "sd"),
+                   several.ok = TRUE)
+
+  vh <- .zonal_open(raster, "raster")
+  r  <- vh$r
+  if (vh$close) on.exit(vec_close_raster(r), add = TRUE)
+  gt <- r$gt; W <- as.integer(r$width); H <- as.integer(r$height)
+  ts <- max(1L, as.integer(r$tile_size))
+
+  use_raster_zones <- inherits(zones, "vectra_raster") ||
+    (is.character(zones) && length(zones) == 1L)
+  if (use_raster_zones) {
+    zh <- .zonal_open(zones, "zones")
+    zr <- zh$r
+    if (zh$close) on.exit(vec_close_raster(zr), add = TRUE)
+    if (zr$width != W || zr$height != H)
+      stop("zone raster must match the value raster's dimensions")
+    if (!isTRUE(all.equal(as.numeric(zr$gt), as.numeric(gt))))
+      stop("zone raster geotransform must match the value raster's")
+    numeric_zone <- TRUE
+  } else {
+    if (!inherits(zones, "sf") && !inherits(zones, "sfc"))
+      stop("`zones` must be a vectra_raster, a .vec path, or an sf/sfc layer")
+    .check_sf()
+    zid <- if (inherits(zones, "sfc") || is.null(zone_field)) {
+      seq_len(length(sf::st_geometry(zones)))
+    } else {
+      if (!zone_field %in% names(zones))
+        stop(sprintf("zone_field '%s' not found in `zones`", zone_field))
+      zones[[zone_field]]
+    }
+    numeric_zone <- is.numeric(zid)
+    zcrs <- sf::st_crs(zones)
+    if (is.na(zcrs) && !is.null(r$epsg) && r$epsg > 0L)
+      zcrs <- sf::st_crs(r$epsg)
+    zones_g <- sf::st_geometry(zones)
+    if (is.na(sf::st_crs(zones_g)) && !is.na(zcrs))
+      zones_g <- sf::st_set_crs(zones_g, zcrs)
+  }
+
+  acc <- .zonal_acc()
+  r0  <- 1L
+  while (r0 <= H) {
+    r1 <- min(r0 + ts - 1L, H)
+    vm <- vec_read_window(r, band = band, cols = c(1L, W), rows = c(r0, r1))
+    v  <- as.vector(vm)
+
+    if (use_raster_zones) {
+      zm <- vec_read_window(zr, band = zone_band, cols = c(1L, W),
+                            rows = c(r0, r1))
+      z <- as.vector(zm)
+    } else {
+      xy  <- .zonal_strip_xy(gt, r0, r1, W)
+      pts <- sf::st_as_sf(data.frame(x = xy$x, y = xy$y),
+                          coords = c("x", "y"), crs = zcrs)
+      hit <- sf::st_intersects(pts, zones_g)
+      first <- vapply(hit, function(h) if (length(h)) h[1L] else NA_integer_,
+                      integer(1L))
+      z <- zid[first]
+    }
+
+    tainted <- character(0)
+    if (!na.rm) {
+      bad <- !is.na(z) & is.na(v)
+      if (any(bad)) tainted <- unique(as.character(z[bad]))
+    }
+    .zonal_update(acc, z, v, tainted)
+    r0 <- r1 + 1L
+  }
+
+  zlab <- names(acc$n)
+  if (!length(zlab))
+    return(.zonal_frame(character(0), acc, fun, numeric_zone, na.rm))
+  ord <- if (numeric_zone) order(as.numeric(zlab)) else order(zlab)
+  .zonal_frame(zlab[ord], acc, fun, numeric_zone, na.rm)
+}
+
+# Assemble the per-zone result frame from the accumulated moments, deriving each
+# requested statistic and blanking na.rm = FALSE tainted zones.
+.zonal_frame <- function(zlab, e, fun, numeric_zone, na.rm) {
+  n  <- e$n[zlab]; s <- e$s[zlab]; ss <- e$ss[zlab]
+  mn <- e$mn[zlab]; mx <- e$mx[zlab]
+  zone <- if (numeric_zone) as.numeric(zlab) else zlab
+  out <- data.frame(zone = zone, stringsAsFactors = FALSE)
+  for (fn in fun) {
+    out[[fn]] <- switch(fn,
+      count = as.numeric(n),
+      sum   = as.numeric(s),
+      mean  = s / n,
+      min   = as.numeric(mn),
+      max   = as.numeric(mx),
+      sd    = sqrt(pmax(0, (ss - s * s / n) / (n - 1))))
+  }
+  if (!na.rm && length(e$na) && nrow(out)) {
+    bad <- as.character(out$zone) %in% e$na
+    for (fn in setdiff(fun, "count")) out[[fn]][bad] <- NA_real_
+  }
+  rownames(out) <- NULL
+  out
+}
+
+# -- focal / terrain (moving-window raster derivatives) -----------------------
+
+# Drive a haloed tile-row strip pass over a VECR raster. For each output
+# tile-row the input is read expanded by `radh` rows (the halo), `compute` maps
+# the strip to an out_h x (W*nout) result, and each of the nout output bands is
+# either streamed to a .vec (never the whole band resident) or assembled into an
+# in-memory matrix. Returns the opened handle (path) or a list of nout matrices.
+# Output side shared by the streamed raster kernels (focal/terrain/warp). The
+# returned object writes one output tile-row at a time -- either streamed to a
+# new .vec (path) or folded into in-memory matrices -- so an op never holds the
+# whole output band. `write(ty, r0, r1, os)` takes an out_h x (W*nout) strip
+# (derivative k in columns [(k-1)*W+1, k*W]); `finish()` returns the opened
+# handle (streamed) or the list of attributed matrices (in memory).
+.raster_sink <- function(W, H, nout, gt, epsg, TS,
+                         path, dtype, band_names, comp_code) {
+  writer <- NULL; acc <- NULL
+  if (!is.null(path)) {
+    path <- normalizePath(path, mustWork = FALSE)
+    writer <- .Call(C_vecr_writer_open, path,
+                    c(W, H, as.integer(nout)), as.character(dtype),
+                    TS, as.numeric(gt), epsg, NA_real_, band_names, comp_code)
+  } else {
+    acc <- replicate(nout, matrix(NA_real_, H, W), simplify = FALSE)
+  }
+  list(
+    write = function(ty, r0, r1, os) {
+      for (k in seq_len(nout)) {
+        strip_k <- os[, ((k - 1L) * W + 1L):(k * W), drop = FALSE]
+        if (!is.null(writer)) {
+          .Call(C_vecr_writer_write_strip, writer, as.integer(k),
+                as.integer(ty), strip_k)
+        } else {
+          acc[[k]][r0:r1, ] <<- strip_k
+        }
+      }
+    },
+    finish = function() {
+      if (!is.null(writer)) {
+        .Call(C_vecr_writer_finish, writer)
+        return(invisible(vec_open_raster(path)))
+      }
+      ext <- c(gt[1L], gt[4L] + H * gt[6L], gt[1L] + W * gt[2L], gt[4L])
+      lapply(acc, function(m) {
+        attr(m, "gt")     <- gt
+        attr(m, "extent") <- ext
+        attr(m, "crs")    <- if (epsg > 0L) epsg else NA
+        m
+      })
+    }
+  )
+}
+
+.raster_focal_run <- function(r, band, radh, nout, compute,
+                              path, dtype, band_names, comp_code) {
+  gt <- r$gt; W <- as.integer(r$width); H <- as.integer(r$height)
+  TS <- max(1L, as.integer(r$tile_size))
+  epsg <- if (!is.null(r$epsg)) as.integer(r$epsg) else 0L
+  sink <- .raster_sink(W, H, nout, gt, epsg, TS, path, dtype, band_names, comp_code)
+
+  tiles_y <- (H + TS - 1L) %/% TS
+  for (ty in seq_len(tiles_y) - 1L) {
+    r0 <- ty * TS + 1L
+    r1 <- min(r0 + TS - 1L, H)
+    in_r0 <- max(1L, r0 - radh)
+    in_r1 <- min(H, r1 + radh)
+    vm <- vec_read_window(r, band = band, cols = c(1L, W), rows = c(in_r0, in_r1))
+    in_h  <- in_r1 - in_r0 + 1L
+    top   <- r0 - in_r0
+    out_h <- r1 - r0 + 1L
+    os <- compute(vm, as.integer(in_h), as.integer(top), as.integer(out_h))
+    sink$write(ty, r0, r1, os)
+  }
+  sink$finish()
+}
+
+# Normalize a focal window argument to an odd-by-odd weight matrix.
+.focal_window <- function(w) {
+  if (is.numeric(w) && is.null(dim(w)) && length(w) == 1L) {
+    if (w < 1 || w %% 2 == 0)
+      stop("`w` given as a single number must be a positive odd integer")
+    w <- matrix(1, w, w)
+  }
+  if (!is.matrix(w) || !is.numeric(w))
+    stop("`w` must be a numeric weight matrix or a single odd integer")
+  if (nrow(w) %% 2 == 0 || ncol(w) %% 2 == 0)
+    stop("`w` must have an odd number of rows and columns")
+  w
+}
+
+#' Moving-window (focal) statistics over a streamed raster
+#'
+#' Applies a moving window to a `.vec` raster, reading the input one tile-row
+#' strip at a time -- each strip expanded by the kernel radius (a halo read) so
+#' window neighbours are available without ever holding the whole grid resident.
+#' The per-window statistic is computed in C. When `path` is given the output is
+#' streamed straight back to a new `.vec` one tile-row at a time, so neither the
+#' input nor the output band is ever fully in memory; this is the raster op that
+#' runs out of core where an in-memory engine needs the whole raster at once.
+#'
+#' This is the *sort / partition* tier of the spatial toolbox: bounded to one
+#' haloed strip at a time, exploiting tile locality.
+#'
+#' The window `w` is a numeric weight matrix with odd dimensions (or a single
+#' odd integer `k`, shorthand for a `k x k` matrix of ones). `NA` weights mark
+#' cells outside the window. For `fun = "sum"`/`"mean"` the weights scale the
+#' values (sum is `sum(w * x)`, mean is `sum(w * x) / sum(w)`); for the other
+#' statistics a finite weight only marks membership. With `na.rm = TRUE` (the
+#' default) nodata cells inside the window are skipped; with `na.rm = FALSE` any
+#' nodata cell -- including a window that runs off the raster edge -- makes the
+#' result `NA`, matching the resident behaviour.
+#'
+#' @param x A `vectra_raster` (from [vec_open_raster()]) or a path to a `.vec`
+#'   raster.
+#' @param w A numeric weight matrix with odd dimensions, or a single positive
+#'   odd integer `k` for a `k x k` window of ones. Default `matrix(1, 3, 3)`.
+#' @param fun Window statistic: one of `"sum"`, `"mean"`, `"min"`, `"max"`,
+#'   `"sd"`, `"median"`. Default `"mean"`.
+#' @param na.rm Skip nodata cells inside the window (`TRUE`, default) or let
+#'   them propagate `NA` (`FALSE`).
+#' @param band Band to read (1-based). Default 1.
+#' @param path Optional output `.vec` path. When given the result is streamed to
+#'   disk and the opened [vec_open_raster()] handle is returned invisibly; when
+#'   `NULL` the result is returned as an in-memory matrix.
+#' @param dtype Storage dtype for `.vec` output (see [vec_write_raster()]).
+#'   Default `"f32"`.
+#' @param compression Compression effort for `.vec` output. Default `"fast"`.
+#'
+#' @return When `path` is `NULL`, a numeric matrix (row 1 northmost) carrying
+#'   `gt`, `extent`, `crs`, and `fun` attributes. When `path` is given, the
+#'   written `vectra_raster` handle (invisibly).
+#'
+#' @seealso [terrain()] for DEM derivatives built on the same strip pass,
+#'   [zonal()] for per-zone summaries.
+#'
+#' @examples
+#' m <- matrix(1:36, 6, 6, byrow = TRUE)
+#' f <- tempfile(fileext = ".vec")
+#' vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 6, 6))
+#'
+#' # 3x3 mean smoother; edge cells see off-raster neighbours.
+#' focal(f, w = matrix(1, 3, 3), fun = "mean")
+#' unlink(f)
+#'
+#' @export
+focal <- function(x, w = matrix(1, 3, 3),
+                  fun = c("mean", "sum", "min", "max", "sd", "median"),
+                  na.rm = TRUE, band = 1L, path = NULL, dtype = "f32",
+                  compression = c("fast", "balanced", "max")) {
+  fun <- match.arg(fun)
+  fun_code <- switch(fun, sum = 0L, mean = 1L, min = 2L, max = 3L,
+                     sd = 4L, median = 5L)
+  w <- .focal_window(w)
+  kh <- nrow(w); kw <- ncol(w)
+  weights <- as.numeric(t(w))
+  radh <- (kh - 1L) %/% 2L
+  comp_code <- switch(match.arg(compression), fast = 0L, balanced = 1L, max = 2L)
+
+  vh <- .zonal_open(x, "x"); r <- vh$r
+  if (vh$close) on.exit(vec_close_raster(r), add = TRUE)
+  W <- as.integer(r$width)
+  kdims <- c(as.integer(kh), as.integer(kw))
+
+  compute <- function(vm, in_h, top, out_h)
+    .Call(C_focal_strip, vm, c(in_h, W), weights, kdims,
+          fun_code, isTRUE(na.rm), top, out_h)
+
+  res <- .raster_focal_run(r, as.integer(band), radh, 1L, compute,
+                           path, dtype, NULL, comp_code)
+  if (!is.null(path)) return(res)
+  m <- res[[1L]]; attr(m, "fun") <- fun; m
+}
+
+#' Terrain derivatives from a streamed elevation raster
+#'
+#' Computes DEM derivatives from a `.vec` elevation raster with Horn's 3x3
+#' method, on the same haloed tile-row strip pass as [focal()] -- the input is
+#' read one strip at a time and, when `path` is given, the outputs are streamed
+#' straight back to a multi-band `.vec`. Matches \pkg{terra}'s
+#' `terrain()` / `shade()` conventions.
+#'
+#' @param x A `vectra_raster` (from [vec_open_raster()]) or a path to a `.vec`
+#'   elevation raster.
+#' @param v Derivatives to compute, any of `"slope"`, `"aspect"`,
+#'   `"hillshade"`, `"TPI"` (topographic position index), `"roughness"`,
+#'   `"TRI"` (terrain ruggedness index). The return follows the input: one
+#'   matrix for a single `v`, a named list for several.
+#' @param unit Angular unit for `slope` and `aspect`: `"degrees"` (default) or
+#'   `"radians"`.
+#' @param azimuth,altitude Sun position for `"hillshade"`, in degrees. Defaults
+#'   315 (NW) and 45.
+#' @param band Band to read (1-based). Default 1.
+#' @param path Optional output `.vec` path (one band per `v`, named after `v`).
+#'   When given the result is streamed to disk and the opened
+#'   [vec_open_raster()] handle is returned invisibly; when `NULL` the result is
+#'   returned in memory.
+#' @param dtype Storage dtype for `.vec` output (see [vec_write_raster()]).
+#'   Default `"f32"`.
+#' @param compression Compression effort for `.vec` output. Default `"fast"`.
+#'
+#' @return When `path` is `NULL`: a numeric matrix for a single `v`, or a named
+#'   list of matrices for several, each carrying `gt`, `extent`, and `crs`
+#'   attributes (row 1 northmost). When `path` is given, the written multi-band
+#'   `vectra_raster` handle (invisibly).
+#'
+#' @details Slope and aspect use the Horn (1981) finite-difference gradient over
+#'   the 3x3 neighbourhood; `aspect` is degrees clockwise from north (flat cells
+#'   return 90). `hillshade` is the cosine of the incidence angle for the given
+#'   sun position, clamped at 0. `TPI` is the cell minus the mean of its eight
+#'   neighbours; `roughness` is the range over the 3x3; `TRI` is the mean
+#'   absolute difference to the eight neighbours. Cells whose 3x3 neighbourhood
+#'   touches a nodata value or the raster edge return `NA`.
+#'
+#' @seealso [focal()] for arbitrary moving windows.
+#'
+#' @examples
+#' # A tilted surface so slope and aspect are well defined.
+#' z <- outer(1:8, 1:8, function(r, c) 10 + 2 * c + r)
+#' f <- tempfile(fileext = ".vec")
+#' vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 8, 8))
+#'
+#' slp <- terrain(f, v = "slope")
+#' deriv <- terrain(f, v = c("slope", "aspect", "hillshade"))
+#' names(deriv)
+#' unlink(f)
+#'
+#' @export
+terrain <- function(x, v = c("slope", "aspect", "hillshade",
+                             "TPI", "roughness", "TRI"),
+                    unit = c("degrees", "radians"),
+                    azimuth = 315, altitude = 45,
+                    band = 1L, path = NULL, dtype = "f32",
+                    compression = c("fast", "balanced", "max")) {
+  v <- match.arg(v, several.ok = TRUE)
+  codes <- c(slope = 0L, aspect = 1L, hillshade = 2L,
+             TPI = 3L, roughness = 4L, TRI = 5L)
+  which_codes <- as.integer(unname(codes[v]))
+  unit_code <- if (match.arg(unit) == "radians") 1L else 0L
+  sun <- c(as.numeric(azimuth), as.numeric(altitude))
+  comp_code <- switch(match.arg(compression), fast = 0L, balanced = 1L, max = 2L)
+
+  vh <- .zonal_open(x, "x"); r <- vh$r
+  if (vh$close) on.exit(vec_close_raster(r), add = TRUE)
+  W <- as.integer(r$width)
+  gt <- r$gt
+  res <- c(abs(gt[2L]), abs(gt[6L]))
+  nout <- length(v)
+
+  compute <- function(vm, in_h, top, out_h)
+    .Call(C_terrain_strip, vm, c(in_h, W), which_codes, top, out_h,
+          res, unit_code, sun)
+
+  out <- .raster_focal_run(r, as.integer(band), 1L, nout, compute,
+                           path, dtype, v, comp_code)
+  if (!is.null(path)) return(out)
+  names(out) <- v
+  if (nout == 1L) out[[1L]] else out
+}
+
+# Resolve the warp target grid to list(W, H, gt, epsg). `template` is either a
+# vectra_raster / .vec path whose grid is borrowed wholesale, or a list spec
+# list(crs=, extent=, res=, dims=). With no `extent` the target extent is the
+# source's corners projected into the target CRS (needs sf for a real
+# reprojection); `res` or `dims` then sets the spacing.
+.warp_grid <- function(template, src) {
+  if (inherits(template, "vectra_raster") ||
+      (is.character(template) && length(template) == 1L)) {
+    th <- .zonal_open(template, "template")
+    t  <- th$r
+    g  <- list(W = as.integer(t$width), H = as.integer(t$height),
+               gt = as.numeric(t$gt),
+               epsg = if (!is.null(t$epsg)) as.integer(t$epsg) else 0L)
+    if (th$close) vec_close_raster(t)
+    return(g)
+  }
+  if (!is.list(template))
+    stop("`template` must be a vectra_raster, a .vec path, or a list(crs=, extent=, res=)")
+
+  epsg <- template$crs
+  if (is.null(epsg)) epsg <- if (!is.null(src$epsg)) src$epsg else 0L
+  epsg <- as.integer(epsg)
+  res <- template$res; extent <- template$extent; dims <- template$dims
+
+  if (is.null(extent)) {
+    if (is.null(res))
+      stop("a list `template` without `extent` needs `res` to set the grid")
+    src_epsg <- if (!is.null(src$epsg)) as.integer(src$epsg) else 0L
+    sg <- as.numeric(src$gt); sW <- src$width; sH <- src$height
+    cx <- c(0, sW, 0, sW); cy <- c(0, 0, sH, sH)
+    X <- sg[1L] + cx * sg[2L] + cy * sg[3L]
+    Y <- sg[4L] + cx * sg[5L] + cy * sg[6L]
+    if (epsg > 0L && src_epsg > 0L && epsg != src_epsg) {
+      .check_sf()
+      p <- sf::sf_project(sf::st_crs(src_epsg), sf::st_crs(epsg), cbind(X, Y))
+      X <- p[, 1L]; Y <- p[, 2L]
+    }
+    extent <- c(min(X), min(Y), max(X), max(Y))
+  }
+  xmin <- extent[1L]; ymin <- extent[2L]; xmax <- extent[3L]; ymax <- extent[4L]
+
+  if (!is.null(res)) {
+    xres <- res[1L]; yres <- if (length(res) >= 2L) res[2L] else res[1L]
+    W <- max(1L, as.integer(round((xmax - xmin) / xres)))
+    H <- max(1L, as.integer(round((ymax - ymin) / yres)))
+  } else if (!is.null(dims)) {
+    W <- as.integer(dims[1L]); H <- as.integer(dims[2L])
+    xres <- (xmax - xmin) / W; yres <- (ymax - ymin) / H
+  } else {
+    stop("a list `template` needs `res` or `dims`")
+  }
+  list(W = W, H = H, gt = c(xmin, xres, 0, ymax, 0, -yres), epsg = epsg)
+}
+
+#' Resample or reproject a streamed raster onto a target grid
+#'
+#' Warps a `.vec` raster onto a target grid, walking the *output* one tile-row
+#' strip at a time. For each strip the target pixel-centre coordinates are built,
+#' projected into the source coordinate reference system when the two CRSs differ
+#' (delegated to PROJ via \pkg{sf}), mapped through the source geotransform to
+#' fractional source pixels, and sampled from the bounded source window those
+#' coordinates fall in. The output is assembled in memory or streamed straight
+#' back to a new `.vec`, so the whole output grid is never resident; the source
+#' is read in bounded windows rather than held whole.
+#'
+#' This is the *sort / partition* tier of the spatial toolbox: each output strip
+#' reads the source window it projects onto. For a mild reprojection or a plain
+#' resample that window is a thin band; a strong reprojection can make it large,
+#' but the output stays streamed throughout.
+#'
+#' Sampling follows the GDAL / \pkg{terra} convention (pixel centres at
+#' half-integer coordinates). `"near"` takes the nearest source cell;
+#' `"bilinear"` the 2x2 weighted mean; `"cubic"` the 4x4 cubic convolution
+#' (Catmull-Rom, a = -0.5). A target cell whose sampling kernel reaches outside
+#' the source extent, or touches a nodata cell, comes back `NA`.
+#'
+#' Reprojection happens only when both rasters carry a known EPSG code and the
+#' codes differ; otherwise `warp()` resamples within a shared CRS and needs no
+#' \pkg{sf}.
+#'
+#' @param x A `vectra_raster` (from [vec_open_raster()]) or a path to a `.vec`
+#'   raster to warp.
+#' @param template The target grid: a `vectra_raster` / `.vec` path whose grid
+#'   and CRS are borrowed, or a list `list(crs =, extent =, res =, dims =)`.
+#'   With `crs` and `res` but no `extent`, the target extent is the source's
+#'   corners projected into `crs`.
+#' @param method Resampling method: `"near"`, `"bilinear"`, or `"cubic"`.
+#'   Default `"near"`.
+#' @param band Band to warp (1-based). Default 1.
+#' @param path Optional output `.vec` path. When given the result is streamed to
+#'   disk and the opened [vec_open_raster()] handle is returned invisibly; when
+#'   `NULL` the result is returned as an in-memory matrix.
+#' @param dtype Storage dtype for `.vec` output (see [vec_write_raster()]).
+#'   Default `"f32"`.
+#' @param compression Compression effort for `.vec` output. Default `"fast"`.
+#'
+#' @return When `path` is `NULL`, a numeric matrix on the target grid (row 1
+#'   northmost) carrying `gt`, `extent`, and `crs` attributes. When `path` is
+#'   given, the written `vectra_raster` handle (invisibly).
+#'
+#' @seealso [rasterize()] to build a raster from streamed vector features,
+#'   [focal()] for moving-window statistics.
+#'
+#' @examples
+#' z <- outer(1:8, 1:8, function(r, c) r + 2 * c)
+#' f <- tempfile(fileext = ".vec")
+#' vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 8, 8))
+#'
+#' # Resample onto a finer grid over the same extent.
+#' fine <- warp(f, list(extent = c(0, 0, 8, 8), res = 0.5), method = "bilinear")
+#' dim(fine)
+#' unlink(f)
+#'
+#' @export
+warp <- function(x, template, method = c("near", "bilinear", "cubic"),
+                 band = 1L, path = NULL, dtype = "f32",
+                 compression = c("fast", "balanced", "max")) {
+  method_code <- switch(match.arg(method), near = 0L, bilinear = 1L, cubic = 2L)
+  comp_code <- switch(match.arg(compression), fast = 0L, balanced = 1L, max = 2L)
+
+  vh <- .zonal_open(x, "x"); src <- vh$r
+  if (vh$close) on.exit(vec_close_raster(src), add = TRUE)
+  band <- as.integer(band)
+
+  tg <- .warp_grid(template, src)
+  W <- tg$W; H <- tg$H; gt_t <- tg$gt; epsg_t <- tg$epsg
+  gt_s <- as.numeric(src$gt)
+  sW <- as.integer(src$width); sH <- as.integer(src$height)
+  epsg_s <- if (!is.null(src$epsg)) as.integer(src$epsg) else 0L
+
+  reproject <- epsg_t > 0L && epsg_s > 0L && epsg_t != epsg_s
+  if (reproject) .check_sf()
+
+  det <- gt_s[2L] * gt_s[6L] - gt_s[3L] * gt_s[5L]
+  if (abs(det) < .Machine$double.eps)
+    stop("source geotransform is not invertible")
+  margin <- method_code   # near = 0, bilinear = 1, cubic = 2 kernel half-width
+
+  TS <- max(1L, as.integer(src$tile_size))
+  sink <- .raster_sink(W, H, 1L, gt_t, epsg_t, TS, path, dtype, NULL, comp_code)
+
+  tiles_y <- (H + TS - 1L) %/% TS
+  for (ty in seq_len(tiles_y) - 1L) {
+    r0 <- ty * TS + 1L
+    r1 <- min(r0 + TS - 1L, H)
+    out_h <- r1 - r0 + 1L
+
+    # Target pixel centres for this strip, column-major (output row fastest).
+    grow <- rep.int(seq.int(0L, out_h - 1L), W)
+    gcol <- rep(seq.int(0L, W - 1L), each = out_h)
+    gr <- (r0 - 1L) + grow
+    Xt <- gt_t[1L] + (gcol + 0.5) * gt_t[2L] + (gr + 0.5) * gt_t[3L]
+    Yt <- gt_t[4L] + (gcol + 0.5) * gt_t[5L] + (gr + 0.5) * gt_t[6L]
+
+    if (reproject) {
+      p <- sf::sf_project(sf::st_crs(epsg_t), sf::st_crs(epsg_s),
+                          cbind(Xt, Yt), keep = TRUE)
+      Xs <- p[, 1L]; Ys <- p[, 2L]
+    } else {
+      Xs <- Xt; Ys <- Yt
+    }
+
+    dx <- Xs - gt_s[1L]; dy <- Ys - gt_s[4L]
+    sx <- (dx * gt_s[6L] - dy * gt_s[3L]) / det   # fractional source col (edge)
+    sy <- (dy * gt_s[2L] - dx * gt_s[5L]) / det   # fractional source row (edge)
+    sx[!is.finite(sx)] <- NA_real_
+    sy[!is.finite(sy)] <- NA_real_
+
+    fin <- !is.na(sx) & !is.na(sy)
+    if (any(fin)) {
+      cmin <- max(0L, as.integer(floor(min(sx[fin]) - 0.5)) - margin - 1L)
+      cmax <- min(sW - 1L, as.integer(ceiling(max(sx[fin]) - 0.5)) + margin + 1L)
+      rmin <- max(0L, as.integer(floor(min(sy[fin]) - 0.5)) - margin - 1L)
+      rmax <- min(sH - 1L, as.integer(ceiling(max(sy[fin]) - 0.5)) + margin + 1L)
+    } else {
+      cmin <- 1L; cmax <- 0L; rmin <- 1L; rmax <- 0L
+    }
+
+    if (cmax >= cmin && rmax >= rmin) {
+      win <- vec_read_window(src, band = band,
+                             cols = c(cmin + 1L, cmax + 1L),
+                             rows = c(rmin + 1L, rmax + 1L))
+      win_h <- rmax - rmin + 1L; win_w <- cmax - cmin + 1L
+      os <- .Call(C_warp_strip, win,
+                  c(as.integer(win_h), as.integer(win_w)),
+                  c(cmin, rmin), sx, sy, method_code, c(out_h, W))
+    } else {
+      os <- matrix(NA_real_, out_h, W)
+    }
+    sink$write(ty, r0, r1, os)
+  }
+
+  out <- sink$finish()
+  if (!is.null(path)) return(out)
+  out[[1L]]
 }
 
 #' Materialize a spatial query as an sf object
@@ -462,15 +1882,9 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   groups <- split(seq_len(n), .overlap_components(sf::st_intersects(x), n))
 
   fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
-  runs <- character(0); buf <- list(); buffered <- 0L; piece_off <- 0L
+  acc <- .run_accumulator(fr)
+  piece_off <- 0L
   pb <- if (!quiet) utils::txtProgressBar(0, length(groups), style = 3) else NULL
-  flush <- function() {
-    if (!length(buf)) return(invisible())
-    df <- if (length(buf) == 1L) buf[[1]] else do.call(rbind, buf)
-    rf <- tempfile(fileext = ".vtr"); write_vtr(df, rf)
-    runs[[length(runs) + 1L]] <<- rf
-    buf <<- list(); buffered <<- 0L
-  }
 
   for (gi in seq_along(groups)) {
     rows <- groups[[gi]]
@@ -494,21 +1908,11 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
     df[[piece]] <- piece_off + idx
     df[[geom]]  <- sf::st_as_binary(pg[idx], hex = TRUE)
     rownames(df) <- NULL
-    buf[[length(buf) + 1L]] <- .coerce_for_vtr(df)
-    buffered  <- buffered + length(idx)
+    acc$push(.coerce_for_vtr(df))
     piece_off <- piece_off + np
-    if (buffered >= fr) flush()
     if (!is.null(pb)) utils::setTxtProgressBar(pb, gi)
   }
-  flush()
   if (!is.null(pb)) close(pb)
-  if (!length(runs)) stop("overlay produced no polygonal pieces")
-
-  node <- .concat_runs(runs)
-  reg  <- new.env(parent = emptyenv()); reg$paths <- runs
-  reg.finalizer(reg, function(e) try(unlink(e$paths), silent = TRUE),
-                onexit = TRUE)
-  node$.reg <- reg
-  node$.crs <- crs
-  node
+  if (piece_off == 0L) stop("overlay produced no polygonal pieces")
+  acc$finish(crs = crs, empty_geom = geom)
 }

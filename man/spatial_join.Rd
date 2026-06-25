@@ -13,6 +13,9 @@ spatial_join(
   crs = NA,
   left = TRUE,
   suffix = c(".x", ".y"),
+  partition = NULL,
+  y_geom = NULL,
+  y_coords = NULL,
   out_geom = NULL,
   flush_rows = NULL,
   ...
@@ -22,7 +25,8 @@ spatial_join(
 \item{x}{A \code{vectra_node} (from \code{\link[=tbl]{tbl()}}, \code{\link[=tbl_tiff]{tbl_tiff()}}, any verb chain, ...).
 It is consumed by the stream.}
 
-\item{y}{An \code{sf} object: the resident right side of the join.}
+\item{y}{The right side of the join: an \code{sf} object held resident (the
+default), or -- when \code{partition} is given -- a streamed \code{vectra_node}.}
 
 \item{join}{An \pkg{sf} binary predicate function, e.g. \link[sf:st_intersects]{sf::st_intersects}
 (default), \link[sf:st_within]{sf::st_within}, \link[sf:st_contains]{sf::st_contains}, \link[sf:st_nearest_feature]{sf::st_nearest_feature}.}
@@ -44,6 +48,15 @@ keep only matches (inner join).}
 
 \item{suffix}{Length-2 character vector disambiguating columns present on
 both sides. Default \code{c(".x", ".y")}.}
+
+\item{partition}{Optional \code{\link[=grid]{grid()}} specification enabling the two-sided
+streamed path, in which \code{y} is itself a \code{vectra_node}. Default \code{NULL} keeps
+the resident-\code{y} path.}
+
+\item{y_geom, y_coords}{Geometry transport for a streamed \code{y} under
+\code{partition}: the name of \code{y}'s hex-WKB geometry column (\code{y_geom}, default
+the left \code{geom}), or a length-2 character vector of \code{y}'s coordinate columns
+(\code{y_coords}). Ignored without \code{partition}.}
 
 \item{out_geom}{Name of the output geometry column. Defaults to \code{geom}
 (or \code{"geometry"} when \code{coords} is used).}
@@ -68,9 +81,23 @@ RAM. The dominant real workload it serves is tagging huge point sets with the
 polygon they fall in.
 }
 \details{
-Both sides huge is out of scope for a single resident \code{y}; partition the
-inputs first with \code{\link[=offload]{offload()}} on a spatial grid key and join within each
-shard. Topology and CRS handling are \pkg{sf}'s; vectra supplies the stream.
+When both sides are larger than RAM, pass \code{partition = grid(cellsize)} and a
+streamed \code{vectra_node} as \code{y}: both inputs are binned to a uniform spatial
+grid, then joined one shard at a time. Each left feature is assigned to the
+single grid cell of its reference point while each right feature is
+replicated to every cell its bounding box overlaps, so a left row is emitted
+exactly once and the result equals the resident join. This is exact for point
+left geometries (the dominant case -- tagging a huge point set with the
+polygon it falls in) and finds, for an extended left feature, the matches
+whose right bounding box overlaps the left reference cell; choose a \code{cellsize}
+larger than the left features for an extended-on-extended join. The partition
+path serves topological predicates (intersects, within, contains, overlaps,
+covers, covered by). It also serves \link[sf:st_nearest_feature]{sf::st_nearest_feature}: because nearest
+is not local to one cell, each left feature then searches its own cell and the
+eight around it, so the true nearest is found when it lies within one cell of
+the left reference cell (pick a \code{cellsize} at least the largest expected
+nearest distance). Topology and CRS handling are \pkg{sf}'s; vectra supplies
+the stream and the grid partition.
 }
 \examples{
 \dontshow{if (requireNamespace("sf", quietly = TRUE)) withAutoprint(\{ # examplesIf}
@@ -87,7 +114,19 @@ tagged <- tbl(f) |>
   spatial_join(nc["NAME"], join = sf::st_intersects,
                coords = c("x", "y"), crs = sf::st_crs(nc))
 head(collect(tagged))
-unlink(f)
+
+# Both sides streamed: bin to a grid and join per shard. Here y is a
+# vectra_node rather than a resident sf object.
+g <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  NAME = nc$NAME,
+  geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)
+), g)
+tagged2 <- tbl(f) |>
+  spatial_join(tbl(g), coords = c("x", "y"), crs = sf::st_crs(nc),
+               partition = grid(0.5))
+head(collect(tagged2))
+unlink(c(f, g))
 \dontshow{\}) # examplesIf}
 }
 \seealso{

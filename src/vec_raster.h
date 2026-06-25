@@ -175,6 +175,21 @@ typedef struct {
  * 0 for unknown ids. */
 size_t vecr_dtype_size(uint8_t dtype);
 
+/* dtype string ("f32"/"i16"/...) <-> VECR_DT_* code. from_string returns 0
+ * for an unrecognised name; to_string returns "unknown". */
+uint8_t     vecr_dtype_from_string(const char *s);
+const char *vecr_dtype_to_string(uint8_t dt);
+
+/* Cast a row-major double buffer into the target dtype's buffer, and back.
+ * On the doubles -> dtype path NaN/NA maps to 0 for integer dtypes (the
+ * caller records a matching nodata value); on the reverse path the raw
+ * sample is widened to double with NaN passthrough for float dtypes. `dst`
+ * must hold `n` samples of the respective representation. */
+void vecr_cast_doubles_to_dtype(const double *src, int64_t n,
+                                uint8_t dt, void *dst);
+void vecr_cast_dtype_to_doubles(const void *src, int64_t n,
+                                uint8_t dt, double *dst);
+
 /* ---------- Writer ------------------------------------------------------ */
 
 typedef struct VecrWriter VecrWriter;
@@ -210,6 +225,9 @@ int vecr_writer_open(const char *path,
  * the first vecr_writer_write_band call. Default is VECR_COMPRESS_FAST.
  * Unknown values are silently clamped to FAST. */
 void vecr_writer_set_compression(VecrWriter *w, int level);
+
+/* The writer's sample dtype (VECR_DT_* code), as given to vecr_writer_open. */
+uint8_t vecr_writer_dtype(VecrWriter *w);
 
 /* ---------- Overviews --------------------------------------------------- */
 
@@ -253,6 +271,16 @@ int vecr_build_overviews(const char *path,
 int vecr_writer_write_band(VecrWriter *w,
                            int band_index,
                            const void *pixels);
+
+/* Write a single tile-row: the `ty`-th row of tiles of `band_index` from a
+ * row-major strip of `strip_h` x width samples in the file's sample dtype.
+ * `strip_h` must equal the tile height for `ty` (tile_size, or the remainder
+ * for the last row). Tiles are appended in (band, ty) call order but the
+ * index records their grid position, so callers may stream tile-rows without
+ * holding the whole band. Returns 0 on success, -1 on error. */
+int vecr_writer_write_tile_row(VecrWriter *w,
+                               int band_index, int64_t ty,
+                               const void *strip_pixels, int64_t strip_h);
 
 /* Set the time stamp recorded on every tile written by subsequent
  * vecr_writer_write_band calls. Pass 0 to unset. Used by time-cube

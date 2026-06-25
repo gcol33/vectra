@@ -1,3 +1,128 @@
+# vectra 0.9.0
+
+## Raster and vector toolbox
+
+* `polygonize(raster)` vectorises a raster into polygon features, the inverse of
+  `rasterize()`: cells are read one tile-row strip at a time and (by default)
+  dissolved by value into one polygon per value through `spatial_dissolve()`.
+* `contours(raster, levels)` traces iso-lines with marching squares over a
+  haloed strip pass, then joins each level's segments into continuous lines.
+* `mask(raster, polygon)` clips a raster to an `sf` polygon layer one strip at a
+  time, keeping the pixels whose centre falls inside (or, with `inverse = TRUE`,
+  outside) it. It is the raster counterpart of `spatial_clip()`.
+* `rast_calc(rasters, expr)` evaluates a cellwise expression across aligned
+  rasters (map algebra): band indices like `(nir - red) / (nir + red)`,
+  reclassification, and arithmetic across layers, streamed strip by strip.
+* `mosaic(rasters, fun)` merges rasters sharing a resolution and cell grid onto
+  their union, resolving overlap with `first` / `last` / `mean` / `sum` / `min`
+  / `max`, one output strip at a time.
+
+## Documentation
+
+* New `vignette("spatial")` walks the out-of-core GIS toolbox as one workflow,
+  with inline canvas animations for the raster-to-points bridge, select by
+  location, rasterization, and the cost-model tiers.
+* The quickstart vignette leads with animated views of the streaming memory
+  envelope, what has to fit in RAM, and the lazy pull-based plan, and its
+  on-disk-format description now matches the tdc codec.
+
+## Two-sided streamed spatial join
+
+* `spatial_join(x, y, partition = grid(cellsize))` joins two larger-than-RAM
+  layers by binning both to a uniform spatial grid and joining one shard at a
+  time, for the case where neither side fits in memory as a resident `sf`
+  object. `y` becomes a streamed `vectra_node`; each left feature is assigned to
+  the single grid cell of its reference point while each right feature is
+  replicated to every cell its bounding box overlaps, so a left row is emitted
+  exactly once and the result equals the resident join. This is exact for point
+  left geometries (the dominant case -- tagging a huge point set with the
+  polygon it falls in). `grid(cellsize, origin)` defines the partition grid. The
+  partition path serves the topological predicates (intersects, within,
+  contains, ...) and `sf::st_nearest_feature`, for which each left feature
+  searches its own cell and the eight around it (the nearest is found when it
+  lies within one cell of the left reference cell).
+
+## Streamed warp (resample / reproject)
+
+* `warp(raster, template, method)` resamples or reprojects a `.vec` raster onto
+  a target grid, walking the *output* one tile-row strip at a time. Each strip's
+  target pixel centres are projected into the source CRS (via PROJ through `sf`
+  only when the two CRSs differ), mapped through the source geotransform, and
+  sampled from the bounded source window they fall in -- so the whole output grid
+  is never resident and the source is read in windows rather than held whole.
+  `method` is `"near"`, `"bilinear"`, or `"cubic"` (Catmull-Rom), following the
+  GDAL / `terra::project()` convention; kernels that reach off the source extent
+  or touch nodata return `NA`. `template` borrows a grid from another raster or
+  is given as `list(crs =, extent =, res =, dims =)`. The C sampler keeps the
+  interpolation native; projection stays in PROJ.
+
+## Streamed focal and terrain
+
+* `focal(raster, w, fun)` applies a moving window to a `.vec` raster, reading
+  the input one tile-row strip at a time -- each strip expanded by the kernel
+  radius (a halo read) so window neighbours are available without ever holding
+  the whole grid resident. When `path` is given the output is streamed straight
+  back to a new `.vec` one tile-row at a time, so neither the input nor the
+  output band is ever fully in memory: the raster op that runs out of core where
+  an in-memory engine needs the whole raster at once. The window is a weight
+  matrix (or a single odd integer); `fun` is one of `"sum"`, `"mean"`, `"min"`,
+  `"max"`, `"sd"`, `"median"`, computed in C, with `na.rm` matching the resident
+  behaviour at edges.
+* `terrain(raster, v)` derives DEM products with Horn's 3x3 method on the same
+  haloed strip pass: `"slope"`, `"aspect"`, `"hillshade"`, `"TPI"`,
+  `"roughness"`, `"TRI"`. The return follows the input -- one matrix for a single
+  `v`, a named list (or a multi-band `.vec`) for several -- and matches
+  `terra::terrain()` / `terra::shade()`.
+
+## Streamed dissolve
+
+* `spatial_dissolve(x, by, .fun)` unions the geometries within each `by` group
+  into a single feature (the GIS "Dissolve" tool), optionally summarising
+  attributes through a named list of functions. Dissolve needs every geometry of
+  a group together, so it rides the partition tier: `x` is spilled once and
+  routed into one shard per group in a single bounded pass, then each shard is
+  unioned with `sf`. With no `by` the whole layer dissolves into one feature.
+
+## Streamed zonal statistics
+
+* `zonal(raster, zones, fun)` summarises a raster within zones one tile-row
+  strip at a time, so the whole grid never has to be resident. Zones come from a
+  second raster aligned to the value grid (the `terra::zonal()` pattern) or from
+  an `sf` polygon layer (each pixel assigned the polygon its centre falls in).
+  The per-zone moments are folded in memory as strips arrive -- peak memory is
+  one strip plus the small per-zone table -- and `fun` may name several of
+  `"mean"`, `"sum"`, `"count"`, `"min"`, `"max"`, `"sd"` at once. Raster zones
+  are `sf`-free; `sd` is derived from the streamed moments with no second pass.
+
+## Streamed vector-to-raster
+
+* `rasterize(x, template, field, fun)` folds a larger-than-RAM point stream into
+  a fixed raster grid one batch at a time. The grid is held resident while the
+  points flow past, so peak memory is the grid plus one batch -- the streaming
+  counterpart to `terra::rasterize()` on a point set that has to fit in RAM. The
+  per-cell reduction (`"count"`, `"sum"`, `"mean"`, `"min"`, `"max"`) is
+  accumulated in C. Points arrive either as two coordinate columns (the default,
+  `sf`-free path) or from a hex-WKB point-geometry column. The result is an
+  in-memory georeferenced matrix, or a `.vec` raster when `path` is given.
+
+## Streamed select-by-location and clip/erase
+
+* `spatial_filter(x, y, predicate)` keeps the rows of a streamed layer `x` whose
+  geometry satisfies an `sf` binary predicate against a small resident layer `y`
+  (select by location), filtering the billion-row stream one batch at a time
+  while `y` stays in memory. Rows are filtered, never duplicated, and the output
+  carries `x`'s schema unchanged; `negate = TRUE` keeps the non-matching rows
+  (select by location, inverted).
+
+* `spatial_clip(x, mask, erase)` cuts a streamed layer's geometry against a
+  small resident `mask`: the intersection by default (the GIS "Clip" tool), or
+  the difference with `erase = TRUE` (the "Erase" tool). The mask is dissolved
+  once and held resident while the stream flows past one batch at a time.
+
+* The run-file spill machinery shared by the streamed spatial verbs
+  (`spatial_map`/`join`/`filter`/`clip`/`overlay`) is now a single internal
+  accumulator, so all of them flush, finalize, and clean up identically.
+
 # vectra 0.8.2
 
 ## Bug fixes

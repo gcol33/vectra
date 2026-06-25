@@ -21,6 +21,7 @@ articles:
   navbar: ~
   contents:
   - quickstart
+  - spatial
   - engine
   - formats
   - joins
@@ -68,6 +69,27 @@ reference:
   - vec_write_raster
   - vec_write_time_cube
   - vec_to_tiff
+- title: Spatial operations
+  desc: Stream sf vector operations one batch at a time, for vector data larger than RAM
+  contents:
+  - spatial_map
+  - spatial_join
+  - grid
+  - spatial_filter
+  - spatial_clip
+  - spatial_dissolve
+  - spatial_overlay
+  - rasterize
+  - polygonize
+  - contours
+  - zonal
+  - focal
+  - terrain
+  - warp
+  - mask
+  - mosaic
+  - rast_calc
+  - collect_sf
 - title: File operations
   desc: Incremental updates to .vtr files
   contents:

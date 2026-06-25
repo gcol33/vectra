@@ -68,6 +68,86 @@ static int vecr_dtype_is_float(uint8_t dt) {
     return dt == VECR_DT_F32 || dt == VECR_DT_F64;
 }
 
+uint8_t vecr_dtype_from_string(const char *s) {
+    if (!s) return VECR_DT_F64;
+    if (strcmp(s, "f64") == 0 || strcmp(s, "double") == 0) return VECR_DT_F64;
+    if (strcmp(s, "f32") == 0 || strcmp(s, "float")  == 0) return VECR_DT_F32;
+    if (strcmp(s, "i8")  == 0) return VECR_DT_I8;
+    if (strcmp(s, "u8")  == 0) return VECR_DT_U8;
+    if (strcmp(s, "i16") == 0) return VECR_DT_I16;
+    if (strcmp(s, "u16") == 0) return VECR_DT_U16;
+    if (strcmp(s, "i32") == 0) return VECR_DT_I32;
+    if (strcmp(s, "u32") == 0) return VECR_DT_U32;
+    if (strcmp(s, "i64") == 0) return VECR_DT_I64;
+    if (strcmp(s, "u64") == 0) return VECR_DT_U64;
+    return 0;
+}
+
+const char *vecr_dtype_to_string(uint8_t dt) {
+    switch (dt) {
+    case VECR_DT_F64: return "f64";
+    case VECR_DT_F32: return "f32";
+    case VECR_DT_I8:  return "i8";
+    case VECR_DT_U8:  return "u8";
+    case VECR_DT_I16: return "i16";
+    case VECR_DT_U16: return "u16";
+    case VECR_DT_I32: return "i32";
+    case VECR_DT_U32: return "u32";
+    case VECR_DT_I64: return "i64";
+    case VECR_DT_U64: return "u64";
+    }
+    return "unknown";
+}
+
+void vecr_cast_doubles_to_dtype(const double *src, int64_t n,
+                                uint8_t dt, void *dst) {
+    if (dt == VECR_DT_F64) { memcpy(dst, src, (size_t)n * sizeof(double)); return; }
+    if (dt == VECR_DT_F32) {
+        float *p = (float *)dst;
+        for (int64_t i = 0; i < n; ++i) p[i] = (float)src[i];
+        return;
+    }
+    for (int64_t i = 0; i < n; ++i) {
+        double v = src[i];
+        int64_t iv = isnan(v) ? 0 : (int64_t)llround(v);
+        switch (dt) {
+        case VECR_DT_I8:  ((int8_t  *)dst)[i] = (int8_t) iv; break;
+        case VECR_DT_U8:  ((uint8_t *)dst)[i] = (uint8_t)iv; break;
+        case VECR_DT_I16: ((int16_t *)dst)[i] = (int16_t)iv; break;
+        case VECR_DT_U16: ((uint16_t*)dst)[i] = (uint16_t)iv; break;
+        case VECR_DT_I32: ((int32_t *)dst)[i] = (int32_t)iv; break;
+        case VECR_DT_U32: ((uint32_t*)dst)[i] = (uint32_t)iv; break;
+        case VECR_DT_I64: ((int64_t *)dst)[i] = iv;          break;
+        case VECR_DT_U64: ((uint64_t*)dst)[i] = (uint64_t)iv; break;
+        }
+    }
+}
+
+void vecr_cast_dtype_to_doubles(const void *src, int64_t n,
+                                uint8_t dt, double *dst) {
+    switch (dt) {
+    case VECR_DT_F64: memcpy(dst, src, (size_t)n * sizeof(double)); break;
+    case VECR_DT_F32: { const float *p = (const float *)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_I8:  { const int8_t   *p = (const int8_t  *)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_U8:  { const uint8_t  *p = (const uint8_t *)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_I16: { const int16_t  *p = (const int16_t *)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_U16: { const uint16_t *p = (const uint16_t*)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_I32: { const int32_t  *p = (const int32_t *)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_U32: { const uint32_t *p = (const uint32_t*)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_I64: { const int64_t  *p = (const int64_t *)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    case VECR_DT_U64: { const uint64_t *p = (const uint64_t*)src;
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+    }
+}
+
 static int vecr_dtype_is_signed(uint8_t dt) {
     return dt == VECR_DT_I8 || dt == VECR_DT_I16 ||
            dt == VECR_DT_I32 || dt == VECR_DT_I64;
@@ -532,10 +612,15 @@ static int vecr_writer_emit_tile(VecrWriter *w,
     return 0;
 }
 
-int vecr_writer_write_band(VecrWriter *w, int band_index, const void *pixels) {
-    if (!w || !pixels) return -1;
+int vecr_writer_write_tile_row(VecrWriter *w, int band_index, int64_t ty,
+                               const void *strip_pixels, int64_t strip_h) {
+    if (!w || !strip_pixels) return -1;
     if (band_index < 0 || band_index >= w->hdr.n_bands) {
         vecr_writer_set_err(w, "band_index out of range");
+        return -1;
+    }
+    if (ty < 0 || ty >= w->tiles_y) {
+        vecr_writer_set_err(w, "tile-row index out of range");
         return -1;
     }
 
@@ -546,50 +631,80 @@ int vecr_writer_write_band(VecrWriter *w, int band_index, const void *pixels) {
     uint16_t TS = w->hdr.tile_size;
     int64_t W = w->hdr.width, H = w->hdr.height;
 
-    /* Tile scratch — sized once at full TS*TS, shrunk per edge tile. */
+    int64_t r0 = ty * TS;
+    int64_t th = (r0 + TS <= H) ? TS : (H - r0);
+    if (strip_h != th) {
+        vecr_writer_set_err(w, "strip height does not match tile-row height");
+        return -1;
+    }
+
+    /* Tile scratch — sized once at full TS*TS, shrunk per edge tile. The
+     * strip is row-major strip_h x W; row r of the strip is input raster row
+     * r0 + r. */
     void *tile_buf = malloc((size_t)TS * (size_t)TS * esz);
     if (!tile_buf) { vecr_writer_set_err(w, "alloc tile buf"); return -1; }
 
-    for (int64_t ty = 0; ty < w->tiles_y; ++ty) {
-        int64_t r0 = ty * TS;
-        int64_t th = (r0 + TS <= H) ? TS : (H - r0);
-        for (int64_t tx = 0; tx < w->tiles_x; ++tx) {
-            int64_t c0 = tx * TS;
-            int64_t tw = (c0 + TS <= W) ? TS : (W - c0);
+    for (int64_t tx = 0; tx < w->tiles_x; ++tx) {
+        int64_t c0 = tx * TS;
+        int64_t tw = (c0 + TS <= W) ? TS : (W - c0);
 
-            /* Copy tile from row-major full raster into tile_buf row-major. */
-            for (int64_t r = 0; r < th; ++r) {
-                const uint8_t *src = (const uint8_t *)pixels
-                    + (size_t)((r0 + r) * W + c0) * esz;
-                uint8_t *dst = (uint8_t *)tile_buf + (size_t)(r * tw) * esz;
-                memcpy(dst, src, (size_t)tw * esz);
-            }
+        /* Copy tile from the row-major strip into tile_buf row-major. */
+        for (int64_t r = 0; r < th; ++r) {
+            const uint8_t *src = (const uint8_t *)strip_pixels
+                + (size_t)(r * W + c0) * esz;
+            uint8_t *dst = (uint8_t *)tile_buf + (size_t)(r * tw) * esz;
+            memcpy(dst, src, (size_t)tw * esz);
+        }
 
-            /* Compute min/max/n_valid over the tile. */
-            int64_t n_valid = 0;
-            double t_min = INFINITY, t_max = -INFINITY;
-            int    saw_finite = 0;
-            int64_t n_pix = tw * th;
-            for (int64_t i = 0; i < n_pix; ++i) {
-                if (vecr_is_nodata(tile_buf, i, dt, has_nd, nd)) continue;
-                double v = vecr_load_double(tile_buf, i, dt);
-                if (vecr_dtype_is_float(dt) && isnan(v)) continue;
-                ++n_valid;
-                if (!saw_finite || v < t_min) t_min = v;
-                if (!saw_finite || v > t_max) t_max = v;
-                saw_finite = 1;
-            }
+        /* Compute min/max/n_valid over the tile. */
+        int64_t n_valid = 0;
+        double t_min = INFINITY, t_max = -INFINITY;
+        int    saw_finite = 0;
+        int64_t n_pix = tw * th;
+        for (int64_t i = 0; i < n_pix; ++i) {
+            if (vecr_is_nodata(tile_buf, i, dt, has_nd, nd)) continue;
+            double v = vecr_load_double(tile_buf, i, dt);
+            if (vecr_dtype_is_float(dt) && isnan(v)) continue;
+            ++n_valid;
+            if (!saw_finite || v < t_min) t_min = v;
+            if (!saw_finite || v > t_max) t_max = v;
+            saw_finite = 1;
+        }
 
-            if (vecr_writer_emit_tile(w, band_index, tx, ty, tile_buf,
-                                       tw, th, t_min, t_max, n_valid) != 0) {
-                free(tile_buf);
-                return -1;
-            }
+        if (vecr_writer_emit_tile(w, band_index, tx, ty, tile_buf,
+                                   tw, th, t_min, t_max, n_valid) != 0) {
+            free(tile_buf);
+            return -1;
         }
     }
 
     free(tile_buf);
     return 0;
+}
+
+int vecr_writer_write_band(VecrWriter *w, int band_index, const void *pixels) {
+    if (!w || !pixels) return -1;
+    if (band_index < 0 || band_index >= w->hdr.n_bands) {
+        vecr_writer_set_err(w, "band_index out of range");
+        return -1;
+    }
+
+    size_t   esz = vecr_dtype_size(w->hdr.sample_dtype);
+    uint16_t TS  = w->hdr.tile_size;
+    int64_t  W = w->hdr.width, H = w->hdr.height;
+
+    for (int64_t ty = 0; ty < w->tiles_y; ++ty) {
+        int64_t r0 = ty * TS;
+        int64_t th = (r0 + TS <= H) ? TS : (H - r0);
+        const void *strip = (const uint8_t *)pixels + (size_t)(r0 * W) * esz;
+        if (vecr_writer_write_tile_row(w, band_index, ty, strip, th) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+uint8_t vecr_writer_dtype(VecrWriter *w) {
+    return w ? w->hdr.sample_dtype : 0;
 }
 
 int vecr_writer_finish(VecrWriter *w) {

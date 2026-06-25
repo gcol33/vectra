@@ -24,96 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------- dtype string -> code ---------------------------------------- */
-
-static uint8_t dtype_from_string(const char *s) {
-    if (!s) return VECR_DT_F64;
-    if (strcmp(s, "f64") == 0 || strcmp(s, "double")  == 0) return VECR_DT_F64;
-    if (strcmp(s, "f32") == 0 || strcmp(s, "float")   == 0) return VECR_DT_F32;
-    if (strcmp(s, "i8")  == 0)                              return VECR_DT_I8;
-    if (strcmp(s, "u8")  == 0)                              return VECR_DT_U8;
-    if (strcmp(s, "i16") == 0)                              return VECR_DT_I16;
-    if (strcmp(s, "u16") == 0)                              return VECR_DT_U16;
-    if (strcmp(s, "i32") == 0)                              return VECR_DT_I32;
-    if (strcmp(s, "u32") == 0)                              return VECR_DT_U32;
-    if (strcmp(s, "i64") == 0)                              return VECR_DT_I64;
-    if (strcmp(s, "u64") == 0)                              return VECR_DT_U64;
-    return 0;  /* invalid */
-}
-
-static const char *dtype_to_string(uint8_t dt) {
-    switch (dt) {
-    case VECR_DT_F64: return "f64";
-    case VECR_DT_F32: return "f32";
-    case VECR_DT_I8:  return "i8";
-    case VECR_DT_U8:  return "u8";
-    case VECR_DT_I16: return "i16";
-    case VECR_DT_U16: return "u16";
-    case VECR_DT_I32: return "i32";
-    case VECR_DT_U32: return "u32";
-    case VECR_DT_I64: return "i64";
-    case VECR_DT_U64: return "u64";
-    }
-    return "unknown";
-}
-
-/* Cast a row-major double buffer into the target dtype's buffer.
- * dst must be allocated of size n * vecr_dtype_size(dt). */
-static void cast_doubles_to_dtype(const double *src, int64_t n,
-                                  uint8_t dt, void *dst) {
-    if (dt == VECR_DT_F64) { memcpy(dst, src, (size_t)n * sizeof(double)); return; }
-    if (dt == VECR_DT_F32) {
-        float *p = (float *)dst;
-        for (int64_t i = 0; i < n; ++i) p[i] = (float)src[i];
-        return;
-    }
-    /* Integer dtypes: NA_REAL maps to nodata (caller is responsible for
-     * setting a nodata value that matches), otherwise round-to-nearest. */
-    for (int64_t i = 0; i < n; ++i) {
-        double v = src[i];
-        int64_t iv = ISNAN(v) ? 0 : (int64_t)llround(v);
-        switch (dt) {
-        case VECR_DT_I8:  ((int8_t  *)dst)[i] = (int8_t) iv; break;
-        case VECR_DT_U8:  ((uint8_t *)dst)[i] = (uint8_t)iv; break;
-        case VECR_DT_I16: ((int16_t *)dst)[i] = (int16_t)iv; break;
-        case VECR_DT_U16: ((uint16_t*)dst)[i] = (uint16_t)iv; break;
-        case VECR_DT_I32: ((int32_t *)dst)[i] = (int32_t)iv; break;
-        case VECR_DT_U32: ((uint32_t*)dst)[i] = (uint32_t)iv; break;
-        case VECR_DT_I64: ((int64_t *)dst)[i] = iv;          break;
-        case VECR_DT_U64: ((uint64_t*)dst)[i] = (uint64_t)iv; break;
-        }
-    }
-}
-
-/* Reverse: dtype buffer -> doubles. NaN passthrough for floats; integer
- * buffers are widened. The caller can post-process nodata to NA_REAL. */
-static void cast_dtype_to_doubles(const void *src, int64_t n,
-                                  uint8_t dt, double *dst) {
-    switch (dt) {
-    case VECR_DT_F64: memcpy(dst, src, (size_t)n * sizeof(double)); break;
-    case VECR_DT_F32: {
-        const float *p = (const float *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case VECR_DT_I8:  { const int8_t   *p = (const int8_t  *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U8:  { const uint8_t  *p = (const uint8_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I16: { const int16_t  *p = (const int16_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U16: { const uint16_t *p = (const uint16_t*)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I32: { const int32_t  *p = (const int32_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U32: { const uint32_t *p = (const uint32_t*)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I64: { const int64_t  *p = (const int64_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U64: { const uint64_t *p = (const uint64_t*)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    }
-}
+/* dtype string conversion and double<->sample casts are shared with the
+ * raster engine (vec_raster.c) — declared in vec_raster.h, used here under
+ * their public vecr_ names. */
+#define dtype_from_string     vecr_dtype_from_string
+#define dtype_to_string       vecr_dtype_to_string
+#define cast_doubles_to_dtype vecr_cast_doubles_to_dtype
+#define cast_dtype_to_doubles vecr_cast_dtype_to_doubles
 
 /* ---------- Reader xptr management -------------------------------------- */
 

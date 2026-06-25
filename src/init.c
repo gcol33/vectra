@@ -62,6 +62,31 @@ SEXP C_vec_read_pixel_series(SEXP ptr_sexp, SEXP col_sexp, SEXP row_sexp,
 SEXP C_vec_raster_times(SEXP ptr_sexp, SEXP band_sexp, SEXP level_sexp);
 SEXP C_vec_raster_layout(SEXP ptr_sexp);
 
+/* Streaming vector-to-raster accumulator (rasterize.c). */
+SEXP C_rasterize_new(SEXP dims_sexp, SEXP gt_sexp, SEXP fun_sexp);
+SEXP C_rasterize_push(SEXP ptr_sexp, SEXP x_sexp, SEXP y_sexp, SEXP val_sexp);
+SEXP C_rasterize_finish(SEXP ptr_sexp, SEXP bg_sexp);
+
+/* Focal / terrain kernels and the streaming tile-row writer (focal.c). */
+SEXP C_focal_strip(SEXP in_sexp, SEXP dims_sexp, SEXP w_sexp, SEXP kdims_sexp,
+                   SEXP fun_sexp, SEXP na_rm_sexp, SEXP top_sexp,
+                   SEXP out_h_sexp);
+SEXP C_terrain_strip(SEXP in_sexp, SEXP dims_sexp, SEXP which_sexp,
+                     SEXP top_sexp, SEXP out_h_sexp, SEXP res_sexp,
+                     SEXP unit_sexp, SEXP sun_sexp);
+SEXP C_vecr_writer_open(SEXP path_sexp, SEXP dims_sexp, SEXP dtype_sexp,
+                        SEXP tile_size_sexp, SEXP gt_sexp, SEXP epsg_sexp,
+                        SEXP nodata_sexp, SEXP band_names_sexp,
+                        SEXP compression_sexp);
+SEXP C_vecr_writer_write_strip(SEXP ptr_sexp, SEXP band_sexp, SEXP ty_sexp,
+                               SEXP strip_sexp);
+SEXP C_vecr_writer_finish(SEXP ptr_sexp);
+
+/* Resample/reproject sampler kernel (warp.c). */
+SEXP C_warp_strip(SEXP win_sexp, SEXP win_dims_sexp, SEXP origin_sexp,
+                  SEXP sx_sexp, SEXP sy_sexp, SEXP method_sexp,
+                  SEXP out_dims_sexp);
+
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
     {"C_scan_node",    (DL_FUNC) &C_scan_node,     1},
@@ -119,6 +144,15 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_vec_read_pixel_series",    (DL_FUNC) &C_vec_read_pixel_series,    5},
     {"C_vec_raster_times",         (DL_FUNC) &C_vec_raster_times,         3},
     {"C_vec_raster_layout",        (DL_FUNC) &C_vec_raster_layout,        1},
+    {"C_rasterize_new",            (DL_FUNC) &C_rasterize_new,            3},
+    {"C_rasterize_push",           (DL_FUNC) &C_rasterize_push,           4},
+    {"C_rasterize_finish",         (DL_FUNC) &C_rasterize_finish,         2},
+    {"C_focal_strip",              (DL_FUNC) &C_focal_strip,              8},
+    {"C_terrain_strip",            (DL_FUNC) &C_terrain_strip,            8},
+    {"C_warp_strip",               (DL_FUNC) &C_warp_strip,               7},
+    {"C_vecr_writer_open",         (DL_FUNC) &C_vecr_writer_open,         9},
+    {"C_vecr_writer_write_strip",  (DL_FUNC) &C_vecr_writer_write_strip,  4},
+    {"C_vecr_writer_finish",       (DL_FUNC) &C_vecr_writer_finish,       1},
     {NULL, NULL, 0}
 };
 
