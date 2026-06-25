@@ -89,6 +89,7 @@ reference:
   - mask
   - mosaic
   - rast_calc
+  - proximity
   - collect_sf
 - title: File operations
   desc: Incremental updates to .vtr files

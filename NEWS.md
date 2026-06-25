@@ -16,6 +16,12 @@
 * `mosaic(rasters, fun)` merges rasters sharing a resolution and cell grid onto
   their union, resolving overlap with `first` / `last` / `mean` / `sum` / `min`
   / `max`, one output strip at a time.
+* `proximity(raster, target)` computes the exact Euclidean distance from every
+  cell to the nearest feature (non-NA, or matching `target`) in CRS units, via
+  the separable Felzenszwalb-Huttenlocher distance transform: a row pass, an
+  out-of-core transpose, a column pass, and a transpose back, each over tile-row
+  strips so the whole grid is never resident. Squared distances scale by the x
+  and y resolution, so the result is exact on anisotropic cells.
 
 ## Documentation
 

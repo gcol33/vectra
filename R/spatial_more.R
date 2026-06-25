@@ -362,6 +362,156 @@ mosaic <- function(rasters, fun = c("first", "last", "mean", "sum", "min", "max"
   res[[1L]]
 }
 
+# -- proximity (Euclidean distance to the nearest feature) --------------------
+
+# Sentinel cost for a cell that holds no feature. The squared distance between
+# any two cells of a realistic grid stays far below this, so it acts as
+# "infinity" while keeping the parabola intersections in finite arithmetic.
+.FH_INF <- 1e20
+
+# One streamed row pass of the distance transform. Reads `rsrc` one tile-row
+# strip at a time, optionally maps each strip to feature/sentinel costs through
+# `prep`, transforms every row with spacing `scale` in C, and writes to `sink`.
+.proximity_row_pass <- function(rsrc, band, W, H, TS, scale, sink, prep) {
+  tiles_y <- (H + TS - 1L) %/% TS
+  for (ty in seq_len(tiles_y) - 1L) {
+    r0 <- ty * TS + 1L; r1 <- min(r0 + TS - 1L, H); out_h <- r1 - r0 + 1L
+    vm <- vec_read_window(rsrc, band = band, cols = c(1L, W), rows = c(r0, r1))
+    f <- if (is.null(prep)) vm else prep(vm)
+    storage.mode(f) <- "double"
+    g <- .Call(C_edt_strip, f, c(out_h, W), as.numeric(scale))
+    sink$write(ty, r0, r1, g)
+  }
+}
+
+# Streamed out-of-core transpose. The destination raster has width `srcH` and
+# height `srcW`; its tile-row strip [r0, r1] is the source columns [r0, r1] over
+# every source row, transposed. `finalize` optionally maps the values before
+# they are written (used on the final pass to take the square root and mark
+# no-feature cells).
+.proximity_transpose <- function(rsrc, srcW, srcH, TS, sink, finalize) {
+  tiles_y <- (srcW + TS - 1L) %/% TS
+  for (ty in seq_len(tiles_y) - 1L) {
+    r0 <- ty * TS + 1L; r1 <- min(r0 + TS - 1L, srcW)
+    block <- vec_read_window(rsrc, band = 1L, cols = c(r0, r1), rows = c(1L, srcH))
+    tb <- t(block)
+    if (!is.null(finalize)) tb <- finalize(tb)
+    sink$write(ty, r0, r1, tb)
+  }
+}
+
+#' Euclidean distance to the nearest feature (proximity)
+#'
+#' Computes, for every cell of a `.vec` raster, the straight-line Euclidean
+#' distance to the nearest feature cell, in CRS units. Feature cells are the
+#' non-NA cells by default, or the cells whose value is in `target`. This is the
+#' raster proximity / Euclidean-distance staple, the distance companion to
+#' [rasterize()].
+#'
+#' The exact Euclidean distance transform is separable (Felzenszwalb and
+#' Huttenlocher 2012): a one-dimensional lower-envelope-of-parabolas transform
+#' along the rows, then the same transform along the columns, each linear in the
+#' line length and each line independent. vectra runs it as four streamed passes
+#' over tile-row strips, with an out-of-core transpose between the row pass and
+#' the column pass, so the whole grid is never resident. The row pass scales
+#' squared distances by the x resolution and the column pass by the y
+#' resolution, so the result is exact on anisotropic (non-square) cells. This
+#' places proximity on the sort / partition tier of the spatial toolbox.
+#'
+#' Distances are straight-line Euclidean in the raster CRS units. Cost-distance,
+#' which accumulates a per-cell friction along the path, is a global
+#' shortest-path problem and stays resident: [collect()] the raster and run a
+#' resident solver for that.
+#'
+#' @param x A `vectra_raster` (from [vec_open_raster()]) or a path to a `.vec`
+#'   raster.
+#' @param target Optional numeric vector of feature values. When `NULL`
+#'   (default) every non-NA cell is a feature; otherwise a cell is a feature
+#'   when its value is in `target`.
+#' @param band Band to read (1-based). Default 1.
+#' @param path Optional output `.vec` path. When given the result is streamed to
+#'   disk and the opened [vec_open_raster()] handle is returned invisibly; when
+#'   `NULL` the result is returned as an in-memory matrix.
+#' @param dtype Storage dtype for `.vec` output (see [vec_write_raster()]).
+#'   Default `"f32"`.
+#' @param compression Compression effort for `.vec` output. Default `"fast"`.
+#'
+#' @return When `path` is `NULL`, a numeric matrix (row 1 northmost) carrying
+#'   `gt`, `extent`, and `crs` attributes, with distance in CRS units and `NA`
+#'   where the raster holds no feature anywhere. When `path` is given, the
+#'   written `vectra_raster` handle (invisibly).
+#'
+#' @seealso [rasterize()] to build a raster from streamed points, [mask()] to
+#'   clip a raster to a polygon layer.
+#'
+#' @examples
+#' m <- matrix(NA_real_, 12, 12)
+#' m[3, 4] <- 1; m[9, 10] <- 1
+#' f <- tempfile(fileext = ".vec")
+#' vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 12, 12))
+#'
+#' d <- proximity(f)
+#' round(d[1:3, 1:3], 2)
+#' unlink(f)
+#'
+#' @export
+proximity <- function(x, target = NULL, band = 1L, path = NULL, dtype = "f32",
+                      compression = c("fast", "balanced", "max")) {
+  comp_code <- switch(match.arg(compression), fast = 0L, balanced = 1L, max = 2L)
+  if (!is.null(target) && !is.numeric(target))
+    stop("`target` must be a numeric vector of feature values, or NULL")
+
+  vh <- .zonal_open(x, "x"); r <- vh$r
+  if (vh$close) on.exit(vec_close_raster(r), add = TRUE)
+  W <- as.integer(r$width); H <- as.integer(r$height); gt <- r$gt
+  TS <- max(1L, as.integer(r$tile_size))
+  epsg <- if (!is.null(r$epsg)) as.integer(r$epsg) else 0L
+  band <- as.integer(band)
+  xres <- abs(gt[2L]); yres <- abs(gt[6L])
+  dgt <- c(0, 1, 0, 0, 0, -1)   # placeholder grid for the transposed temporaries
+
+  t1  <- tempfile(fileext = ".vec")
+  t1t <- tempfile(fileext = ".vec")
+  t2t <- tempfile(fileext = ".vec")
+  on.exit(unlink(c(t1, t1t, t2t)), add = TRUE)
+
+  # Pass A: row transform of the source (spacing xres), features -> 0 cost and
+  # every other cell -> the sentinel. Output t1 holds the partial transform.
+  prep <- function(vm) {
+    v <- as.numeric(vm)
+    feat <- if (is.null(target)) !is.na(v) else !is.na(v) & v %in% target
+    f <- rep(.FH_INF, length(v)); f[feat] <- 0
+    matrix(f, nrow(vm), ncol(vm))
+  }
+  s1 <- .raster_sink(W, H, 1L, gt, epsg, TS, t1, "f64", NULL, 0L)
+  .proximity_row_pass(r, band, W, H, TS, xres, s1, prep)
+  h1 <- s1$finish()
+
+  # Transpose t1 (W x H) -> t1t (H x W): the source columns become rows.
+  s1t <- .raster_sink(H, W, 1L, dgt, 0L, TS, t1t, "f64", NULL, 0L)
+  .proximity_transpose(h1, W, H, TS, s1t, NULL)
+  h1t <- s1t$finish(); vec_close_raster(h1)
+
+  # Pass B: row transform of the transpose (spacing yres) is the column
+  # transform of the source, completing the exact squared distance.
+  s2 <- .raster_sink(H, W, 1L, dgt, 0L, TS, t2t, "f64", NULL, 0L)
+  .proximity_row_pass(h1t, 1L, H, W, TS, yres, s2, NULL)
+  h2t <- s2$finish(); vec_close_raster(h1t)
+
+  # Transpose back (H x W -> W x H), take the square root, and map cells with no
+  # feature anywhere to NA.
+  bn <- if (!is.null(r$band_names)) r$band_names[band] else NULL
+  out_sink <- .raster_sink(W, H, 1L, gt, epsg, TS, path, dtype, bn, comp_code)
+  finalize <- function(tb) {
+    d <- sqrt(tb); d[tb >= 1e19] <- NA_real_; d
+  }
+  .proximity_transpose(h2t, H, W, TS, out_sink, finalize)
+  out <- out_sink$finish(); vec_close_raster(h2t)
+
+  if (!is.null(path)) return(out)
+  out[[1L]]
+}
+
 # -- polygonize (raster -> vector polygons) -----------------------------------
 
 # Turn one strip of pixels into rectangle corners tagged by value. With

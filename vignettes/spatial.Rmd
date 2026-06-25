@@ -327,6 +327,24 @@ output strip at a time.
 tile_merge <- mosaic(list("n50.vec", "n51.vec", "n52.vec"), fun = "mean")
 ```
 
+## Distance to the nearest feature
+
+`proximity()` gives every cell its Euclidean distance to the nearest feature
+cell, in CRS units. Features are the non-NA cells, or the cells whose value is
+in `target`. The transform is separable: a pass along the rows, a pass along the
+columns, each linear in the line length, with an out-of-core transpose between
+them so the whole grid is never resident. Squared distances scale by the x and y
+resolution, so the answer is exact on non-square cells.
+
+```{r}
+dist_to_road <- proximity("roads.vec", path = "road_distance.vec")
+sea_distance <- proximity("landcover.vec", target = 0)   # 0 = water
+```
+
+Cost-distance, which accumulates a per-cell friction along the path, is a global
+shortest-path problem and stays resident: `collect()` the raster and run a
+resident solver for it.
+
 ## The cost model
 
 Each operation states its memory tier, so the toolbox reads as a cost model
@@ -370,8 +388,8 @@ cat(paste0(
   `spatial_filter()`, `spatial_clip()`, `rasterize()`, `zonal()`, and every
   `spatial_map()` recipe.
 - **Sort / partition.** Spatial locality first: `focal()`, `terrain()`,
-  `warp()` over tile-and-halo reads, `spatial_dissolve()`, and the partitioned
-  `spatial_join()`.
+  `warp()` over tile-and-halo reads, `proximity()` over its transpose passes,
+  `spatial_dissolve()`, and the partitioned `spatial_join()`.
 - **All-to-all.** Inherently resident: `spatial_overlay()` and operations such
   as Voronoi, Delaunay, convex hull, and global neighbour graphs. For these,
   collect the result and run sf or terra on it; vectra does not pretend to

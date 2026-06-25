@@ -87,6 +87,9 @@ SEXP C_warp_strip(SEXP win_sexp, SEXP win_dims_sexp, SEXP origin_sexp,
                   SEXP sx_sexp, SEXP sy_sexp, SEXP method_sexp,
                   SEXP out_dims_sexp);
 
+/* Euclidean distance transform kernel (edt.c). */
+SEXP C_edt_strip(SEXP mat_sexp, SEXP dims_sexp, SEXP scale_sexp);
+
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
     {"C_scan_node",    (DL_FUNC) &C_scan_node,     1},
@@ -150,6 +153,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_focal_strip",              (DL_FUNC) &C_focal_strip,              8},
     {"C_terrain_strip",            (DL_FUNC) &C_terrain_strip,            8},
     {"C_warp_strip",               (DL_FUNC) &C_warp_strip,               7},
+    {"C_edt_strip",                (DL_FUNC) &C_edt_strip,                3},
     {"C_vecr_writer_open",         (DL_FUNC) &C_vecr_writer_open,         9},
     {"C_vecr_writer_write_strip",  (DL_FUNC) &C_vecr_writer_write_strip,  4},
     {"C_vecr_writer_finish",       (DL_FUNC) &C_vecr_writer_finish,       1},
