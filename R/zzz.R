@@ -1,6 +1,7 @@
 #' @useDynLib vectra, .registration = TRUE
 #' @importFrom rlang expr enquo is_formula as_function
 #' @importFrom stats sd var median
+#' @importFrom libgeos libgeos_version
 NULL
 
 # -- package-level constants --------------------------------------------------
