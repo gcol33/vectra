@@ -156,6 +156,17 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
         if (g != NULL && rect != NULL) {
             GEOSGeometry *gc = GEOSClipByRect_r(ctx, g, rect[0], rect[1], rect[2], rect[3]);
             GEOSGeom_destroy_r(ctx, g);
+            /* GEOSClipByRect is a fast rectangle clip with no validity guarantee:
+             * on a multi-ring polygon it can return an invalid geometry whose area
+             * and point-in-polygon tests disagree, so the clip would be measured
+             * smaller than the faces credited to it and the piece coverage no
+             * longer sums to the input. Repair it before it is used as both the
+             * area source and the covering geometry. */
+            if (gc != NULL && !GEOSisValid_r(ctx, gc)) {
+                GEOSGeometry *gv = GEOSMakeValid_r(ctx, gc);
+                GEOSGeom_destroy_r(ctx, gc);
+                gc = gv;
+            }
             g = (gc != NULL) ? areal_only(ctx, gc) : NULL;
             if (gc != NULL) GEOSGeom_destroy_r(ctx, gc);
         } else if (g != NULL) {
