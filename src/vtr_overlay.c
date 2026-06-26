@@ -104,31 +104,32 @@ static void uf_union(int *p, int a, int b) {
 
 /* ---- output accumulation (per worker) ------------------------------------ */
 
-typedef struct { char *hex; int *lab; int nlab; double area; } OutPiece;
+/* One output row = one disjoint piece (face) clipped to one covering input.
+ * `face` ties the rows that came from the same polygonised face together, so the
+ * caller can rebuild the piece-id the overlaps are grouped by. */
+typedef struct { char *hex; int origin; double area; int face; } OutPiece;
 typedef struct { OutPiece *a; size_t n, cap; } OutList;
 
 static void ol_init(OutList *o) { o->a = NULL; o->n = 0; o->cap = 0; }
-static void ol_push(OutList *o, char *hex, int *lab, int nlab, double area) {
+static void ol_push(OutList *o, char *hex, int origin, double area, int face) {
     if (o->n == o->cap) {
         o->cap = o->cap ? o->cap * 2 : 256;
         o->a = (OutPiece *) realloc(o->a, o->cap * sizeof(OutPiece));
         if (o->a == NULL) error("vectra overlay: out of memory");
     }
-    o->a[o->n].hex = hex; o->a[o->n].lab = lab;
-    o->a[o->n].nlab = nlab; o->a[o->n].area = area; o->n++;
+    o->a[o->n].hex = hex; o->a[o->n].origin = origin;
+    o->a[o->n].area = area; o->a[o->n].face = face; o->n++;
 }
 
 static void emit_piece(GEOSContextHandle_t ctx, GEOSWKBWriter *writer, OutList *out,
-                       const GEOSGeometry *geom, const int *lab, int nlab, double area) {
+                       const GEOSGeometry *geom, int origin, double area, int face) {
     size_t len = 0;
     unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, geom, &len);
     if (buf == NULL) return;
     char *hex = (char *) malloc(len + 1);
     memcpy(hex, buf, len); hex[len] = '\0';
     GEOSFree_r(ctx, buf);
-    int *labcopy = (int *) malloc((size_t) nlab * sizeof(int));
-    memcpy(labcopy, lab, (size_t) nlab * sizeof(int));
-    ol_push(out, hex, labcopy, nlab, area);
+    ol_push(out, hex, origin, area, face);
 }
 
 /* ---- one tile ------------------------------------------------------------ */
@@ -140,7 +141,7 @@ static void emit_piece(GEOSContextHandle_t ctx, GEOSWKBWriter *writer, OutList *
 static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKBWriter *writer,
                          const unsigned char **ptrs, const size_t *lens,
                          const int *members, int nmem, const double *rect,
-                         OutList *out, double *inarea) {
+                         OutList *out, double *inarea, int *gface) {
     GEOSGeometry **poly = (GEOSGeometry **) calloc((size_t) nmem, sizeof(GEOSGeometry *));
     const GEOSPreparedGeometry **prep =
         (const GEOSPreparedGeometry **) calloc((size_t) nmem, sizeof(const GEOSPreparedGeometry *));
@@ -173,8 +174,14 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
 
     if (live == 1) {
         for (int k = 0; k < nmem; k++) if (poly[k] != NULL) {
-            int one = members[k];
-            emit_piece(ctx, writer, out, poly[k], &one, 1, inarea[members[k]]);
+            int fid;
+#ifdef _OPENMP
+            #pragma omp atomic capture
+            { fid = *gface; *gface += 1; }
+#else
+            fid = (*gface)++;
+#endif
+            emit_piece(ctx, writer, out, poly[k], members[k], inarea[members[k]], fid);
             break;
         }
     } else if (live > 1) {
@@ -201,21 +208,46 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
                 for (int f = 0; f < nf; f++) {
                     const GEOSGeometry *face = GEOSGetGeometryN_r(ctx, faces, f);
                     if (GEOSisEmpty_r(ctx, face)) continue;
-                    GEOSGeometry *rep = GEOSPointOnSurface_r(ctx, face);
-                    if (rep == NULL) continue;
+                    double fa = areal_area(ctx, face);
+                    if (fa <= 0.0) continue;
+                    /* A face produced by noding the snapped boundaries can straddle
+                     * an input edge at coarse precision, so the piece a covering
+                     * input gets is the face clipped to that input -- credited the
+                     * intersection area, not the whole face. The common case (face
+                     * wholly inside the input) skips the clip. This keeps each
+                     * input's pieces summing to its area regardless of the grid. */
                     cand.n = 0;
-                    GEOSSTRtree_query_r(ctx, tree, rep, strtree_cb, &cand);
-                    int *labbuf = (int *) malloc((size_t) (cand.n > 0 ? cand.n : 1) * sizeof(int));
-                    int nlab = 0;
+                    GEOSSTRtree_query_r(ctx, tree, face, strtree_cb, &cand);
+                    int fid = -1;
                     for (int c = 0; c < cand.n; c++) {
                         int k = cand.idx[c];
-                        if (poly[k] != NULL && GEOSPreparedIntersects_r(ctx, prep[k], rep))
-                            labbuf[nlab++] = members[k];
+                        if (poly[k] == NULL) continue;
+                        if (!GEOSPreparedIntersects_r(ctx, prep[k], face)) continue;
+                        const GEOSGeometry *piece = NULL;
+                        GEOSGeometry *clip = NULL;
+                        double a;
+                        if (GEOSPreparedContains_r(ctx, prep[k], face)) {
+                            piece = face; a = fa;
+                        } else {
+                            GEOSGeometry *inter = GEOSIntersection_r(ctx, face, poly[k]);
+                            clip = (inter != NULL) ? areal_only(ctx, inter) : NULL;
+                            if (inter != NULL) GEOSGeom_destroy_r(ctx, inter);
+                            if (clip == NULL) continue;
+                            a = areal_area(ctx, clip);
+                            if (a <= 1e-9 * fa) { GEOSGeom_destroy_r(ctx, clip); continue; }
+                            piece = clip;
+                        }
+                        if (fid < 0) {
+#ifdef _OPENMP
+                            #pragma omp atomic capture
+                            { fid = *gface; *gface += 1; }
+#else
+                            fid = (*gface)++;
+#endif
+                        }
+                        emit_piece(ctx, writer, out, piece, members[k], a, fid);
+                        if (clip != NULL) GEOSGeom_destroy_r(ctx, clip);
                     }
-                    GEOSGeom_destroy_r(ctx, rep);
-                    if (nlab > 0)
-                        emit_piece(ctx, writer, out, face, labbuf, nlab, areal_area(ctx, face));
-                    free(labbuf);
                 }
                 free(cand.idx);
                 GEOSGeom_destroy_r(ctx, faces);
@@ -291,14 +323,8 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
             if (g != NULL && grid > 0.0) {
                 GEOSGeometry *gs = GEOSGeom_setPrecision_r(ctx, g, grid, 0);
                 GEOSGeom_destroy_r(ctx, g);
-                /* setPrecision can fold a ring onto itself and return invalid,
-                 * self-overlapping geometry whose GEOSArea double-counts the
-                 * overlap; re-validate so the snapped area and the noded pieces
-                 * built from its boundary reconstruct each other. */
-                GEOSGeometry *gv = (gs != NULL) ? GEOSMakeValid_r(ctx, gs) : NULL;
+                g = (gs != NULL) ? areal_only(ctx, gs) : NULL;
                 if (gs != NULL) GEOSGeom_destroy_r(ctx, gs);
-                g = (gv != NULL) ? areal_only(ctx, gv) : NULL;
-                if (gv != NULL) GEOSGeom_destroy_r(ctx, gv);
             }
             if (g == NULL) continue;
             double xmin, ymin, xmax, ymax;
@@ -387,8 +413,10 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
  *   rects     : REALSXP length 4*njobs (xmin,ymin,xmax,ymax per job); NA xmin
  *               means the job is not clipped (a whole small component)
  *   n_threads : INTSXP(1) OpenMP threads (<=0 -> all cores)
- * returns VECSXP(4): hex-WKB pieces, INTSXP origins (1-based chunk indices),
- *                    piece areas, input areas (per chunk input, clipped). */
+ * returns VECSXP(5): hex-WKB pieces (one per face x covering input), INTSXP
+ *                    origin (1-based chunk index of the covering input), piece
+ *                    areas, input areas (per chunk input, clipped), INTSXP face
+ *                    (1-based id shared by the rows from one polygonised face). */
 SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp) {
     overlay_geos_init();
     int m = (int) Rf_length(wkb_chunk);
@@ -426,6 +454,7 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
     int nw = nthreads > 0 ? nthreads : 1;
     OutList *worker = (OutList *) R_alloc((size_t) nw, sizeof(OutList));
     for (int t = 0; t < nw; t++) ol_init(&worker[t]);
+    int g_face = 0;   /* dense piece-id source, shared across jobs/threads */
 
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nthreads)
@@ -440,7 +469,7 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
             process_tile(ctx, reader, writer, ptrs, lens, jmemb[j], jsize[j],
-                         rect, &worker[tid], inarea);
+                         rect, &worker[tid], inarea, &g_face);
         }
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);
@@ -456,7 +485,7 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
             process_tile(ctx, reader, writer, ptrs, lens, jmemb[j], jsize[j],
-                         rect, &worker[0], inarea);
+                         rect, &worker[0], inarea, &g_face);
         }
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);
@@ -466,21 +495,20 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
 
     size_t total = 0;
     for (int t = 0; t < nw; t++) total += worker[t].n;
-    SEXP geoms   = PROTECT(allocVector(STRSXP, (R_xlen_t) total));
-    SEXP origins = PROTECT(allocVector(VECSXP, (R_xlen_t) total));
-    SEXP parea   = PROTECT(allocVector(REALSXP, (R_xlen_t) total));
-    double *pa = REAL(parea);
+    SEXP geoms  = PROTECT(allocVector(STRSXP,  (R_xlen_t) total));
+    SEXP origin = PROTECT(allocVector(INTSXP,  (R_xlen_t) total));
+    SEXP parea  = PROTECT(allocVector(REALSXP, (R_xlen_t) total));
+    SEXP face   = PROTECT(allocVector(INTSXP,  (R_xlen_t) total));
+    int *op = INTEGER(origin); double *pa = REAL(parea); int *fp = INTEGER(face);
     size_t w = 0;
     for (int t = 0; t < nw; t++) {
         OutList *ol = &worker[t];
         for (size_t k = 0; k < ol->n; k++) {
             SET_STRING_ELT(geoms, (R_xlen_t) w, mkChar(ol->a[k].hex));
-            SEXP lab = allocVector(INTSXP, ol->a[k].nlab);
-            int *lp = INTEGER(lab);
-            for (int jj = 0; jj < ol->a[k].nlab; jj++) lp[jj] = ol->a[k].lab[jj] + 1;
-            SET_VECTOR_ELT(origins, (R_xlen_t) w, lab);
+            op[w] = ol->a[k].origin + 1;     /* 1-based chunk input index */
             pa[w] = ol->a[k].area;
-            free(ol->a[k].hex); free(ol->a[k].lab);
+            fp[w] = ol->a[k].face + 1;       /* 1-based piece id within this call */
+            free(ol->a[k].hex);
             w++;
         }
         free(ol->a);
@@ -490,12 +518,13 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
     memcpy(REAL(iarea), inarea, (size_t) m * sizeof(double));
     R_Free(inarea); R_Free(jfill); R_Free(jsize);
 
-    SEXP res = PROTECT(allocVector(VECSXP, 4));
+    SEXP res = PROTECT(allocVector(VECSXP, 5));
     SET_VECTOR_ELT(res, 0, geoms);
-    SET_VECTOR_ELT(res, 1, origins);
+    SET_VECTOR_ELT(res, 1, origin);
     SET_VECTOR_ELT(res, 2, parea);
     SET_VECTOR_ELT(res, 3, iarea);
-    UNPROTECT(5);
+    SET_VECTOR_ELT(res, 4, face);
+    UNPROTECT(6);
     return res;
 }
 

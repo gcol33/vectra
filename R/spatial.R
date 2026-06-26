@@ -270,14 +270,11 @@
 # piece and input areas the C engine returns, so no geometry is re-measured.
 # Returns a data.frame keyed by the input's chunk-local index, so the caller can
 # map back to global rows and name the worst offenders, not just the scalar max.
-.overlay_coverage_detail <- function(res) {
-  origins <- res[[2L]]; parea <- res[[3L]]; iarea <- res[[4L]]
-  if (!length(origins))
+.overlay_coverage_detail <- function(origin, parea, iarea) {
+  if (!length(origin))
     return(data.frame(src = integer(0), cov = numeric(0),
                       iarea = numeric(0), err = numeric(0)))
-  idx <- rep.int(seq_along(origins), lengths(origins))
-  src <- unlist(origins, use.names = FALSE)
-  agg <- rowsum(parea[idx], group = src)
+  agg <- rowsum(parea, group = origin)
   cov <- numeric(length(iarea))
   cov[as.integer(rownames(agg))] <- agg[, 1L]
   data.frame(src = seq_along(iarea), cov = cov, iarea = iarea,
@@ -2280,17 +2277,17 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
     rct <- unlist(lapply(batch, `[[`, "rect"), use.names = FALSE)
     res <- .Call(C_overlay_run, cwkb[gi], as.integer(job), as.double(rct),
                  as.integer(nthreads))
-    geoms <- res[[1L]]; origins <- res[[2L]]
+    geoms <- res[[1L]]; origin <- res[[2L]]; parea <- res[[3L]]
+    iarea <- res[[4L]]; fid <- res[[5L]]
     if (length(geoms)) {
-      idx <- rep.int(seq_along(geoms), lengths(origins))
-      src <- gi[unlist(origins, use.names = FALSE)]    # chunk index -> global row
+      src <- gi[origin]                                # chunk index -> global row
       df  <- attrs[src, , drop = FALSE]
-      df[[piece]] <- piece_off + idx
-      df[[geom]]  <- geoms[idx]
+      df[[piece]] <- piece_off + fid                  # rows of one face share a piece id
+      df[[geom]]  <- geoms
       rownames(df) <- NULL
       acc$push(.coerce_for_vtr(df))
-      piece_off <<- piece_off + length(geoms)
-      det <- .overlay_coverage_detail(res)
+      piece_off <<- piece_off + max(fid)
+      det <- .overlay_coverage_detail(origin, parea, iarea)
       if (nrow(det)) cov_err <<- max(cov_err, max(det$err))
       bad <- det[det$err > 1e-4, , drop = FALSE]
       if (nrow(bad)) {
