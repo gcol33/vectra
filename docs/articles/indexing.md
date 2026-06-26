@@ -39,6 +39,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 set.seed(42)
 n <- 50000
@@ -331,9 +334,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.16 s
+#> Without index: 0.1 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.52 s
+#> With index:    0.36 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -504,7 +507,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.65 s
+#> With index, %in% filter: 0.4 s
 ```
 
 Without an index, the same query reads all row groups and filters in

@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.7.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -31,6 +31,8 @@
       <ul class="navbar-nav me-auto"><li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -268,6 +270,148 @@
 
         </dt>
         <dd>Export a .vec raster to GeoTIFF</dd>
+      </dl></div><div class="section level2">
+      <h2 id="spatial-operations">Spatial operations<a class="anchor" aria-label="anchor" href="#spatial-operations"></a></h2>
+
+      <div class="section-desc"><p>Stream sf vector operations one batch at a time, for vector data larger than RAM</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_map.html">spatial_map()</a></code>
+
+        </dt>
+        <dd>Stream a query through an sf transform</dd>
+
+        <dt>
+
+          <code><a href="spatial_join.html">spatial_join()</a></code>
+
+        </dt>
+        <dd>Spatial join a streamed query against a resident sf object</dd>
+
+        <dt>
+
+          <code><a href="grid.html">grid()</a></code>
+
+        </dt>
+        <dd>Define a uniform grid for a partitioned spatial join</dd>
+
+        <dt>
+
+          <code><a href="spatial_filter.html">spatial_filter()</a></code>
+
+        </dt>
+        <dd>Keep streamed rows by their spatial relation to a resident layer</dd>
+
+        <dt>
+
+          <code><a href="spatial_clip.html">spatial_clip()</a></code>
+
+        </dt>
+        <dd>Clip or erase a streamed layer against a resident mask</dd>
+
+        <dt>
+
+          <code><a href="spatial_dissolve.html">spatial_dissolve()</a></code>
+
+        </dt>
+        <dd>Dissolve geometries by group</dd>
+
+        <dt>
+
+          <code><a href="spatial_overlay.html">spatial_overlay()</a></code>
+
+        </dt>
+        <dd>Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)</dd>
+
+        <dt>
+
+          <code><a href="rasterize.html">rasterize()</a></code>
+
+        </dt>
+        <dd>Rasterize a streamed point layer onto a fixed grid</dd>
+
+        <dt>
+
+          <code><a href="polygonize.html">polygonize()</a></code>
+
+        </dt>
+        <dd>Vectorise a raster into polygons</dd>
+
+        <dt>
+
+          <code><a href="contours.html">contours()</a></code>
+
+        </dt>
+        <dd>Extract contour iso-lines from a streamed raster</dd>
+
+        <dt>
+
+          <code><a href="zonal.html">zonal()</a></code>
+
+        </dt>
+        <dd>Summarise raster values within zones</dd>
+
+        <dt>
+
+          <code><a href="focal.html">focal()</a></code>
+
+        </dt>
+        <dd>Moving-window (focal) statistics over a streamed raster</dd>
+
+        <dt>
+
+          <code><a href="terrain.html">terrain()</a></code>
+
+        </dt>
+        <dd>Terrain derivatives from a streamed elevation raster</dd>
+
+        <dt>
+
+          <code><a href="warp.html">warp()</a></code>
+
+        </dt>
+        <dd>Resample or reproject a streamed raster onto a target grid</dd>
+
+        <dt>
+
+          <code><a href="mask.html">mask()</a></code>
+
+        </dt>
+        <dd>Mask a streamed raster to a polygon layer</dd>
+
+        <dt>
+
+          <code><a href="mosaic.html">mosaic()</a></code>
+
+        </dt>
+        <dd>Merge aligned rasters onto a common grid</dd>
+
+        <dt>
+
+          <code><a href="rast_calc.html">rast_calc()</a></code>
+
+        </dt>
+        <dd>Cellwise calculation over aligned rasters (map algebra)</dd>
+
+        <dt>
+
+          <code><a href="proximity.html">proximity()</a></code>
+
+        </dt>
+        <dd>Euclidean distance to the nearest feature (proximity)</dd>
+
+        <dt>
+
+          <code><a href="collect_sf.html">collect_sf()</a></code>
+
+        </dt>
+        <dd>Materialize a spatial query as an sf object</dd>
       </dl></div><div class="section level2">
       <h2 id="file-operations">File operations<a class="anchor" aria-label="anchor" href="#file-operations"></a></h2>
 

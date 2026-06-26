@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.7.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -31,6 +31,8 @@
       <ul class="navbar-nav me-auto"><li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -97,9 +99,19 @@ nth value. If <code>FALSE</code>, returns exactly <code>n</code> rows.</p></dd>
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A <code>vectra_node</code> for <code>slice_head()</code> and <code>slice_min/max(..., with_ties = FALSE)</code>. A data.frame for <code>slice_tail()</code> and
+    <p>A <code>vectra_node</code> for <code>slice_head()</code>, for grouped
+<code>slice_min()</code>/<code>slice_max()</code>, and for ungrouped <code>slice_min/max(..., with_ties = FALSE)</code>. A data.frame for <code>slice_tail()</code> and ungrouped
 <code>slice_min/max(..., with_ties = TRUE)</code> (the default), since these must
 materialize all rows.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>When <code>slice_min()</code>/<code>slice_max()</code> follow <code><a href="group_by.html">group_by()</a></code>, the n smallest/largest
+rows are taken within each group and the whole winning row is kept (every
+column, including geometry carried as a string). <code>with_ties = FALSE</code> returns
+exactly <code>n</code> rows per group via a deterministic ordered <code>row_number()</code>;
+<code>with_ties = TRUE</code> keeps rows tied at the nth value via min-rank. The grouped
+path buffers its input (like all window operations) rather than streaming.</p>
     </div>
 
     <div class="section level2">
@@ -109,6 +121,8 @@ materialize all rows.</p>
 <span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu">slice_head</span><span class="op">(</span>n <span class="op">=</span> <span class="fl">3</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu">slice_min</span><span class="op">(</span>order_by <span class="op">=</span> <span class="va">mpg</span>, n <span class="op">=</span> <span class="fl">3</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu">slice_max</span><span class="op">(</span>order_by <span class="op">=</span> <span class="va">mpg</span>, n <span class="op">=</span> <span class="fl">3</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="co"># earliest row per group, geometry/attrs preserved:</span></span>
+<span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu">slice_min</span><span class="op">(</span><span class="va">mpg</span>, n <span class="op">=</span> <span class="fl">1</span>, with_ties <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span>
 <span></span></code></pre></div>
     </div>

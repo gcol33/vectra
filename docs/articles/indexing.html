@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.7.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -44,10 +44,12 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="active nav-item dropdown">
+<li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -84,7 +86,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-06-12</h4>
+            <h4 data-toc-skip class="date">2026-06-26</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/indexing.Rmd" class="external-link"><code>vignettes/indexing.Rmd</code></a></small>
       <div class="d-none name"><code>indexing.Rmd</code></div>
@@ -125,6 +127,9 @@ an index is worth the disk space.</p>
 <span><span class="co">#&gt; The following object is masked from 'package:stats':</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt;     filter</span></span>
+<span><span class="co">#&gt; The following object is masked from 'package:graphics':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     grid</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">42</span><span class="op">)</span></span>
 <span><span class="va">n</span> <span class="op">&lt;-</span> <span class="fl">50000</span></span>
@@ -380,9 +385,9 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Without index: 0.16 s</span></span>
+<span><span class="co">#&gt; Without index: 0.1 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.52 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.36 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a
@@ -535,7 +540,7 @@ site, or sample ID.</p>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index, %in% filter:"</span>, <span class="va">t_in_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index, %in% filter: 0.65 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index, %in% filter: 0.4 s</span></span></code></pre></div>
 <p>Without an index, the same query reads all row groups and filters in
 memory. The difference grows with file size.</p>
 </div>

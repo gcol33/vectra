@@ -51,6 +51,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 trees <- data.frame(
   species  = c("Quercus robur  ", "  fagus sylvatica", "ACER platanoides",

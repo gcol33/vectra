@@ -1,5 +1,312 @@
 # Changelog
 
+## vectra 0.9.0
+
+### Raster and vector toolbox
+
+- `polygonize(raster)` vectorises a raster into polygon features, the
+  inverse of
+  [`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md):
+  cells are read one tile-row strip at a time and (by default) dissolved
+  by value into one polygon per value through
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md).
+- `contours(raster, levels)` traces iso-lines with marching squares over
+  a haloed strip pass, then joins each level’s segments into continuous
+  lines.
+- `mask(raster, polygon)` clips a raster to an `sf` polygon layer one
+  strip at a time, keeping the pixels whose centre falls inside (or,
+  with `inverse = TRUE`, outside) it. It is the raster counterpart of
+  [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md).
+- `rast_calc(rasters, expr)` evaluates a cellwise expression across
+  aligned rasters (map algebra): band indices like
+  `(nir - red) / (nir + red)`, reclassification, and arithmetic across
+  layers, streamed strip by strip.
+- `mosaic(rasters, fun)` merges rasters sharing a resolution and cell
+  grid onto their union, resolving overlap with `first` / `last` /
+  `mean` / `sum` / `min` / `max`, one output strip at a time.
+- `proximity(raster, target)` computes the exact Euclidean distance from
+  every cell to the nearest feature (non-NA, or matching `target`) in
+  CRS units, via the separable Felzenszwalb-Huttenlocher distance
+  transform: a row pass, an out-of-core transpose, a column pass, and a
+  transpose back, each over tile-row strips so the whole grid is never
+  resident. Squared distances scale by the x and y resolution, so the
+  result is exact on anisotropic cells.
+
+### Native libgeos compute paths
+
+- [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md),
+  [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md),
+  [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md),
+  and
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
+  now run their geometry operation natively on the GEOS C API (via
+  `libgeos`) straight off the hex-WKB geometry column, with no per-batch
+  round-trip through `sf`. The resident side – the locator layer, the
+  join target, the clip mask – is parsed once into a GEOS spatial index
+  and each streamed batch is tested, matched, or cut in C, parallel
+  across rows.
+  [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
+  and
+  [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  cover the topological predicates (intersects, within, contains,
+  overlaps, covers, covered by, touches, crosses);
+  [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  returns the per-row match lists from C and attaches the resident
+  attributes in R without decoding the left side.
+- The native predicate set extends beyond the topological ones:
+  `equals`, within-distance
+  ([`sf::st_is_within_distance`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  radius passed as `dist =`, found by querying the index with each
+  feature’s envelope grown by the radius), and, for
+  [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md),
+  nearest feature
+  ([`sf::st_nearest_feature`](https://r-spatial.github.io/sf/reference/st_nearest_feature.html),
+  one resident match per row via the index’s nearest-neighbour
+  traversal).
+  [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
+  also runs `disjoint` natively (a row matches when it is disjoint from
+  at least one resident feature). A disjoint *join* keeps the `sf` path,
+  since its matches are the bounding-box complement a spatial index
+  cannot prune.
+- Coordinate-assembled (`coords`) point input runs natively too: each
+  point is built in C from its x/y columns and matched against the
+  index, instead of being assembled into an `sf` layer per batch. This
+  covers
+  [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
+  (every predicate but disjoint, which stays on `sf` as it does for the
+  join) and
+  [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  (topological, within-distance, and nearest, with the emitted point
+  geometry also built in C).
+- [`zonal()`](https://gillescolling.com/vectra/reference/zonal.md) with
+  polygon zones now assigns each pixel centre to its polygon natively:
+  the polygons are parsed once into the index and every tile-row strip’s
+  centres are located in C, so `sf` is touched only to read the polygons
+  in. Geographic polygons with spherical geometry on
+  ([`sf::sf_use_s2()`](https://r-spatial.github.io/sf/reference/s2.html))
+  keep the `sf` point-in-polygon path.
+- The native paths run on projected or unprojected planar data, where
+  they equal the previous `sf` result exactly. Geographic coordinates
+  with spherical geometry on
+  ([`sf::sf_use_s2()`](https://r-spatial.github.io/sf/reference/s2.html)),
+  a disjoint join, and extra
+  [`sf::st_union()`](https://r-spatial.github.io/sf/reference/geos_combine.html)
+  /
+  [`sf::st_join()`](https://r-spatial.github.io/sf/reference/st_join.html)
+  arguments keep the `sf` path, so its semantics are unchanged.
+
+### Documentation
+
+- New
+  [`vignette("spatial")`](https://gillescolling.com/vectra/articles/spatial.md)
+  walks the out-of-core GIS toolbox as one workflow, with inline canvas
+  animations for the raster-to-points bridge, select by location,
+  rasterization, and the cost-model tiers.
+- The quickstart vignette leads with animated views of the streaming
+  memory envelope, what has to fit in RAM, and the lazy pull-based plan,
+  and its on-disk-format description now matches the tdc codec.
+
+### Two-sided streamed spatial join
+
+- `spatial_join(x, y, partition = grid(cellsize))` joins two
+  larger-than-RAM layers by binning both to a uniform spatial grid and
+  joining one shard at a time, for the case where neither side fits in
+  memory as a resident `sf` object. `y` becomes a streamed
+  `vectra_node`; each left feature is assigned to the single grid cell
+  of its reference point while each right feature is replicated to every
+  cell its bounding box overlaps, so a left row is emitted exactly once
+  and the result equals the resident join. This is exact for point left
+  geometries (the dominant case – tagging a huge point set with the
+  polygon it falls in). `grid(cellsize, origin)` defines the partition
+  grid. The partition path serves the topological predicates
+  (intersects, within, contains, …) and
+  [`sf::st_nearest_feature`](https://r-spatial.github.io/sf/reference/st_nearest_feature.html),
+  for which each left feature searches its own cell and the eight around
+  it (the nearest is found when it lies within one cell of the left
+  reference cell).
+
+### Streamed warp (resample / reproject)
+
+- `warp(raster, template, method)` resamples or reprojects a `.vec`
+  raster onto a target grid, walking the *output* one tile-row strip at
+  a time. Each strip’s target pixel centres are projected into the
+  source CRS (via PROJ through `sf` only when the two CRSs differ),
+  mapped through the source geotransform, and sampled from the bounded
+  source window they fall in – so the whole output grid is never
+  resident and the source is read in windows rather than held whole.
+  `method` is `"near"`, `"bilinear"`, or `"cubic"` (Catmull-Rom),
+  following the GDAL /
+  [`terra::project()`](https://rspatial.github.io/terra/reference/project.html)
+  convention; kernels that reach off the source extent or touch nodata
+  return `NA`. `template` borrows a grid from another raster or is given
+  as `list(crs =, extent =, res =, dims =)`. The C sampler keeps the
+  interpolation native; projection stays in PROJ.
+
+### Streamed focal and terrain
+
+- `focal(raster, w, fun)` applies a moving window to a `.vec` raster,
+  reading the input one tile-row strip at a time – each strip expanded
+  by the kernel radius (a halo read) so window neighbours are available
+  without ever holding the whole grid resident. When `path` is given the
+  output is streamed straight back to a new `.vec` one tile-row at a
+  time, so neither the input nor the output band is ever fully in
+  memory: the raster op that runs out of core where an in-memory engine
+  needs the whole raster at once. The window is a weight matrix (or a
+  single odd integer); `fun` is one of `"sum"`, `"mean"`, `"min"`,
+  `"max"`, `"sd"`, `"median"`, computed in C, with `na.rm` matching the
+  resident behaviour at edges.
+- `terrain(raster, v)` derives DEM products with Horn’s 3x3 method on
+  the same haloed strip pass: `"slope"`, `"aspect"`, `"hillshade"`,
+  `"TPI"`, `"roughness"`, `"TRI"`. The return follows the input – one
+  matrix for a single `v`, a named list (or a multi-band `.vec`) for
+  several – and matches
+  [`terra::terrain()`](https://rspatial.github.io/terra/reference/terrain.html)
+  /
+  [`terra::shade()`](https://rspatial.github.io/terra/reference/shade.html).
+
+### Streamed dissolve
+
+- `spatial_dissolve(x, by, .fun)` unions the geometries within each `by`
+  group into a single feature (the GIS “Dissolve” tool), optionally
+  summarising attributes through a named list of functions. Dissolve
+  needs every geometry of a group together, so it rides the partition
+  tier: `x` is spilled once and routed into one shard per group in a
+  single bounded pass, then each shard is unioned with `sf`. With no
+  `by` the whole layer dissolves into one feature.
+
+### Streamed zonal statistics
+
+- `zonal(raster, zones, fun)` summarises a raster within zones one
+  tile-row strip at a time, so the whole grid never has to be resident.
+  Zones come from a second raster aligned to the value grid (the
+  [`terra::zonal()`](https://rspatial.github.io/terra/reference/zonal.html)
+  pattern) or from an `sf` polygon layer (each pixel assigned the
+  polygon its centre falls in). The per-zone moments are folded in
+  memory as strips arrive – peak memory is one strip plus the small
+  per-zone table – and `fun` may name several of `"mean"`, `"sum"`,
+  `"count"`, `"min"`, `"max"`, `"sd"` at once. Raster zones are
+  `sf`-free; `sd` is derived from the streamed moments with no second
+  pass.
+
+### Streamed vector-to-raster
+
+- `rasterize(x, template, field, fun)` folds a larger-than-RAM point
+  stream into a fixed raster grid one batch at a time. The grid is held
+  resident while the points flow past, so peak memory is the grid plus
+  one batch – the streaming counterpart to
+  [`terra::rasterize()`](https://rspatial.github.io/terra/reference/rasterize.html)
+  on a point set that has to fit in RAM. The per-cell reduction
+  (`"count"`, `"sum"`, `"mean"`, `"min"`, `"max"`) is accumulated in C.
+  Points arrive either as two coordinate columns (the default, `sf`-free
+  path) or from a hex-WKB point-geometry column. The result is an
+  in-memory georeferenced matrix, or a `.vec` raster when `path` is
+  given.
+
+### Streamed select-by-location and clip/erase
+
+- `spatial_filter(x, y, predicate)` keeps the rows of a streamed layer
+  `x` whose geometry satisfies an `sf` binary predicate against a small
+  resident layer `y` (select by location), filtering the billion-row
+  stream one batch at a time while `y` stays in memory. Rows are
+  filtered, never duplicated, and the output carries `x`’s schema
+  unchanged; `negate = TRUE` keeps the non-matching rows (select by
+  location, inverted).
+
+- `spatial_clip(x, mask, erase)` cuts a streamed layer’s geometry
+  against a small resident `mask`: the intersection by default (the GIS
+  “Clip” tool), or the difference with `erase = TRUE` (the “Erase”
+  tool). The mask is dissolved once and held resident while the stream
+  flows past one batch at a time.
+
+- The run-file spill machinery shared by the streamed spatial verbs
+  (`spatial_map`/`join`/`filter`/`clip`/`overlay`) is now a single
+  internal accumulator, so all of them flush, finalize, and clean up
+  identically.
+
+## vectra 0.8.2
+
+### Bug fixes
+
+- [`ifelse()`](https://rdrr.io/r/base/ifelse.html) (and `if_else()`) now
+  returns the correct type when its two branches differ. Previously
+  `ifelse(int64_col, x, y)` with a `double` or `NA` other branch
+  labelled the result column int64 while the evaluator produced doubles,
+  so the kept int64 values came back as ~4.6e18 garbage (and triggered a
+  spurious “int64 value exceeds 2^53” warning). The result column now
+  adopts the common type of the two branches, matching the evaluator. In
+  particular `ifelse(year > 0, year, NA)` is a clean way to blank out
+  sentinel years.
+
+## vectra 0.8.1
+
+### Polygon self-overlay
+
+- `spatial_overlay(x)` splits a polygon `sf` layer along all its own
+  overlaps into disjoint pieces (the “Union (single layer)” overlay),
+  returning a lazy node with one row per piece per covering polygon.
+  Resolve the duplicates with a grouped
+  [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)/[`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  – e.g. earliest designation year wins,
+  `group_by(piece_id) |> slice_min(year)`. The overlay runs in C on the
+  GEOS C API (via `libgeos`). Each feature is parsed once, in parallel –
+  repaired and snapped to a fixed-precision grid – then features are
+  grouped into connected components from their bounding boxes. Each
+  component is one overlay job whose boundary linework is noded once and
+  polygonised into faces (a single noding pass, so cost tracks the
+  number of pieces, not how deeply polygons overlap); the few components
+  too large for the memory budget are tiled over their own extent and
+  clipped, so no single noding pass is ever large. Jobs run one per
+  OpenMP thread (`threads`) and stream to a `.vtr` in batches sized to a
+  `mem_limit` budget, so peak memory stays bounded regardless of layer
+  size. The snapping grid is derived from the data’s coordinate
+  magnitude and checked against a coverage invariant (the piece areas
+  covering an input sum to its area), so pieces come out disjoint and
+  their areas reconstruct the union. Scales to layers a single
+  [`sf::st_intersection()`](https://r-spatial.github.io/sf/reference/geos_binary_ops.html)
+  cannot hold at once (a 470k marine-protection layer overlays in
+  bounded memory where the in-memory call exhausts RAM).
+
+## vectra 0.8.0
+
+### Group-aware slicing
+
+- [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  and
+  [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  now respect
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md):
+  they keep the n smallest/largest rows *within each group* and return
+  the whole winning row (every column, including geometry carried as a
+  string), rather than a global top-n. `with_ties = FALSE` returns
+  exactly n per group via a deterministic ordered `row_number()`;
+  `with_ties = TRUE` keeps rows tied at the nth value. Previously a
+  grouped
+  [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)/[`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  silently ignored the grouping and returned a single global result.
+- `row_number()` accepts an order column: `row_number(col)` and
+  `row_number(desc(col))` assign a deterministic 1..n within each
+  partition, ordered by the column (the unordered `row_number()` is
+  unchanged). `rank(desc(col))` is also supported.
+
+### Streamed spatial operations
+
+- `spatial_map(x, fn)` streams a lazy query through an `sf` transform
+  (buffer, centroid, CRS transform, simplify, …) one batch at a time and
+  returns a new lazy node, so a per-feature geometry operation runs on a
+  table larger than RAM at one-batch peak memory.
+- `spatial_join(x, y, join)` joins a streamed left side `x` against a
+  small resident `sf` object `y` with an `sf` binary predicate
+  (`st_intersects` by default): the spatial analogue of a hash join with
+  the small side resident. The dominant use is tagging a huge point set
+  with the polygon it falls in. Both-sides-huge joins compose with
+  `offload(by = ...)`: partition on a spatial grid key, join each shard,
+  recombine.
+- `collect_sf(x)` materializes a spatial query as an `sf` object.
+- Geometry rides through the engine as hex-encoded WKB in an ordinary
+  string column (no new column type), losslessly round-tripped; the CRS
+  is carried on the node. Topology stays with `sf`/GEOS — `sf` is an
+  optional dependency (Suggests).
+
 ## vectra 0.7.1
 
 CRAN release: 2026-06-11

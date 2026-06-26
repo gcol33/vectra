@@ -12,8 +12,8 @@
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><link href="extra.css" rel="stylesheet">
 <meta property="og:title" content="Columnar Query Engine for Larger-than-RAM Data">
-<meta name="description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter(), select(), mutate(), group_by(), summarise(), joins, window functions) and common aggregations (n(), sum(), mean(), min(), max(), sd(), first(), last()) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr). Reads and writes GeoTIFF (including tiled and BigTIFF layouts) and a tiled raster format (.vec) with overview pyramids and time cubes for larger-than-RAM raster data.">
-<meta property="og:description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter(), select(), mutate(), group_by(), summarise(), joins, window functions) and common aggregations (n(), sum(), mean(), min(), max(), sd(), first(), last()) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr). Reads and writes GeoTIFF (including tiled and BigTIFF layouts) and a tiled raster format (.vec) with overview pyramids and time cubes for larger-than-RAM raster data.">
+<meta name="description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter(), select(), mutate(), group_by(), summarise(), joins, window functions) and common aggregations (n(), sum(), mean(), min(), max(), sd(), first(), last()) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr). Reads and writes GeoTIFF (including tiled and BigTIFF layouts) and a tiled raster format (.vec) with overview pyramids and time cubes for larger-than-RAM raster data. Streams vector operations (spatial transforms, point-in-polygon and nearest-feature joins including a two-sided grid-partitioned join, select-by-location, clip, erase, dissolve, rasterization, polygonization, and contouring) through sf, and runs raster operations (zonal statistics, focal windows, terrain derivatives, resample or reproject warp, polygon masking, map algebra, and mosaicking) in native C or over the tiled .vec format, one batch or tile at a time for data larger than RAM.">
+<meta property="og:description" content="A minimal columnar query engine with lazy execution on datasets larger than RAM. Provides dplyr-like verbs (filter(), select(), mutate(), group_by(), summarise(), joins, window functions) and common aggregations (n(), sum(), mean(), min(), max(), sd(), first(), last()) backed by a pure C11 pull-based execution engine and a custom on-disk format (.vtr). Reads and writes GeoTIFF (including tiled and BigTIFF layouts) and a tiled raster format (.vec) with overview pyramids and time cubes for larger-than-RAM raster data. Streams vector operations (spatial transforms, point-in-polygon and nearest-feature joins including a two-sided grid-partitioned join, select-by-location, clip, erase, dissolve, rasterization, polygonization, and contouring) through sf, and runs raster operations (zonal statistics, focal windows, terrain derivatives, resample or reproject warp, polygon masking, map algebra, and mosaicking) in native C or over the tiled .vec format, one batch or tile at a time for data larger than RAM.">
 </head>
 <body>
 <p>
@@ -37,7 +37,7 @@
 
     <a class="navbar-brand me-2" href="index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.7.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -50,6 +50,8 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="articles/quickstart.html">Getting Started with vectra</a></li>
+    <li><a class="dropdown-item" href="articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="articles/streaming-spatial.html">Streaming spatial operations</a></li>
     <li><a class="dropdown-item" href="articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="articles/joins.html">Joins</a></li>

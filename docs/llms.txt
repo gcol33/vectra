@@ -386,6 +386,50 @@ Read and write .vec rasters and time cubes out of core
 - [`vec_to_tiff()`](https://gillescolling.com/vectra/reference/vec_to_tiff.md)
   : Export a .vec raster to GeoTIFF
 
+## Spatial operations
+
+Stream sf vector operations one batch at a time, for vector data larger
+than RAM
+
+- [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
+  : Stream a query through an sf transform
+- [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  : Spatial join a streamed query against a resident sf object
+- [`grid()`](https://gillescolling.com/vectra/reference/grid.md) :
+  Define a uniform grid for a partitioned spatial join
+- [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
+  : Keep streamed rows by their spatial relation to a resident layer
+- [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md)
+  : Clip or erase a streamed layer against a resident mask
+- [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
+  : Dissolve geometries by group
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  : Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)
+- [`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md)
+  : Rasterize a streamed point layer onto a fixed grid
+- [`polygonize()`](https://gillescolling.com/vectra/reference/polygonize.md)
+  : Vectorise a raster into polygons
+- [`contours()`](https://gillescolling.com/vectra/reference/contours.md)
+  : Extract contour iso-lines from a streamed raster
+- [`zonal()`](https://gillescolling.com/vectra/reference/zonal.md) :
+  Summarise raster values within zones
+- [`focal()`](https://gillescolling.com/vectra/reference/focal.md) :
+  Moving-window (focal) statistics over a streamed raster
+- [`terrain()`](https://gillescolling.com/vectra/reference/terrain.md) :
+  Terrain derivatives from a streamed elevation raster
+- [`warp()`](https://gillescolling.com/vectra/reference/warp.md) :
+  Resample or reproject a streamed raster onto a target grid
+- [`mask()`](https://gillescolling.com/vectra/reference/mask.md) : Mask
+  a streamed raster to a polygon layer
+- [`mosaic()`](https://gillescolling.com/vectra/reference/mosaic.md) :
+  Merge aligned rasters onto a common grid
+- [`rast_calc()`](https://gillescolling.com/vectra/reference/rast_calc.md)
+  : Cellwise calculation over aligned rasters (map algebra)
+- [`proximity()`](https://gillescolling.com/vectra/reference/proximity.md)
+  : Euclidean distance to the nearest feature (proximity)
+- [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+  : Materialize a spatial query as an sf object
+
 ## File operations
 
 Incremental updates to .vtr files
@@ -531,6 +575,10 @@ Spill a query to disk and stream it back, for out-of-core fits
 
 - [Getting Started with
   vectra](https://gillescolling.com/vectra/articles/quickstart.md):
+- [Out-of-core GIS with
+  vectra](https://gillescolling.com/vectra/articles/spatial.md):
+- [Streaming spatial
+  operations](https://gillescolling.com/vectra/articles/streaming-spatial.md):
 - [vectra Engine
   Reference](https://gillescolling.com/vectra/articles/engine.md):
 - [Format

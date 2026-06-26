@@ -43,6 +43,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 obs_path <- tempfile(fileext = ".vtr")
 sites_path <- tempfile(fileext = ".vtr")

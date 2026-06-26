@@ -84,6 +84,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 set.seed(42)
 

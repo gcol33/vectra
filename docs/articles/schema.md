@@ -68,6 +68,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 # Fact table: field observations
 obs_path <- tempfile(fileext = ".vtr")

@@ -36,6 +36,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 # Write mtcars to .vtr, then read it back lazily
 f <- tempfile(fileext = ".vtr")

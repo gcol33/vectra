@@ -4,6 +4,10 @@
 
 - [Getting Started with
   vectra](https://gillescolling.com/vectra/articles/quickstart.md):
+- [Out-of-core GIS with
+  vectra](https://gillescolling.com/vectra/articles/spatial.md):
+- [Streaming spatial
+  operations](https://gillescolling.com/vectra/articles/streaming-spatial.md):
 - [vectra Engine
   Reference](https://gillescolling.com/vectra/articles/engine.md):
 - [Format

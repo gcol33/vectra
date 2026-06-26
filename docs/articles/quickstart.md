@@ -2,79 +2,70 @@
 
 ## Introduction
 
-vectra is a columnar query engine for R. It stores data in a custom
-binary format (`.vtr`), reads it lazily, and processes it batch-by-batch
-through a C11 execution engine. The user-facing API looks like dplyr:
-you chain
+vectra is a columnar query engine for R. It stores data in a binary
+columnar format (`.vtr`), reads it lazily, and processes it batch by
+batch through a C11 execution engine. The API mirrors dplyr: chain
 [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
 [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
 [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md),
 [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md),
-and the rest. But nothing actually runs until you call
+and the rest, and nothing runs until
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 That call pulls row groups through a tree of plan nodes, each consuming
-and producing fixed-size batches. Memory use stays roughly constant
-regardless of how large the file is.
+and producing fixed-size batches, so memory use stays roughly constant
+as the file grows.
 
 The execution model is pull-based. When
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
-fires, the root node calls `next_batch()` on its child, which calls its
-own child, and so on down to the scan node that reads from disk. Each
-node transforms one batch and passes it upstream. Filtering uses
-selection vectors rather than copying rows, so a filter over a
+fires, the root node calls `next_batch()` on its child, down to the scan
+node that reads from disk; each node transforms one batch and passes it
+upstream. Filtering uses selection vectors, so a filter over a
 billion-row file touches only the matching indices. Sorting spills to
-temporary files and merges via a k-way min-heap when data exceeds 1 GB.
-Aggregation uses hash tables that grow proportionally to the number of
-groups, not the number of input rows. The engine knows four column
-types: 64-bit integers, doubles, booleans, and variable-length strings,
-each with a separate validity bitmap for NA tracking.
+temporary files and merges with a k-way heap. Aggregation uses hash
+tables sized to the number of groups. The engine carries four column
+types (64-bit integers, doubles, booleans, variable-length strings),
+each with a validity bitmap for NA.
 
-The question of when to reach for vectra over base R, dplyr, data.table,
-or arrow comes down to working set size and workflow. If your data fits
-comfortably in RAM and you prefer in-memory semantics, dplyr and
-data.table are mature, fast, and well-supported. Arrow’s
-`open_dataset()` handles partitioned Parquet and multi-file scans well
-and interoperates with the broader Arrow ecosystem (Spark, DuckDB,
-Flight). vectra fills a different niche: dplyr syntax on single-file
-storage with memory-bounded execution and no heavy compiled
-dependencies. The entire C codebase compiles from C11 source with no
-external library dependencies — compression and deflate support are
-vendored in the package itself. There is no C++ compiler requirement, no
-Boost, no protobuf. A 20 GB `.vtr` file processes on a laptop with 8 GB
-of RAM because the scan node reads one row group at a time and the
-downstream pipeline never holds more than two batches in memory
-simultaneously.
+Compression and encoding run through the vendored tdc codec at write
+time, per column per row group. Per-row-group statistics (min, max, null
+count) are attached to the container index, so the scan node skips row
+groups a predicate excludes before decoding them. Optional `.vtri` hash
+indexes accelerate equality predicates to O(1) row-group lookup. The
+whole C codebase compiles from C11 with no external library link, so a
+20 GB `.vtr` processes on a laptop because the scan reads one row group
+at a time and the pipeline holds at most two batches at once.
 
-The on-disk format uses dictionary encoding for low-cardinality string
-columns, delta encoding for monotonic integer sequences, and Zstandard
-compression at the byte level. File sizes are competitive with Parquet
-for typical tabular workloads. Zone-map statistics (per-row-group
-min/max) are stored in the header, enabling the scan node to skip
-irrelevant row groups before decompressing any column data. Optional
-hash indexes stored as `.vtri` sidecar files accelerate equality
-predicates to O(1) row group lookup.
+Three pictures before the code: what streaming buys, what has to fit in
+RAM, and how a lazy plan pulls one batch through.
 
-This vignette is a taste test. Each section introduces a feature area
-with runnable examples, then points to the relevant deep-dive vignette
-for full coverage. All code uses tempfiles and built-in datasets, so you
-can run every chunk on any machine with vectra installed.
+The in-memory route holds the whole working set, so its footprint climbs
+with the file and eventually meets the RAM limit. The streamed route
+holds one batch, so the line stays flat. What has to fit at once is the
+difference.
+
+An in-memory pipeline keeps the source, a working copy, and the R
+session live together. A streamed pipeline keeps one batch and the R
+session. The plan that decides which one you get is lazy until
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
+
+The verbs below build that plan. Each section introduces a feature area
+with runnable examples, then points to the deep-dive vignette for full
+coverage. All code uses tempfiles and built-in datasets, so every chunk
+runs on any machine with vectra installed.
 
 ## Writing and reading data
 
 vectra uses a binary columnar format with the `.vtr` extension. A `.vtr`
-file contains a header (format version, column schema, and row group
-count), a row group index for fast seeking, and then the actual column
-data per row group. Each column within a row group is stored as a typed
-array with a validity bitmap for NA values. The current format version
-(v4) applies a two-stage encoding stack per column per row group. The
-first stage is a logical encoding: DICTIONARY for string columns where
-fewer than 50% of values are unique (the dictionary itself is stored
-once, and index runs are RLE-compressed), DELTA for int64 columns with
-monotonically increasing values (storing first value plus deltas), or
-PLAIN for everything else. The second stage is byte-level compression:
-Zstandard when the compressed output is smaller than the input and the
-raw data exceeds 64 bytes, or NONE otherwise. The file reader handles v1
-through v4 transparently; the writer always produces v4.
+file is a typed container: a magic header, an attached column schema,
+one self-describing record per column per row group, and a trailing
+row-group index for fast seeking. Each column within a row group is
+stored as a typed array with a validity bitmap for NA values. Encoding
+and compression are handled per column per row group by the vendored tdc
+codec, which derives a specification (a model, a transform chain, and an
+entropy stage) from the requested compression level and emits one
+self-describing record. Per-row-group statistics (min, max, null count)
+are attached to the index so the scan node can prune row groups a
+predicate excludes before decoding them.
 
 Write any data.frame to `.vtr` with
 [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md).
@@ -92,6 +83,9 @@ library(vectra)
 #> The following object is masked from 'package:stats':
 #> 
 #>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
@@ -2053,6 +2047,29 @@ tbl(f) |> glimpse()
 #> $ gear            <NA> 4, 4, 4, 3, 3
 #> $ carb            <NA> 4, 4, 1, 1, 2
 ```
+
+## Where to go next
+
+This vignette is the fast path through the engine. Each area has a
+dedicated vignette with full coverage:
+
+- [Out-of-core
+  GIS](https://gillescolling.com/vectra/articles/spatial.md) for the
+  streamed spatial toolbox (filter, clip, rasterize, zonal, focal,
+  terrain, warp, partitioned spatial join).
+
+- [The execution
+  engine](https://gillescolling.com/vectra/articles/engine.md) for the
+  pull-based plan in depth.
+
+- [Joins](https://gillescolling.com/vectra/articles/joins.md), [string
+  operations](https://gillescolling.com/vectra/articles/string-ops.md),
+  [indexing](https://gillescolling.com/vectra/articles/indexing.md), and
+  [larger-than-RAM
+  strategy](https://gillescolling.com/vectra/articles/large-data.md) for
+  the verb families this tour samples.
+
+- The function reference for the full API.
 
 ## Cleanup
 
