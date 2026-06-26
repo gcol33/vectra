@@ -400,6 +400,9 @@ whose memory can be bounded, and names the ones it cannot.
 
 ## Where to go next
 
+- [Streaming spatial operations](streaming-spatial.html) for the hands-on
+  companion: every vector verb run end to end on a real layer, with runnable
+  code and figures.
 - [Larger-than-RAM strategy](large-data.html) for the spill and partition tiers
   in depth.
 - [Offloading](offload.html) for the cost grades the spatial tiers reuse.
