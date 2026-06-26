@@ -23,6 +23,42 @@
   strips so the whole grid is never resident. Squared distances scale by the x
   and y resolution, so the result is exact on anisotropic cells.
 
+## Native libgeos compute paths
+
+* `spatial_filter()`, `spatial_join()`, `spatial_clip()`, and
+  `spatial_dissolve()` now run their geometry operation natively on the GEOS C
+  API (via `libgeos`) straight off the hex-WKB geometry column, with no per-batch
+  round-trip through `sf`. The resident side -- the locator layer, the join
+  target, the clip mask -- is parsed once into a GEOS spatial index and each
+  streamed batch is tested, matched, or cut in C, parallel across rows.
+  `spatial_filter()` and `spatial_join()` cover the topological predicates
+  (intersects, within, contains, overlaps, covers, covered by, touches,
+  crosses); `spatial_join()` returns the per-row match lists from C and attaches
+  the resident attributes in R without decoding the left side.
+* The native predicate set extends beyond the topological ones: `equals`,
+  within-distance (`sf::st_is_within_distance`, radius passed as `dist =`, found
+  by querying the index with each feature's envelope grown by the radius), and,
+  for `spatial_join()`, nearest feature (`sf::st_nearest_feature`, one resident
+  match per row via the index's nearest-neighbour traversal). `spatial_filter()`
+  also runs `disjoint` natively (a row matches when it is disjoint from at least
+  one resident feature). A disjoint *join* keeps the `sf` path, since its matches
+  are the bounding-box complement a spatial index cannot prune.
+* Coordinate-assembled (`coords`) point input runs natively too: each point is
+  built in C from its x/y columns and matched against the index, instead of being
+  assembled into an `sf` layer per batch. This covers `spatial_filter()` (every
+  predicate but disjoint, which stays on `sf` as it does for the join) and
+  `spatial_join()` (topological, within-distance, and nearest, with the emitted
+  point geometry also built in C).
+* `zonal()` with polygon zones now assigns each pixel centre to its polygon
+  natively: the polygons are parsed once into the index and every tile-row
+  strip's centres are located in C, so `sf` is touched only to read the polygons
+  in. Geographic polygons with spherical geometry on (`sf::sf_use_s2()`) keep the
+  `sf` point-in-polygon path.
+* The native paths run on projected or unprojected planar data, where they equal
+  the previous `sf` result exactly. Geographic coordinates with spherical
+  geometry on (`sf::sf_use_s2()`), a disjoint join, and extra `sf::st_union()` /
+  `sf::st_join()` arguments keep the `sf` path, so its semantics are unchanged.
+
 ## Documentation
 
 * New `vignette("spatial")` walks the out-of-core GIS toolbox as one workflow,

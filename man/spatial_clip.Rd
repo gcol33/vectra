@@ -61,8 +61,11 @@ flows past one batch at a time.
 \details{
 Geometry travels through the engine as hex-encoded WKB in a string column and
 the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
-Topology is \pkg{sf}/GEOS's; vectra supplies the streaming. When \code{mask}
-carries no CRS it inherits the stream's.
+On projected or unprojected planar data the cut runs natively on the GEOS C
+API straight off the hex-WKB column (the mask parsed once); geographic
+coordinates with spherical geometry on (\code{sf::sf_use_s2()}) and
+coordinate-assembled (\code{coords}) input cut through \pkg{sf} instead. When
+\code{mask} carries no CRS it inherits the stream's.
 }
 \examples{
 \dontshow{if (requireNamespace("sf", quietly = TRUE)) withAutoprint(\{ # examplesIf}

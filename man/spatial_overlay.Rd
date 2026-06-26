@@ -9,6 +9,7 @@ spatial_overlay(
   vars = NULL,
   piece = "piece_id",
   geom = "geometry",
+  grid = NULL,
   flush_rows = NULL,
   mem_limit = NULL,
   threads = NULL,
@@ -26,6 +27,14 @@ output narrow.}
 you group by to resolve overlaps). Default \code{"piece_id"}.}
 
 \item{geom}{Name of the output hex-WKB geometry column. Default \code{"geometry"}.}
+
+\item{grid}{Fixed-precision snapping grid size in CRS units. Coordinates are
+snapped to this grid before noding so near-duplicate shared boundaries merge
+into one. \code{NULL} (the default) derives it from coordinate magnitude
+(\code{max(abs(st_bbox(x))) * 3e-8}), which suits projected layers. Pass a number
+to override when that default is too coarse for fine geometry (or too coarse
+because an outlier coordinate inflated the magnitude), or \code{0} to disable
+snapping entirely.}
 
 \item{flush_rows}{Exploded rows buffered before a spill flush. Defaults to
 \code{getOption("vectra.spatial_flush", 5e5)}.}

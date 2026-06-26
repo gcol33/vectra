@@ -12,7 +12,8 @@ spatial_filter(
   geom = "geometry",
   coords = NULL,
   crs = NA,
-  flush_rows = NULL
+  flush_rows = NULL,
+  ...
 )
 }
 \arguments{
@@ -44,6 +45,9 @@ CRS the upstream node carries, or unknown.}
 \item{flush_rows}{Transformed rows buffered before a spill flush. Larger
 values mean fewer, bigger temporary files. Defaults to
 \code{getOption("vectra.spatial_flush", 5e5)}.}
+
+\item{...}{Further arguments passed to \code{predicate}, e.g. \verb{dist =} for
+\link[sf:st_is_within_distance]{sf::st_is_within_distance}.}
 }
 \value{
 A \code{vectra_node} of the kept rows with \code{x}'s schema, backed by
@@ -60,9 +64,19 @@ left stream never materializes; \code{y} (a study region, habitat patches, a
 coastline buffer, ...) stays resident.
 }
 \details{
-Topology and CRS handling are \pkg{sf}'s; vectra supplies the stream. When
-\code{y} carries no CRS it inherits the stream's so the predicate does not reject
-on a mismatch.
+For the recognised predicates -- the topological ones (intersects, within,
+contains, overlaps, covers, covered by, touches, crosses), equals, disjoint,
+and within-distance (\link[sf:st_is_within_distance]{sf::st_is_within_distance}, whose radius is passed as
+\verb{dist =}) -- on projected or unprojected planar data, the test runs natively
+on the GEOS C API straight off the hex-WKB column: \code{y} is parsed once into a
+spatial index and each batch is tested in C, with no per-batch round-trip
+through \pkg{sf}. Coordinate-assembled (\code{coords}) point input runs natively
+too, building each point in C rather than through \pkg{sf}; disjoint is the
+one exception there (its matches are the bounding boxes the index prunes
+away) and keeps the \pkg{sf} loop, as it does for the join. Geographic
+coordinates with spherical geometry on (\code{sf::sf_use_s2()}) and any other
+predicate use \pkg{sf} instead, preserving its semantics. When \code{y} carries no
+CRS it inherits the stream's so the predicate does not reject on a mismatch.
 }
 \examples{
 \dontshow{if (requireNamespace("sf", quietly = TRUE)) withAutoprint(\{ # examplesIf}

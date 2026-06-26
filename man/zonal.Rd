@@ -57,9 +57,12 @@ any nodata pixel in a zone makes that zone's \code{sum}/\code{mean}/\code{min}/\
 \code{NA}, matching the resident behaviour. \code{count} always reports the number of
 non-nodata cells in the zone.
 
-Polygon zones delegate point-in-polygon to \pkg{sf} (an optional
-dependency); raster zones are fully \pkg{sf}-free. The zone raster must share
-the value raster's dimensions and geotransform.
+Polygon zones assign each pixel centre to a polygon natively on the GEOS C
+API (the polygons parsed once into a spatial index, every strip's centres
+located in C), so \pkg{sf} is touched only to read the polygons in; geographic
+polygons with spherical geometry on (\code{sf::sf_use_s2()}) keep the \pkg{sf}
+point-in-polygon path. Raster zones are fully \pkg{sf}-free. The zone raster
+must share the value raster's dimensions and geotransform.
 }
 \examples{
 # A value raster and an aligned 2x2-block zone raster on a 4x4 grid.

@@ -29,18 +29,14 @@
 #include <stdint.h>
 #include <string.h>
 #include "libgeos.h"
+#include "vtr_geos.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-static int geos_api_ready = 0;
-static void overlay_geos_init(void) {
-    if (!geos_api_ready) { libgeos_init_api(); geos_api_ready = 1; }
-}
-static void overlay_error_handler(const char *message, void *userdata) {
-    (void) message; (void) userdata;   /* errors surface as NULL returns we guard */
-}
+#define overlay_geos_init      vtr_geos_ensure_api
+#define overlay_error_handler  vtr_geos_quiet_handler
 
 /* ---- areal normalisation ------------------------------------------------- */
 
@@ -295,8 +291,14 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
             if (g != NULL && grid > 0.0) {
                 GEOSGeometry *gs = GEOSGeom_setPrecision_r(ctx, g, grid, 0);
                 GEOSGeom_destroy_r(ctx, g);
-                g = (gs != NULL) ? areal_only(ctx, gs) : NULL;
+                /* setPrecision can fold a ring onto itself and return invalid,
+                 * self-overlapping geometry whose GEOSArea double-counts the
+                 * overlap; re-validate so the snapped area and the noded pieces
+                 * built from its boundary reconstruct each other. */
+                GEOSGeometry *gv = (gs != NULL) ? GEOSMakeValid_r(ctx, gs) : NULL;
                 if (gs != NULL) GEOSGeom_destroy_r(ctx, gs);
+                g = (gv != NULL) ? areal_only(ctx, gv) : NULL;
+                if (gv != NULL) GEOSGeom_destroy_r(ctx, gv);
             }
             if (g == NULL) continue;
             double xmin, ymin, xmax, ymax;

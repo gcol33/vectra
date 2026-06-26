@@ -62,7 +62,10 @@ into one feature.
 \details{
 Geometry travels through the engine as hex-encoded WKB in a string column and
 the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
-Topology is \pkg{sf}/GEOS's; vectra supplies the streaming partition. The
+On projected or unprojected planar data each group is unioned natively on the
+GEOS C API straight off the hex-WKB column; geographic coordinates with
+spherical geometry on (\code{sf::sf_use_s2()}), or any extra \code{\link[sf:st_union]{sf::st_union()}}
+arguments (e.g. \code{is_coverage = TRUE}), union through \pkg{sf} instead. The
 \pkg{sf} package is an optional dependency (Suggests).
 }
 \examples{

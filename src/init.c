@@ -95,6 +95,16 @@ SEXP C_geos_version(void);
 SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp);
 SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp);
 
+/* GEOS-native streaming spatial verbs (vtr_spatial.c). */
+SEXP C_geos_locator_build(SEXP wkb_list);
+SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp, SEXP negate_sexp, SEXP dist_sexp, SEXP nthreads_sexp);
+SEXP C_geos_join(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp, SEXP dist_sexp, SEXP nthreads_sexp);
+SEXP C_geos_nearest(SEXP loc_ptr, SEXP batch_hex, SEXP nthreads_sexp);
+SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_sexp);
+SEXP C_geos_union_hex(SEXP batch_hex);
+SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp, SEXP dist_sexp, SEXP want_all_sexp, SEXP nthreads_sexp);
+SEXP C_geos_points_to_hex(SEXP x_sexp, SEXP y_sexp);
+
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
     {"C_scan_node",    (DL_FUNC) &C_scan_node,     1},
@@ -162,6 +172,14 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_geos_version",             (DL_FUNC) &C_geos_version,             0},
     {"C_overlay_partition",        (DL_FUNC) &C_overlay_partition,        3},
     {"C_overlay_run",              (DL_FUNC) &C_overlay_run,              4},
+    {"C_geos_locator_build",       (DL_FUNC) &C_geos_locator_build,       1},
+    {"C_geos_filter",              (DL_FUNC) &C_geos_filter,              6},
+    {"C_geos_join",                (DL_FUNC) &C_geos_join,                5},
+    {"C_geos_nearest",             (DL_FUNC) &C_geos_nearest,             3},
+    {"C_geos_clip",                (DL_FUNC) &C_geos_clip,                4},
+    {"C_geos_union_hex",           (DL_FUNC) &C_geos_union_hex,           1},
+    {"C_geos_locate_xy",           (DL_FUNC) &C_geos_locate_xy,           7},
+    {"C_geos_points_to_hex",       (DL_FUNC) &C_geos_points_to_hex,       2},
     {"C_vecr_writer_open",         (DL_FUNC) &C_vecr_writer_open,         9},
     {"C_vecr_writer_write_strip",  (DL_FUNC) &C_vecr_writer_write_strip,  4},
     {"C_vecr_writer_finish",       (DL_FUNC) &C_vecr_writer_finish,       1},

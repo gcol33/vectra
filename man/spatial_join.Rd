@@ -81,6 +81,20 @@ RAM. The dominant real workload it serves is tagging huge point sets with the
 polygon they fall in.
 }
 \details{
+For the recognised predicates -- the topological ones (intersects, within,
+contains, overlaps, covers, covered by, touches, crosses), equals,
+within-distance (\link[sf:st_is_within_distance]{sf::st_is_within_distance}, radius passed as \verb{dist =}), and
+nearest feature (\link[sf:st_nearest_feature]{sf::st_nearest_feature}) -- on projected or unprojected
+planar data, the match runs natively on the GEOS C API straight off the
+hex-WKB column: \code{y} is parsed once into a spatial index, each batch's matches
+come back from C, and \code{y}'s attributes are attached in R without decoding the
+left side to \pkg{sf}. Coordinate-assembled (\code{coords}) point input runs
+natively too, building each point in C (the emitted point geometry is built in
+C as well). Geographic coordinates with spherical geometry on
+(\code{sf::sf_use_s2()}), a disjoint join (whose matches are the bounding-box
+complement an index cannot prune), and other extra \code{\link[sf:st_join]{sf::st_join()}} arguments
+use \pkg{sf} instead, preserving its semantics.
+
 When both sides are larger than RAM, pass \code{partition = grid(cellsize)} and a
 streamed \code{vectra_node} as \code{y}: both inputs are binned to a uniform spatial
 grid, then joined one shard at a time. Each left feature is assigned to the

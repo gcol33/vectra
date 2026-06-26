@@ -171,6 +171,85 @@
   .coerce_for_vtr(df)
 }
 
+# -- native libgeos compute paths ---------------------------------------------
+
+# Worker count for the per-batch GEOS loops, mirroring the overlay convention.
+.spatial_threads <- function()
+  max(as.integer(getOption("vectra.spatial_threads",
+                           min(parallel::detectCores(), 8L))), 1L)
+
+# Parse a resident sf/sfc side once into a GEOS locator (an external pointer
+# holding the parsed geometries plus an STRtree), reused across every streamed
+# batch. Geometry crosses to C as raw WKB; sf is touched only here, on the small
+# resident side, not in the per-batch loop.
+.geos_locator <- function(y) {
+  g <- if (inherits(y, "sf")) sf::st_geometry(y) else y
+  .Call(C_geos_locator_build, sf::st_as_binary(g, EWKB = FALSE))
+}
+
+# Native GEOS computes in the planar frame. sf computes geographic coordinates
+# on the sphere (s2) when `sf_use_s2()` is on, so the native path matches the sf
+# path only for projected data, or when s2 is off (both then planar via GEOS),
+# or when the CRS is unknown (sf is planar too). Geographic data with s2 on
+# keeps the spherical sf path.
+.geos_planar_ok <- function(crs) {
+  ll <- tryCatch(sf::st_is_longlat(crs), error = function(e) NA)
+  if (is.na(ll)) return(TRUE)
+  !ll || !sf::sf_use_s2()
+}
+
+# Map an sf binary-predicate function to the native predicate code the C filter
+# understands, or NA when it is one the native path does not cover (the caller
+# then falls back to the sf loop). NULL means the default, st_intersects.
+.geos_pred_code <- function(predicate) {
+  if (is.null(predicate)) return(0L)
+  known <- c(st_intersects = 0L, st_within = 1L, st_contains = 2L,
+             st_overlaps = 3L, st_covers = 4L, st_covered_by = 5L,
+             st_touches = 6L, st_crosses = 7L, st_equals = 8L,
+             st_disjoint = 9L, st_is_within_distance = 10L)
+  for (nm in names(known))
+    if (identical(predicate, getExportedValue("sf", nm))) return(unname(known[[nm]]))
+  NA_integer_
+}
+
+# Pull the two coordinate columns from a batch as doubles (the raw-point input to
+# the native locate kernel), erroring if either is missing.
+.batch_xy <- function(chunk, coords) {
+  miss <- setdiff(coords, names(chunk))
+  if (length(miss))
+    stop(sprintf("coords column(s) not found: %s", paste(miss, collapse = ", ")))
+  list(x = as.numeric(chunk[[coords[1L]]]), y = as.numeric(chunk[[coords[2L]]]))
+}
+
+# Build one streamed spatial-join batch from the per-row match lists the C join
+# returns. `matches` is a list with one integer vector of 1-based resident-row
+# indices per left row; each left row is replicated once per match and the
+# resident attributes `y_attrs` attached. With `left`, an unmatched left row is
+# kept once padded with NA resident columns; otherwise it is dropped. Attribute
+# names shared by both sides get `suffix`, mirroring [sf::st_join()]. The left
+# geometry column rides through untouched (the left side is never decoded).
+.geos_join_assemble <- function(chunk, matches, y_attrs, left, suffix) {
+  nmatch <- lengths(matches)
+  reps   <- if (left) pmax(nmatch, 1L) else nmatch
+  left_idx  <- rep.int(seq_len(nrow(chunk)), reps)
+  right_idx <- unlist(lapply(seq_along(matches), function(i) {
+    mi <- matches[[i]]
+    if (length(mi)) mi else if (left) NA_integer_ else integer(0)
+  }), use.names = FALSE)
+  if (is.null(right_idx)) right_idx <- integer(0)
+
+  lout <- chunk[left_idx, , drop = FALSE]
+  rout <- y_attrs[right_idx, , drop = FALSE]
+  shared <- intersect(names(lout), names(rout))
+  if (length(shared)) {
+    names(lout)[match(shared, names(lout))] <- paste0(shared, suffix[1L])
+    names(rout)[match(shared, names(rout))] <- paste0(shared, suffix[2L])
+  }
+  out <- cbind(lout, rout, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
 # -- self-overlay (QGIS-style Union) ------------------------------------------
 
 # Fixed-precision grid (in CRS units) for the self-overlay. Snapping input
@@ -185,19 +264,24 @@
   mag * 3e-8
 }
 
-# Maximum per-input coverage error of an overlay result. For a correct disjoint
+# Per-input coverage error of an overlay result. For a correct disjoint
 # decomposition the piece areas covering each input must sum to that input's
 # area; this is the invariant the snapping grid is verified against. Uses the
 # piece and input areas the C engine returns, so no geometry is re-measured.
-.overlay_coverage_err <- function(res) {
+# Returns a data.frame keyed by the input's chunk-local index, so the caller can
+# map back to global rows and name the worst offenders, not just the scalar max.
+.overlay_coverage_detail <- function(res) {
   origins <- res[[2L]]; parea <- res[[3L]]; iarea <- res[[4L]]
-  if (!length(origins)) return(if (all(iarea == 0)) 0 else 1)
+  if (!length(origins))
+    return(data.frame(src = integer(0), cov = numeric(0),
+                      iarea = numeric(0), err = numeric(0)))
   idx <- rep.int(seq_along(origins), lengths(origins))
   src <- unlist(origins, use.names = FALSE)
   agg <- rowsum(parea[idx], group = src)
   cov <- numeric(length(iarea))
   cov[as.integer(rownames(agg))] <- agg[, 1L]
-  max(abs(cov - iarea) / pmax(iarea, 1))
+  data.frame(src = seq_along(iarea), cov = cov, iarea = iarea,
+             err = abs(cov - iarea) / pmax(iarea, 1))
 }
 
 # Memory model. The overlay cost of a tile is driven by the noding of its
@@ -400,6 +484,20 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
 #' RAM. The dominant real workload it serves is tagging huge point sets with the
 #' polygon they fall in.
 #'
+#' For the recognised predicates -- the topological ones (intersects, within,
+#' contains, overlaps, covers, covered by, touches, crosses), equals,
+#' within-distance ([sf::st_is_within_distance], radius passed as `dist =`), and
+#' nearest feature ([sf::st_nearest_feature]) -- on projected or unprojected
+#' planar data, the match runs natively on the GEOS C API straight off the
+#' hex-WKB column: `y` is parsed once into a spatial index, each batch's matches
+#' come back from C, and `y`'s attributes are attached in R without decoding the
+#' left side to \pkg{sf}. Coordinate-assembled (`coords`) point input runs
+#' natively too, building each point in C (the emitted point geometry is built in
+#' C as well). Geographic coordinates with spherical geometry on
+#' (`sf::sf_use_s2()`), a disjoint join (whose matches are the bounding-box
+#' complement an index cannot prune), and other extra [sf::st_join()] arguments
+#' use \pkg{sf} instead, preserving its semantics.
+#'
 #' When both sides are larger than RAM, pass `partition = grid(cellsize)` and a
 #' streamed `vectra_node` as `y`: both inputs are binned to a uniform spatial
 #' grid, then joined one shard at a time. Each left feature is assigned to the
@@ -497,6 +595,76 @@ spatial_join <- function(x, y, join = NULL, geom = "geometry", coords = NULL,
 
   if (!inherits(y, "sf"))
     stop("`y` must be an sf object (the resident right side of the join)")
+
+  # Native path: a recognised predicate and planar-equivalent data. `y` is parsed
+  # once into a GEOS locator; each batch's per-row matches come back from C and
+  # the resident attributes are joined on in R, so the streamed left side is
+  # never decoded to sf. `prep_batch(chunk, loc, nt)` returns a list of the
+  # (possibly geometry-augmented) left `chunk` and its per-row match lists.
+  run_native_join <- function(prep_batch) {
+    loc     <- .geos_locator(y)
+    y_attrs <- .coerce_for_vtr(as.data.frame(sf::st_drop_geometry(y)))
+    nt      <- .spatial_threads()
+    acc     <- .run_accumulator(fr)
+    nxt     <- .batch_cursor(x)
+    repeat {
+      chunk <- nxt(); if (is.null(chunk)) break
+      pb   <- prep_batch(chunk, loc, nt)
+      out  <- .geos_join_assemble(pb$chunk, pb$matches, y_attrs, left, suffix)
+      if (!identical(out_geom, geom) && geom %in% names(out))
+        names(out)[match(geom, names(out))] <- out_geom
+      gcol <- if (out_geom %in% names(out)) out_geom
+              else if (geom %in% names(out)) geom else NULL
+      if (!is.null(gcol))
+        out <- out[c(setdiff(names(out), gcol), gcol)]  # geometry last, as st_join
+      acc$push(.coerce_for_vtr(out))
+    }
+    acc$finish(crs = crs, empty_geom = out_geom)
+  }
+
+  # The streamed geometry reaches C as the batch's hex-WKB column (geom=) or as
+  # raw point coordinates built into points in C (coords=); both share the match
+  # assembly above. within-distance takes its radius through `...` (`dist =`);
+  # any other extra st_join argument, or disjoint (whose matches are the bbox
+  # complement the index cannot prune), falls back to sf.
+  if (.geos_planar_ok(crs)) {
+    nearest <- !length(dots) && identical(join, sf::st_nearest_feature)
+    code <- if (nearest) NA_integer_ else .geos_pred_code(join)
+    dist_val <- 0
+    if (!is.na(code) && code == 10L) {
+      dist_val <- dots$dist
+      if (is.null(dist_val) || length(setdiff(names(dots), "dist")))
+        code <- NA_integer_
+    } else if (length(dots) || (!is.na(code) && code == 9L)) {
+      code <- NA_integer_
+    }
+    if (nearest || !is.na(code)) {
+      d <- as.numeric(dist_val)
+      hex_matches <- function(hex, loc, nt)
+        if (nearest) {
+          near <- .Call(C_geos_nearest, loc, hex, nt)
+          lapply(near, function(k) if (is.na(k)) integer(0) else k)
+        } else .Call(C_geos_join, loc, hex, code, d, nt)
+      xy_matches <- function(xy, loc, nt)
+        if (nearest) {
+          near <- .Call(C_geos_locate_xy, loc, xy$x, xy$y, 11L, 0, FALSE, nt)
+          lapply(near, function(k) if (is.na(k)) integer(0) else k)
+        } else .Call(C_geos_locate_xy, loc, xy$x, xy$y, code, d, TRUE, nt)
+      if (is.null(coords))
+        return(run_native_join(function(chunk, loc, nt) {
+          if (!geom %in% names(chunk))
+            stop(sprintf("geometry column '%s' not found; pass geom= or coords=", geom))
+          list(chunk = chunk,
+               matches = hex_matches(as.character(chunk[[geom]]), loc, nt))
+        }))
+      return(run_native_join(function(chunk, loc, nt) {
+        xy <- .batch_xy(chunk, coords)
+        chunk[[out_geom]] <- .Call(C_geos_points_to_hex, xy$x, xy$y)
+        list(chunk = chunk, matches = xy_matches(xy, loc, nt))
+      }))
+    }
+  }
+
   batch_fn <- function(sb)
     do.call(sf::st_join,
             c(list(sb, y, join = join, left = left, suffix = suffix), dots))
@@ -725,9 +893,19 @@ print.vectra_grid <- function(x, ...) {
 #' left stream never materializes; `y` (a study region, habitat patches, a
 #' coastline buffer, ...) stays resident.
 #'
-#' Topology and CRS handling are \pkg{sf}'s; vectra supplies the stream. When
-#' `y` carries no CRS it inherits the stream's so the predicate does not reject
-#' on a mismatch.
+#' For the recognised predicates -- the topological ones (intersects, within,
+#' contains, overlaps, covers, covered by, touches, crosses), equals, disjoint,
+#' and within-distance ([sf::st_is_within_distance], whose radius is passed as
+#' `dist =`) -- on projected or unprojected planar data, the test runs natively
+#' on the GEOS C API straight off the hex-WKB column: `y` is parsed once into a
+#' spatial index and each batch is tested in C, with no per-batch round-trip
+#' through \pkg{sf}. Coordinate-assembled (`coords`) point input runs natively
+#' too, building each point in C rather than through \pkg{sf}; disjoint is the
+#' one exception there (its matches are the bounding boxes the index prunes
+#' away) and keeps the \pkg{sf} loop, as it does for the join. Geographic
+#' coordinates with spherical geometry on (`sf::sf_use_s2()`) and any other
+#' predicate use \pkg{sf} instead, preserving its semantics. When `y` carries no
+#' CRS it inherits the stream's so the predicate does not reject on a mismatch.
 #'
 #' @inheritParams spatial_map
 #' @param y An `sf` or `sfc` object: the resident locator layer to test against.
@@ -737,6 +915,8 @@ print.vectra_grid <- function(x, ...) {
 #'   at least one match against `y`.
 #' @param negate If `TRUE`, keep the rows with no match instead (the inverted
 #'   select-by-location). Default `FALSE`.
+#' @param ... Further arguments passed to `predicate`, e.g. `dist =` for
+#'   [sf::st_is_within_distance].
 #'
 #' @return A `vectra_node` of the kept rows with `x`'s schema, backed by
 #'   temporary `.vtr` spills and carrying the input CRS.
@@ -762,27 +942,77 @@ print.vectra_grid <- function(x, ...) {
 #' @export
 spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
                            geom = "geometry", coords = NULL, crs = NA,
-                           flush_rows = NULL) {
+                           flush_rows = NULL, ...) {
   .check_sf()
   if (!inherits(x, "vectra_node"))
     stop("`x` must be a vectra_node (the streamed left side)")
   if (!inherits(y, "sf") && !inherits(y, "sfc"))
     stop("`y` must be an sf or sfc object (the resident locator layer)")
-  if (is.null(predicate)) predicate <- sf::st_intersects
   crs <- .resolve_crs(x, crs)
   y   <- .align_resident_crs(y, crs)
   fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
-
-  nxt <- .batch_cursor(x)
+  dots <- list(...)
   acc <- .run_accumulator(fr)
+  empty_geom <- if (is.null(coords)) geom else "geometry"
+
+  # Native path: a recognised predicate and hex-WKB geometry. The resident side
+  # is parsed once into a GEOS locator and each batch is tested in C straight off
+  # the column. `st_is_within_distance` takes its radius through `...` (`dist =`);
+  # any other extra predicate argument, coordinate-assembled (`coords`) input, or
+  # an unrecognised predicate falls back to the per-batch sf loop.
+  code <- .geos_pred_code(predicate)
+  dist_val <- 0
+  if (!is.na(code) && code == 10L) {
+    dist_val <- dots$dist
+    if (is.null(dist_val) || length(setdiff(names(dots), "dist")))
+      code <- NA_integer_
+  } else if (length(dots)) {
+    code <- NA_integer_
+  }
+  if (is.null(coords) && !is.na(code) && .geos_planar_ok(crs)) {
+    loc <- .geos_locator(y)
+    nt  <- .spatial_threads()
+    nxt <- .batch_cursor(x)
+    repeat {
+      chunk <- nxt(); if (is.null(chunk)) break
+      if (!geom %in% names(chunk))
+        stop(sprintf("geometry column '%s' not found; pass geom= or coords=", geom))
+      hit <- .Call(C_geos_filter, loc, as.character(chunk[[geom]]),
+                   code, isTRUE(negate), as.numeric(dist_val), nt)
+      acc$push(.coerce_for_vtr(chunk[hit, , drop = FALSE]))
+    }
+    return(acc$finish(crs = crs, empty_geom = empty_geom))
+  }
+
+  # Native coords path: raw x/y point columns matched in C with no per-batch sf.
+  # Disjoint (its matches are the bbox complement the index cannot prune) keeps
+  # the sf loop, as it does for the join.
+  if (!is.null(coords) && !is.na(code) && code != 9L && .geos_planar_ok(crs)) {
+    loc <- .geos_locator(y)
+    nt  <- .spatial_threads()
+    nxt <- .batch_cursor(x)
+    repeat {
+      chunk <- nxt(); if (is.null(chunk)) break
+      xy  <- .batch_xy(chunk, coords)
+      idx <- .Call(C_geos_locate_xy, loc, xy$x, xy$y, code,
+                   as.numeric(dist_val), FALSE, nt)
+      hit <- !is.na(idx)
+      if (negate) hit <- !hit
+      acc$push(.coerce_for_vtr(chunk[hit, , drop = FALSE]))
+    }
+    return(acc$finish(crs = crs, empty_geom = empty_geom))
+  }
+
+  if (is.null(predicate)) predicate <- sf::st_intersects
+  nxt <- .batch_cursor(x)
   repeat {
     chunk <- nxt(); if (is.null(chunk)) break
     sb  <- .sf_decode_chunk(chunk, geom, coords, crs)
-    hit <- lengths(predicate(sb, y)) > 0L
+    hit <- lengths(do.call(predicate, c(list(sb, y), dots))) > 0L
     if (negate) hit <- !hit
     acc$push(.coerce_for_vtr(chunk[hit, , drop = FALSE]))
   }
-  acc$finish(crs = crs, empty_geom = if (is.null(coords)) geom else "geometry")
+  acc$finish(crs = crs, empty_geom = empty_geom)
 }
 
 #' Clip or erase a streamed layer against a resident mask
@@ -798,8 +1028,11 @@ spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
 #' the CRS is carried on the returned node; use [collect_sf()] to materialize.
-#' Topology is \pkg{sf}/GEOS's; vectra supplies the streaming. When `mask`
-#' carries no CRS it inherits the stream's.
+#' On projected or unprojected planar data the cut runs natively on the GEOS C
+#' API straight off the hex-WKB column (the mask parsed once); geographic
+#' coordinates with spherical geometry on (`sf::sf_use_s2()`) and
+#' coordinate-assembled (`coords`) input cut through \pkg{sf} instead. When
+#' `mask` carries no CRS it inherits the stream's.
 #'
 #' @inheritParams spatial_map
 #' @param mask An `sf` or `sfc` object whose dissolved geometry clips (or, with
@@ -840,7 +1073,33 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
   crs    <- .resolve_crs(x, crs)
   mask   <- .align_resident_crs(mask, crs)
   mask_u <- sf::st_union(sf::st_geometry(mask))   # one resident mask geometry
-  op     <- if (erase) sf::st_difference else sf::st_intersection
+  if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+
+  # Native path: cut each batch's hex-WKB geometry against the resident mask in
+  # C (intersection to clip, difference to erase), parsing the mask once. The
+  # coordinate-assembled (`coords`) and spherical (geographic + s2) cases fall
+  # back to the per-batch sf loop.
+  if (is.null(coords) && .geos_planar_ok(crs)) {
+    loc <- .geos_locator(mask_u)
+    nt  <- .spatial_threads()
+    acc <- .run_accumulator(fr)
+    nxt <- .batch_cursor(x)
+    repeat {
+      chunk <- nxt(); if (is.null(chunk)) break
+      if (!geom %in% names(chunk))
+        stop(sprintf("geometry column '%s' not found; pass geom= or coords=", geom))
+      cut  <- .Call(C_geos_clip, loc, as.character(chunk[[geom]]),
+                    isTRUE(erase), nt)
+      keep <- !is.na(cut)
+      df   <- chunk[keep, setdiff(names(chunk), geom), drop = FALSE]
+      df[[out_geom]] <- cut[keep]
+      acc$push(.coerce_for_vtr(df))
+    }
+    return(acc$finish(crs = crs, empty_geom = out_geom))
+  }
+
+  op <- if (erase) sf::st_difference else sf::st_intersection
   # st_intersection/st_difference warn once per batch that attributes are
   # assumed spatially constant; that is the intended behaviour here, so mute
   # just that warning rather than letting it repeat for every streamed batch.
@@ -851,8 +1110,6 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
         if (grepl("assumed.*spatially constant", conditionMessage(w)))
           invokeRestart("muffleWarning")
       })
-  if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
@@ -883,7 +1140,10 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
 #' the CRS is carried on the returned node; use [collect_sf()] to materialize.
-#' Topology is \pkg{sf}/GEOS's; vectra supplies the streaming partition. The
+#' On projected or unprojected planar data each group is unioned natively on the
+#' GEOS C API straight off the hex-WKB column; geographic coordinates with
+#' spherical geometry on (`sf::sf_use_s2()`), or any extra [sf::st_union()]
+#' arguments (e.g. `is_coverage = TRUE`), union through \pkg{sf} instead. The
 #' \pkg{sf} package is an optional dependency (Suggests).
 #'
 #' @inheritParams spatial_map
@@ -954,13 +1214,22 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
   acc <- .run_accumulator(fr)
   for (lab in sort(names(res$runs))) {
     df <- collect(.concat_runs(res$runs[[lab]]))
-    sb <- .sf_decode_chunk(df, geom, NULL, crs)
-    u  <- do.call(sf::st_union, c(list(sf::st_geometry(sb)), dots))
+    # Native union off the hex-WKB column. Extra st_union arguments (e.g.
+    # is_coverage = TRUE) are not expressible through GEOSUnaryUnion, and
+    # geographic data with s2 on unions on the sphere, so both union through sf
+    # instead; the planar projected case unions natively.
+    if (length(dots) || !.geos_planar_ok(crs)) {
+      sb     <- .sf_decode_chunk(df, geom, NULL, crs)
+      u      <- do.call(sf::st_union, c(list(sf::st_geometry(sb)), dots))
+      u_hex  <- sf::st_as_binary(u, hex = TRUE)
+    } else {
+      u_hex  <- .Call(C_geos_union_hex, as.character(df[[geom]]))
+    }
     row <- if (is.null(by)) df[1, character(0), drop = FALSE]
            else df[1, by, drop = FALSE]
     if (!is.null(.fun))
       for (nm in names(.fun)) row[[nm]] <- .fun[[nm]](df)
-    row[[geom]] <- sf::st_as_binary(u, hex = TRUE)
+    row[[geom]] <- u_hex
     rownames(row) <- NULL
     acc$push(.coerce_for_vtr(row))
   }
@@ -1197,9 +1466,12 @@ rasterize <- function(x, template = NULL, field = NULL,
 #' `NA`, matching the resident behaviour. `count` always reports the number of
 #' non-nodata cells in the zone.
 #'
-#' Polygon zones delegate point-in-polygon to \pkg{sf} (an optional
-#' dependency); raster zones are fully \pkg{sf}-free. The zone raster must share
-#' the value raster's dimensions and geotransform.
+#' Polygon zones assign each pixel centre to a polygon natively on the GEOS C
+#' API (the polygons parsed once into a spatial index, every strip's centres
+#' located in C), so \pkg{sf} is touched only to read the polygons in; geographic
+#' polygons with spherical geometry on (`sf::sf_use_s2()`) keep the \pkg{sf}
+#' point-in-polygon path. Raster zones are fully \pkg{sf}-free. The zone raster
+#' must share the value raster's dimensions and geotransform.
 #'
 #' @param raster A `vectra_raster` (from [vec_open_raster()]) or a path to a
 #'   `.vec` raster holding the values to summarise.
@@ -1273,6 +1545,13 @@ zonal <- function(raster, zones, fun = "mean", band = 1L, zone_band = 1L,
     zones_g <- sf::st_geometry(zones)
     if (is.na(sf::st_crs(zones_g)) && !is.na(zcrs))
       zones_g <- sf::st_set_crs(zones_g, zcrs)
+    # Native point-in-polygon for each pixel centre, planar-gated like the other
+    # GEOS paths; spherical geographic zones (s2 on) keep the sf intersects loop.
+    native_zones <- .geos_planar_ok(zcrs)
+    if (native_zones) {
+      zloc <- .geos_locator(zones_g)
+      znt  <- .spatial_threads()
+    }
   }
 
   acc <- .zonal_acc()
@@ -1286,6 +1565,11 @@ zonal <- function(raster, zones, fun = "mean", band = 1L, zone_band = 1L,
       zm <- vec_read_window(zr, band = zone_band, cols = c(1L, W),
                             rows = c(r0, r1))
       z <- as.vector(zm)
+    } else if (native_zones) {
+      xy <- .zonal_strip_xy(gt, r0, r1, W)
+      first <- .Call(C_geos_locate_xy, zloc, as.numeric(xy$x), as.numeric(xy$y),
+                     0L, 0, FALSE, znt)
+      z <- zid[first]
     } else {
       xy  <- .zonal_strip_xy(gt, r0, r1, W)
       pts <- sf::st_as_sf(data.frame(x = xy$x, y = xy$y),
@@ -1872,6 +2156,13 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #' @param piece Name of the integer piece-id column added to the output (the key
 #'   you group by to resolve overlaps). Default `"piece_id"`.
 #' @param geom Name of the output hex-WKB geometry column. Default `"geometry"`.
+#' @param grid Fixed-precision snapping grid size in CRS units. Coordinates are
+#'   snapped to this grid before noding so near-duplicate shared boundaries merge
+#'   into one. `NULL` (the default) derives it from coordinate magnitude
+#'   (`max(abs(st_bbox(x))) * 3e-8`), which suits projected layers. Pass a number
+#'   to override when that default is too coarse for fine geometry (or too coarse
+#'   because an outlier coordinate inflated the magnitude), or `0` to disable
+#'   snapping entirely.
 #' @param flush_rows Exploded rows buffered before a spill flush. Defaults to
 #'   `getOption("vectra.spatial_flush", 5e5)`.
 #' @param mem_limit Approximate peak working-set budget in bytes. Components are
@@ -1907,7 +2198,7 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #'
 #' @export
 spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
-                            geom = "geometry", flush_rows = NULL,
+                            geom = "geometry", grid = NULL, flush_rows = NULL,
                             mem_limit = NULL, threads = NULL, quiet = TRUE) {
   .check_sf()
   if (!inherits(x, "sf"))
@@ -1931,7 +2222,13 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   # labelling all run in C on GEOS (via libgeos). Geometry stays compact (raw
   # WKB) in R.
   wkb  <- sf::st_as_binary(sf::st_geometry(x), EWKB = FALSE)
-  grid <- .overlay_grid(x)
+  if (is.null(grid)) {
+    grid <- .overlay_grid(x)
+  } else {
+    if (!is.numeric(grid) || length(grid) != 1L || !is.finite(grid) || grid < 0)
+      stop("`grid` must be a single non-negative number (CRS units), or NULL to derive it")
+    grid <- as.double(grid)
+  }
 
   mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit", .OVERLAY_MEM)
   nthreads <- threads   %||% getOption("vectra.overlay_threads",
@@ -1972,6 +2269,7 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   acc       <- .run_accumulator(fr)
   piece_off <- 0L
   cov_err   <- 0
+  worst     <- NULL                                  # top offending inputs by coverage error
   batch_budget <- max(mem / .OVERLAY_FACTOR, tile_bytes)
   pb <- if (!quiet) utils::txtProgressBar(0, length(jobs), style = 3) else NULL
 
@@ -1992,7 +2290,14 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
       rownames(df) <- NULL
       acc$push(.coerce_for_vtr(df))
       piece_off <<- piece_off + length(geoms)
-      cov_err <<- max(cov_err, .overlay_coverage_err(res))
+      det <- .overlay_coverage_detail(res)
+      if (nrow(det)) cov_err <<- max(cov_err, max(det$err))
+      bad <- det[det$err > 1e-4, , drop = FALSE]
+      if (nrow(bad)) {
+        bad$row <- gi[bad$src]
+        worst <<- rbind(worst, bad[, c("row", "err", "iarea", "cov")])
+        worst <<- worst[utils::head(order(worst$err, decreasing = TRUE), 50L), , drop = FALSE]
+      }
     }
   }
 
@@ -2006,8 +2311,19 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   if (length(batch)) run_batch(batch)
   if (!is.null(pb)) close(pb)
   if (piece_off == 0L) stop("overlay produced no polygonal pieces")
-  if (cov_err > 1e-4)
-    warning(sprintf("spatial_overlay: coverage rel-err %.2e exceeds 1e-4; the snapping grid (%.4g) may be off for this layer",
-                    cov_err, grid))
-  acc$finish(crs = crs, empty_geom = geom)
+  if (cov_err > 1e-4) {
+    rows <- if (!is.null(worst))
+      paste(utils::head(worst$row[order(worst$err, decreasing = TRUE)], 5L), collapse = ", ")
+    else "unknown"
+    warning(sprintf(paste0("spatial_overlay: coverage rel-err %.2e exceeds 1e-4; %d input(s) did not ",
+                           "reconstruct from their pieces (worst rows in `x`: %s). Their geometry is ",
+                           "finer than, or invalid after, the snapping grid (%.4g); pass grid= to adjust."),
+                    cov_err, if (is.null(worst)) 0L else nrow(worst), rows, grid),
+            call. = FALSE)
+  }
+  attr_node <- acc$finish(crs = crs, empty_geom = geom)
+  if (!is.null(worst))
+    attr(attr_node, "coverage_offenders") <-
+      worst[order(worst$err, decreasing = TRUE), , drop = FALSE]
+  attr_node
 }
