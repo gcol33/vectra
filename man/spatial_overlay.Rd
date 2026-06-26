@@ -10,6 +10,8 @@ spatial_overlay(
   piece = "piece_id",
   geom = "geometry",
   flush_rows = NULL,
+  mem_limit = NULL,
+  threads = NULL,
   quiet = TRUE
 )
 }
@@ -28,7 +30,17 @@ you group by to resolve overlaps). Default \code{"piece_id"}.}
 \item{flush_rows}{Exploded rows buffered before a spill flush. Defaults to
 \code{getOption("vectra.spatial_flush", 5e5)}.}
 
-\item{quiet}{If \code{FALSE}, show a text progress bar over the overlap clusters.}
+\item{mem_limit}{Approximate peak working-set budget in bytes. Components are
+grouped into chunks within this budget and each chunk is overlaid then
+spilled before the next, so memory stays bounded regardless of layer size.
+Raise it for more parallel throughput, lower it for tighter memory. Defaults
+to \code{getOption("vectra.overlay_mem_limit", 2e9)}.}
+
+\item{threads}{Number of OpenMP threads for the per-component overlay within a
+chunk. \code{0} (the default, via \code{getOption("vectra.overlay_threads", 0)}) uses
+all available cores.}
+
+\item{quiet}{If \code{FALSE}, show a text progress bar over the overlay chunks.}
 }
 \value{
 A \code{vectra_node} over the exploded overlay (one row per piece per

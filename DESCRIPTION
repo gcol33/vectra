@@ -25,7 +25,11 @@ SystemRequirements: GNU make
 Encoding: UTF-8
 Imports:
     tidyselect,
-    rlang
+    rlang,
+    libgeos,
+    parallel
+LinkingTo:
+    libgeos
 Roxygen: list(markdown = TRUE)
 Suggests:
     biglm,

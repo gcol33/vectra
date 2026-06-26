@@ -173,30 +173,74 @@
 
 # -- self-overlay (QGIS-style Union) ------------------------------------------
 
-# Connected components of the polygon overlap graph, via union-find over the
-# sparse adjacency from sf::st_intersects(). Only overlapping polygons can share
-# an overlay piece, so each component is overlaid independently -- exact tiling
-# with no tile-edge artefacts, and bounded memory.
-.overlap_components <- function(hits, n) {
-  parent <- seq_len(n)
-  find <- function(i) { while (parent[i] != i) i <- parent[i]; i }
-  for (i in seq_len(n)) for (j in hits[[i]]) if (j > i) {
-    ri <- find(i); rj <- find(j)
-    if (ri != rj) parent[rj] <- ri
-  }
-  vapply(seq_len(n), find, integer(1L))
+# Fixed-precision grid (in CRS units) for the self-overlay. Snapping input
+# coordinates to a grid this fine merges the near-duplicate boundaries that
+# overlapping polygons share, so the noded arrangement has no sliver faces. The
+# grid is derived from coordinate magnitude (not extent), keeping it stable
+# against far-flung outliers and invariant to units. Returns 0 when no sensible
+# grid exists (degenerate or all-zero coordinates), which disables snapping.
+.overlay_grid <- function(x) {
+  mag <- max(abs(sf::st_bbox(x)))
+  if (!is.finite(mag) || mag == 0) return(0)
+  mag * 3e-8
 }
 
-# Robust fixed-precision grid for the overlay. Snapping coordinates to ~1e-7 of
-# their magnitude leaves about seven significant digits -- well inside double
-# precision, so GEOS overlays on a fixed-precision model and the pieces come out
-# exactly disjoint, while staying fine enough not to distort features. Magnitude
-# (not extent) keeps it stable against far-flung outliers. Returns NULL when no
-# sensible grid exists (degenerate or all-zero coordinates).
-.robust_precision <- function(x) {
-  mag <- max(abs(sf::st_bbox(x)))
-  if (!is.finite(mag) || mag == 0) return(NULL)
-  1 / (mag * 1e-7)
+# Maximum per-input coverage error of an overlay result. For a correct disjoint
+# decomposition the piece areas covering each input must sum to that input's
+# area; this is the invariant the snapping grid is verified against. Uses the
+# piece and input areas the C engine returns, so no geometry is re-measured.
+.overlay_coverage_err <- function(res) {
+  origins <- res[[2L]]; parea <- res[[3L]]; iarea <- res[[4L]]
+  if (!length(origins)) return(if (all(iarea == 0)) 0 else 1)
+  idx <- rep.int(seq_along(origins), lengths(origins))
+  src <- unlist(origins, use.names = FALSE)
+  agg <- rowsum(parea[idx], group = src)
+  cov <- numeric(length(iarea))
+  cov[as.integer(rownames(agg))] <- agg[, 1L]
+  max(abs(cov - iarea) / pmax(iarea, 1))
+}
+
+# Memory model. The overlay cost of a tile is driven by the noding of its
+# boundary linework, which can balloon far past the input where polygons overlap
+# densely. The layer is therefore tiled over an adaptive grid so no tile is large
+# enough to blow up: a tile that lands on a dense blob keeps subdividing. Peak
+# memory is bounded by `mem_limit`; raising it allows larger tiles and more
+# parallel throughput, lowering it tightens memory at the cost of more tiles.
+.OVERLAY_MEM       <- 2e9   # default peak working-set budget (bytes)
+.OVERLAY_FACTOR    <- 24    # per-tile working set ~ tile input bytes * this
+.OVERLAY_FEAT_CAP  <- 3000  # also cap features per tile (node count, not just bytes)
+.OVERLAY_MAX_DEPTH <- 16    # quadtree depth cap (coincident features can't split)
+
+# Adaptive quadtree over feature bounding boxes: subdivide the extent until each
+# leaf tile is within the byte and feature budgets, then return the leaves as
+# overlay jobs (`idx` = global rows whose bbox meets the tile, `rect` = clip
+# bounds). A feature spanning a tile edge is replicated into both tiles and
+# clipped there, so pieces are split along the grid but coverage and labels stay
+# exact.
+.overlay_tiles <- function(bbox, idx, rect, budget_bytes, budget_feat, wbytes, depth) {
+  if (length(idx) <= 1L ||
+      depth >= .OVERLAY_MAX_DEPTH ||
+      (length(idx) <= budget_feat && sum(wbytes[idx]) <= budget_bytes))
+    return(list(list(idx = idx, rect = rect)))
+  xm <- (rect[1L] + rect[3L]) / 2; ym <- (rect[2L] + rect[4L]) / 2
+  quads <- list(c(rect[1L], rect[2L], xm, ym), c(xm, rect[2L], rect[3L], ym),
+                c(rect[1L], ym, xm, rect[4L]), c(xm, ym, rect[3L], rect[4L]))
+  xmin <- bbox[, 1L]; ymin <- bbox[, 2L]; xmax <- bbox[, 3L]; ymax <- bbox[, 4L]
+  sels <- lapply(quads, function(q)
+    idx[xmin[idx] <= q[3L] & xmax[idx] >= q[1L] &
+        ymin[idx] <= q[4L] & ymax[idx] >= q[2L]])
+  # Stop if splitting does not separate the features (large mutually-overlapping
+  # features whose bounding boxes all span the cell): subdividing would replicate
+  # them into every child without shrinking any, exploding the tile count. The
+  # cell stays one tile; clipping still shrinks each feature to it.
+  if (max(vapply(sels, length, integer(1))) >= length(idx))
+    return(list(list(idx = idx, rect = rect)))
+  out <- list()
+  for (i in seq_along(quads))
+    if (length(sels[[i]]))
+      out <- c(out, .overlay_tiles(bbox, sels[[i]], quads[[i]],
+                                   budget_bytes, budget_feat, wbytes, depth + 1L))
+  out
 }
 
 # -- run-file accumulator (shared spill machinery) ----------------------------
@@ -1830,7 +1874,15 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #' @param geom Name of the output hex-WKB geometry column. Default `"geometry"`.
 #' @param flush_rows Exploded rows buffered before a spill flush. Defaults to
 #'   `getOption("vectra.spatial_flush", 5e5)`.
-#' @param quiet If `FALSE`, show a text progress bar over the overlap clusters.
+#' @param mem_limit Approximate peak working-set budget in bytes. Components are
+#'   grouped into chunks within this budget and each chunk is overlaid then
+#'   spilled before the next, so memory stays bounded regardless of layer size.
+#'   Raise it for more parallel throughput, lower it for tighter memory. Defaults
+#'   to `getOption("vectra.overlay_mem_limit", 2e9)`.
+#' @param threads Number of OpenMP threads for the per-component overlay within a
+#'   chunk. `0` (the default, via `getOption("vectra.overlay_threads", 0)`) uses
+#'   all available cores.
+#' @param quiet If `FALSE`, show a text progress bar over the overlay chunks.
 #'
 #' @return A `vectra_node` over the exploded overlay (one row per piece per
 #'   covering polygon), backed by temporary `.vtr` spills removed when the node
@@ -1856,19 +1908,14 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #' @export
 spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
                             geom = "geometry", flush_rows = NULL,
-                            quiet = TRUE) {
+                            mem_limit = NULL, threads = NULL, quiet = TRUE) {
   .check_sf()
   if (!inherits(x, "sf"))
     stop("`x` must be an sf object (the polygon layer to self-overlay)")
-  crs  <- sf::st_crs(x)
-  prec <- .robust_precision(x)
-  if (!is.null(prec)) x <- sf::st_set_precision(x, prec)
-  x <- sf::st_make_valid(x)
-  x <- x[!sf::st_is_empty(x), , drop = FALSE]
-  n <- nrow(x)
-  if (n == 0L) stop("`x` has no non-empty geometries to overlay")
+  crs <- sf::st_crs(x)
+  n   <- nrow(x)
+  if (n == 0L) stop("`x` has no geometries to overlay")
 
-  g     <- sf::st_geometry(x)
   attrs <- as.data.frame(sf::st_drop_geometry(x))
   if (!is.null(vars)) {
     miss <- setdiff(vars, names(attrs))
@@ -1879,40 +1926,88 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   if (piece %in% names(attrs))
     stop(sprintf("piece column '%s' already exists in `x`; pass piece=", piece))
 
-  groups <- split(seq_len(n), .overlap_components(sf::st_intersects(x), n))
+  # WKB is the only sf touch on the compute boundary: validity repair, areal
+  # extraction, clipping, fixed-precision snapping, noding, polygonisation and
+  # labelling all run in C on GEOS (via libgeos). Geometry stays compact (raw
+  # WKB) in R.
+  wkb  <- sf::st_as_binary(sf::st_geometry(x), EWKB = FALSE)
+  grid <- .overlay_grid(x)
 
-  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
-  acc <- .run_accumulator(fr)
-  piece_off <- 0L
-  pb <- if (!quiet) utils::txtProgressBar(0, length(groups), style = 3) else NULL
+  mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit", .OVERLAY_MEM)
+  nthreads <- threads   %||% getOption("vectra.overlay_threads",
+                                       min(parallel::detectCores(), 8L))
+  nthreads <- max(as.integer(nthreads), 1L)
 
-  for (gi in seq_along(groups)) {
-    rows <- groups[[gi]]
-    if (length(rows) == 1L) {
-      pg <- g[rows]; origins <- list(1L)
+  # Parse once, in parallel: repair, snap to the grid, record bounding boxes,
+  # return cleaned WKB. The cleaned WKB is what the overlay jobs consume, so a
+  # feature spanning several tiles is never repaired or snapped more than once.
+  part <- .Call(C_overlay_partition, wkb, as.double(grid), as.integer(nthreads))
+  comp <- part[[1L]]; bbox <- part[[2L]]; cwkb <- part[[3L]]
+  part <- NULL; wkb <- NULL                       # drop the raw input copy
+  if (!any(!is.na(bbox[, 1L]))) stop("`x` has no parseable geometries to overlay")
+  wbytes <- as.numeric(lengths(cwkb))
+
+  # Connected components (from bounding boxes). Each component is one overlay job;
+  # only the few components too large for the memory budget are tiled over their
+  # own extent. Most components are small, so there is no clipping or replication
+  # and the fast exact path is taken.
+  tile_bytes <- max(mem / (nthreads * .OVERLAY_FACTOR), 1e6)
+  no_clip <- rep(NA_real_, 4L)
+  jobs <- list()
+  for (rows in split(seq_len(n), comp)) {
+    if (length(rows) <= .OVERLAY_FEAT_CAP && sum(wbytes[rows]) <= tile_bytes) {
+      jobs[[length(jobs) + 1L]] <- list(idx = rows, rect = no_clip)
     } else {
-      sub   <- sf::st_sf(.ovl = seq_along(rows), geometry = g[rows])
-      parts <- sf::st_intersection(sub)
-      d     <- sf::st_dimension(parts)
-      parts <- parts[!is.na(d) & d == 2, ]       # drop point/line touch pieces
-      if (nrow(parts) &&
-          any(sf::st_geometry_type(parts) == "GEOMETRYCOLLECTION"))
-        parts <- sf::st_collection_extract(parts, "POLYGON")
-      if (!nrow(parts)) { if (!is.null(pb)) utils::setTxtProgressBar(pb, gi); next }
-      pg <- sf::st_geometry(parts); origins <- parts$origins
+      ext <- c(min(bbox[rows, 1L]), min(bbox[rows, 2L]),
+               max(bbox[rows, 3L]), max(bbox[rows, 4L]))
+      jobs <- c(jobs, .overlay_tiles(bbox, rows, ext, tile_bytes,
+                                     .OVERLAY_FEAT_CAP, wbytes, 0L))
     }
-    np  <- length(pg)
-    idx <- rep(seq_len(np), lengths(origins))
-    src <- rows[unlist(origins)]
-    df  <- attrs[src, , drop = FALSE]
-    df[[piece]] <- piece_off + idx
-    df[[geom]]  <- sf::st_as_binary(pg[idx], hex = TRUE)
-    rownames(df) <- NULL
-    acc$push(.coerce_for_vtr(df))
-    piece_off <- piece_off + np
-    if (!is.null(pb)) utils::setTxtProgressBar(pb, gi)
   }
+  if (!quiet)
+    message(sprintf("spatial_overlay: %d inputs, %d components, %d jobs, %d threads, grid=%.4g",
+                    n, max(comp), length(jobs), nthreads, grid))
+
+  fr        <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  acc       <- .run_accumulator(fr)
+  piece_off <- 0L
+  cov_err   <- 0
+  batch_budget <- max(mem / .OVERLAY_FACTOR, tile_bytes)
+  pb <- if (!quiet) utils::txtProgressBar(0, length(jobs), style = 3) else NULL
+
+  # Overlay one batch of tiles, map pieces back to global rows, stream to spill.
+  run_batch <- function(batch) {
+    job <- rep.int(seq_along(batch), vapply(batch, function(t) length(t$idx), integer(1)))
+    gi  <- unlist(lapply(batch, `[[`, "idx"), use.names = FALSE)
+    rct <- unlist(lapply(batch, `[[`, "rect"), use.names = FALSE)
+    res <- .Call(C_overlay_run, cwkb[gi], as.integer(job), as.double(rct),
+                 as.integer(nthreads))
+    geoms <- res[[1L]]; origins <- res[[2L]]
+    if (length(geoms)) {
+      idx <- rep.int(seq_along(geoms), lengths(origins))
+      src <- gi[unlist(origins, use.names = FALSE)]    # chunk index -> global row
+      df  <- attrs[src, , drop = FALSE]
+      df[[piece]] <- piece_off + idx
+      df[[geom]]  <- geoms[idx]
+      rownames(df) <- NULL
+      acc$push(.coerce_for_vtr(df))
+      piece_off <<- piece_off + length(geoms)
+      cov_err <<- max(cov_err, .overlay_coverage_err(res))
+    }
+  }
+
+  batch <- list(); batch_b <- 0
+  for (ji in seq_along(jobs)) {
+    batch[[length(batch) + 1L]] <- jobs[[ji]]
+    batch_b <- batch_b + sum(wbytes[jobs[[ji]]$idx])
+    if (batch_b >= batch_budget) { run_batch(batch); batch <- list(); batch_b <- 0 }
+    if (!is.null(pb)) utils::setTxtProgressBar(pb, ji)
+  }
+  if (length(batch)) run_batch(batch)
   if (!is.null(pb)) close(pb)
   if (piece_off == 0L) stop("overlay produced no polygonal pieces")
+  if (cov_err > 1e-4)
+    warning(sprintf("spatial_overlay: coverage rel-err %.2e exceeds 1e-4; the snapping grid (%.4g) may be off for this layer",
+                    cov_err, grid))
   acc$finish(crs = crs, empty_geom = geom)
 }

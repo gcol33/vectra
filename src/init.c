@@ -90,6 +90,11 @@ SEXP C_warp_strip(SEXP win_sexp, SEXP win_dims_sexp, SEXP origin_sexp,
 /* Euclidean distance transform kernel (edt.c). */
 SEXP C_edt_strip(SEXP mat_sexp, SEXP dims_sexp, SEXP scale_sexp);
 
+/* GEOS-native vector overlay (vtr_overlay.c). */
+SEXP C_geos_version(void);
+SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp);
+SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp);
+
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
     {"C_scan_node",    (DL_FUNC) &C_scan_node,     1},
@@ -154,6 +159,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_terrain_strip",            (DL_FUNC) &C_terrain_strip,            8},
     {"C_warp_strip",               (DL_FUNC) &C_warp_strip,               7},
     {"C_edt_strip",                (DL_FUNC) &C_edt_strip,                3},
+    {"C_geos_version",             (DL_FUNC) &C_geos_version,             0},
+    {"C_overlay_partition",        (DL_FUNC) &C_overlay_partition,        3},
+    {"C_overlay_run",              (DL_FUNC) &C_overlay_run,              4},
     {"C_vecr_writer_open",         (DL_FUNC) &C_vecr_writer_open,         9},
     {"C_vecr_writer_write_strip",  (DL_FUNC) &C_vecr_writer_write_strip,  4},
     {"C_vecr_writer_finish",       (DL_FUNC) &C_vecr_writer_finish,       1},

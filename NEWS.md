@@ -149,12 +149,22 @@
   into disjoint pieces (the "Union (single layer)" overlay), returning a lazy
   node with one row per piece per covering polygon. Resolve the duplicates with
   a grouped `slice_min()`/`slice_max()` -- e.g. earliest designation year wins,
-  `group_by(piece_id) |> slice_min(year)`. The topology is tiled over connected
-  overlap clusters (exact, bounded memory) and the exploded pieces stream to a
-  `.vtr`. The overlay runs on a fixed-precision model derived from the data's
-  own coordinate magnitude, so pieces come out disjoint and their areas
-  reconstruct the union, instead of drifting by the sub-percent that
-  floating-point sliver artefacts on invalid input otherwise introduce.
+  `group_by(piece_id) |> slice_min(year)`. The overlay runs in C on the GEOS C
+  API (via `libgeos`). Each feature is parsed once, in parallel -- repaired and
+  snapped to a fixed-precision grid -- then features are grouped into connected
+  components from their bounding boxes. Each component is one overlay job whose
+  boundary linework is noded once and polygonised into faces (a single noding
+  pass, so cost tracks the number of pieces, not how deeply polygons overlap);
+  the few components too large for the memory budget are tiled over their own
+  extent and clipped, so no single noding pass is ever large. Jobs run one per
+  OpenMP thread (`threads`) and stream to a `.vtr` in batches sized to a
+  `mem_limit` budget, so peak memory stays bounded regardless of layer size. The
+  snapping grid is derived from the data's coordinate magnitude and checked
+  against a coverage invariant (the piece areas covering an input sum to its
+  area), so pieces come out disjoint and their areas reconstruct the union.
+  Scales to layers a single `sf::st_intersection()` cannot hold at once (a 470k
+  marine-protection layer overlays in bounded memory where the in-memory call
+  exhausts RAM).
 
 # vectra 0.8.0
 
