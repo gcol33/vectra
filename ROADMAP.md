@@ -42,21 +42,23 @@ with a `.x` / `.y` suffix. `y` accepts an `sf` object or a file path
 (`layer_y` / `query_y`) read in batches. It reuses the existing noding, dedup,
 component-tiling, and streaming machinery, so it scales like the self-union.
 
-## Tier 2 - set-wise geometry constructions
+## Tier 2 - set-wise geometry constructions (done, 0.9.2)
 
-These build one geometry (or a tessellation) from a whole set of features, so a
-per-feature `spatial_map` cannot express them: the construction needs every
-feature in scope at once.
+`spatial_construct()` builds one geometry (or a tessellation) from a whole set of
+features, the constructions a per-feature `spatial_map` cannot express because
+they need every feature in scope at once. A `kind` argument selects it:
 
-- Convex hull and concave hull of a feature set.
-- Voronoi tessellation and Delaunay triangulation of a point set.
-- Minimum bounding geometry (envelope, oriented box, enclosing circle).
-- Pole of inaccessibility (the QGIS "point inside polygon farthest from edges").
+- `"convex_hull"` and `"concave_hull"` of a feature set.
+- `"voronoi"` tessellation and `"delaunay"` triangulation of a point set.
+- minimum bounding geometry: `"envelope"`, `"oriented_box"`,
+  `"enclosing_circle"`.
+- `"inscribed_circle"` and `"pole"` (the QGIS pole of inaccessibility, the point
+  inside the shape farthest from its edges).
 
-These are bounded by the result size, not the input, so the streaming model fits:
-accumulate input geometry (or its hull-relevant subset) per group, emit the
-construction. A `by =` argument gives per-group hulls/tessellations, matching the
-`spatial_dissolve` grouping idiom.
+It rides the partition tier like `spatial_dissolve`: a `by =` argument routes the
+layer into one shard per group and emits one construction per group (one polygon
+per cell for the tessellations), with `by = NULL` constructing from the whole
+layer. Peak memory is the routing budget, then one group's geometry.
 
 ## Tier 2 - snapping and topology cleanup
 

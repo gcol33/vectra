@@ -26,6 +26,19 @@
   streaming counterpart of the QGIS "multipart to singleparts" tool, processing
   one batch at a time, and the inverse of `spatial_dissolve()`.
 
+## `spatial_construct()`
+
+* New `spatial_construct()` builds a set-wise geometry construction from a whole
+  feature set -- the constructions a per-feature `spatial_map()` cannot express.
+  A `kind` argument selects it: `"convex_hull"`, `"concave_hull"`, `"envelope"`,
+  `"oriented_box"`, `"enclosing_circle"`, `"inscribed_circle"`, `"pole"` (the
+  pole of inaccessibility, the centre of the maximum inscribed circle),
+  `"voronoi"`, and `"delaunay"`. Like `spatial_dissolve()` it rides the partition
+  tier: a `by` argument routes the layer into one shard per group and builds one
+  construction per group, with `NULL` constructing from the whole layer. The
+  enclosing kinds emit one feature per group; the tessellations emit one polygon
+  per cell, each carrying the group's `by` values.
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication

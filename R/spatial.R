@@ -1507,6 +1507,173 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
   acc$finish(crs = crs, empty_geom = geom)
 }
 
+# -- set-wise geometry constructions ------------------------------------------
+
+# The constructions that need every feature of a group at once. Each maps the
+# group's combined geometry `gu` (a length-1 sfc) to the construction: the
+# enclosing kinds return one geometry, the tessellation kinds (voronoi,
+# delaunay) return one polygon per cell. `pole` is the centre of the maximum
+# inscribed circle (the point inside the shape farthest from its edges, the QGIS
+# "pole of inaccessibility"). The inscribed-circle and pole kinds need a positive
+# tolerance; the caller supplies one derived from the extent when none is given.
+.CONSTRUCT_KINDS <- c("convex_hull", "concave_hull", "envelope", "oriented_box",
+                      "enclosing_circle", "inscribed_circle", "pole",
+                      "voronoi", "delaunay")
+
+# Tolerance for the kinds that require one. inscribed_circle/pole take a small
+# fraction of the bounding-box diagonal so the circle is found to a sensible
+# precision; the tessellations accept 0 (GEOS picks its own snap).
+.construct_tol <- function(gu, kind) {
+  if (!kind %in% c("inscribed_circle", "pole")) return(0)
+  bb <- sf::st_bbox(gu)
+  d  <- sqrt((bb[["xmax"]] - bb[["xmin"]])^2 + (bb[["ymax"]] - bb[["ymin"]])^2)
+  if (is.finite(d) && d > 0) d * 1e-3 else 1e-6
+}
+
+# Build the construction for one group. `gu` is the group's combined geometry
+# (an sfc of length 1); returns an sfc of the result (length 1 for the enclosing
+# kinds, one polygon per cell for the tessellations). The inscribed-circle path
+# drops the empty companion geometry sf returns alongside the circle.
+.construct_group <- function(gu, kind, ratio, allow_holes, tol) {
+  switch(kind,
+    convex_hull      = sf::st_convex_hull(gu),
+    concave_hull     = sf::st_concave_hull(gu, ratio = ratio,
+                                           allow_holes = allow_holes),
+    envelope         = sf::st_as_sfc(sf::st_bbox(gu)),
+    oriented_box     = sf::st_minimum_rotated_rectangle(gu),
+    enclosing_circle = sf::st_minimum_bounding_circle(gu),
+    inscribed_circle = {
+      ic <- sf::st_inscribed_circle(gu, dTolerance = tol)
+      ic[!sf::st_is_empty(ic)]
+    },
+    pole = {
+      ic <- sf::st_inscribed_circle(gu, dTolerance = tol)
+      ic <- ic[!sf::st_is_empty(ic)]
+      suppressWarnings(sf::st_centroid(ic))
+    },
+    voronoi  = sf::st_collection_extract(
+                 sf::st_voronoi(gu, dTolerance = tol), "POLYGON"),
+    delaunay = sf::st_collection_extract(
+                 sf::st_triangulate(gu, dTolerance = tol), "POLYGON"))
+}
+
+#' Build a set-wise geometry construction, optionally per group
+#'
+#' Constructs one geometry (or a tessellation) from a whole set of features --
+#' the constructions a per-feature [spatial_map()] cannot express because they
+#' need every feature in scope at once. Like [spatial_dissolve()] it rides the
+#' **partition tier**: `x` is spilled once and routed into one disjoint shard per
+#' `by` group in a single bounded pass, then each shard's geometry is combined
+#' and the construction built with \pkg{sf}. With no `by`, the whole layer yields
+#' one construction. Peak memory is the routing budget during the pass, then one
+#' group's geometry while it is built -- partition on a key whose groups fit in
+#' memory.
+#'
+#' `kind` selects the construction:
+#' \describe{
+#'   \item{`"convex_hull"`}{the convex hull of the set.}
+#'   \item{`"concave_hull"`}{the concave hull (`ratio`, `allow_holes`).}
+#'   \item{`"envelope"`}{the axis-aligned bounding rectangle.}
+#'   \item{`"oriented_box"`}{the minimum-area rotated bounding rectangle.}
+#'   \item{`"enclosing_circle"`}{the minimum bounding circle.}
+#'   \item{`"inscribed_circle"`}{the maximum inscribed circle (largest circle
+#'     that fits inside the set's union).}
+#'   \item{`"pole"`}{the pole of inaccessibility -- the centre of the maximum
+#'     inscribed circle, the point inside the shape farthest from its edges.}
+#'   \item{`"voronoi"`}{the Voronoi tessellation, one polygon per cell.}
+#'   \item{`"delaunay"`}{the Delaunay triangulation, one polygon per triangle.}
+#' }
+#' The enclosing kinds and `pole` emit one feature per group; `voronoi` and
+#' `delaunay` emit one feature per cell, each carrying the group's `by` values.
+#'
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' Topology is \pkg{sf}/GEOS throughout (an optional dependency, Suggests); some
+#' constructions need projected coordinates.
+#'
+#' @inheritParams spatial_map
+#' @param kind The construction to build; one of the values above.
+#' @param by Character vector of attribute columns to construct within: one
+#'   construction (or tessellation) per distinct combination of their values.
+#'   `NULL` (default) builds a single construction from the whole layer.
+#' @param ratio For `kind = "concave_hull"`, the concaveness in `[0, 1]` (1 is
+#'   the convex hull). Default `0.3`.
+#' @param allow_holes For `kind = "concave_hull"`, whether the hull may contain
+#'   holes. Default `FALSE`.
+#' @param tolerance Distance tolerance for the kinds that take one
+#'   (`"inscribed_circle"`, `"pole"`, `"voronoi"`, `"delaunay"`). `0` (default)
+#'   lets the inscribed-circle kinds derive a tolerance from the extent and the
+#'   tessellations use the GEOS default.
+#'
+#' @return A `vectra_node` of the construction -- one row per group for the
+#'   enclosing kinds, one row per cell for the tessellations -- carrying the
+#'   `by` columns and the input CRS, backed by temporary `.vtr` spills removed
+#'   when the node is garbage-collected.
+#'
+#' @seealso [spatial_dissolve()] to merge a group into one feature,
+#'   [spatial_map()] for per-feature transforms, [collect_sf()] to materialize.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
+#' nc$band <- nc$SID74 > 5
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   band = nc$band,
+#'   geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)
+#' ), f)
+#'
+#' # One convex hull per band.
+#' tbl(f) |>
+#'   spatial_construct("convex_hull", by = "band", crs = sf::st_crs(nc)) |>
+#'   collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_construct <- function(x, kind = .CONSTRUCT_KINDS, by = NULL,
+                              geom = "geometry", crs = NA, ratio = 0.3,
+                              allow_holes = FALSE, tolerance = 0,
+                              flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to construct from)")
+  kind <- match.arg(kind)
+  if (!is.null(by) && !is.character(by))
+    stop("`by` must be a character vector of column names, or NULL")
+  crs <- .resolve_crs(x, crs)
+
+  spill <- tempfile(fileext = ".vtr")
+  on.exit(unlink(spill), add = TRUE)
+  write_vtr(x, spill)
+
+  schema <- .Call(C_node_schema, tbl(spill)$.node)
+  miss <- setdiff(c(by, geom), schema$name)
+  if (length(miss))
+    stop(sprintf("column(s) not found in the stream: %s",
+                 paste(miss, collapse = ", ")))
+
+  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
+  res <- .partition_router(spill, .dissolve_assign(by), budget)
+  on.exit(unlink(unlist(res$runs, use.names = FALSE)), add = TRUE)
+
+  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  acc <- .run_accumulator(fr)
+  for (lab in sort(names(res$runs))) {
+    df <- collect(.concat_runs(res$runs[[lab]]))
+    sb <- .sf_decode_chunk(df, geom, NULL, crs)
+    gu <- sf::st_union(sf::st_geometry(sb))
+    tol <- if (tolerance > 0) tolerance else .construct_tol(gu, kind)
+    out <- .construct_group(gu, kind, ratio, allow_holes, tol)
+    out <- out[!sf::st_is_empty(out)]
+    if (!length(out)) next
+    rowdf <- if (is.null(by)) data.frame(matrix(nrow = length(out), ncol = 0))
+             else df[rep(1L, length(out)), by, drop = FALSE]
+    rowdf[[geom]] <- sf::st_as_binary(out, hex = TRUE)
+    rownames(rowdf) <- NULL
+    acc$push(.coerce_for_vtr(rowdf))
+  }
+  acc$finish(crs = crs, empty_geom = geom)
+}
+
 #' Rasterize a streamed point layer onto a fixed grid
 #'
 #' Folds a larger-than-RAM stream of points into a fixed raster grid one batch
