@@ -85,7 +85,12 @@ group-and-combine direction already served by `spatial_dissolve()`.
   and distance -- the top-`k` and the distances `spatial_join`'s nearest-feature
   match does not give.
 - Split with lines, and line-intersection points between two layers.
-- Points along geometry, densify, and smooth (Chaikin / spline) for line work.
+- Smooth (Chaikin) for line work (done, 0.9.2). `spatial_smooth()` rounds the
+  corners of streamed lines and polygons by Chaikin corner-cutting, computed
+  directly on the coordinates (no GEOS call). Densify and points-along are
+  per-feature transforms that already run through `spatial_map`
+  (`~ sf::st_segmentize(.x, dfMaxLength)` and `~ sf::st_line_sample(.x, n)`), so
+  they need no dedicated verb, as buffer and simplify do not.
 
 ## Notes
 

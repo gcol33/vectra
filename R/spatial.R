@@ -1514,6 +1514,129 @@ spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
+# -- line / polygon smoothing (Chaikin corner-cutting) ------------------------
+
+# One Chaikin pass over an open polyline: each segment P_i -> P_{i+1} yields two
+# points at 1/4 and 3/4 of the way, cutting the corner. `keep_ends` pins the
+# first and last vertices so an open line is not shortened at its tips. Repeated
+# `iterations` times; a line too short to cut is returned unchanged.
+.chaikin_open <- function(m, iterations, keep_ends) {
+  for (it in seq_len(iterations)) {
+    n <- nrow(m)
+    if (n < 3L) break
+    i <- seq_len(n - 1L)
+    q <- 0.75 * m[i, , drop = FALSE] + 0.25 * m[i + 1L, , drop = FALSE]
+    r <- 0.25 * m[i, , drop = FALSE] + 0.75 * m[i + 1L, , drop = FALSE]
+    body <- matrix(0, 2L * length(i), ncol(m))
+    body[seq.int(1L, by = 2L, length.out = length(i)), ] <- q
+    body[seq.int(2L, by = 2L, length.out = length(i)), ] <- r
+    m <- if (keep_ends) rbind(m[1L, , drop = FALSE], body, m[n, , drop = FALSE])
+         else body
+  }
+  m
+}
+
+# One Chaikin pass over a closed ring (first vertex repeated as the last). The
+# cut runs cyclically over every edge, including the closing one, and the result
+# is re-closed; corner-cutting shrinks the ring slightly, as Chaikin does.
+.chaikin_ring <- function(m, iterations) {
+  for (it in seq_len(iterations)) {
+    p <- m[-nrow(m), , drop = FALSE]
+    k <- nrow(p)
+    if (k < 3L) break
+    nxt  <- p[c(2:k, 1L), , drop = FALSE]
+    q <- 0.75 * p + 0.25 * nxt
+    r <- 0.25 * p + 0.75 * nxt
+    body <- matrix(0, 2L * k, ncol(p))
+    body[seq.int(1L, by = 2L, length.out = k), ] <- q
+    body[seq.int(2L, by = 2L, length.out = k), ] <- r
+    m <- rbind(body, body[1L, , drop = FALSE])
+  }
+  m
+}
+
+# Smooth one sfg: open polylines cut with `keep_ends`, polygon rings cut
+# cyclically, multi/collection types recursed. Point geometry is returned as-is.
+.smooth_sfg <- function(g, iterations, keep_ends) {
+  switch(class(g)[2L],
+    LINESTRING = sf::st_linestring(.chaikin_open(unclass(g), iterations, keep_ends)),
+    MULTILINESTRING = sf::st_multilinestring(
+      lapply(unclass(g), .chaikin_open, iterations, keep_ends)),
+    POLYGON = sf::st_polygon(lapply(unclass(g), .chaikin_ring, iterations)),
+    MULTIPOLYGON = sf::st_multipolygon(lapply(unclass(g), function(rings)
+      lapply(rings, .chaikin_ring, iterations))),
+    GEOMETRYCOLLECTION = sf::st_geometrycollection(
+      lapply(g, .smooth_sfg, iterations, keep_ends)),
+    g)
+}
+
+.smooth_batch <- function(sb, iterations, keep_ends) {
+  if (nrow(sb) == 0L) return(sb)
+  g  <- sf::st_geometry(sb)
+  g2 <- sf::st_sfc(lapply(g, .smooth_sfg, iterations, keep_ends),
+                   crs = sf::st_crs(g))
+  sf::st_set_geometry(sb, g2)
+}
+
+#' Smooth streamed line and polygon geometry
+#'
+#' Rounds the corners of every line and polygon in a streamed layer by Chaikin
+#' corner-cutting, one batch at a time. Each iteration replaces every vertex with
+#' two points a quarter and three-quarters of the way along its adjacent edges,
+#' so sharp angles become a sequence of short chamfers that read as a smooth
+#' curve; more `iterations` give a smoother result with more vertices. Open lines
+#' keep their endpoints (`keep_ends`); polygon rings are cut cyclically and shrink
+#' slightly, as Chaikin smoothing does. Point geometry passes through unchanged.
+#'
+#' The smoothing is computed directly on the coordinates (no GEOS call), so it is
+#' dependency-light; \pkg{sf} is used only to decode and rebuild each batch.
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#'
+#' @inheritParams spatial_map
+#' @param iterations Number of corner-cutting passes (a positive integer). Each
+#'   pass roughly doubles the vertex count. Default `2`.
+#' @param keep_ends If `TRUE` (default), pin the first and last vertex of an open
+#'   line so it is not shortened at its tips. Ignored for closed rings.
+#'
+#' @return A `vectra_node` of the smoothed geometry with `x`'s attributes, backed
+#'   by temporary `.vtr` spills (removed when the node is garbage-collected) and
+#'   carrying the input CRS.
+#'
+#' @seealso [spatial_map()] for per-feature transforms such as densifying with
+#'   `~ sf::st_segmentize(.x, dfMaxLength)` or sampling points along a line with
+#'   `~ sf::st_line_sample(.x, n)`, [collect_sf()] to materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' zig <- sf::st_linestring(rbind(c(0, 0), c(1, 1), c(2, 0), c(3, 1), c(4, 0)))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = 1L, geometry = sf::st_as_binary(sf::st_sfc(zig), hex = TRUE)
+#' ), f)
+#'
+#' # Smooth the zig-zag with three corner-cutting passes.
+#' tbl(f) |> spatial_smooth(iterations = 3) |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_smooth <- function(x, iterations = 2L, keep_ends = TRUE,
+                           geom = "geometry", crs = NA, out_geom = NULL,
+                           flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to smooth)")
+  if (!is.numeric(iterations) || length(iterations) != 1L ||
+      !is.finite(iterations) || iterations < 1)
+    stop("`iterations` must be a single positive integer")
+  iterations <- as.integer(iterations)
+  crs <- .resolve_crs(x, crs)
+  if (is.null(out_geom)) out_geom <- geom
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  .spatial_stream(x, function(sb) .smooth_batch(sb, iterations, keep_ends),
+                  geom, coords = NULL, crs = crs, out_geom = out_geom,
+                  flush_rows = fr)
+}
+
 # -- k-nearest neighbours (with distances) ------------------------------------
 
 # Find the k nearest resident-y features for each row of one decoded left batch

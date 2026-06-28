@@ -63,6 +63,17 @@
   the building block of a distance matrix. Distances follow `sf::st_distance()`
   (planar in CRS units, or great-circle metres when spherical geometry is on).
 
+## `spatial_smooth()`
+
+* New `spatial_smooth()` rounds the corners of streamed lines and polygons by
+  Chaikin corner-cutting, one batch at a time. Each iteration replaces every
+  vertex with two points a quarter and three-quarters along its adjacent edges;
+  open lines keep their endpoints, polygon rings are cut cyclically. The
+  smoothing is computed directly on the coordinates (no GEOS call), so it is
+  dependency-light. Densifying and sampling points along a line stay
+  `spatial_map()` recipes (`~ sf::st_segmentize(.x, dfMaxLength)`,
+  `~ sf::st_line_sample(.x, n)`).
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication
