@@ -356,10 +356,14 @@
 # accumulating cleaned WKB. Scales with total RAM (bigger chunks, fewer round
 # trips, on roomy machines) around a 16 GB reference, with a safe fixed fallback.
 .OVERLAY_PARSE_CHUNK <- 50000L
+# RAM-scaled read/parse batch size. Keeping peak low is the goal, so this only
+# scales DOWN on a memory-constrained machine (a bigger batch on a roomy machine
+# just saves a few read round trips while raising the peak, which defeats the
+# point); the batch never grows past the reference size.
 .overlay_chunk_ram <- function() {
   ram <- .sys_ram_bytes()
   if (is.na(ram)) .OVERLAY_PARSE_CHUNK
-  else as.integer(.OVERLAY_PARSE_CHUNK * max(0.5, min(4, ram / 16e9)))
+  else as.integer(.OVERLAY_PARSE_CHUNK * max(0.25, min(1, ram / 16e9)))
 }
 # Batch size for reads/parse, RAM-scaled, overridable, and (sf path) capped at n.
 .overlay_chunk_size <- function()
