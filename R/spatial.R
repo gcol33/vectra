@@ -283,14 +283,30 @@
 
 # Memory model. The overlay cost of a tile is driven by the noding of its
 # boundary linework, which can balloon far past the input where polygons overlap
-# densely. The layer is therefore tiled over an adaptive grid so no tile is large
-# enough to blow up: a tile that lands on a dense blob keeps subdividing. Peak
-# memory is bounded by `mem_limit`; raising it allows larger tiles and more
-# parallel throughput, lowering it tightens memory at the cost of more tiles.
-.OVERLAY_MEM       <- 2e9   # default peak working-set budget (bytes)
+# densely. The layer is therefore tiled so no tile is large enough to blow up: a
+# tile that lands on a dense blob keeps subdividing. Peak memory is bounded by
+# `mem_limit`; lowering it tightens memory at the cost of more tiles.
+#
+# Tile size is a throughput knob with an interior optimum, not "bigger is faster".
+# Smaller tiles replicate a feature spanning several tiles into each (more clip and
+# parse work), while larger tiles node more linework per tile, and noding cost is
+# superlinear in the linework gathered. Measured on a dense ~470k-feature layer the
+# total wall time is flat for per-tile inputs around 1-5 MB and rises on either
+# side; a budget far above that (tens of GB of working set) runs slower, not faster.
+# The default therefore targets that per-tile size and lets the budget scale with
+# the thread count -- more threads run more tiles at once, so the working set grows
+# with parallelism -- rather than scaling with installed RAM.
+.OVERLAY_TILE_TGT  <- 2.6e6 # target per-tile input bytes (throughput sweet spot)
 .OVERLAY_FACTOR    <- 24    # per-tile working set ~ tile input bytes * this
 .OVERLAY_FEAT_CAP  <- 3000  # also cap features per tile (node count, not just bytes)
 .OVERLAY_MAX_DEPTH <- 16    # quadtree depth cap (coincident features can't split)
+
+# Default overlay working-set budget. tile_bytes = mem / (threads * FACTOR), so to
+# hold tile_bytes at the target the budget scales with the thread count. Peak
+# working set is then target * FACTOR * threads, modest and proportional to the
+# parallelism actually used. An explicit mem_limit always wins.
+.overlay_mem_default <- function(nthreads)
+  .OVERLAY_TILE_TGT * .OVERLAY_FACTOR * max(as.integer(nthreads), 1L)
 
 # Adaptive quadtree over feature bounding boxes: subdivide the extent until each
 # leaf tile is within the byte and feature budgets, then return the leaves as
@@ -306,10 +322,11 @@
   xm <- (rect[1L] + rect[3L]) / 2; ym <- (rect[2L] + rect[4L]) / 2
   quads <- list(c(rect[1L], rect[2L], xm, ym), c(xm, rect[2L], rect[3L], ym),
                 c(rect[1L], ym, xm, rect[4L]), c(xm, ym, rect[3L], rect[4L]))
-  xmin <- bbox[, 1L]; ymin <- bbox[, 2L]; xmax <- bbox[, 3L]; ymax <- bbox[, 4L]
+  # Index this cell's features only; pulling whole bbox columns here would copy the
+  # entire layer at every quadtree node.
+  xmin <- bbox[idx, 1L]; ymin <- bbox[idx, 2L]; xmax <- bbox[idx, 3L]; ymax <- bbox[idx, 4L]
   sels <- lapply(quads, function(q)
-    idx[xmin[idx] <= q[3L] & xmax[idx] >= q[1L] &
-        ymin[idx] <= q[4L] & ymax[idx] >= q[2L]])
+    idx[xmin <= q[3L] & xmax >= q[1L] & ymin <= q[4L] & ymax >= q[2L]])
   # Stop if splitting does not separate the features (large mutually-overlapping
   # features whose bounding boxes all span the cell): subdividing would replicate
   # them into every child without shrinking any, exploding the tile count. The
@@ -2160,13 +2177,28 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #'   to override when that default is too coarse for fine geometry (or too coarse
 #'   because an outlier coordinate inflated the magnitude), or `0` to disable
 #'   snapping entirely.
+#' @param precision Fixed-precision grid size, in CRS units, for noding the
+#'   boundary linework. Noding on a fixed grid is deterministic and avoids the
+#'   floating noder's repair-and-retry on dense overlapping linework, which is
+#'   what makes a large dense layer feasible to overlay. It is far finer than
+#'   `grid` so intersection points are not collapsed. `NULL` (the default)
+#'   derives it from coordinate magnitude (`max(abs(st_bbox(x))) * 1e-13`); pass
+#'   a number to override, or `0` to node in floating precision.
+#' @param dedup Overlay one representative per group of byte-identical cleaned
+#'   geometries and fan the per-record attributes back onto its pieces afterwards.
+#'   Duplicates add no faces, so the result is identical; this only removes the
+#'   redundant noding when many records are stacked over one site (common in
+#'   WDPA-style data). `TRUE` by default; set `FALSE` to overlay every record.
 #' @param flush_rows Exploded rows buffered before a spill flush. Defaults to
 #'   `getOption("vectra.spatial_flush", 5e5)`.
-#' @param mem_limit Approximate peak working-set budget in bytes. Components are
-#'   grouped into chunks within this budget and each chunk is overlaid then
-#'   spilled before the next, so memory stays bounded regardless of layer size.
-#'   Raise it for more parallel throughput, lower it for tighter memory. Defaults
-#'   to `getOption("vectra.overlay_mem_limit", 2e9)`.
+#' @param mem_limit Approximate peak working-set budget in bytes, bounding the
+#'   per-tile size (`tile_bytes = mem_limit / (threads * 24)`). It is a throughput
+#'   knob with an interior optimum, not "bigger is faster": too small replicates
+#'   features across many tiles, too large nodes too much linework per tile (a
+#'   superlinear cost), and a budget of tens of GB runs slower than the default on
+#'   a dense layer. Lower it for tighter memory. Defaults via
+#'   `getOption("vectra.overlay_mem_limit", ...)` to a value that scales with
+#'   `threads` to hold the per-tile size near its measured optimum.
 #' @param threads Number of OpenMP threads for the per-component overlay within a
 #'   chunk. `0` (the default, via `getOption("vectra.overlay_threads", 0)`) uses
 #'   all available cores.
@@ -2195,7 +2227,8 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #'
 #' @export
 spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
-                            geom = "geometry", grid = NULL, flush_rows = NULL,
+                            geom = "geometry", grid = NULL, precision = NULL,
+                            dedup = TRUE, flush_rows = NULL,
                             mem_limit = NULL, threads = NULL, quiet = TRUE) {
   .check_sf()
   if (!inherits(x, "sf"))
@@ -2219,6 +2252,7 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   # labelling all run in C on GEOS (via libgeos). Geometry stays compact (raw
   # WKB) in R.
   wkb  <- sf::st_as_binary(sf::st_geometry(x), EWKB = FALSE)
+  mag  <- max(abs(sf::st_bbox(x)))
   if (is.null(grid)) {
     grid <- .overlay_grid(x)
   } else {
@@ -2226,11 +2260,27 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
       stop("`grid` must be a single non-negative number (CRS units), or NULL to derive it")
     grid <- as.double(grid)
   }
+  # Noding precision. Boundaries are noded at a fixed grid (snap rounding): this is
+  # deterministic and avoids the floating noder's repair-and-retry on dense overlapping
+  # linework, which is what makes a large dense layer feasible to node. The grid is
+  # far finer than the cleaning grid so intersection points are not collapsed; it is
+  # set well above the floating-point resolution at the layer's extent.
+  if (is.null(precision)) {
+    precision <- if (is.finite(mag) && mag > 0) mag * 1e-13 else 0
+  } else {
+    if (!is.numeric(precision) || length(precision) != 1L || !is.finite(precision) || precision < 0)
+      stop("`precision` must be a single non-negative number (CRS units), or NULL to derive it")
+    precision <- as.double(precision)
+  }
 
-  mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit", .OVERLAY_MEM)
+  # Overlay is CPU-bound and the tiles are load-balanced across the pool, so use
+  # every core by default; peak memory is bounded by the per-tile budget times the
+  # running threads, not by the thread count.
   nthreads <- threads   %||% getOption("vectra.overlay_threads",
-                                       min(parallel::detectCores(), 8L))
+                                       max(parallel::detectCores(), 1L))
   nthreads <- max(as.integer(nthreads), 1L)
+  mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit",
+                                       .overlay_mem_default(nthreads))
 
   # Parse once, in parallel: repair, snap to the grid, record bounding boxes,
   # return cleaned WKB. The cleaned WKB is what the overlay jobs consume, so a
@@ -2241,49 +2291,88 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   if (!any(!is.na(bbox[, 1L]))) stop("`x` has no parseable geometries to overlay")
   wbytes <- as.numeric(lengths(cwkb))
 
+  # Deduplicate identical cleaned geometry before overlaying. After snapping, the
+  # many records stacked over one site are byte-identical, and duplicates add no
+  # faces -- so the overlay runs on one representative per group and the per-record
+  # attributes are fanned back onto its pieces afterwards. The arrangement is
+  # unchanged; only the redundant noding/clipping work is removed. `mem_by_dk[[k]]`
+  # holds the original rows the k-th distinct input stands for.
+  n_orig <- n
+  if (isTRUE(dedup)) {
+    grp       <- .Call(C_overlay_group, cwkb)
+    rep_idx   <- which(!duplicated(grp))
+    mem_by_dk <- unname(split(seq_len(n_orig), grp))
+  } else {
+    rep_idx   <- seq_len(n_orig)
+    mem_by_dk <- as.list(seq_len(n_orig))
+  }
+  comp <- comp[rep_idx]; bbox <- bbox[rep_idx, , drop = FALSE]
+  cwkb <- cwkb[rep_idx]; wbytes <- wbytes[rep_idx]; n <- length(rep_idx)
+
   # Connected components (from bounding boxes). Each component is one overlay job;
   # only the few components too large for the memory budget are tiled over their
   # own extent. Most components are small, so there is no clipping or replication
   # and the fast exact path is taken.
   tile_bytes <- max(mem / (nthreads * .OVERLAY_FACTOR), 1e6)
   no_clip <- rep(NA_real_, 4L)
-  jobs <- list()
-  for (rows in split(seq_len(n), comp)) {
-    if (length(rows) <= .OVERLAY_FEAT_CAP && sum(wbytes[rows]) <= tile_bytes) {
-      jobs[[length(jobs) + 1L]] <- list(idx = rows, rect = no_clip)
-    } else {
-      ext <- c(min(bbox[rows, 1L]), min(bbox[rows, 2L]),
-               max(bbox[rows, 3L]), max(bbox[rows, 4L]))
-      jobs <- c(jobs, .overlay_tiles(bbox, rows, ext, tile_bytes,
-                                     .OVERLAY_FEAT_CAP, wbytes, 0L))
-    }
+  # Build each component's jobs into its own list, then flatten once. Growing a
+  # single `jobs` list per component is quadratic over the many components a large
+  # layer splits into; the per-component lists keep it linear.
+  per_comp <- lapply(split(seq_len(n), comp), function(rows) {
+    if (length(rows) <= .OVERLAY_FEAT_CAP && sum(wbytes[rows]) <= tile_bytes)
+      return(list(list(idx = rows, rect = no_clip)))
+    ext <- c(min(bbox[rows, 1L]), min(bbox[rows, 2L]),
+             max(bbox[rows, 3L]), max(bbox[rows, 4L]))
+    .overlay_tiles(bbox, rows, ext, tile_bytes, .OVERLAY_FEAT_CAP, wbytes, 0L)
+  })
+  jobs <- unlist(per_comp, recursive = FALSE, use.names = FALSE)
+  # Process the heaviest tiles first. A tile's cost tracks its feature bytes, and
+  # the dense archipelago tiles cost far more than the rest; running them first
+  # keeps every thread busy instead of stranding one on a giant tile at the tail.
+  if (length(jobs) > 1L) {
+    jcost <- vapply(jobs, function(t) sum(wbytes[t$idx]), numeric(1))
+    jobs <- jobs[order(jcost, decreasing = TRUE)]
   }
   if (!quiet)
-    message(sprintf("spatial_overlay: %d inputs, %d components, %d jobs, %d threads, grid=%.4g",
-                    n, max(comp), length(jobs), nthreads, grid))
+    message(sprintf(paste0("spatial_overlay: %d inputs (%d distinct), %d components, %d jobs, ",
+                           "%d threads, grid=%.4g, noding=%.3g"),
+                    n_orig, n, max(comp), length(jobs), nthreads, grid, precision))
 
   fr        <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
   acc       <- .run_accumulator(fr)
   piece_off <- 0L
   cov_err   <- 0
   worst     <- NULL                                  # top offending inputs by coverage error
-  batch_budget <- max(mem / .OVERLAY_FACTOR, tile_bytes)
+  # A batch is overlaid with one thread per tile and load-balanced across the pool
+  # only within the batch, so each batch must hold many more tiles than threads, or
+  # a batch that gathers several large tiles leaves most threads idle on its tail.
+  # Batch by a fixed tile count, not input bytes: a feature spanning many tiles is
+  # shared in memory but its bytes recur in every tile, so a byte budget collapses
+  # to a handful of tiles wherever such features dominate. Peak working set stays
+  # bounded by tile_bytes times the running threads, independent of the batch size.
+  batch_tiles <- max(256L, 32L * nthreads)
   pb <- if (!quiet) utils::txtProgressBar(0, length(jobs), style = 3) else NULL
 
   # Overlay one batch of tiles, map pieces back to global rows, stream to spill.
+  # `gi[origin]` is the distinct input covering a piece; each piece-row is fanned to
+  # one output row per original record that distinct input stands for, carrying that
+  # record's attributes and the shared piece id.
   run_batch <- function(batch) {
     job <- rep.int(seq_along(batch), vapply(batch, function(t) length(t$idx), integer(1)))
     gi  <- unlist(lapply(batch, `[[`, "idx"), use.names = FALSE)
     rct <- unlist(lapply(batch, `[[`, "rect"), use.names = FALSE)
     res <- .Call(C_overlay_run, cwkb[gi], as.integer(job), as.double(rct),
-                 as.integer(nthreads))
+                 as.integer(nthreads), as.double(precision))
     geoms <- res[[1L]]; origin <- res[[2L]]; parea <- res[[3L]]
     iarea <- res[[4L]]; fid <- res[[5L]]
     if (length(geoms)) {
-      src <- gi[origin]                                # chunk index -> global row
-      df  <- attrs[src, , drop = FALSE]
-      df[[piece]] <- piece_off + fid                  # rows of one face share a piece id
-      df[[geom]]  <- geoms
+      members <- mem_by_dk[gi[origin]]                # original rows per piece-row
+      mult    <- lengths(members)
+      rep_row <- rep.int(seq_along(origin), mult)     # piece-row index per fanned row
+      pid     <- piece_off + fid
+      df  <- attrs[unlist(members, use.names = FALSE), , drop = FALSE]
+      df[[piece]] <- pid[rep_row]                     # rows of one face share a piece id
+      df[[geom]]  <- geoms[rep_row]
       rownames(df) <- NULL
       acc$push(.coerce_for_vtr(df))
       piece_off <<- piece_off + max(fid)
@@ -2291,21 +2380,19 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
       if (nrow(det)) cov_err <<- max(cov_err, max(det$err))
       bad <- det[det$err > 1e-4, , drop = FALSE]
       if (nrow(bad)) {
-        bad$row <- gi[bad$src]
+        bad$row <- rep_idx[gi[bad$src]]               # distinct chunk -> original row
         worst <<- rbind(worst, bad[, c("row", "err", "iarea", "cov")])
         worst <<- worst[utils::head(order(worst$err, decreasing = TRUE), 50L), , drop = FALSE]
       }
     }
   }
 
-  batch <- list(); batch_b <- 0
-  for (ji in seq_along(jobs)) {
-    batch[[length(batch) + 1L]] <- jobs[[ji]]
-    batch_b <- batch_b + sum(wbytes[jobs[[ji]]$idx])
-    if (batch_b >= batch_budget) { run_batch(batch); batch <- list(); batch_b <- 0 }
-    if (!is.null(pb)) utils::setTxtProgressBar(pb, ji)
+  njob <- length(jobs)
+  for (start in seq.int(1L, njob, by = batch_tiles)) {
+    last <- min(start + batch_tiles - 1L, njob)
+    run_batch(jobs[start:last])
+    if (!is.null(pb)) utils::setTxtProgressBar(pb, last)
   }
-  if (length(batch)) run_batch(batch)
   if (!is.null(pb)) close(pb)
   if (piece_off == 0L) stop("overlay produced no polygonal pieces")
   if (cov_err > 1e-4) {

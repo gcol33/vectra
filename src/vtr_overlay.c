@@ -27,6 +27,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "libgeos.h"
 #include "vtr_geos.h"
@@ -141,7 +142,7 @@ static void emit_piece(GEOSContextHandle_t ctx, GEOSWKBWriter *writer, OutList *
 static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKBWriter *writer,
                          const unsigned char **ptrs, const size_t *lens,
                          const int *members, int nmem, const double *rect,
-                         OutList *out, double *inarea, int *gface) {
+                         OutList *out, double *inarea, int *gface, double prec) {
     GEOSGeometry **poly = (GEOSGeometry **) calloc((size_t) nmem, sizeof(GEOSGeometry *));
     const GEOSPreparedGeometry **prep =
         (const GEOSPreparedGeometry **) calloc((size_t) nmem, sizeof(const GEOSPreparedGeometry *));
@@ -153,7 +154,18 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
     for (int k = 0; k < nmem; k++) {
         store[k] = k;
         GEOSGeometry *g = GEOSWKBReader_read_r(ctx, reader, ptrs[members[k]], lens[members[k]]);
+        int straddles = 0;
         if (g != NULL && rect != NULL) {
+            /* Only a feature whose bounding box leaves the tile needs clipping; one
+             * that sits wholly inside the tile is unchanged by the clip and is
+             * already valid from the partition pass, so it skips the clip, the
+             * validity check and the repair below -- the common case in a tile. */
+            double xmin, ymin, xmax, ymax;
+            straddles = !(GEOSGeom_getExtent_r(ctx, g, &xmin, &ymin, &xmax, &ymax) &&
+                          xmin >= rect[0] && ymin >= rect[1] &&
+                          xmax <= rect[2] && ymax <= rect[3]);
+        }
+        if (g != NULL && rect != NULL && straddles) {
             GEOSGeometry *gc = GEOSClipByRect_r(ctx, g, rect[0], rect[1], rect[2], rect[3]);
             GEOSGeom_destroy_r(ctx, g);
             /* GEOSClipByRect is a fast rectangle clip with no validity guarantee:
@@ -206,7 +218,8 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
         GEOSGeometry *coll = (nb > 0)
             ? GEOSGeom_createCollection_r(ctx, GEOS_GEOMETRYCOLLECTION, bnds, nb) : NULL;
         free(bnds);
-        GEOSGeometry *noded = (coll != NULL) ? GEOSUnaryUnion_r(ctx, coll) : NULL;
+        GEOSGeometry *noded = (coll == NULL) ? NULL
+            : (prec > 0.0 ? GEOSUnaryUnionPrec_r(ctx, coll, prec) : GEOSUnaryUnion_r(ctx, coll));
         if (coll != NULL) GEOSGeom_destroy_r(ctx, coll);
 
         if (noded != NULL) {
@@ -416,6 +429,46 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
     return out;
 }
 
+/* C_overlay_group(wkb_list) -> INTSXP length n: a dense 1-based group id per
+ * feature, equal for features whose cleaned WKB is byte-identical. Precision
+ * snapping in C_overlay_partition makes the many designation records stacked
+ * over one site identical down to the byte, so grouping here lets the driver
+ * run the overlay on one representative per group and fan the per-record
+ * attributes back afterwards -- the duplicates add no faces, so the pieces are
+ * unchanged. The group id of a run of identical features is the id assigned to
+ * the first of them, so the first feature in each group is its representative. */
+SEXP C_overlay_group(SEXP wkb_list) {
+    R_xlen_t n = XLENGTH(wkb_list);
+    SEXP grp = PROTECT(allocVector(INTSXP, n));
+    int *g = INTEGER(grp);
+    size_t cap = 1;
+    while (cap < (size_t) (2 * n + 1)) cap <<= 1;
+    size_t mask = cap - 1;
+    R_xlen_t *slot = (R_xlen_t *) R_Calloc(cap, R_xlen_t);  /* stores i+1; 0 = empty */
+    int ngroup = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+        SEXP r = VECTOR_ELT(wkb_list, i);
+        const unsigned char *p = RAW(r);
+        R_xlen_t len = XLENGTH(r);
+        uint64_t h = 1469598103934665603ULL;            /* FNV-1a 64-bit */
+        for (R_xlen_t b = 0; b < len; b++) { h ^= p[b]; h *= 1099511628211ULL; }
+        size_t pos = (size_t) h & mask;
+        for (;;) {
+            R_xlen_t s = slot[pos];
+            if (s == 0) { slot[pos] = i + 1; g[i] = ++ngroup; break; }
+            R_xlen_t j = s - 1;
+            SEXP rj = VECTOR_ELT(wkb_list, j);
+            if (XLENGTH(rj) == len && memcmp(RAW(rj), p, (size_t) len) == 0) {
+                g[i] = g[j]; break;
+            }
+            pos = (pos + 1) & mask;
+        }
+    }
+    R_Free(slot);
+    UNPROTECT(1);
+    return grp;
+}
+
 /* ---- run one batch of jobs ----------------------------------------------- */
 
 /* C_overlay_run(wkb_chunk, job_chunk, rects, n_threads)
@@ -424,16 +477,20 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
  *   rects     : REALSXP length 4*njobs (xmin,ymin,xmax,ymax per job); NA xmin
  *               means the job is not clipped (a whole small component)
  *   n_threads : INTSXP(1) OpenMP threads (<=0 -> all cores)
+ *   prec      : REALSXP(1) noding grid size; >0 nodes at fixed precision
+ *               (snap-rounding on that grid), 0 nodes in floating precision
  * returns VECSXP(5): hex-WKB pieces (one per face x covering input), INTSXP
  *                    origin (1-based chunk index of the covering input), piece
  *                    areas, input areas (per chunk input, clipped), INTSXP face
  *                    (1-based id shared by the rows from one polygonised face). */
-SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp) {
+SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp,
+                   SEXP prec_sexp) {
     overlay_geos_init();
     int m = (int) Rf_length(wkb_chunk);
     int nthreads = (Rf_length(nthreads_sexp) > 0) ? INTEGER(nthreads_sexp)[0] : 0;
     int have_rects = (rects_sexp != R_NilValue && Rf_length(rects_sexp) >= 4);
     const double *rects = have_rects ? REAL(rects_sexp) : NULL;
+    double prec = (Rf_length(prec_sexp) > 0) ? REAL(prec_sexp)[0] : 0.0;
 
     const unsigned char **ptrs =
         (const unsigned char **) R_alloc((size_t) m, sizeof(const unsigned char *));
@@ -480,7 +537,7 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
             process_tile(ctx, reader, writer, ptrs, lens, jmemb[j], jsize[j],
-                         rect, &worker[tid], inarea, &g_face);
+                         rect, &worker[tid], inarea, &g_face, prec);
         }
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);
@@ -496,7 +553,7 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
             process_tile(ctx, reader, writer, ptrs, lens, jmemb[j], jsize[j],
-                         rect, &worker[0], inarea, &g_face);
+                         rect, &worker[0], inarea, &g_face, prec);
         }
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);

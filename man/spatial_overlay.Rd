@@ -10,6 +10,8 @@ spatial_overlay(
   piece = "piece_id",
   geom = "geometry",
   grid = NULL,
+  precision = NULL,
+  dedup = TRUE,
   flush_rows = NULL,
   mem_limit = NULL,
   threads = NULL,
@@ -36,14 +38,31 @@ to override when that default is too coarse for fine geometry (or too coarse
 because an outlier coordinate inflated the magnitude), or \code{0} to disable
 snapping entirely.}
 
+\item{precision}{Fixed-precision grid size, in CRS units, for noding the
+boundary linework. Noding on a fixed grid is deterministic and avoids the
+floating noder's repair-and-retry on dense overlapping linework, which is
+what makes a large dense layer feasible to overlay. It is far finer than
+\code{grid} so intersection points are not collapsed. \code{NULL} (the default)
+derives it from coordinate magnitude (\code{max(abs(st_bbox(x))) * 1e-13}); pass
+a number to override, or \code{0} to node in floating precision.}
+
+\item{dedup}{Overlay one representative per group of byte-identical cleaned
+geometries and fan the per-record attributes back onto its pieces afterwards.
+Duplicates add no faces, so the result is identical; this only removes the
+redundant noding when many records are stacked over one site (common in
+WDPA-style data). \code{TRUE} by default; set \code{FALSE} to overlay every record.}
+
 \item{flush_rows}{Exploded rows buffered before a spill flush. Defaults to
 \code{getOption("vectra.spatial_flush", 5e5)}.}
 
-\item{mem_limit}{Approximate peak working-set budget in bytes. Components are
-grouped into chunks within this budget and each chunk is overlaid then
-spilled before the next, so memory stays bounded regardless of layer size.
-Raise it for more parallel throughput, lower it for tighter memory. Defaults
-to \code{getOption("vectra.overlay_mem_limit", 2e9)}.}
+\item{mem_limit}{Approximate peak working-set budget in bytes, bounding the
+per-tile size (\code{tile_bytes = mem_limit / (threads * 24)}). It is a throughput
+knob with an interior optimum, not "bigger is faster": too small replicates
+features across many tiles, too large nodes too much linework per tile (a
+superlinear cost), and a budget of tens of GB runs slower than the default on
+a dense layer. Lower it for tighter memory. Defaults via
+\code{getOption("vectra.overlay_mem_limit", ...)} to a value that scales with
+\code{threads} to hold the per-tile size near its measured optimum.}
 
 \item{threads}{Number of OpenMP threads for the per-component overlay within a
 chunk. \code{0} (the default, via \code{getOption("vectra.overlay_threads", 0)}) uses

@@ -1,4 +1,21 @@
-# vectra 0.9.0
+# vectra 0.9.1
+
+## `spatial_overlay()` noding and deduplication
+
+* `spatial_overlay()` now nodes each tile with fixed-precision snap-rounding
+  (`GEOSUnaryUnionPrec`) at a grid derived from the layer extent, instead of
+  floating-point noding. Floating noding throws on dense overlapping linework
+  and falls back to a full snap-rounding retry of the whole component, which on
+  large protected-area layers dominated the run. Fixed-precision noding is
+  deterministic and single-pass, so the per-tile cost is flat and the overlap
+  coverage invariant holds (`maxerr < 1e-4`) without the previous coverage
+  warning. A new `precision` argument overrides the derived grid size.
+* Byte-identical input geometries are now deduplicated before the overlay
+  (`dedup = TRUE`, the default): each distinct geometry is overlaid once and its
+  attributes fanned back to every duplicate source, so a layer with repeated
+  sites does the topology work once. On a ~470k-feature world protected-area
+  union this cut the distinct geometry count by about three quarters and the
+  end-to-end run from roughly 50 to 17 minutes. Set `dedup = FALSE` to disable.
 
 ## Raster and vector toolbox
 
