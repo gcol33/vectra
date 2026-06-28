@@ -15,11 +15,18 @@ spatial_overlay(
   flush_rows = NULL,
   mem_limit = NULL,
   threads = NULL,
-  quiet = TRUE
+  quiet = TRUE,
+  layer = NULL,
+  query = NULL,
+  read_chunk = NULL
 )
 }
 \arguments{
-\item{x}{An \code{sf} object with polygon or multipolygon geometry.}
+\item{x}{An \code{sf} object with polygon or multipolygon geometry, or a single
+path to a vector file (e.g. a GeoPackage). A path is read in feature batches
+via \code{layer} / \code{query}, so the whole layer is never held in memory at once --
+peak memory then tracks the cleaned geometry, not the source size, which lets
+a larger-than-RAM layer overlay on a modest machine.}
 
 \item{vars}{Character vector of attribute columns of \code{x} to carry onto each
 piece. Default \code{NULL} keeps them all; name a subset to keep the streamed
@@ -69,6 +76,18 @@ chunk. \code{0} (the default, via \code{getOption("vectra.overlay_threads", 0)})
 all available cores.}
 
 \item{quiet}{If \code{FALSE}, show a text progress bar over the overlay chunks.}
+
+\item{layer}{When \code{x} is a file path, the name of the layer to read. Ignored
+for an \code{sf} \code{x}. Supply this or \code{query}.}
+
+\item{query}{When \code{x} is a file path, a SQL statement selecting the features to
+overlay (read in batches via \code{LIMIT}/\code{OFFSET}); use it instead of \code{layer}
+for a subset or join. With \code{query} and no \code{layer}, pass \code{grid} explicitly,
+since the layer extent cannot be read from the file metadata.}
+
+\item{read_chunk}{Features per read/parse batch. \code{NULL} (default) sizes it
+from available RAM. Smaller batches lower peak memory; larger ones do fewer
+round trips.}
 }
 \value{
 A \code{vectra_node} over the exploded overlay (one row per piece per

@@ -103,3 +103,37 @@ test_that("invalid input polygons are repaired before overlay", {
   g <- sf::st_as_sfc(structure(df$geometry, class = "WKB"), EWKB = FALSE)
   expect_true(all(sf::st_is_valid(g)))
 })
+
+test_that("reading from a GeoPackage in batches matches the in-memory overlay", {
+  skip_if_not_installed("sf")
+  sq <- function(x, y, s) sf::st_polygon(list(rbind(
+    c(x, y), c(x+s, y), c(x+s, y+s), c(x, y+s), c(x, y))))
+  g <- vector("list", 30L); yr <- integer(30L); k <- 0L
+  for (i in 0:5) for (j in 0:4) { k <- k+1L; g[[k]] <- sq(i*600, j*600, 1000); yr[k] <- 1900L+k }
+  x  <- sf::st_sf(year = yr, geometry = sf::st_sfc(g), crs = 3857)
+  gp <- tempfile(fileext = ".gpkg"); on.exit(unlink(gp))
+  sf::st_write(x, gp, "lyr", quiet = TRUE)
+
+  pull <- function(o) {
+    d <- as.data.frame(collect(o))
+    d[order(d$piece_id, d$year), c("piece_id", "year", "geometry")]
+  }
+  ref  <- pull(spatial_overlay(x, vars = "year"))                                  # in-memory
+  file <- pull(spatial_overlay(gp, layer = "lyr", vars = "year"))                  # file, one batch
+  chnk <- pull(spatial_overlay(gp, layer = "lyr", vars = "year", read_chunk = 7L)) # file, many batches
+
+  expect_equal(nrow(file), nrow(ref))
+  expect_identical(file$piece_id, ref$piece_id)
+  expect_identical(file$year, ref$year)
+  expect_identical(file$geometry, ref$geometry)   # geometry byte-identical
+  expect_identical(chnk$geometry, ref$geometry)   # batch count does not change output
+})
+
+test_that("file overlay needs layer or query, and query without grid asks for grid", {
+  skip_if_not_installed("sf")
+  x  <- sf::st_sf(year = 1L, geometry = sf::st_sfc(mk(0, 1)), crs = 3857)
+  gp <- tempfile(fileext = ".gpkg"); on.exit(unlink(gp))
+  sf::st_write(x, gp, "lyr", quiet = TRUE)
+  expect_error(spatial_overlay(gp), "layer.*query")
+  expect_error(spatial_overlay(gp, query = "SELECT * FROM lyr"), "grid")
+})

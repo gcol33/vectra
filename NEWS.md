@@ -29,6 +29,22 @@
   all attributes included, is still kept. Other grouped cases (`n > 1` or
   `with_ties = TRUE`) are unchanged.
 
+## Lower-memory `spatial_overlay()`
+
+* `spatial_overlay()` now encodes and parses the input geometry a feature batch
+  at a time rather than materializing the whole layer's WKB at once. Connected
+  components are derived from the bounding boxes after parsing, so the result is
+  byte-identical; only the transient input copy is bounded. The batch size scales
+  with available RAM (`read_chunk`, or `getOption("vectra.overlay_parse_chunk")`),
+  and the default working-set budget is capped at half of total RAM when it can be
+  detected, so a many-core machine cannot scale the overlay past what it can hold.
+* `spatial_overlay()` can read its input directly from a vector file (`x` a path,
+  with `layer =` or `query =`) instead of a pre-loaded `sf` object, reading the
+  layer in feature batches. The full layer is never held in memory, so peak usage
+  tracks the cleaned geometry rather than the source size: a world protected-area
+  layer that needs ~11 GB to load with `sf::st_read()` overlays in ~5 GB this way,
+  bringing a larger-than-RAM layer within reach of a 16 GB machine.
+
 ## Raster and vector toolbox
 
 * `polygonize(raster)` vectorises a raster into polygon features, the inverse of

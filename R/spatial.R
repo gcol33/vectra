@@ -258,11 +258,11 @@
 # grid is derived from coordinate magnitude (not extent), keeping it stable
 # against far-flung outliers and invariant to units. Returns 0 when no sensible
 # grid exists (degenerate or all-zero coordinates), which disables snapping.
-.overlay_grid <- function(x) {
-  mag <- max(abs(sf::st_bbox(x)))
+.overlay_grid_mag <- function(mag) {
   if (!is.finite(mag) || mag == 0) return(0)
   mag * 3e-8
 }
+.overlay_grid <- function(x) .overlay_grid_mag(max(abs(sf::st_bbox(x))))
 
 # Per-input coverage error of an overlay result. For a correct disjoint
 # decomposition the piece areas covering each input must sum to that input's
@@ -301,12 +301,171 @@
 .OVERLAY_FEAT_CAP  <- 3000  # also cap features per tile (node count, not just bytes)
 .OVERLAY_MAX_DEPTH <- 16    # quadtree depth cap (coincident features can't split)
 
+# Total physical RAM in bytes, or NA if it cannot be determined. Cached per
+# session. Used only to RELAX limits when memory is plentiful and to cap them
+# when it is scarce; every caller has a safe fixed fallback for the NA case, so
+# nothing about correctness or the peak guarantee depends on detection working.
+.sys_ram_cache <- new.env(parent = emptyenv())
+.sys_ram_bytes <- function() {
+  if (!is.null(.sys_ram_cache$v)) return(.sys_ram_cache$v)
+  v <- tryCatch({
+    sys <- Sys.info()[["sysname"]]
+    if (identical(sys, "Linux")) {
+      mt <- grep("^MemTotal:", readLines("/proc/meminfo", n = 64L), value = TRUE)
+      if (length(mt)) as.numeric(sub("\\D+(\\d+).*", "\\1", mt[1L])) * 1024 else NA_real_
+    } else if (identical(sys, "Darwin")) {
+      as.numeric(system2("sysctl", c("-n", "hw.memsize"), stdout = TRUE, stderr = FALSE))
+    } else if (identical(sys, "Windows")) {
+      pick <- function(out) {
+        num <- suppressWarnings(as.numeric(grep("[0-9]", out, value = TRUE)))
+        num <- num[is.finite(num) & num > 0]
+        if (length(num)) num[1L] else NA_real_
+      }
+      out <- tryCatch(system2("wmic", c("ComputerSystem", "get", "TotalPhysicalMemory"),
+                              stdout = TRUE, stderr = FALSE), error = function(e) character(0))
+      r <- pick(out)
+      if (is.na(r)) {  # wmic is absent on newer Windows; fall back to CIM
+        out <- tryCatch(system2("powershell",
+          c("-NoProfile", "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"),
+          stdout = TRUE, stderr = FALSE), error = function(e) character(0))
+        r <- pick(out)
+      }
+      r
+    } else NA_real_
+  }, error = function(e) NA_real_)
+  if (length(v) != 1L || !is.finite(v) || v <= 0) v <- NA_real_
+  .sys_ram_cache$v <- v
+  v
+}
+
 # Default overlay working-set budget. tile_bytes = mem / (threads * FACTOR), so to
 # hold tile_bytes at the target the budget scales with the thread count. Peak
 # working set is then target * FACTOR * threads, modest and proportional to the
-# parallelism actually used. An explicit mem_limit always wins.
-.overlay_mem_default <- function(nthreads)
-  .OVERLAY_TILE_TGT * .OVERLAY_FACTOR * max(as.integer(nthreads), 1L)
+# parallelism actually used. When total RAM is known the budget is also capped at
+# half of it, so a many-core / low-RAM machine cannot scale the working set past
+# what it can hold. An explicit mem_limit always wins.
+.overlay_mem_default <- function(nthreads) {
+  thread_scaled <- .OVERLAY_TILE_TGT * .OVERLAY_FACTOR * max(as.integer(nthreads), 1L)
+  ram <- .sys_ram_bytes()
+  if (is.na(ram)) thread_scaled else min(thread_scaled, 0.5 * ram)
+}
+
+# Features per parse chunk. The parse materializes the raw WKB for its chunk only,
+# so the chunk count bounds the transient input copy that coexists with the
+# accumulating cleaned WKB. Scales with total RAM (bigger chunks, fewer round
+# trips, on roomy machines) around a 16 GB reference, with a safe fixed fallback.
+.OVERLAY_PARSE_CHUNK <- 50000L
+.overlay_chunk_ram <- function() {
+  ram <- .sys_ram_bytes()
+  if (is.na(ram)) .OVERLAY_PARSE_CHUNK
+  else as.integer(.OVERLAY_PARSE_CHUNK * max(0.5, min(4, ram / 16e9)))
+}
+# Batch size for reads/parse, RAM-scaled, overridable, and (sf path) capped at n.
+.overlay_chunk_size <- function()
+  as.integer(getOption("vectra.overlay_parse_chunk", .overlay_chunk_ram()))
+.overlay_parse_chunk <- function(n)
+  max(1L, min(as.integer(n), .overlay_chunk_size()))
+
+# Coordinate magnitude of a GeoPackage layer from its declared extent
+# (gpkg_contents), or NA if it cannot be read. Lets the file path derive the
+# snapping grid without scanning geometry.
+.overlay_source_mag <- function(path, layer) {
+  ext <- tryCatch(
+    sf::st_read(path, quiet = TRUE,
+      query = sprintf(
+        "SELECT min_x, min_y, max_x, max_y FROM gpkg_contents WHERE table_name = '%s'",
+        layer)),
+    error = function(e) NULL)
+  if (is.null(ext) || nrow(ext) == 0L) return(NA_real_)
+  v <- suppressWarnings(as.numeric(unlist(ext[1L, c("min_x", "min_y", "max_x", "max_y")])))
+  v <- v[is.finite(v)]
+  if (!length(v)) NA_real_ else max(abs(v))
+}
+
+# Common input path for spatial_overlay(): produce cleaned geometry (cwkb),
+# bounding boxes, and attributes from either an in-memory sf object or a file
+# source read in feature batches. Each batch is parsed once and the raw WKB is
+# released before the next, so the transient input copy stays small. The file
+# path never holds the whole layer as an sf object, so peak memory tracks the
+# cleaned geometry rather than the (much larger) cost of materializing the source.
+.overlay_ingest <- function(x, vars, piece, grid, nthreads,
+                            layer = NULL, query = NULL, read_chunk = NULL) {
+  sel_attrs <- function(df) {
+    df <- as.data.frame(df)
+    if (!is.null(vars)) {
+      miss <- setdiff(vars, names(df))
+      if (length(miss))
+        stop(sprintf("vars not found in `x`: %s", paste(miss, collapse = ", ")))
+      df <- df[, vars, drop = FALSE]
+    }
+    if (piece %in% names(df))
+      stop(sprintf("piece column '%s' already exists in `x`; pass piece=", piece))
+    df
+  }
+
+  if (inherits(x, "sf")) {
+    crs <- sf::st_crs(x)
+    n   <- nrow(x)
+    if (n == 0L) stop("`x` has no geometries to overlay")
+    attrs <- sel_attrs(sf::st_drop_geometry(x))
+    if (is.null(grid)) grid <- .overlay_grid_mag(max(abs(sf::st_bbox(x))))
+    xgeom <- sf::st_geometry(x)
+    bbox  <- matrix(NA_real_, n, 4L)
+    cwkb  <- vector("list", n)
+    chunk <- read_chunk %||% .overlay_parse_chunk(n)
+    for (s in seq.int(1L, n, by = chunk)) {
+      e  <- min(s + chunk - 1L, n)
+      w  <- sf::st_as_binary(xgeom[s:e], EWKB = FALSE)
+      pr <- .Call(C_overlay_parse, w, as.double(grid), as.integer(nthreads))
+      bbox[s:e, ] <- pr[[1L]]
+      cwkb[s:e]   <- pr[[2L]]
+      w <- NULL; pr <- NULL
+    }
+    return(list(attrs = attrs, crs = crs, n = n,
+                cwkb = cwkb, bbox = bbox, grid = as.double(grid)))
+  }
+
+  if (!is.character(x) || length(x) != 1L)
+    stop("`x` must be an sf object or a single file path")
+  if (!file.exists(x)) stop(sprintf("file not found: %s", x))
+  if (is.null(layer) && is.null(query))
+    stop("reading from a file needs `layer=` (a layer name) or `query=` (SQL)")
+  make_q <- function(off) {
+    if (is.null(query))
+      sprintf('SELECT * FROM "%s" LIMIT %d OFFSET %d', layer, chunk, off)
+    else
+      sprintf("SELECT * FROM (%s) LIMIT %d OFFSET %d", query, chunk, off)
+  }
+
+  if (is.null(grid)) {
+    mag <- if (!is.null(layer)) .overlay_source_mag(x, layer) else NA_real_
+    if (is.na(mag))
+      stop("cannot derive the snapping grid from this source; pass grid= explicitly")
+    grid <- .overlay_grid_mag(mag)
+  }
+
+  chunk <- read_chunk %||% .overlay_chunk_size()
+  cw <- list(); bb <- list(); at <- list(); crs <- NULL; off <- 0L; ci <- 0L
+  repeat {
+    b  <- sf::st_read(x, query = make_q(off), quiet = TRUE)
+    nb <- nrow(b)
+    if (nb == 0L) break
+    if (is.null(crs)) crs <- sf::st_crs(b)
+    ci <- ci + 1L
+    at[[ci]] <- sel_attrs(sf::st_drop_geometry(b))
+    w  <- sf::st_as_binary(sf::st_geometry(b), EWKB = FALSE)
+    pr <- .Call(C_overlay_parse, w, as.double(grid), as.integer(nthreads))
+    bb[[ci]] <- pr[[1L]]; cw[[ci]] <- pr[[2L]]
+    off <- off + nb
+    b <- NULL; w <- NULL; pr <- NULL
+    if (nb < chunk) break
+  }
+  if (ci == 0L) stop("the source returned no features to overlay")
+  cwkb <- unlist(cw, recursive = FALSE, use.names = FALSE)
+  list(attrs = do.call(rbind, at), crs = crs, n = length(cwkb),
+       cwkb = cwkb, bbox = do.call(rbind, bb), grid = as.double(grid))
+}
 
 # Adaptive quadtree over feature bounding boxes: subdivide the extent until each
 # leaf tile is within the byte and feature budgets, then return the leaves as
@@ -2163,7 +2322,11 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #' intersecting needs the geometries in memory. The exploded result, which is
 #' typically several times larger, is what streams to disk.
 #'
-#' @param x An `sf` object with polygon or multipolygon geometry.
+#' @param x An `sf` object with polygon or multipolygon geometry, or a single
+#'   path to a vector file (e.g. a GeoPackage). A path is read in feature batches
+#'   via `layer` / `query`, so the whole layer is never held in memory at once --
+#'   peak memory then tracks the cleaned geometry, not the source size, which lets
+#'   a larger-than-RAM layer overlay on a modest machine.
 #' @param vars Character vector of attribute columns of `x` to carry onto each
 #'   piece. Default `NULL` keeps them all; name a subset to keep the streamed
 #'   output narrow.
@@ -2203,6 +2366,15 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #'   chunk. `0` (the default, via `getOption("vectra.overlay_threads", 0)`) uses
 #'   all available cores.
 #' @param quiet If `FALSE`, show a text progress bar over the overlay chunks.
+#' @param layer When `x` is a file path, the name of the layer to read. Ignored
+#'   for an `sf` `x`. Supply this or `query`.
+#' @param query When `x` is a file path, a SQL statement selecting the features to
+#'   overlay (read in batches via `LIMIT`/`OFFSET`); use it instead of `layer`
+#'   for a subset or join. With `query` and no `layer`, pass `grid` explicitly,
+#'   since the layer extent cannot be read from the file metadata.
+#' @param read_chunk Features per read/parse batch. `NULL` (default) sizes it
+#'   from available RAM. Smaller batches lower peak memory; larger ones do fewer
+#'   round trips.
 #'
 #' @return A `vectra_node` over the exploded overlay (one row per piece per
 #'   covering polygon), backed by temporary `.vtr` spills removed when the node
@@ -2229,45 +2401,17 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
                             geom = "geometry", grid = NULL, precision = NULL,
                             dedup = TRUE, flush_rows = NULL,
-                            mem_limit = NULL, threads = NULL, quiet = TRUE) {
+                            mem_limit = NULL, threads = NULL, quiet = TRUE,
+                            layer = NULL, query = NULL, read_chunk = NULL) {
   .check_sf()
-  if (!inherits(x, "sf"))
-    stop("`x` must be an sf object (the polygon layer to self-overlay)")
-  crs <- sf::st_crs(x)
-  n   <- nrow(x)
-  if (n == 0L) stop("`x` has no geometries to overlay")
 
-  attrs <- as.data.frame(sf::st_drop_geometry(x))
-  if (!is.null(vars)) {
-    miss <- setdiff(vars, names(attrs))
-    if (length(miss))
-      stop(sprintf("vars not found in `x`: %s", paste(miss, collapse = ", ")))
-    attrs <- attrs[, vars, drop = FALSE]
-  }
-  if (piece %in% names(attrs))
-    stop(sprintf("piece column '%s' already exists in `x`; pass piece=", piece))
-
-  # WKB is the only sf touch on the compute boundary: validity repair, areal
-  # extraction, clipping, fixed-precision snapping, noding, polygonisation and
-  # labelling all run in C on GEOS (via libgeos). Geometry stays compact (raw
-  # WKB) in R.
-  wkb  <- sf::st_as_binary(sf::st_geometry(x), EWKB = FALSE)
-  mag  <- max(abs(sf::st_bbox(x)))
-  if (is.null(grid)) {
-    grid <- .overlay_grid(x)
-  } else {
+  # Validate an explicit grid / precision up front; NULL means derive them.
+  if (!is.null(grid)) {
     if (!is.numeric(grid) || length(grid) != 1L || !is.finite(grid) || grid < 0)
       stop("`grid` must be a single non-negative number (CRS units), or NULL to derive it")
     grid <- as.double(grid)
   }
-  # Noding precision. Boundaries are noded at a fixed grid (snap rounding): this is
-  # deterministic and avoids the floating noder's repair-and-retry on dense overlapping
-  # linework, which is what makes a large dense layer feasible to node. The grid is
-  # far finer than the cleaning grid so intersection points are not collapsed; it is
-  # set well above the floating-point resolution at the layer's extent.
-  if (is.null(precision)) {
-    precision <- if (is.finite(mag) && mag > 0) mag * 1e-13 else 0
-  } else {
+  if (!is.null(precision)) {
     if (!is.numeric(precision) || length(precision) != 1L || !is.finite(precision) || precision < 0)
       stop("`precision` must be a single non-negative number (CRS units), or NULL to derive it")
     precision <- as.double(precision)
@@ -2282,13 +2426,29 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit",
                                        .overlay_mem_default(nthreads))
 
-  # Parse once, in parallel: repair, snap to the grid, record bounding boxes,
-  # return cleaned WKB. The cleaned WKB is what the overlay jobs consume, so a
-  # feature spanning several tiles is never repaired or snapped more than once.
-  part <- .Call(C_overlay_partition, wkb, as.double(grid), as.integer(nthreads))
-  comp <- part[[1L]]; bbox <- part[[2L]]; cwkb <- part[[3L]]
-  part <- NULL; wkb <- NULL                       # drop the raw input copy
+  # Read and parse the input: an in-memory sf object, or a file source (x a path
+  # with layer= or query=) read in feature batches so the whole layer is never
+  # materialized at once. Either way the geometry is repaired, made areal, snapped
+  # to the grid, and returned as cleaned WKB plus bounding boxes; geometry stays
+  # compact (raw WKB) in R and never touches sf again on the compute boundary.
+  ing   <- .overlay_ingest(x, vars, piece, grid, nthreads,
+                           layer = layer, query = query, read_chunk = read_chunk)
+  attrs <- ing$attrs; crs <- ing$crs; n <- ing$n
+  cwkb  <- ing$cwkb;  bbox <- ing$bbox; grid <- ing$grid
+  ing   <- NULL
   if (!any(!is.na(bbox[, 1L]))) stop("`x` has no parseable geometries to overlay")
+
+  # Noding precision. Boundaries are noded at a fixed grid (snap rounding): this is
+  # deterministic and avoids the floating noder's repair-and-retry on dense overlapping
+  # linework, which is what makes a large dense layer feasible to node. The grid is
+  # far finer than the cleaning grid so intersection points are not collapsed; it is
+  # set well above the floating-point resolution at the layer's extent.
+  if (is.null(precision)) {
+    mag       <- max(abs(bbox), na.rm = TRUE)
+    precision <- if (is.finite(mag) && mag > 0) mag * 1e-13 else 0
+  }
+
+  comp   <- .Call(C_overlay_components, bbox)
   wbytes <- as.numeric(lengths(cwkb))
 
   # Deduplicate identical cleaned geometry before overlaying. After snapping, the

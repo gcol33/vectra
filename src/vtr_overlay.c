@@ -289,15 +289,14 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
 
 /* ---- partition: clean + bbox + components -------------------------------- */
 
-/* C_overlay_partition(wkb_list, grid, n_threads) -> VECSXP(3):
- *   [[1]] INTSXP  dense 1-based connected-component id per feature (overlap from
- *         bounding boxes; a valid superset of true overlap)
- *   [[2]] REALSXP matrix n x 4 (xmin, ymin, xmax, ymax), NA row on parse failure
- *   [[3]] VECSXP  cleaned WKB (raw) per feature: repaired, areal, snapped to grid
- * Each feature is parsed once, in parallel; the cleaned WKB is what the overlay
- * jobs consume, so a feature spanning many tiles is never repaired or snapped
- * more than once. */
-SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
+/* C_overlay_parse(wkb_list, grid, n_threads) -> VECSXP(2):
+ *   [[1]] REALSXP matrix n x 4 (xmin, ymin, xmax, ymax), NA row on parse failure
+ *   [[2]] VECSXP  cleaned WKB (raw) per feature: repaired, areal, snapped to grid
+ * Each feature is parsed once, in parallel. Connected components are derived
+ * separately (C_overlay_components) from the boxes alone, so the driver can parse
+ * the layer in chunks -- bounding the transient raw-WKB copy to one chunk -- and
+ * still label components globally. */
+SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
     overlay_geos_init();
     int n = (int) Rf_length(wkb_list);
     double grid = (Rf_length(grid_sexp) > 0) ? REAL(grid_sexp)[0] : 0.0;
@@ -369,15 +368,9 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
         GEOS_finish_r(ctx);
     }
 
-    /* serial: cleaned WKB list + STRtree over boxes + connected components */
-    GEOSContextHandle_t ctx = GEOS_init_r();
-    GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
+    /* serial: move cleaned WKB into an R list, freeing each C buffer as we go */
     SEXP clean = PROTECT(allocVector(VECSXP, n));
-    GEOSGeometry **rect = (GEOSGeometry **) R_Calloc((size_t) n, GEOSGeometry *);
-    int *store = (int *) R_Calloc((size_t) n, int);
-    GEOSSTRtree *tree = GEOSSTRtree_create_r(ctx, 10);
     for (int i = 0; i < n; i++) {
-        store[i] = i;
         if (cbuf[i] != NULL) {
             SEXP r = allocVector(RAWSXP, (R_xlen_t) clen[i]);
             memcpy(RAW(r), cbuf[i], clen[i]);
@@ -386,6 +379,32 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
         } else {
             SET_VECTOR_ELT(clean, i, allocVector(RAWSXP, 0));
         }
+    }
+    R_Free(clen); R_Free(cbuf);
+
+    SEXP out = PROTECT(allocVector(VECSXP, 2));
+    SET_VECTOR_ELT(out, 0, bbox);
+    SET_VECTOR_ELT(out, 1, clean);
+    UNPROTECT(3);
+    return out;
+}
+
+/* C_overlay_components(bbox) -> INTSXP length n: dense 1-based connected-component
+ * id per feature, from bounding-box overlap (a valid superset of true overlap).
+ * bbox is the n x 4 matrix from C_overlay_parse, with the chunk rows recombined
+ * in the original feature order. */
+SEXP C_overlay_components(SEXP bbox_sexp) {
+    overlay_geos_init();
+    int n = (int) Rf_nrows(bbox_sexp);
+    double *bb = REAL(bbox_sexp);
+
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
+    GEOSGeometry **rect = (GEOSGeometry **) R_Calloc((size_t) n, GEOSGeometry *);
+    int *store = (int *) R_Calloc((size_t) n, int);
+    GEOSSTRtree *tree = GEOSSTRtree_create_r(ctx, 10);
+    for (int i = 0; i < n; i++) {
+        store[i] = i;
         if (!ISNA(bb[i])) {
             rect[i] = GEOSGeom_createRectangle_r(ctx, bb[i], bb[i+n], bb[i+2*n], bb[i+3*n]);
             if (rect[i] != NULL) GEOSSTRtree_insert_r(ctx, tree, rect[i], &store[i]);
@@ -419,14 +438,9 @@ SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
     GEOSSTRtree_destroy_r(ctx, tree);
     GEOS_finish_r(ctx);
     R_Free(remap); R_Free(parent); R_Free(store); R_Free(rect);
-    R_Free(clen); R_Free(cbuf);
 
-    SEXP out = PROTECT(allocVector(VECSXP, 3));
-    SET_VECTOR_ELT(out, 0, comp);
-    SET_VECTOR_ELT(out, 1, bbox);
-    SET_VECTOR_ELT(out, 2, clean);
-    UNPROTECT(4);
-    return out;
+    UNPROTECT(1);
+    return comp;
 }
 
 /* C_overlay_group(wkb_list) -> INTSXP length n: a dense 1-based group id per

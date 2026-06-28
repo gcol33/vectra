@@ -92,7 +92,8 @@ SEXP C_edt_strip(SEXP mat_sexp, SEXP dims_sexp, SEXP scale_sexp);
 
 /* GEOS-native vector overlay (vtr_overlay.c). */
 SEXP C_geos_version(void);
-SEXP C_overlay_partition(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp);
+SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp);
+SEXP C_overlay_components(SEXP bbox_sexp);
 SEXP C_overlay_group(SEXP wkb_list);
 SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp, SEXP prec_sexp);
 
@@ -172,7 +173,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_warp_strip",               (DL_FUNC) &C_warp_strip,               7},
     {"C_edt_strip",                (DL_FUNC) &C_edt_strip,                3},
     {"C_geos_version",             (DL_FUNC) &C_geos_version,             0},
-    {"C_overlay_partition",        (DL_FUNC) &C_overlay_partition,        3},
+    {"C_overlay_parse",            (DL_FUNC) &C_overlay_parse,            3},
+    {"C_overlay_components",       (DL_FUNC) &C_overlay_components,       1},
     {"C_overlay_group",            (DL_FUNC) &C_overlay_group,            1},
     {"C_overlay_run",              (DL_FUNC) &C_overlay_run,              5},
     {"C_geos_locator_build",       (DL_FUNC) &C_geos_locator_build,       1},
