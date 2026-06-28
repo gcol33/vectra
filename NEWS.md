@@ -39,6 +39,20 @@
   enclosing kinds emit one feature per group; the tessellations emit one polygon
   per cell, each carrying the group's `by` values.
 
+## `spatial_snap_grid()` and `spatial_snap()`
+
+* New `spatial_snap_grid()` rounds a streamed layer's coordinates to a regular
+  grid of a given spacing and repairs the result, one batch at a time. It is the
+  fixed-precision snap-rounding `spatial_overlay()` applies internally, exposed
+  as a standalone verb, so a layer can be cleaned of slivers or pre-noded to a
+  common precision without running a full overlay. The snap runs in C straight
+  off the hex-WKB column, one cleaned geometry per input feature.
+* New `spatial_snap()` snaps a streamed layer's vertices and edges toward a
+  resident reference layer when they lie within a tolerance (the QGIS "snap
+  geometries to layer"), closing the small gaps and overshoots between two layers
+  that should share a boundary. The reference layer stays resident while the left
+  stream flows past one batch at a time.
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication

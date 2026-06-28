@@ -60,13 +60,15 @@ layer into one shard per group and emits one construction per group (one polygon
 per cell for the tessellations), with `by = NULL` constructing from the whole
 layer. Peak memory is the routing budget, then one group's geometry.
 
-## Tier 2 - snapping and topology cleanup
+## Tier 2 - snapping and topology cleanup (done, 0.9.2)
 
-- Snap geometries of one layer to another within a tolerance (vertex and edge
-  snapping), the QGIS "snap geometries to layer".
-- Snap-to-grid as a standalone verb. The fixed-precision snap-rounding added for
-  overlay noding already does this internally; exposing it lets a user node a
-  layer without running a full overlay.
+- `spatial_snap()` snaps the geometries of a streamed layer toward a resident
+  reference layer within a tolerance (vertex and edge snapping), the QGIS "snap
+  geometries to layer".
+- `spatial_snap_grid()` snaps coordinates to a fixed grid as a standalone verb,
+  exposing the fixed-precision snap-rounding the overlay noder uses internally so
+  a layer can be cleaned or pre-noded to a common precision without running a
+  full overlay.
 
 ## Tier 2 - explode and collect as verbs
 

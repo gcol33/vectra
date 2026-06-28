@@ -1384,6 +1384,136 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
+# -- snapping and topology cleanup --------------------------------------------
+
+# Snap one batch's geometry to a fixed-precision grid using the same C
+# snap-rounding the overlay noder uses internally: each geometry crosses to C as
+# WKB, is rounded to the `size` lattice and made valid, and comes back as cleaned
+# WKB. The count is preserved (one cleaned geometry per input), so attributes
+# ride through untouched.
+.snap_grid_batch <- function(sb, size, nt) {
+  g  <- sf::st_geometry(sb)
+  w  <- sf::st_as_binary(g, EWKB = FALSE)
+  pr <- .Call(C_overlay_parse, w, as.double(size), as.integer(nt))
+  g2 <- sf::st_as_sfc(structure(pr[[2L]], class = "WKB"), EWKB = FALSE)
+  sf::st_set_geometry(sb, sf::st_set_crs(g2, sf::st_crs(g)))
+}
+
+#' Snap a streamed layer's coordinates to a fixed grid
+#'
+#' Rounds every coordinate of a streamed layer to a regular grid of spacing
+#' `size` (in CRS units) and repairs the result, one batch at a time. This is the
+#' fixed-precision snap-rounding the overlay noder
+#' ([spatial_overlay()]) applies internally, exposed as a standalone verb: it
+#' merges near-coincident vertices and removes the slivers that floating-point
+#' coordinates leave between shared boundaries, so a layer can be cleaned (or
+#' pre-noded to a common precision) without running a full overlay. Snapping is
+#' done in C straight off the hex-WKB column; one cleaned geometry comes back per
+#' input feature, so attributes ride through untouched.
+#'
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' The \pkg{sf} package is an optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param size Grid spacing in CRS units (a positive number). Coordinates are
+#'   rounded to the nearest multiple; a larger `size` snaps more aggressively.
+#'
+#' @return A `vectra_node` of the snapped geometry with `x`'s attributes, backed
+#'   by temporary `.vtr` spills (removed when the node is garbage-collected) and
+#'   carrying the input CRS.
+#'
+#' @seealso [spatial_snap()] to snap toward another layer instead of a grid,
+#'   [spatial_overlay()] whose noding uses the same snap-rounding, [collect_sf()].
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' p <- sf::st_polygon(list(rbind(c(0.04, 0.03), c(1.02, 0.01),
+#'                                c(0.98, 1.03), c(0.01, 0.97), c(0.04, 0.03))))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = 1L, geometry = sf::st_as_binary(sf::st_sfc(p), hex = TRUE)
+#' ), f)
+#'
+#' # Snap the jittered corners back onto a 0.1 grid.
+#' tbl(f) |> spatial_snap_grid(0.1) |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_snap_grid <- function(x, size, geom = "geometry", crs = NA,
+                              out_geom = NULL, flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to snap)")
+  if (!is.numeric(size) || length(size) != 1L || !is.finite(size) || size <= 0)
+    stop("`size` must be a single positive number (the grid spacing)")
+  crs <- .resolve_crs(x, crs)
+  if (is.null(out_geom)) out_geom <- geom
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  nt <- .spatial_threads()
+  .spatial_stream(x, function(sb) .snap_grid_batch(sb, size, nt),
+                  geom, coords = NULL, crs = crs, out_geom = out_geom,
+                  flush_rows = fr)
+}
+
+#' Snap a streamed layer toward a resident reference layer
+#'
+#' Streams a large layer `x` through the engine and snaps each batch's vertices
+#' toward a small resident reference layer `y` when they lie within `tolerance`
+#' (in CRS units), one batch at a time (the QGIS "snap geometries to layer").
+#' Vertices and edges of `x` closer than `tolerance` to `y` are pulled onto `y`,
+#' which closes the small gaps and overshoots between two layers that should
+#' share a boundary. The reference layer stays resident while the billion-row
+#' left stream flows past; the snap itself is \pkg{sf}'s [sf::st_snap()].
+#'
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' When `y` carries no CRS it inherits the stream's. The \pkg{sf} package is an
+#' optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param y An `sf` or `sfc` object: the resident reference layer to snap toward.
+#' @param tolerance Snapping distance in CRS units (a positive number). Vertices
+#'   and edges of `x` within this distance of `y` are moved onto `y`.
+#'
+#' @return A `vectra_node` of the snapped geometry with `x`'s attributes, backed
+#'   by temporary `.vtr` spills (removed when the node is garbage-collected) and
+#'   carrying the input CRS.
+#'
+#' @seealso [spatial_snap_grid()] to snap to a grid instead of a layer,
+#'   [spatial_clip()] for the resident-mask streaming pattern, [collect_sf()].
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' ref <- sf::st_sfc(sf::st_linestring(rbind(c(0, 0), c(10, 0))))
+#' line <- sf::st_linestring(rbind(c(0, 0.2), c(5, 0.1), c(10, 0.2)))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = 1L, geometry = sf::st_as_binary(sf::st_sfc(line), hex = TRUE)
+#' ), f)
+#'
+#' # Pull the near-zero vertices down onto the reference line.
+#' tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
+                         crs = NA, out_geom = NULL, flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to snap)")
+  if (!inherits(y, "sf") && !inherits(y, "sfc"))
+    stop("`y` must be an sf or sfc object (the resident reference layer)")
+  if (!is.numeric(tolerance) || length(tolerance) != 1L ||
+      !is.finite(tolerance) || tolerance <= 0)
+    stop("`tolerance` must be a single positive number (the snap distance)")
+  crs  <- .resolve_crs(x, crs)
+  y    <- .align_resident_crs(y, crs)
+  yg   <- sf::st_geometry(y)
+  if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  batch_fn <- function(sb) sf::st_snap(sb, yg, tolerance = tolerance)
+  .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
+}
+
 # -- dissolve (aggregate geometries by group) ---------------------------------
 
 # Composite group label for a batch: one string per row joining the `by`
