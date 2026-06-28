@@ -1,3 +1,15 @@
+# vectra 0.9.5
+
+## Coverage cleanup
+
+* `spatial_eliminate()` cleans a polygon coverage by absorbing every feature
+  smaller than `max_area` into a neighbour (the QGIS "Eliminate"): each sliver
+  joins the neighbour it shares the longest border with, or the largest-area
+  neighbour with `into = "largest_area"`. An area-rooted union-find collapses
+  chains of slivers so a connected run flows to its single largest member, whose
+  attributes survive, and a sliver with no neighbour is kept unchanged. Rides the
+  partition tier alongside `spatial_dissolve()`.
+
 # vectra 0.9.4
 
 ## Centerline and planar topology

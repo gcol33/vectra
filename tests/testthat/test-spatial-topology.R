@@ -1,5 +1,6 @@
 # Topology verbs: polygonize (lines -> faces), line_merge (segments -> maximal
-# lines), simplify (coverage-preserving), locate (linear referencing). Geometry
+# lines), simplify (coverage-preserving), locate (linear referencing), centerline
+# (medial axis), topology (shared-edge arcs), eliminate (merge slivers). Geometry
 # round-trips through a .vtr; CRS is carried on the node.
 
 skip_if_not_installed("sf")
@@ -223,4 +224,76 @@ test_that("topology rejects a missing id column and bad face_cols", {
   f <- vtr_from(x); on.exit(unlink(f))
   expect_error(collect(spatial_topology(tbl(f), id = "nope")), "not found")
   expect_error(spatial_topology(tbl(f), face_cols = "only_one"), "two distinct")
+})
+
+# -- eliminate (merge slivers) ------------------------------------------------
+
+test_that("eliminate absorbs a sliver into the square it borders", {
+  big <- sf::st_polygon(list(rbind(
+    c(0, 0), c(10, 0), c(10, 10), c(0, 10), c(0, 0))))
+  sliver <- sf::st_polygon(list(rbind(
+    c(10, 0), c(10.3, 0), c(10.3, 10), c(10, 10), c(10, 0))))
+  x <- sf::st_sf(id = c("keep", "sliver"), geometry = sf::st_sfc(big, sliver))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+  expect_equal(nrow(d), 1L)
+  # the survivor keeps the large feature's attributes
+  expect_equal(d$id, "keep")
+  # the union area is preserved (nothing dropped, nothing double-counted)
+  expect_equal(as.numeric(sf::st_area(sf::st_geometry(d))), 103,
+               tolerance = 1e-9)
+})
+
+test_that("eliminate collapses a chain of slivers to the largest member", {
+  b  <- sf::st_polygon(list(rbind(
+    c(0, 0), c(10, 0), c(10, 10), c(0, 10), c(0, 0))))
+  s1 <- sf::st_polygon(list(rbind(
+    c(10, 0), c(10.3, 0), c(10.3, 10), c(10, 10), c(10, 0))))
+  s2 <- sf::st_polygon(list(rbind(
+    c(10.3, 0), c(10.6, 0), c(10.6, 10), c(10.3, 10), c(10.3, 0))))
+  x <- sf::st_sf(id = c("big", "s1", "s2"), geometry = sf::st_sfc(b, s1, s2))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+  expect_equal(nrow(d), 1L)
+  expect_equal(d$id, "big")
+})
+
+test_that("eliminate keeps a sliver with no neighbour and leaves big ones", {
+  b1  <- sf::st_polygon(list(rbind(
+    c(0, 0), c(10, 0), c(10, 10), c(0, 10), c(0, 0))))
+  b2  <- sf::st_polygon(list(rbind(
+    c(10, 0), c(20, 0), c(20, 10), c(10, 10), c(10, 0))))
+  iso <- sf::st_polygon(list(rbind(
+    c(50, 50), c(50.2, 50), c(50.2, 51), c(50, 51), c(50, 50))))
+  x <- sf::st_sf(id = c("b1", "b2", "iso"), geometry = sf::st_sfc(b1, b2, iso))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+  # two untouched big squares plus the unmergeable isolated sliver
+  expect_equal(nrow(d), 3L)
+  expect_setequal(d$id, c("b1", "b2", "iso"))
+})
+
+test_that("eliminate by-group cleans each coverage independently", {
+  mk <- function(dx) {
+    big <- sf::st_polygon(list(rbind(
+      c(0, 0), c(10, 0), c(10, 10), c(0, 10), c(0, 0)))) + c(dx, 0)
+    sl  <- sf::st_polygon(list(rbind(
+      c(10, 0), c(10.3, 0), c(10.3, 10), c(10, 10), c(10, 0)))) + c(dx, 0)
+    sf::st_sfc(big, sl)
+  }
+  x <- sf::st_sf(
+    grp = c("a", "a", "b", "b"),
+    geometry = sf::st_sfc(c(mk(0), mk(100))))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_eliminate(max_area = 5, by = "grp") |> collect_sf()
+  expect_equal(nrow(d), 2L)
+  expect_setequal(d$grp, c("a", "b"))
+})
+
+test_that("eliminate rejects a bad threshold and a non-node input", {
+  x <- sf::st_sf(geometry = sf::st_sfc(
+    sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))))
+  f <- vtr_from(x); on.exit(unlink(f))
+  expect_error(spatial_eliminate(tbl(f), max_area = -1), "positive")
+  expect_error(spatial_eliminate(data.frame(a = 1), max_area = 1), "vectra_node")
 })

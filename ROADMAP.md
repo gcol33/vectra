@@ -96,7 +96,7 @@ group-and-combine direction already served by `spatial_dissolve()`.
   (`~ sf::st_segmentize(.x, dfMaxLength)` and `~ sf::st_line_sample(.x, n)`), so
   they need no dedicated verb, as buffer and simplify do not.
 
-## Tier 4 - build geometry from a set, and linear referencing (done, 0.9.3-0.9.4)
+## Tier 4 - build geometry from a set, and linear referencing (done, 0.9.3-0.9.5)
 
 The operations that need either a whole set of features fused into new geometry,
 or a point located against a resident line layer. The three set-wise verbs ride
@@ -137,6 +137,57 @@ memory at a time); `spatial_locate` is a resident-`y` streamed verb in the
   arc, tagged with the identifiers of the (up to two) polygons on either side --
   two for an internal edge, one for an outer edge. Rides the partition tier; the
   "build topology" of a GIS, and the inverse of `spatial_polygonize`.
+- `spatial_eliminate()` (0.9.5) cleans a polygon coverage by absorbing every
+  feature smaller than `max_area` into a neighbour (the QGIS "Eliminate"): each
+  sliver joins the neighbour it shares the longest border with (or, with `into =
+  "largest_area"`, the largest neighbour), and an area-rooted union-find collapses
+  chains of slivers so a connected run flows to its single largest member, whose
+  attributes survive. A sliver with no neighbour is kept, so nothing vanishes.
+  The merge target is one of a sliver's neighbours, not the sliver itself, so a
+  per-feature `spatial_map` cannot express it; it rides the partition tier.
+
+## Tier 5 - network analysis (future, separate engine)
+
+Routing and reachability over a line network -- shortest path, service areas, an
+origin-destination cost matrix, travel-time isochrones (the QGIS network-analysis
+tools, `sfnetworks`/pgRouting). This is the one vector workflow a GIS user
+expects that vectra does not address, and it is the next genuine tier rather than
+a missing verb: it needs a graph built from the geometry (nodes at line
+endpoints, edges weighted by length or a cost column) and a shortest-path solver
+over it, not a geometry stream. A streamed design would build the node-edge graph
+from a line layer once (the partition tier already nodes and indexes lines), keep
+the graph resident, and stream the queries -- one row per origin for a cost
+matrix, one polygon per origin for a service area -- so the query side scales
+while the graph stays in memory. Out of scope for the current geometry tiers;
+recorded here as the deliberate boundary.
+
+## Out of scope (a different package)
+
+These sit on top of geometry but are not geometry operations, and fit a
+statistics or solver package better than a columnar geometry engine:
+
+- **Spatial interpolation and surfaces** -- IDW, kriging, kernel-density
+  heatmaps. A solver over the whole point set, partly raster output; the raster
+  tier covers the output format, not the estimator.
+- **Spatial statistics and point-pattern** -- Moran's I, Getis-Ord hot spots,
+  Ripley's K. Global estimators over a layer, not streamable element by element.
+- **Geocoding, conflation, map-matching** -- need external services or external
+  reference data.
+
+## Coverage cleanup beyond eliminate
+
+Two cleanup operations remain, both expressible from the verbs already shipped,
+so neither is its own tier:
+
+- **Fill gaps in a coverage** -- the empty slivers between polygons that should
+  tile. The gap polygons come from the boundary arcs (`spatial_topology` /
+  `spatial_polygonize` of the unioned boundary minus the input), and each gap
+  then merges into a neighbour by exactly the `spatial_eliminate` machinery; a
+  future `spatial_eliminate(fill_gaps = TRUE)` argument would fold it into the
+  same verb rather than a sibling.
+- **Delete holes** -- drop the interior rings of individual polygons. This is a
+  per-feature transform and runs through `spatial_map(~ ...)` rebuilding each
+  polygon from its exterior ring, so it needs no dedicated verb.
 
 ## Notes
 

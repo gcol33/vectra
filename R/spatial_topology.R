@@ -593,6 +593,132 @@ spatial_topology <- function(x, id = NULL, by = NULL, geom = "geometry",
                   flush_rows, need = id)
 }
 
+# -- eliminate (merge sliver polygons into a neighbour) -----------------------
+
+# One group's worth of polygons -> the same coverage with every feature smaller
+# than `max_area` absorbed into a neighbour. Adjacent features are found by
+# intersection; each small feature is linked to the neighbour it shares the
+# longest border with (or the largest-area neighbour), and an area-rooted
+# union-find collapses chains of slivers so each connected run flows to its
+# single largest member, whose attribute row survives. A small feature with no
+# neighbour is kept unchanged, so nothing vanishes.
+.eliminate_fn <- function(by, geom, crs, max_area, into) function(df) {
+  sb   <- .sf_decode_chunk(df, geom, NULL, crs)
+  g    <- sf::st_geometry(sb)
+  n    <- length(g)
+  if (!n) return(NULL)
+  if (n == 1L) return(df)
+  cols  <- setdiff(names(df), geom)
+  area  <- as.numeric(sf::st_area(g))
+  small <- area < max_area
+  parent <- seq_len(n)
+  find <- function(i) {
+    while (parent[i] != i) { parent[i] <<- parent[parent[i]]; i <- parent[i] }
+    i
+  }
+  if (any(small)) {
+    touch <- sf::st_intersects(g)
+    bnd   <- if (into == "longest_border") sf::st_boundary(g) else NULL
+    for (i in which(small)) {
+      cand <- setdiff(touch[[i]], i)
+      if (!length(cand)) next
+      if (into == "longest_border") {
+        sl <- vapply(cand, function(j) {
+          ix <- suppressWarnings(sf::st_intersection(bnd[i], bnd[j]))
+          if (length(ix)) sum(as.numeric(sf::st_length(ix))) else 0
+        }, numeric(1))
+        best <- cand[which.max(sl)]
+      } else {
+        best <- cand[which.max(area[cand])]
+      }
+      ri <- find(i); rb <- find(best)
+      if (ri != rb) {
+        if (area[rb] >= area[ri]) parent[ri] <- rb else parent[rb] <- ri
+      }
+    }
+  }
+  roots <- vapply(seq_len(n), find, integer(1))
+  ur    <- unique(roots)
+  geoms <- do.call(c, lapply(ur, function(r) sf::st_union(g[roots == r])))
+  rowdf <- df[ur, cols, drop = FALSE]
+  rowdf[[geom]] <- sf::st_as_binary(geoms, hex = TRUE)
+  rownames(rowdf) <- NULL
+  rowdf
+}
+
+#' Merge sliver polygons into a neighbour
+#'
+#' Cleans a polygon coverage by absorbing every feature whose area is below
+#' `max_area` into an adjacent feature (the QGIS "Eliminate Selected Polygons"):
+#' the sliver removal a per-feature transform cannot do, because the target a
+#' sliver merges into is one of its neighbours, not the sliver itself. Each small
+#' feature is joined to the neighbour it shares the longest border with (or the
+#' largest-area neighbour, with `into = "largest_area"`); chains of slivers
+#' collapse so a connected run of small features flows to its single largest
+#' member, whose attribute row survives. A small feature with no neighbour is
+#' kept unchanged, so nothing vanishes. Like [spatial_dissolve()] it rides the
+#' **partition tier**: `x` is spilled once and routed into one disjoint shard per
+#' `by` group in a single bounded pass, and each group is cleaned as an
+#' independent coverage. Peak memory is the routing budget during the pass, then
+#' one group's geometry while its slivers are merged -- partition on a key whose
+#' groups fit in memory. With no `by`, the whole layer is one coverage.
+#'
+#' Adjacency and shared-border length are \pkg{sf}/GEOS ([sf::st_intersects],
+#' [sf::st_boundary], [sf::st_intersection]) and expect projected or unprojected
+#' planar data; `max_area` is in CRS units squared. Geometry travels through the
+#' engine as hex-encoded WKB in a string column and the CRS is carried on the
+#' returned node. The \pkg{sf} package is an optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param max_area Area threshold in CRS units squared: a feature smaller than
+#'   this is a sliver and is merged into a neighbour. Larger values absorb more.
+#' @param by Character vector of attribute columns whose groups are each cleaned
+#'   as an independent coverage. `NULL` (default) treats the whole layer as one
+#'   coverage.
+#' @param into How to pick the neighbour a sliver merges into: `"longest_border"`
+#'   (default) the neighbour sharing the longest boundary, or `"largest_area"`
+#'   the neighbour with the greatest area.
+#'
+#' @return A `vectra_node` of the cleaned coverage -- one row per surviving
+#'   feature, each carrying its (largest member's) attributes and the input CRS,
+#'   backed by temporary `.vtr` spills removed when the node is garbage-collected.
+#'
+#' @seealso [spatial_dissolve()] to merge geometries by attribute,
+#'   [spatial_simplify()] for coverage-preserving simplification,
+#'   [spatial_topology()] for the shared-edge adjacency, [collect_sf()] to
+#'   materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' big    <- sf::st_polygon(list(rbind(
+#'   c(0, 0), c(10, 0), c(10, 10), c(0, 10), c(0, 0))))
+#' sliver <- sf::st_polygon(list(rbind(
+#'   c(10, 0), c(10.3, 0), c(10.3, 10), c(10, 10), c(10, 0))))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = c("keep", "sliver"),
+#'   geometry = sf::st_as_binary(sf::st_sfc(big, sliver), hex = TRUE)
+#' ), f)
+#'
+#' # The thin sliver is absorbed into the square it borders.
+#' tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_eliminate <- function(x, max_area, by = NULL,
+                              into = c("longest_border", "largest_area"),
+                              geom = "geometry", crs = NA, flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed polygon coverage to clean)")
+  if (!is.numeric(max_area) || length(max_area) != 1L || !is.finite(max_area) ||
+      max_area <= 0)
+    stop("`max_area` must be a single positive number (the sliver area threshold)")
+  into <- match.arg(into)
+  crs  <- .resolve_crs(x, crs)
+  .partition_each(x, by, geom, crs, .eliminate_fn(by, geom, crs, max_area, into),
+                  flush_rows)
+}
+
 # The partition tier shared with dissolve and construct. Routes `x` into one
 # shard per `by` group on disk in a single bounded pass, then applies
 # `group_fn(df)` to each shard's collected rows (geometry as hex-WKB in `geom`),
