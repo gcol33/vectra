@@ -302,9 +302,10 @@ head.vectra_node <- function(x, n = 6L, ...) {
 #' When `slice_min()`/`slice_max()` follow [group_by()], the n smallest/largest
 #' rows are taken within each group and the whole winning row is kept (every
 #' column, including geometry carried as a string). `with_ties = FALSE` returns
-#' exactly `n` rows per group via a deterministic ordered `row_number()`;
-#' `with_ties = TRUE` keeps rows tied at the nth value via min-rank. The grouped
-#' path buffers its input (like all window operations) rather than streaming.
+#' exactly `n` rows per group; `with_ties = TRUE` keeps rows tied at the nth
+#' value via min-rank. The `n = 1`, `with_ties = FALSE` case streams: it holds
+#' only the running winner per group, so memory scales with the number of groups
+#' (the result size), not the input. Other grouped cases buffer their input.
 #'
 #' @return A `vectra_node` for `slice_head()`, for grouped
 #'   `slice_min()`/`slice_max()`, and for ungrouped `slice_min/max(...,
@@ -357,7 +358,19 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
 # row_number (exactly n per group, deterministic); with_ties = TRUE uses min-rank
 # (includes rows tied at the nth value). Runs through the window node, so the
 # winning whole row -- geometry and all attributes -- is preserved.
+#
+# n == 1 without ties is the common case (one winner per group). It routes to
+# the streaming grouped-top-n node, which holds only the running champion per
+# group -- O(#groups) memory -- instead of materializing every input row to
+# rank it. That keeps the whole winning row, geometry included, and lets the
+# resolution survive overlay outputs whose geometry column dwarfs RAM.
 .grouped_slice_topn <- function(.data, order_col, n, with_ties, desc) {
+  if (n == 1L && !with_ties) {
+    keys <- .data$.groups
+    new_xptr <- .Call(C_group_topn_node, .data$.node, keys, order_col, desc)
+    return(structure(list(.node = new_xptr, .path = .data$.path,
+                          .groups = .data$.groups), class = "vectra_node"))
+  }
   schema <- .Call(C_node_schema, .data$.node)
   orig_names <- schema$name
   rank_col <- ".__vtr_slice_rank"

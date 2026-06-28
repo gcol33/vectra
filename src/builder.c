@@ -293,6 +293,30 @@ VecArray vec_builder_finish(VecArrayBuilder *b) {
     return arr;
 }
 
+VecArray vec_builder_view(const VecArrayBuilder *b) {
+    VecArray arr;
+    memset(&arr, 0, sizeof(arr));
+    arr.type = b->type;
+    arr.length = b->length;
+    arr.validity = b->validity;
+    arr.owns_data = 0;
+
+    switch (b->type) {
+    case VEC_INT64:  arr.buf.i64 = b->buf.i64; break;
+    case VEC_INT32:  arr.buf.i32 = b->buf.i32; break;
+    case VEC_INT16:  arr.buf.i16 = b->buf.i16; break;
+    case VEC_INT8:   arr.buf.i8  = b->buf.i8;  break;
+    case VEC_DOUBLE: arr.buf.dbl = b->buf.dbl; break;
+    case VEC_BOOL:   arr.buf.bln = b->buf.bln; break;
+    case VEC_STRING:
+        arr.buf.str.offsets = b->str_offsets;
+        arr.buf.str.data = b->str_data;
+        arr.buf.str.data_len = b->str_data_len;
+        break;
+    }
+    return arr;
+}
+
 void vec_builder_free(VecArrayBuilder *b) {
     free(b->validity);
     switch (b->type) {

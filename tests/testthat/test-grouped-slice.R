@@ -108,3 +108,49 @@ test_that("ungrouped slice_min/slice_max remain global", {
   expect_equal(nrow(u), 2L)
   expect_true(all(u$STATUS_YR <= 1980))   # two globally smallest (0, 1980)
 })
+
+# Base-R reference: the winning row per group is the earliest known order value
+# (NA sorts last), ties broken by first appearance -- matching the streaming
+# grouped-top-n operator that n == 1, with_ties = FALSE routes through.
+ref_winner <- function(df, group_cols, ord_col, desc = FALSE) {
+  key <- do.call(paste, c(df[group_cols], sep = "\r"))
+  ord <- df[[ord_col]]
+  rn  <- seq_len(nrow(df))
+  win <- vapply(split(rn, factor(key, levels = unique(key))), function(idx) {
+    v <- ord[idx]; valid <- !is.na(v)
+    if (!any(valid)) return(idx[1L])
+    iv <- idx[valid]; vv <- v[valid]
+    iv[if (desc) which.max(vv) else which.min(vv)]
+  }, integer(1))
+  df[sort(win), , drop = FALSE]
+}
+
+test_that("grouped slice recovers the per-group winner across types", {
+  set.seed(7)
+  n <- 4000L
+  d <- data.frame(
+    k1   = sample(1:200, n, replace = TRUE),
+    k2   = sample(letters[1:6], n, replace = TRUE),
+    ord  = sample.int(500L, n, replace = TRUE),
+    dbl  = rnorm(n),
+    flag = sample(c(TRUE, FALSE), n, replace = TRUE),
+    blob = paste0("WKB", sprintf("%07d", seq_len(n)), strrep("z", 30)),
+    stringsAsFactors = FALSE)
+  d$ord[sample(n, n %/% 8)] <- NA_integer_   # NA order values sort last
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f)); write_vtr(d, f)
+
+  sort_rows <- function(x) x[order(x$k1, x$k2), , drop = FALSE]
+
+  for (desc in c(FALSE, TRUE)) {
+    fn  <- if (desc) slice_max else slice_min
+    got <- tbl(f) |> group_by(k1, k2) |>
+      fn(ord, n = 1, with_ties = FALSE) |> collect()
+    ref <- ref_winner(d, c("k1", "k2"), "ord", desc = desc)
+    g <- sort_rows(got); r <- sort_rows(ref)
+    expect_equal(nrow(g), nrow(r))
+    expect_equal(g$ord, r$ord)
+    expect_equal(g$dbl, r$dbl)             # double passthrough
+    expect_equal(g$flag, r$flag)           # bool passthrough
+    expect_equal(g$blob, r$blob)           # whole geometry-sized string kept
+  }
+})

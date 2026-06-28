@@ -38,9 +38,10 @@ Select first or last rows
 When \code{slice_min()}/\code{slice_max()} follow \code{\link[=group_by]{group_by()}}, the n smallest/largest
 rows are taken within each group and the whole winning row is kept (every
 column, including geometry carried as a string). \code{with_ties = FALSE} returns
-exactly \code{n} rows per group via a deterministic ordered \code{row_number()};
-\code{with_ties = TRUE} keeps rows tied at the nth value via min-rank. The grouped
-path buffers its input (like all window operations) rather than streaming.
+exactly \code{n} rows per group; \code{with_ties = TRUE} keeps rows tied at the nth
+value via min-rank. The \code{n = 1}, \code{with_ties = FALSE} case streams: it holds
+only the running winner per group, so memory scales with the number of groups
+(the result size), not the input. Other grouped cases buffer their input.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")

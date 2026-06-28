@@ -51,6 +51,11 @@ void vec_builder_append_repeat(VecArrayBuilder *b, const VecArray *arr,
 /* Finish builder into a VecArray (builder is consumed) */
 VecArray vec_builder_finish(VecArrayBuilder *b);
 
+/* Non-owning VecArray aliasing the builder's current buffers (length =
+   b->length). Valid only until the next append reallocates; rebuild it after
+   any append. The returned array must NOT be freed. */
+VecArray vec_builder_view(const VecArrayBuilder *b);
+
 /* Free builder without finishing */
 void vec_builder_free(VecArrayBuilder *b);
 

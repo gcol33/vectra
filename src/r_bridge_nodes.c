@@ -7,6 +7,7 @@
 #include "group_agg.h"
 #include "sort.h"
 #include "topn.h"
+#include "group_topn.h"
 #include "limit.h"
 #include "join.h"
 #include "fuzzy_join.h"
@@ -199,6 +200,37 @@ SEXP C_topn_node(SEXP node_xptr, SEXP col_names_sexp,
     int64_t limit = (int64_t)Rf_asReal(n_sexp);
     TopNNode *tn = topn_node_create(child, n_keys, keys, limit);
     return wrap_node((VecNode *)tn);
+}
+
+/* --- C_group_topn_node --- */
+
+SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names_sexp,
+                       SEXP order_sexp, SEXP desc_sexp) {
+    VecNode *child = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+
+    const VecSchema *schema = &child->output_schema;
+    int n_keys = Rf_length(key_names_sexp);
+
+    int *key_idx = (int *)malloc((size_t)(n_keys > 0 ? n_keys : 1) * sizeof(int));
+    for (int k = 0; k < n_keys; k++) {
+        const char *nm = CHAR(STRING_ELT(key_names_sexp, k));
+        int idx = vec_schema_find_col(schema, nm);
+        if (idx < 0)
+            vectra_error("group_topn: group column not found: %s", nm);
+        key_idx[k] = idx;
+    }
+
+    const char *order_nm = CHAR(STRING_ELT(order_sexp, 0));
+    int order_idx = vec_schema_find_col(schema, order_nm);
+    if (order_idx < 0)
+        vectra_error("group_topn: order column not found: %s", order_nm);
+
+    int descending = LOGICAL(desc_sexp)[0];
+    GroupTopNNode *gn = group_topn_node_create(child, n_keys, key_idx,
+                                               order_idx, descending);
+    free(key_idx);
+    return wrap_node((VecNode *)gn);
 }
 
 /* --- C_join_node --- */

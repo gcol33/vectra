@@ -17,6 +17,18 @@
   union this cut the distinct geometry count by about three quarters and the
   end-to-end run from roughly 50 to 17 minutes. Set `dedup = FALSE` to disable.
 
+## Streaming grouped `slice_min()` / `slice_max()`
+
+* Grouped `slice_min()` / `slice_max()` with `n = 1, with_ties = FALSE` now
+  streams: it holds only the running winner per group, so peak memory scales
+  with the number of groups (the result size), not the input length. The
+  previous path ranked every input row through the window operator, which
+  materialized all columns -- including a large geometry string column -- and
+  could exhaust memory (`builder realloc failed (str data)`) when resolving a
+  dense overlay whose geometry dwarfs RAM. The whole winning row, geometry and
+  all attributes included, is still kept. Other grouped cases (`n > 1` or
+  `with_ties = TRUE`) are unchanged.
+
 ## Raster and vector toolbox
 
 * `polygonize(raster)` vectorises a raster into polygon features, the inverse of
