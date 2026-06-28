@@ -1,3 +1,32 @@
+# vectra 0.9.3
+
+## Set-wise topology verbs and linear referencing
+
+* `spatial_polygonize()` builds the polygonal faces enclosed by a line network
+  (the QGIS "Polygonize", the inverse of taking polygon boundaries): a group's
+  lines are unioned and noded, then the faces of that arrangement are returned,
+  one per row. Like `spatial_dissolve()` and `spatial_construct()` it rides the
+  partition tier, with an optional `by` to polygonize within groups.
+* `spatial_line_merge()` sews line segments that meet end to end into maximal
+  linestrings (the line counterpart of a dissolve), one row per chain; segments
+  meeting at a junction of degree greater than two stay separate.
+* `spatial_simplify()` simplifies a polygon coverage without tearing shared
+  edges: boundaries are unioned so a shared border is one line, noded into arcs,
+  each arc simplified once with its junction endpoints pinned, and
+  re-polygonized, so adjacent polygons stay edge-matched with no slivers. This is
+  the topology-preserving simplification a per-feature
+  `spatial_map(~ sf::st_simplify())` cannot give, because that simplifies each
+  polygon's copy of a shared border independently. Each simplified face keeps its
+  source polygon's attributes.
+* `spatial_locate()` locates streamed points along a resident line layer (linear
+  referencing): each point gets its nearest line's identifier, the measure
+  (distance along that line), and the perpendicular offset, with an optional
+  `snap` onto the line. The inverse (a measure back to a point) is
+  `sf::st_line_interpolate()` through `spatial_map()`.
+* The partition tier shared by `spatial_dissolve()`, `spatial_construct()`, and
+  the three new set-wise verbs is now a single internal `.partition_each` router
+  rather than re-inlined in each verb.
+
 # vectra 0.9.2
 
 ## Two-layer `spatial_overlay()`

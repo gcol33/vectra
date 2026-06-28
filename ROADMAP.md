@@ -96,6 +96,37 @@ group-and-combine direction already served by `spatial_dissolve()`.
   (`~ sf::st_segmentize(.x, dfMaxLength)` and `~ sf::st_line_sample(.x, n)`), so
   they need no dedicated verb, as buffer and simplify do not.
 
+## Tier 4 - build geometry from a set, and linear referencing (done, 0.9.3)
+
+The operations that need either a whole set of features fused into new geometry,
+or a point located against a resident line layer. The three set-wise verbs ride
+the partition tier alongside `spatial_dissolve` and `spatial_construct` (shared
+`.partition_each` router: spill once, one shard per `by` group, one group in
+memory at a time); `spatial_locate` is a resident-`y` streamed verb in the
+`spatial_knn` / `spatial_split` family.
+
+- `spatial_polygonize()` builds the polygonal faces enclosed by a line network
+  (the QGIS "Polygonize", the inverse of taking boundaries): the group's lines
+  are unioned and noded, then the faces of that arrangement are returned, one per
+  row. Reuses the same `st_node` / `st_polygonize` path `spatial_split` uses to
+  carve polygons.
+- `spatial_line_merge()` sews line segments that meet end to end into maximal
+  linestrings (`st_line_merge`), the line counterpart of a dissolve; each maximal
+  chain is one row, and segments meeting at a junction of degree > 2 stay
+  separate.
+- `spatial_simplify()` simplifies a polygon **coverage** without tearing shared
+  edges: boundaries are unioned so a shared border is one line, noded into arcs,
+  each arc simplified once (junction endpoints pinned), and re-polygonized, so
+  adjacent polygons stay edge-matched with no slivers. This is the
+  topology-preserving simplification a per-feature `spatial_map(~ st_simplify())`
+  cannot give, because that simplifies each polygon's copy of a shared border
+  independently. Each simplified face inherits its source polygon's attributes.
+- `spatial_locate()` locates streamed points along a resident line layer
+  (linear referencing, `st_line_project`): each point gets the identifier of its
+  nearest line, the measure (distance along that line), and the perpendicular
+  offset, with an optional `snap` onto the line. The inverse direction (a measure
+  back to a point) is `sf::st_line_interpolate` through `spatial_map`.
+
 ## Notes
 
 - Every verb keeps the streaming contract: peak memory tracks the result or the

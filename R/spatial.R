@@ -1962,34 +1962,17 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
   crs <- .resolve_crs(x, crs)
   dots <- list(...)
 
-  spill <- tempfile(fileext = ".vtr")
-  on.exit(unlink(spill), add = TRUE)
-  write_vtr(x, spill)
-
-  schema <- .Call(C_node_schema, tbl(spill)$.node)
-  miss <- setdiff(c(by, geom), schema$name)
-  if (length(miss))
-    stop(sprintf("column(s) not found in the stream: %s",
-                 paste(miss, collapse = ", ")))
-
-  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
-  res <- .partition_router(spill, .dissolve_assign(by), budget)
-  on.exit(unlink(unlist(res$runs, use.names = FALSE)), add = TRUE)
-
-  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
-  acc <- .run_accumulator(fr)
-  for (lab in sort(names(res$runs))) {
-    df <- collect(.concat_runs(res$runs[[lab]]))
+  group_fn <- function(df) {
     # Native union off the hex-WKB column. Extra st_union arguments (e.g.
     # is_coverage = TRUE) are not expressible through GEOSUnaryUnion, and
     # geographic data with s2 on unions on the sphere, so both union through sf
     # instead; the planar projected case unions natively.
     if (length(dots) || !.geos_planar_ok(crs)) {
-      sb     <- .sf_decode_chunk(df, geom, NULL, crs)
-      u      <- do.call(sf::st_union, c(list(sf::st_geometry(sb)), dots))
-      u_hex  <- sf::st_as_binary(u, hex = TRUE)
+      sb    <- .sf_decode_chunk(df, geom, NULL, crs)
+      u     <- do.call(sf::st_union, c(list(sf::st_geometry(sb)), dots))
+      u_hex <- sf::st_as_binary(u, hex = TRUE)
     } else {
-      u_hex  <- .Call(C_geos_union_hex, as.character(df[[geom]]))
+      u_hex <- .Call(C_geos_union_hex, as.character(df[[geom]]))
     }
     row <- if (is.null(by)) df[1, character(0), drop = FALSE]
            else df[1, by, drop = FALSE]
@@ -1997,9 +1980,9 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
       for (nm in names(.fun)) row[[nm]] <- .fun[[nm]](df)
     row[[geom]] <- u_hex
     rownames(row) <- NULL
-    acc$push(.coerce_for_vtr(row))
+    row
   }
-  acc$finish(crs = crs, empty_geom = geom)
+  .partition_each(x, by, geom, crs, group_fn, flush_rows)
 }
 
 # -- set-wise geometry constructions ------------------------------------------
@@ -2136,37 +2119,20 @@ spatial_construct <- function(x, kind = .CONSTRUCT_KINDS, by = NULL,
     stop("`by` must be a character vector of column names, or NULL")
   crs <- .resolve_crs(x, crs)
 
-  spill <- tempfile(fileext = ".vtr")
-  on.exit(unlink(spill), add = TRUE)
-  write_vtr(x, spill)
-
-  schema <- .Call(C_node_schema, tbl(spill)$.node)
-  miss <- setdiff(c(by, geom), schema$name)
-  if (length(miss))
-    stop(sprintf("column(s) not found in the stream: %s",
-                 paste(miss, collapse = ", ")))
-
-  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
-  res <- .partition_router(spill, .dissolve_assign(by), budget)
-  on.exit(unlink(unlist(res$runs, use.names = FALSE)), add = TRUE)
-
-  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
-  acc <- .run_accumulator(fr)
-  for (lab in sort(names(res$runs))) {
-    df <- collect(.concat_runs(res$runs[[lab]]))
+  group_fn <- function(df) {
     sb <- .sf_decode_chunk(df, geom, NULL, crs)
     gu <- sf::st_union(sf::st_geometry(sb))
     tol <- if (tolerance > 0) tolerance else .construct_tol(gu, kind)
     out <- .construct_group(gu, kind, ratio, allow_holes, tol)
     out <- out[!sf::st_is_empty(out)]
-    if (!length(out)) next
+    if (!length(out)) return(NULL)
     rowdf <- if (is.null(by)) data.frame(matrix(nrow = length(out), ncol = 0))
              else df[rep(1L, length(out)), by, drop = FALSE]
     rowdf[[geom]] <- sf::st_as_binary(out, hex = TRUE)
     rownames(rowdf) <- NULL
-    acc$push(.coerce_for_vtr(rowdf))
+    rowdf
   }
-  acc$finish(crs = crs, empty_geom = geom)
+  .partition_each(x, by, geom, crs, group_fn, flush_rows)
 }
 
 #' Rasterize a streamed point layer onto a fixed grid
