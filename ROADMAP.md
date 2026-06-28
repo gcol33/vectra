@@ -68,10 +68,10 @@ construction. A `by =` argument gives per-group hulls/tessellations, matching th
 
 ## Tier 2 - explode and collect as verbs
 
-Multipart-to-singlepart (explode) runs inside `spatial_overlay` already but is
-not exported. A streamed `spatial_explode()` (one row per part) and its inverse
-collect-to-multipart are common enough in a QGIS workflow to expose directly,
-and the explode pass already exists internally.
+`spatial_explode()` (done, 0.9.2) streams one row per single-part component of
+each multipart geometry, copying the source attributes onto each part, with an
+optional `part` index column. The inverse, collect-to-multipart, is the
+group-and-combine direction already served by `spatial_dissolve()`.
 
 ## Tier 3 - analysis verbs
 

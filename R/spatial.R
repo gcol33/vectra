@@ -576,6 +576,45 @@
   acc$finish(crs = if (!is.null(out_crs)) out_crs else crs, empty_geom = out_geom)
 }
 
+# Decompose one sfg into its single-part components: a MULTI* into its parts, a
+# GEOMETRYCOLLECTION recursively into the parts of its members, and an already
+# single-part geometry into itself. An empty multi-geometry has no parts, so it
+# passes through as a single row rather than vanishing.
+.parts_of <- function(g) {
+  out <- switch(class(g)[2L],
+    MULTIPOLYGON    = lapply(unclass(g), sf::st_polygon),
+    MULTILINESTRING = lapply(unclass(g), sf::st_linestring),
+    MULTIPOINT      = {
+      m <- unclass(g)
+      if (!length(m)) list()
+      else lapply(seq_len(nrow(m)), function(i) sf::st_point(m[i, ]))
+    },
+    GEOMETRYCOLLECTION = unlist(lapply(g, .parts_of), recursive = FALSE),
+    list(g))
+  if (length(out)) out else list(g)
+}
+
+# Explode one decoded sf batch: replace each multipart feature with one row per
+# part, replicating the attributes. `part` (when set) numbers the parts within
+# each input feature, 1-based.
+.explode_batch <- function(sb, part) {
+  if (!is.null(part) && part %in% names(sb))
+    stop(sprintf("part column '%s' already exists in `x`; pass part=", part))
+  if (nrow(sb) == 0L) {
+    if (!is.null(part)) sb[[part]] <- integer(0)
+    return(sb)
+  }
+  g     <- sf::st_geometry(sb)
+  parts <- lapply(g, .parts_of)
+  np    <- lengths(parts)
+  out   <- sb[rep.int(seq_len(nrow(sb)), np), , drop = FALSE]
+  sf::st_geometry(out) <- sf::st_sfc(unlist(parts, recursive = FALSE),
+                                     crs = sf::st_crs(g))
+  if (!is.null(part))
+    out[[part]] <- unlist(lapply(np, seq_len), use.names = FALSE)
+  out
+}
+
 # -- front doors --------------------------------------------------------------
 
 #' Stream a query through an sf transform
@@ -649,6 +688,61 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
   fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
   .spatial_stream(x, fn, geom, coords, crs, out_geom, fr)
+}
+
+#' Explode multipart geometries into single-part features
+#'
+#' Streams a lazy vectra query and splits every multipart geometry into its
+#' component single-part geometries: a `MULTIPOLYGON` becomes one row per
+#' polygon, a `MULTILINESTRING` one row per linestring, a `MULTIPOINT` one row
+#' per point, and a `GEOMETRYCOLLECTION` one row per member (recursively). The
+#' attributes of the source feature are copied onto each part. Already
+#' single-part geometries pass through unchanged, as does an empty geometry
+#' (kept as one row). This is the streaming counterpart of the QGIS
+#' "multipart to singleparts" tool and of [sf::st_cast()] to a single-part type.
+#'
+#' One batch is decoded, exploded, and spilled at a time, so peak memory tracks
+#' one batch and its parts, not the whole layer.
+#'
+#' @inheritParams spatial_map
+#' @param part Optional name of an integer column numbering the parts within each
+#'   source feature, 1-based. Default `NULL` adds no such column.
+#'
+#' @return A `vectra_node` of single-part features, backed by temporary `.vtr`
+#'   spills (removed when the node is garbage-collected) and carrying the input
+#'   CRS.
+#'
+#' @seealso [spatial_map()] for per-feature transforms, [spatial_dissolve()] to
+#'   merge features the other way, [collect_sf()] to materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' mp <- sf::st_multipolygon(list(
+#'   list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))),
+#'   list(rbind(c(2, 2), c(3, 2), c(3, 3), c(2, 3), c(2, 2)))))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = 1L,
+#'   geometry = sf::st_as_binary(sf::st_sfc(mp), hex = TRUE)
+#' ), f)
+#'
+#' # One row per polygon, attributes copied, parts numbered.
+#' tbl(f) |> spatial_explode(part = "part_id") |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
+                            part = NULL, flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (build one with tbl(), tbl_csv(), ...)")
+  if (!is.null(part) && (!is.character(part) || length(part) != 1L))
+    stop("`part` must be a single column name, or NULL")
+  crs <- .resolve_crs(x, crs)
+  if (is.null(out_geom)) out_geom <- geom
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  .spatial_stream(x, function(sb) .explode_batch(sb, part),
+                  geom, coords = NULL, crs = crs, out_geom = out_geom,
+                  flush_rows = fr)
 }
 
 #' Spatial join a streamed query against a resident sf object

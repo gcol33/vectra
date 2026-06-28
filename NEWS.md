@@ -15,6 +15,17 @@
   the existing noding, deduplication, component-tiling, and streaming machinery,
   so a two-layer overlay scales the same way the self-union does.
 
+## `spatial_explode()`
+
+* New `spatial_explode()` streams a query and splits every multipart geometry
+  into its single-part components -- a `MULTIPOLYGON` into one row per polygon, a
+  `MULTILINESTRING` into linestrings, a `MULTIPOINT` into points, and a
+  `GEOMETRYCOLLECTION` into its members (recursively) -- copying the source
+  attributes onto each part. Single-part and empty geometries pass through as one
+  row. An optional `part` argument names a 1-based part-index column. It is the
+  streaming counterpart of the QGIS "multipart to singleparts" tool, processing
+  one batch at a time, and the inverse of `spatial_dissolve()`.
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication
