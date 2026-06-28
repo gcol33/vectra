@@ -318,7 +318,11 @@ SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
     for (int i = 0; i < n; i++) { bb[i] = bb[i+n] = bb[i+2*n] = bb[i+3*n] = NA_REAL; }
 
 #ifdef _OPENMP
-    if (nthreads <= 0) nthreads = omp_get_max_threads();
+    {   /* clamp to the team cap so R CMD check's two-core limit reaches the
+           explicit num_threads() below */
+        int cap = omp_get_max_threads();
+        if (nthreads <= 0 || nthreads > cap) nthreads = cap;
+    }
 #else
     nthreads = 1;
 #endif
@@ -528,7 +532,10 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
     double *inarea = (double *) R_Calloc((size_t) m, double);
 
 #ifdef _OPENMP
-    if (nthreads <= 0) nthreads = omp_get_max_threads();
+    {   /* clamp to the team cap (R CMD check two-core limit), then to job count */
+        int cap = omp_get_max_threads();
+        if (nthreads <= 0 || nthreads > cap) nthreads = cap;
+    }
     if (nthreads > njobs) nthreads = njobs > 0 ? njobs : 1;
 #else
     nthreads = 1;
