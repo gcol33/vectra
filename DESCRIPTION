@@ -14,11 +14,11 @@ Description: A minimal columnar query engine with lazy execution on datasets
     larger-than-RAM raster data. Streams vector operations (spatial transforms,
     point-in-polygon and nearest-feature joins including a two-sided
     grid-partitioned join, select-by-location, clip, erase, dissolve,
-    rasterization, polygonization, and contouring) through 'sf', and runs raster
-    operations (zonal statistics, focal windows, terrain derivatives, resample or
-    reproject warp, polygon masking, map algebra, and mosaicking) in native C or
-    over the tiled '.vec' format, one batch or tile at a time for data larger
-    than RAM.
+    'rasterization', 'polygonization', and contouring) through 'sf', and runs
+    raster operations (zonal statistics, focal windows, terrain derivatives,
+    resample or 'reproject' warp, polygon masking, map algebra, and 'mosaicking')
+    in native C or over the tiled '.vec' format, one batch or tile at a time for
+    data larger than RAM.
 License: MIT + file LICENSE
 Depends: R (>= 4.1.0)
 SystemRequirements: GNU make
