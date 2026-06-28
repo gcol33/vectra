@@ -1,3 +1,20 @@
+# vectra 0.9.2
+
+## Two-layer `spatial_overlay()`
+
+* `spatial_overlay()` gains a second layer `y`: instead of self-unioning one
+  layer it nodes two layers into one planar partition and carries the attributes
+  of the covering `x`-record and `y`-record onto each piece. A `how` argument
+  selects which pieces to keep -- `"intersection"` (covered by both),
+  `"union"` (every piece of either, the absent side filled with `NA`),
+  `"identity"` (all of `x` split by `y`), or `"symdiff"` (pieces in exactly one
+  layer). `vars_y` selects the carried `y` columns, and a name shared with an `x`
+  column is disambiguated with a `.x` / `.y` suffix. `y` accepts an `sf` object
+  or a file path (`layer_y` / `query_y`) read in batches, and must share the CRS
+  of `x`. With `y = NULL` (the default) the behaviour is unchanged. This reuses
+  the existing noding, deduplication, component-tiling, and streaming machinery,
+  so a two-layer overlay scales the same way the self-union does.
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication

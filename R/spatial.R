@@ -2369,18 +2369,33 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #' fraction of a percent that floating-point sliver artefacts on invalid input
 #' otherwise introduce. Inputs are also passed through [sf::st_make_valid()].
 #'
-#' The input `x` must be a resident `sf` object: building the overlap graph and
-#' intersecting needs the geometries in memory. The exploded result, which is
-#' typically several times larger, is what streams to disk.
+#' With a second layer `y`, the same machinery overlays two layers instead of
+#' self-unioning one: both layers are noded together into one planar partition,
+#' and each piece carries the attributes of the `x` record and the `y` record
+#' that cover it. `how` selects which pieces to keep -- the intersection (pieces
+#' covered by both), the union (every piece of either), `x` split by `y`
+#' (`"identity"`), or the parts in exactly one layer (`"symdiff"`). With
+#' `y = NULL` (the default) the function self-unions `x` and `how` is ignored.
 #'
 #' @param x An `sf` object with polygon or multipolygon geometry, or a single
 #'   path to a vector file (e.g. a GeoPackage). A path is read in feature batches
 #'   via `layer` / `query`, so the whole layer is never held in memory at once --
 #'   peak memory then tracks the cleaned geometry, not the source size, which lets
 #'   a larger-than-RAM layer overlay on a modest machine.
+#' @param y Optional second layer to overlay `x` against, in the same forms `x`
+#'   accepts (an `sf` object or a file path read via `layer_y` / `query_y`). It
+#'   must share the CRS of `x`. `NULL` (the default) self-unions `x`.
 #' @param vars Character vector of attribute columns of `x` to carry onto each
 #'   piece. Default `NULL` keeps them all; name a subset to keep the streamed
 #'   output narrow.
+#' @param vars_y Character vector of attribute columns of `y` to carry onto each
+#'   piece (two-layer overlay only). Default `NULL` keeps them all. A name shared
+#'   with an `x` column is disambiguated with a `.x` / `.y` suffix in the output.
+#' @param how For a two-layer overlay, which pieces to keep: `"intersection"`
+#'   (covered by both layers; the default), `"union"` (every piece of either,
+#'   the absent side's attributes filled with `NA`), `"identity"` (all of `x`,
+#'   split by `y`, with `y`'s attributes where it covers and `NA` elsewhere), or
+#'   `"symdiff"` (pieces in exactly one layer). Ignored when `y = NULL`.
 #' @param piece Name of the integer piece-id column added to the output (the key
 #'   you group by to resolve overlaps). Default `"piece_id"`.
 #' @param geom Name of the output hex-WKB geometry column. Default `"geometry"`.
@@ -2423,13 +2438,16 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #'   overlay (read in batches via `LIMIT`/`OFFSET`); use it instead of `layer`
 #'   for a subset or join. With `query` and no `layer`, pass `grid` explicitly,
 #'   since the layer extent cannot be read from the file metadata.
+#' @param layer_y,query_y The `layer` / `query` equivalents for a file-path `y`.
 #' @param read_chunk Features per read/parse batch. `NULL` (default) sizes it
 #'   from available RAM. Smaller batches lower peak memory; larger ones do fewer
 #'   round trips.
 #'
-#' @return A `vectra_node` over the exploded overlay (one row per piece per
-#'   covering polygon), backed by temporary `.vtr` spills removed when the node
-#'   is garbage-collected, carrying the CRS of `x` for [collect_sf()].
+#' @return A `vectra_node` over the exploded overlay, backed by temporary `.vtr`
+#'   spills removed when the node is garbage-collected, carrying the CRS of `x`
+#'   for [collect_sf()]. For a self-union it is one row per piece per covering
+#'   polygon; for a two-layer overlay one row per piece per covering
+#'   `x`-record / `y`-record pair, with the columns of both layers.
 #'
 #' @seealso [slice_min()] / [slice_max()] to resolve each piece to one winner,
 #'   [collect_sf()] to materialize as `sf`.
@@ -2448,13 +2466,25 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #'   collect_sf()
 #' first
 #'
+#' # Two-layer overlay: intersect the squares with a zone layer, keeping both
+#' # sets of attributes on each overlapping piece.
+#' zones <- sf::st_sf(zone = c("A", "B"),
+#'                    geometry = sf::st_sfc(sq(0, 1.5), sq(1.5, 3)))
+#' inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+#' inter
+#'
 #' @export
-spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
+spatial_overlay <- function(x, y = NULL, vars = NULL, vars_y = NULL,
+                            how = c("intersection", "union", "identity", "symdiff"),
+                            piece = "piece_id",
                             geom = "geometry", grid = NULL, precision = NULL,
                             dedup = TRUE, flush_rows = NULL,
                             mem_limit = NULL, threads = NULL, quiet = TRUE,
-                            layer = NULL, query = NULL, read_chunk = NULL) {
+                            layer = NULL, query = NULL,
+                            layer_y = NULL, query_y = NULL, read_chunk = NULL) {
   .check_sf()
+  how <- match.arg(how)
+  two <- !is.null(y)
 
   # Validate an explicit grid / precision up front; NULL means derive them.
   if (!is.null(grid)) {
@@ -2477,17 +2507,43 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
   mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit",
                                        .overlay_mem_default(nthreads))
 
-  # Read and parse the input: an in-memory sf object, or a file source (x a path
+  # Read and parse the input: an in-memory sf object, or a file source (a path
   # with layer= or query=) read in feature batches so the whole layer is never
   # materialized at once. Either way the geometry is repaired, made areal, snapped
   # to the grid, and returned as cleaned WKB plus bounding boxes; geometry stays
-  # compact (raw WKB) in R and never touches sf again on the compute boundary.
-  ing   <- .overlay_ingest(x, vars, piece, grid, nthreads,
+  # compact (raw WKB) in R and never touches sf again on the compute boundary. For
+  # a two-layer overlay both layers are ingested onto the same grid and stacked, so
+  # the downstream noding, components, dedup, and tiling treat them as one set; a
+  # per-input `side` tag (1 = x, 2 = y) drives the attribute fan-out at the end.
+  ingx  <- .overlay_ingest(x, vars, piece, grid, nthreads,
                            layer = layer, query = query, read_chunk = read_chunk)
-  attrs <- ing$attrs; crs <- ing$crs; n <- ing$n
-  cwkb  <- ing$cwkb;  bbox <- ing$bbox; grid <- ing$grid
-  ing   <- NULL
-  if (!any(!is.na(bbox[, 1L]))) stop("`x` has no parseable geometries to overlay")
+  crs   <- ingx$crs; grid <- ingx$grid
+  if (two) {
+    ingy <- .overlay_ingest(y, vars_y, piece, grid, nthreads,
+                            layer = layer_y, query = query_y, read_chunk = read_chunk)
+    if (!isTRUE(crs == ingy$crs))
+      stop("`x` and `y` must share a CRS; transform one first (e.g. sf::st_transform()).")
+    nx <- ingx$n; ny <- ingy$n; n <- nx + ny
+    cwkb <- c(ingx$cwkb, ingy$cwkb)
+    bbox <- rbind(ingx$bbox, ingy$bbox)
+    side_of  <- c(rep.int(1L, nx), rep.int(2L, ny))   # which layer each input is
+    local_of <- c(seq_len(nx), seq_len(ny))           # its row within that layer
+    # Disambiguate shared column names (dplyr-style .x / .y) and pre-rename the
+    # per-layer attribute frames so the fan-out can combine them without collision.
+    nm_x <- names(ingx$attrs); nm_y <- names(ingy$attrs)
+    ax <- ingx$attrs; if (length(ax)) names(ax) <- ifelse(nm_x %in% nm_y, paste0(nm_x, ".x"), nm_x)
+    ay <- ingy$attrs; if (length(ay)) names(ay) <- ifelse(nm_y %in% nm_x, paste0(nm_y, ".y"), nm_y)
+    out_template <- ax[0, , drop = FALSE]
+    for (nm in names(ay)) out_template[[nm]] <- ay[[nm]][0]
+    out_template[[piece]] <- integer(0)
+    out_template[[geom]]  <- character(0)
+    ingy <- NULL
+  } else {
+    attrs <- ingx$attrs; n <- ingx$n
+    cwkb  <- ingx$cwkb;  bbox <- ingx$bbox
+  }
+  ingx  <- NULL
+  if (!any(!is.na(bbox[, 1L]))) stop("the inputs have no parseable geometries to overlay")
 
   # Noding precision. Boundaries are noded at a fixed grid (snap rounding): this is
   # deterministic and avoids the floating noder's repair-and-retry on dense overlapping
@@ -2551,23 +2607,79 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
 
   fr        <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
   acc       <- .run_accumulator(fr)
+  # Seed the schema from the combined template so an empty two-layer result (e.g.
+  # an intersection with no overlaps) still finishes as a correctly typed node.
+  if (two) acc$push(.coerce_for_vtr(out_template))
   piece_off <- 0L
   cov_err   <- 0
   worst     <- NULL                                  # top offending inputs by coverage error
-  # A batch is overlaid with one thread per tile and load-balanced across the pool
-  # only within the batch, so each batch must hold many more tiles than threads, or
-  # a batch that gathers several large tiles leaves most threads idle on its tail.
-  # Batch by a fixed tile count, not input bytes: a feature spanning many tiles is
-  # shared in memory but its bytes recur in every tile, so a byte budget collapses
-  # to a handful of tiles wherever such features dominate. Peak working set stays
-  # bounded by tile_bytes times the running threads, independent of the batch size.
-  batch_tiles <- max(256L, 32L * nthreads)
-  pb <- if (!quiet) utils::txtProgressBar(0, length(jobs), style = 3) else NULL
+
+  # Turn one batch's arrangement (pieces x covering inputs) into output rows.
+  # Self-union: each piece-row is fanned to one output row per original record the
+  # covering distinct input stands for, carrying that record's attributes.
+  emit_single <- function(geoms, origin, fid, gi, poff) {
+    members <- mem_by_dk[gi[origin]]                 # original rows per piece-row
+    mult    <- lengths(members)
+    rep_row <- rep.int(seq_along(origin), mult)      # piece-row index per fanned row
+    pid     <- poff + fid
+    df  <- attrs[unlist(members, use.names = FALSE), , drop = FALSE]
+    df[[piece]] <- pid[rep_row]                      # rows of one face share a piece id
+    df[[geom]]  <- geoms[rep_row]
+    rownames(df) <- NULL
+    df
+  }
+
+  # Two-layer: group the covering inputs of each face by layer, then combine the
+  # x-records and y-records covering a face per `how`. A face's covering rows are
+  # the (x record) x (y record) pairs; faces touching only one layer fill the
+  # other side with NA. All output rows of a face share its piece id, and the
+  # face geometry is taken once (every covering row of a face holds the same one).
+  emit_two <- function(geoms, origin, fid, gi, poff) {
+    members  <- mem_by_dk[gi[origin]]
+    rows     <- unlist(members, use.names = FALSE)   # original rows covering each piece-row
+    face_rep <- rep.int(fid, lengths(members))       # face id (batch-local, 1-based) per row
+    sd       <- side_of[rows]; loc <- local_of[rows]
+    nf   <- max(fid)
+    fdup <- !duplicated(fid)
+    geom_by_face <- character(nf)
+    geom_by_face[fid[fdup]] <- geoms[fdup]           # one representative geometry per face
+
+    ix <- data.frame(face = face_rep[sd == 1L], loc = loc[sd == 1L])  # x coverage
+    iy <- data.frame(face = face_rep[sd == 2L], loc = loc[sd == 2L])  # y coverage
+
+    block <- function(face_vec, lx, ly) {
+      if (!length(face_vec)) return(NULL)
+      m  <- length(face_vec)
+      d  <- ax[if (is.null(lx)) rep(NA_integer_, m) else lx, , drop = FALSE]
+      dy <- ay[if (is.null(ly)) rep(NA_integer_, m) else ly, , drop = FALSE]
+      for (nm in names(dy)) d[[nm]] <- dy[[nm]]
+      d[[piece]] <- poff + face_vec
+      d[[geom]]  <- geom_by_face[face_vec]
+      rownames(d) <- NULL
+      d
+    }
+
+    out <- list()
+    if (how != "symdiff" && nrow(ix) && nrow(iy)) {  # pieces covered by both layers
+      mm <- merge(ix, iy, by = "face", suffixes = c(".x", ".y"))
+      if (nrow(mm)) out <- c(out, list(block(mm$face, mm$loc.x, mm$loc.y)))
+    }
+    fx <- unique(ix$face); fy <- unique(iy$face)
+    if (how %in% c("union", "identity", "symdiff")) {  # pieces with only x coverage
+      xof <- setdiff(fx, fy)
+      if (length(xof)) { s <- ix[ix$face %in% xof, ]; out <- c(out, list(block(s$face, s$loc, NULL))) }
+    }
+    if (how %in% c("union", "symdiff")) {              # pieces with only y coverage
+      yof <- setdiff(fy, fx)
+      if (length(yof)) { s <- iy[iy$face %in% yof, ]; out <- c(out, list(block(s$face, NULL, s$loc))) }
+    }
+    out <- out[!vapply(out, is.null, logical(1))]
+    if (!length(out)) out_template else do.call(rbind, out)
+  }
+
+  emit_fn <- if (two) emit_two else emit_single
 
   # Overlay one batch of tiles, map pieces back to global rows, stream to spill.
-  # `gi[origin]` is the distinct input covering a piece; each piece-row is fanned to
-  # one output row per original record that distinct input stands for, carrying that
-  # record's attributes and the shared piece id.
   run_batch <- function(batch) {
     job <- rep.int(seq_along(batch), vapply(batch, function(t) length(t$idx), integer(1)))
     gi  <- unlist(lapply(batch, `[[`, "idx"), use.names = FALSE)
@@ -2577,14 +2689,7 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
     geoms <- res[[1L]]; origin <- res[[2L]]; parea <- res[[3L]]
     iarea <- res[[4L]]; fid <- res[[5L]]
     if (length(geoms)) {
-      members <- mem_by_dk[gi[origin]]                # original rows per piece-row
-      mult    <- lengths(members)
-      rep_row <- rep.int(seq_along(origin), mult)     # piece-row index per fanned row
-      pid     <- piece_off + fid
-      df  <- attrs[unlist(members, use.names = FALSE), , drop = FALSE]
-      df[[piece]] <- pid[rep_row]                     # rows of one face share a piece id
-      df[[geom]]  <- geoms[rep_row]
-      rownames(df) <- NULL
+      df <- emit_fn(geoms, origin, fid, gi, piece_off)
       acc$push(.coerce_for_vtr(df))
       piece_off <<- piece_off + max(fid)
       det <- .overlay_coverage_detail(origin, parea, iarea)
@@ -2597,6 +2702,15 @@ spatial_overlay <- function(x, vars = NULL, piece = "piece_id",
       }
     }
   }
+  # A batch is overlaid with one thread per tile and load-balanced across the pool
+  # only within the batch, so each batch must hold many more tiles than threads, or
+  # a batch that gathers several large tiles leaves most threads idle on its tail.
+  # Batch by a fixed tile count, not input bytes: a feature spanning many tiles is
+  # shared in memory but its bytes recur in every tile, so a byte budget collapses
+  # to a handful of tiles wherever such features dominate. Peak working set stays
+  # bounded by tile_bytes times the running threads, independent of the batch size.
+  batch_tiles <- max(256L, 32L * nthreads)
+  pb <- if (!quiet) utils::txtProgressBar(0, length(jobs), style = 3) else NULL
 
   njob <- length(jobs)
   for (start in seq.int(1L, njob, by = batch_tiles)) {

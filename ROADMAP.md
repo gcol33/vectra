@@ -19,40 +19,28 @@ What already covers a lot, so it is not listed below:
 The gaps are the operations that need either two layers fused, or a set-wide
 construction that a per-feature map cannot produce.
 
-## Tier 1 - two-layer overlay
+## Tier 1 - two-layer overlay (done, 0.9.2)
 
-The largest gap. `spatial_overlay()` self-unions one layer. There is no streamed
-overlay that fuses two different layers: split the geometry where they meet and
-carry attributes from both sides onto each resulting piece. Today `spatial_join`
-transfers attributes but leaves geometry uncut, and `spatial_clip` cuts geometry
-but drops the mask's attributes. The WDPA self-union demo is the special case
-`y = x`.
-
-Approach: an optional `y =` argument on the existing verb rather than a new
-function, so the self-union stays the default.
+`spatial_overlay()` takes an optional second layer `y` and nodes two layers into
+one planar partition, carrying the attributes of the covering `x`-record and
+`y`-record onto each piece. The self-union stays the default (`y = NULL`).
 
 ```r
-spatial_overlay(x, y = NULL, vars = NULL,
+spatial_overlay(x, y = NULL, vars = NULL, vars_y = NULL,
                 how = c("intersection", "union", "identity", "symdiff"),
                 ...)
 ```
 
-- `y = NULL` -> current self-union, unchanged.
+- `y = NULL` -> self-union, unchanged.
 - `how = "intersection"` -> only the overlapping pieces, attributes from both.
-- `how = "union"` -> all pieces of both layers, attributes filled where present.
+- `how = "union"` -> all pieces of both layers, the absent side filled with `NA`.
 - `how = "identity"` -> all of `x`, split by `y`, `y` attributes where covered.
-- `how = "symdiff"` -> pieces in exactly one layer (the XOR; folds in tier 2).
+- `how = "symdiff"` -> pieces in exactly one layer (also the symmetric difference).
 
-The noding, dedup, clustering, and streaming machinery already built for the
-self-union carry over; the new work is the two-input topology pass and the
-two-sided attribute fan-out. `y` should accept a resident `sf` object or a file
-path/`vectra_node` so a large second layer is read in batches like `x`.
-
-## Tier 1 - symmetric difference
-
-Pieces present in exactly one of two layers. Standalone in QGIS, but here it is
-the `how = "symdiff"` mode of the two-layer overlay above, so it ships with
-tier 1 rather than as its own verb.
+`vars_y` selects the carried `y` columns; a name shared with `x` is disambiguated
+with a `.x` / `.y` suffix. `y` accepts an `sf` object or a file path
+(`layer_y` / `query_y`) read in batches. It reuses the existing noding, dedup,
+component-tiling, and streaming machinery, so it scales like the self-union.
 
 ## Tier 2 - set-wise geometry constructions
 

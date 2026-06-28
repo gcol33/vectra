@@ -6,7 +6,10 @@
 \usage{
 spatial_overlay(
   x,
+  y = NULL,
   vars = NULL,
+  vars_y = NULL,
+  how = c("intersection", "union", "identity", "symdiff"),
   piece = "piece_id",
   geom = "geometry",
   grid = NULL,
@@ -18,6 +21,8 @@ spatial_overlay(
   quiet = TRUE,
   layer = NULL,
   query = NULL,
+  layer_y = NULL,
+  query_y = NULL,
   read_chunk = NULL
 )
 }
@@ -28,9 +33,23 @@ via \code{layer} / \code{query}, so the whole layer is never held in memory at o
 peak memory then tracks the cleaned geometry, not the source size, which lets
 a larger-than-RAM layer overlay on a modest machine.}
 
+\item{y}{Optional second layer to overlay \code{x} against, in the same forms \code{x}
+accepts (an \code{sf} object or a file path read via \code{layer_y} / \code{query_y}). It
+must share the CRS of \code{x}. \code{NULL} (the default) self-unions \code{x}.}
+
 \item{vars}{Character vector of attribute columns of \code{x} to carry onto each
 piece. Default \code{NULL} keeps them all; name a subset to keep the streamed
 output narrow.}
+
+\item{vars_y}{Character vector of attribute columns of \code{y} to carry onto each
+piece (two-layer overlay only). Default \code{NULL} keeps them all. A name shared
+with an \code{x} column is disambiguated with a \code{.x} / \code{.y} suffix in the output.}
+
+\item{how}{For a two-layer overlay, which pieces to keep: \code{"intersection"}
+(covered by both layers; the default), \code{"union"} (every piece of either,
+the absent side's attributes filled with \code{NA}), \code{"identity"} (all of \code{x},
+split by \code{y}, with \code{y}'s attributes where it covers and \code{NA} elsewhere), or
+\code{"symdiff"} (pieces in exactly one layer). Ignored when \code{y = NULL}.}
 
 \item{piece}{Name of the integer piece-id column added to the output (the key
 you group by to resolve overlaps). Default \code{"piece_id"}.}
@@ -85,14 +104,18 @@ overlay (read in batches via \code{LIMIT}/\code{OFFSET}); use it instead of \cod
 for a subset or join. With \code{query} and no \code{layer}, pass \code{grid} explicitly,
 since the layer extent cannot be read from the file metadata.}
 
+\item{layer_y, query_y}{The \code{layer} / \code{query} equivalents for a file-path \code{y}.}
+
 \item{read_chunk}{Features per read/parse batch. \code{NULL} (default) sizes it
 from available RAM. Smaller batches lower peak memory; larger ones do fewer
 round trips.}
 }
 \value{
-A \code{vectra_node} over the exploded overlay (one row per piece per
-covering polygon), backed by temporary \code{.vtr} spills removed when the node
-is garbage-collected, carrying the CRS of \code{x} for \code{\link[=collect_sf]{collect_sf()}}.
+A \code{vectra_node} over the exploded overlay, backed by temporary \code{.vtr}
+spills removed when the node is garbage-collected, carrying the CRS of \code{x}
+for \code{\link[=collect_sf]{collect_sf()}}. For a self-union it is one row per piece per covering
+polygon; for a two-layer overlay one row per piece per covering
+\code{x}-record / \code{y}-record pair, with the columns of both layers.
 }
 \description{
 Splits a polygon layer along all its own overlaps into disjoint pieces and
@@ -117,9 +140,13 @@ their areas reconstruct the union of the inputs, instead of drifting by the
 fraction of a percent that floating-point sliver artefacts on invalid input
 otherwise introduce. Inputs are also passed through \code{\link[sf:st_make_valid]{sf::st_make_valid()}}.
 
-The input \code{x} must be a resident \code{sf} object: building the overlap graph and
-intersecting needs the geometries in memory. The exploded result, which is
-typically several times larger, is what streams to disk.
+With a second layer \code{y}, the same machinery overlays two layers instead of
+self-unioning one: both layers are noded together into one planar partition,
+and each piece carries the attributes of the \code{x} record and the \code{y} record
+that cover it. \code{how} selects which pieces to keep -- the intersection (pieces
+covered by both), the union (every piece of either), \code{x} split by \code{y}
+(\code{"identity"}), or the parts in exactly one layer (\code{"symdiff"}). With
+\code{y = NULL} (the default) the function self-unions \code{x} and \code{how} is ignored.
 }
 \examples{
 \dontshow{if (requireNamespace("sf", quietly = TRUE)) withAutoprint(\{ # examplesIf}
@@ -135,6 +162,13 @@ first <- spatial_overlay(polys) |>
   slice_min(year, n = 1, with_ties = FALSE) |>
   collect_sf()
 first
+
+# Two-layer overlay: intersect the squares with a zone layer, keeping both
+# sets of attributes on each overlapping piece.
+zones <- sf::st_sf(zone = c("A", "B"),
+                   geometry = sf::st_sfc(sq(0, 1.5), sq(1.5, 3)))
+inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+inter
 \dontshow{\}) # examplesIf}
 }
 \seealso{
