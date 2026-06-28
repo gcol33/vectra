@@ -370,12 +370,236 @@ spatial_locate <- function(x, line, geom = "geometry", coords = NULL, crs = NA,
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
+# -- centerline (medial axis of a polygon) ------------------------------------
+
+# Approximate the medial axis (centerline) of one polygon from the Voronoi
+# diagram of its densified boundary: the Voronoi edges that lie inside the
+# polygon trace the points equidistant from two boundary stretches, i.e. its
+# skeleton. The boundary is densified to spacing `density` so the diagram is fine
+# enough; interior edges are kept (their midpoint inside a slightly shrunk
+# polygon), merged into maximal lines, and optionally pruned of branches shorter
+# than `prune`. A non-polygon geometry, or one too small to sample, returns
+# unchanged so a feature never vanishes.
+.centerline_one <- function(g, density, prune, crs) {
+  gs <- sf::st_sfc(g, crs = crs)
+  if (!grepl("POLYGON", class(g)[2L])) return(gs)
+  bb   <- sf::st_bbox(gs)
+  diag <- sqrt((bb[["xmax"]] - bb[["xmin"]])^2 + (bb[["ymax"]] - bb[["ymin"]])^2)
+  d <- if (!is.null(density) && density > 0) density else diag / 100
+  if (!is.finite(d) || d <= 0) return(gs)
+  b   <- sf::st_segmentize(sf::st_cast(gs, "MULTILINESTRING"), dfMaxLength = d)
+  v   <- sf::st_cast(b, "POINT")
+  vor <- sf::st_collection_extract(sf::st_voronoi(sf::st_union(v)), "POLYGON")
+  edges <- sf::st_cast(sf::st_union(sf::st_boundary(vor)), "LINESTRING",
+                       warn = FALSE)
+  edges <- sf::st_cast(sf::st_node(sf::st_union(edges)), "LINESTRING",
+                       warn = FALSE)
+  if (!length(edges)) return(gs)
+  mid    <- sf::st_line_sample(edges, sample = 0.5)
+  inside <- lengths(sf::st_within(mid, sf::st_buffer(gs, -d * 0.01))) > 0
+  ce <- edges[inside]
+  if (!length(ce)) return(gs)
+  m <- sf::st_cast(sf::st_line_merge(sf::st_union(ce)), "LINESTRING",
+                   warn = FALSE)
+  if (prune > 0) {
+    keep <- as.numeric(sf::st_length(m)) >= prune
+    if (any(keep)) m <- m[keep]
+  }
+  if (!length(m)) gs else m
+}
+
+.centerline_batch <- function(sb, density, prune, crs) {
+  if (nrow(sb) == 0L) return(sb)
+  crs <- .as_crs(crs)
+  g   <- sf::st_geometry(sb)
+  pieces <- lapply(seq_along(g),
+                   function(i) .centerline_one(g[[i]], density, prune, crs))
+  np  <- lengths(pieces)
+  out <- sb[rep.int(seq_len(nrow(sb)), np), , drop = FALSE]
+  sf::st_geometry(out) <- sf::st_sfc(unlist(pieces, recursive = FALSE), crs = crs)
+  rownames(out) <- NULL
+  out
+}
+
+#' Trace the centerline (medial axis) of streamed polygons
+#'
+#' Approximates the centerline of every polygon in a streamed layer, one batch
+#' at a time -- the medial axis a per-feature transform such as a buffer cannot
+#' produce. Each polygon's boundary is densified and its Voronoi diagram taken;
+#' the Voronoi edges that fall inside the polygon trace the points equidistant
+#' from two stretches of boundary, which is its skeleton, and they are merged
+#' into maximal lines. This is the usual approximation for river or road
+#' centerlines from a filled shape; `prune` drops the short branches that the
+#' skeleton grows toward convex corners. A non-polygon geometry passes through
+#' unchanged.
+#'
+#' The centerline is an approximation whose detail is set by `density` (the
+#' boundary sampling spacing): finer sampling traces the axis more closely at
+#' more cost. Geometry travels through the engine as hex-encoded WKB in a string
+#' column and the CRS is carried on the returned node; the Voronoi construction
+#' is \pkg{sf}/GEOS and expects projected or unprojected planar data. The
+#' \pkg{sf} package is an optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param density Boundary sampling spacing in CRS units: the polygon outline is
+#'   densified to at most this vertex spacing before the Voronoi diagram is
+#'   built. `NULL` (default) uses one-hundredth of each polygon's bounding-box
+#'   diagonal.
+#' @param prune Drop centerline branches shorter than this length (CRS units),
+#'   removing the short spurs the skeleton grows toward convex corners. `0`
+#'   (default) keeps every branch.
+#'
+#' @return A `vectra_node` of the centerlines, each carrying its source polygon's
+#'   attributes (replicated if the centerline is several lines) and the input
+#'   CRS, backed by temporary `.vtr` spills removed when the node is
+#'   garbage-collected.
+#'
+#' @seealso [spatial_construct()] with `kind = "pole"` for the single deepest
+#'   interior point, [spatial_simplify()] to simplify a coverage, [collect_sf()]
+#'   to materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' road <- sf::st_polygon(list(rbind(
+#'   c(0, 0), c(10, 0), c(10, 2), c(0, 2), c(0, 0))))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   geometry = sf::st_as_binary(sf::st_sfc(road), hex = TRUE)
+#' ), f)
+#'
+#' # The centerline runs down the middle of the strip.
+#' tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_centerline <- function(x, density = NULL, prune = 0,
+                               geom = "geometry", crs = NA, out_geom = NULL,
+                               flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed polygon layer)")
+  if (!is.null(density) && (!is.numeric(density) || length(density) != 1L ||
+                            !is.finite(density) || density <= 0))
+    stop("`density` must be a single positive number, or NULL")
+  if (!is.numeric(prune) || length(prune) != 1L || !is.finite(prune) ||
+      prune < 0)
+    stop("`prune` must be a single non-negative number")
+  crs <- .resolve_crs(x, crs)
+  if (is.null(out_geom)) out_geom <- geom
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  .spatial_stream(x, function(sb) .centerline_batch(sb, density, prune, crs),
+                  geom, coords = NULL, crs = crs, out_geom = out_geom,
+                  flush_rows = fr)
+}
+
+# -- planar topology (shared-edge arc table of a coverage) --------------------
+
+# One group's worth of polygons -> the arcs of their shared-edge topology. The
+# boundaries are unioned (so a border shared by two polygons is one line) and
+# noded at every junction; each resulting arc is emitted once, tagged with the
+# identifiers of the (up to two) polygons whose boundary covers it -- two for an
+# internal shared edge, one for an outer edge (the other side `NA`). The arc
+# identifiers come from `id` (a column of `x`) or the 1-based feature order.
+.topology_fn <- function(id, by, geom, crs, face_cols) function(df) {
+  sb   <- .sf_decode_chunk(df, geom, NULL, crs)
+  g    <- sf::st_geometry(sb)
+  bnd  <- sf::st_boundary(g)
+  arcs <- sf::st_cast(sf::st_node(sf::st_union(bnd)), "LINESTRING", warn = FALSE)
+  arcs <- arcs[!sf::st_is_empty(arcs)]
+  if (!length(arcs)) return(NULL)
+  fid <- if (is.null(id)) seq_len(nrow(df)) else df[[id]]
+  nb  <- lapply(seq_along(arcs), function(i)
+    fid[vapply(seq_along(g),
+               function(j) length(sf::st_covered_by(arcs[i], bnd[j])[[1L]]) > 0,
+               logical(1))])
+  pick <- function(k) {
+    out <- fid[rep(NA_integer_, length(nb))]
+    for (i in seq_along(nb)) if (length(nb[[i]]) >= k) out[i] <- nb[[i]][[k]]
+    out
+  }
+  rowdf <- if (is.null(by)) data.frame(matrix(nrow = length(arcs), ncol = 0))
+           else df[rep(1L, length(arcs)), by, drop = FALSE]
+  rowdf[[face_cols[1L]]] <- pick(1L)
+  rowdf[[face_cols[2L]]] <- pick(2L)
+  rowdf[[geom]] <- sf::st_as_binary(arcs, hex = TRUE)
+  rownames(rowdf) <- NULL
+  rowdf
+}
+
+#' Build the shared-edge topology of a polygon coverage
+#'
+#' Decomposes a polygon coverage into the arcs of its planar topology: each
+#' border is returned once, tagged with the polygons on either side. Where the
+#' raw boundaries of adjacent polygons each carry their own copy of a shared
+#' edge, this nodes the unioned boundaries so a shared border is a single arc
+#' carrying the identifiers of both neighbours -- the "build topology" of a GIS,
+#' and the adjacency a dissolve or a coverage edit needs. An internal arc names
+#' two faces; an outer arc names one and leaves the other side `NA`. Like
+#' [spatial_dissolve()] it rides the **partition tier**: `x` is spilled once and
+#' routed into one disjoint shard per `by` group in a single bounded pass, and
+#' each group is treated as an independent coverage. Peak memory is the routing
+#' budget during the pass, then one group's geometry while its arcs are built.
+#'
+#' Geometry travels through the engine as hex-encoded WKB in a string column and
+#' the CRS is carried on the returned node; the noding is \pkg{sf}/GEOS and
+#' expects projected or unprojected planar data. The \pkg{sf} package is an
+#' optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param id Optional name of a column of `x` whose value identifies each polygon
+#'   in the face columns. `NULL` (default) uses the 1-based feature order within
+#'   the group.
+#' @param by Character vector of attribute columns whose groups are each built as
+#'   an independent coverage. `NULL` (default) treats the whole layer as one
+#'   coverage.
+#' @param face_cols Length-2 character vector naming the two output columns that
+#'   hold the identifiers of the polygons on either side of each arc. Default
+#'   `c("face1", "face2")`.
+#'
+#' @return A `vectra_node` of one row per arc -- the arc geometry plus the two
+#'   face-identifier columns (and any `by` columns) -- carrying the input CRS and
+#'   backed by temporary `.vtr` spills removed when the node is garbage-collected.
+#'
+#' @seealso [spatial_polygonize()] to rebuild faces from arcs,
+#'   [spatial_dissolve()] to merge geometries by group, [collect_sf()] to
+#'   materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' p1 <- sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))
+#' p2 <- sf::st_polygon(list(rbind(c(1, 0), c(2, 0), c(2, 1), c(1, 1), c(1, 0))))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = c("a", "b"),
+#'   geometry = sf::st_as_binary(sf::st_sfc(p1, p2), hex = TRUE)
+#' ), f)
+#'
+#' # The shared edge appears once, tagged with both neighbours.
+#' tbl(f) |> spatial_topology(id = "id") |> collect()
+#' unlink(f)
+#'
+#' @export
+spatial_topology <- function(x, id = NULL, by = NULL, geom = "geometry",
+                             crs = NA, face_cols = c("face1", "face2"),
+                             flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed polygon coverage)")
+  if (!is.null(id) && (!is.character(id) || length(id) != 1L))
+    stop("`id` must be a single column name, or NULL")
+  if (!is.character(face_cols) || length(face_cols) != 2L ||
+      anyNA(face_cols) || face_cols[1L] == face_cols[2L])
+    stop("`face_cols` must be two distinct column names")
+  crs <- .resolve_crs(x, crs)
+  .partition_each(x, by, geom, crs, .topology_fn(id, by, geom, crs, face_cols),
+                  flush_rows, need = id)
+}
+
 # The partition tier shared with dissolve and construct. Routes `x` into one
 # shard per `by` group on disk in a single bounded pass, then applies
 # `group_fn(df)` to each shard's collected rows (geometry as hex-WKB in `geom`),
 # accumulating the returned data frames into one node. Peak memory is the
 # routing budget, then one group's geometry while `group_fn` runs.
-.partition_each <- function(x, by, geom, crs, group_fn, flush_rows) {
+.partition_each <- function(x, by, geom, crs, group_fn, flush_rows,
+                            need = NULL) {
   if (!inherits(x, "vectra_node"))
     stop("`x` must be a vectra_node (the streamed layer)")
   if (!is.null(by) && !is.character(by))
@@ -386,7 +610,7 @@ spatial_locate <- function(x, line, geom = "geometry", coords = NULL, crs = NA,
   write_vtr(x, spill)
 
   schema <- .Call(C_node_schema, tbl(spill)$.node)
-  miss <- setdiff(c(by, geom), schema$name)
+  miss <- setdiff(c(by, geom, need), schema$name)
   if (length(miss))
     stop(sprintf("column(s) not found in the stream: %s",
                  paste(miss, collapse = ", ")))

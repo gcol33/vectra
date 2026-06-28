@@ -96,7 +96,7 @@ group-and-combine direction already served by `spatial_dissolve()`.
   (`~ sf::st_segmentize(.x, dfMaxLength)` and `~ sf::st_line_sample(.x, n)`), so
   they need no dedicated verb, as buffer and simplify do not.
 
-## Tier 4 - build geometry from a set, and linear referencing (done, 0.9.3)
+## Tier 4 - build geometry from a set, and linear referencing (done, 0.9.3-0.9.4)
 
 The operations that need either a whole set of features fused into new geometry,
 or a point located against a resident line layer. The three set-wise verbs ride
@@ -126,6 +126,17 @@ memory at a time); `spatial_locate` is a resident-`y` streamed verb in the
   nearest line, the measure (distance along that line), and the perpendicular
   offset, with an optional `snap` onto the line. The inverse direction (a measure
   back to a point) is `sf::st_line_interpolate` through `spatial_map`.
+- `spatial_centerline()` (0.9.4) traces the medial axis of each streamed polygon
+  from the Voronoi diagram of its densified boundary: the Voronoi edges inside
+  the polygon are its skeleton, merged into lines, with an optional `prune` for
+  the short spurs toward convex corners. Per-feature streamed (one polygon at a
+  time), the approximation used for river or road centerlines from a filled
+  shape.
+- `spatial_topology()` (0.9.4) decomposes a polygon coverage into the arcs of its
+  planar topology: the unioned boundaries are noded so a shared border is one
+  arc, tagged with the identifiers of the (up to two) polygons on either side --
+  two for an internal edge, one for an outer edge. Rides the partition tier; the
+  "build topology" of a GIS, and the inverse of `spatial_polygonize`.
 
 ## Notes
 

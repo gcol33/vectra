@@ -146,3 +146,81 @@ test_that("locate rejects a non-node input and a non-sf line", {
   expect_error(spatial_locate(tbl(f), data.frame(a = 1), coords = c("x", "y")),
                "sf or sfc")
 })
+
+# -- centerline ---------------------------------------------------------------
+
+test_that("centerline runs down the middle of a strip", {
+  road <- sf::st_polygon(list(rbind(
+    c(0, 0), c(10, 0), c(10, 2), c(0, 2), c(0, 0))))
+  x <- sf::st_sf(geometry = sf::st_sfc(road))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+  expect_gt(nrow(d), 0L)
+  expect_true(all(sf::st_geometry_type(d) == "LINESTRING"))
+  # the centerline lies inside the strip and tracks mid-height (y ~ 1)
+  expect_true(all(lengths(sf::st_within(
+    sf::st_geometry(d), sf::st_sfc(road))) > 0))
+  ys <- sf::st_coordinates(d)[, "Y"]
+  expect_lt(abs(mean(ys) - 1), 0.3)
+  # it spans most of the 10-unit length
+  expect_gt(sum(as.numeric(sf::st_length(d))), 8)
+})
+
+test_that("centerline passes non-polygon geometry through unchanged", {
+  ln <- sf::st_linestring(rbind(c(0, 0), c(5, 0)))
+  x <- sf::st_sf(geometry = sf::st_sfc(ln))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_centerline() |> collect_sf()
+  expect_equal(nrow(d), 1L)
+  expect_equal(as.numeric(sf::st_length(d)), 5, tolerance = 1e-9)
+})
+
+test_that("centerline rejects bad density and prune", {
+  x <- sf::st_sf(geometry = sf::st_sfc(
+    sf::st_polygon(list(rbind(c(0, 0), c(4, 0), c(4, 2), c(0, 2), c(0, 0))))))
+  f <- vtr_from(x); on.exit(unlink(f))
+  expect_error(spatial_centerline(tbl(f), density = -1), "density")
+  expect_error(spatial_centerline(tbl(f), prune = -1), "prune")
+})
+
+# -- topology -----------------------------------------------------------------
+
+test_that("topology returns shared edges once with both neighbours", {
+  p1 <- sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))
+  p2 <- sf::st_polygon(list(rbind(c(1, 0), c(2, 0), c(2, 1), c(1, 1), c(1, 0))))
+  p3 <- sf::st_polygon(list(rbind(c(0, 1), c(1, 1), c(1, 2), c(0, 2), c(0, 1))))
+  x <- sf::st_sf(id = c("a", "b", "c"), geometry = sf::st_sfc(p1, p2, p3))
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_topology(id = "id") |> collect_sf()
+  expect_true(all(c("face1", "face2") %in% names(d)))
+  expect_true(all(sf::st_geometry_type(d) == "LINESTRING"))
+  nfaces <- (!is.na(d$face1)) + (!is.na(d$face2))
+  # exactly two internal shared edges (a|b and a|c), the rest outer (one face)
+  expect_equal(sum(nfaces == 2L), 2L)
+  expect_gt(sum(nfaces == 1L), 0L)
+  shared <- d[nfaces == 2L, ]
+  pair <- function(r) paste(sort(c(r$face1, r$face2)), collapse = "|")
+  expect_setequal(vapply(seq_len(nrow(shared)),
+                         function(i) pair(shared[i, ]), character(1)),
+                  c("a|b", "a|c"))
+})
+
+test_that("topology arcs rebuild the original coverage via polygonize", {
+  p1 <- sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))
+  p2 <- sf::st_polygon(list(rbind(c(1, 0), c(2, 0), c(2, 1), c(1, 1), c(1, 0))))
+  x <- sf::st_sf(id = c("a", "b"), geometry = sf::st_sfc(p1, p2))
+  f <- vtr_from(x); on.exit(unlink(f))
+  arcs <- tbl(f) |> spatial_topology(id = "id") |> collect_sf()
+  faces <- sf::st_collection_extract(
+    sf::st_polygonize(sf::st_union(sf::st_geometry(arcs))), "POLYGON")
+  expect_equal(length(faces), 2L)
+  expect_equal(as.numeric(sf::st_area(sf::st_union(faces))), 2, tolerance = 1e-9)
+})
+
+test_that("topology rejects a missing id column and bad face_cols", {
+  x <- sf::st_sf(geometry = sf::st_sfc(
+    sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))))
+  f <- vtr_from(x); on.exit(unlink(f))
+  expect_error(collect(spatial_topology(tbl(f), id = "nope")), "not found")
+  expect_error(spatial_topology(tbl(f), face_cols = "only_one"), "two distinct")
+})

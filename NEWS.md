@@ -1,3 +1,19 @@
+# vectra 0.9.4
+
+## Centerline and planar topology
+
+* `spatial_centerline()` traces the centerline (medial axis) of each streamed
+  polygon from the Voronoi diagram of its densified boundary: the Voronoi edges
+  that fall inside the polygon are its skeleton, merged into maximal lines.
+  `density` sets the boundary sampling and `prune` drops the short spurs the
+  skeleton grows toward convex corners. The usual approximation for river or road
+  centerlines from a filled shape; non-polygon geometry passes through unchanged.
+* `spatial_topology()` decomposes a polygon coverage into the arcs of its planar
+  topology: the unioned boundaries are noded so a shared border becomes one arc,
+  tagged with the identifiers of the (up to two) polygons on either side -- two
+  for an internal shared edge, one for an outer edge. Rides the partition tier
+  and is the inverse of `spatial_polygonize()`.
+
 # vectra 0.9.3
 
 ## Set-wise topology verbs and linear referencing
