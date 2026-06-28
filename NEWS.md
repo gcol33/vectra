@@ -74,6 +74,18 @@
   `spatial_map()` recipes (`~ sf::st_segmentize(.x, dfMaxLength)`,
   `~ sf::st_line_sample(.x, n)`).
 
+## `spatial_split()`
+
+* New `spatial_split()` cuts a streamed layer against a small resident `blade`
+  layer (the QGIS "split with lines"), one batch at a time: a polygon is divided
+  into the faces the blade carves out, a line into the arcs between crossings, and
+  each piece is emitted as its own row with the source attributes copied. A
+  feature the blade misses passes through as a single piece. With
+  `extract = "points"` it instead returns the points where each feature meets the
+  blade (the "line intersections" tool), dropping features that do not cross. The
+  split is built from \pkg{sf}/GEOS noding and polygonization and expects planar
+  coordinates.
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication

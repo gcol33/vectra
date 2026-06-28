@@ -84,7 +84,11 @@ group-and-combine direction already served by `spatial_dissolve()`.
   feature, returning one row per (left, neighbour) pair with rank, identifier,
   and distance -- the top-`k` and the distances `spatial_join`'s nearest-feature
   match does not give.
-- Split with lines, and line-intersection points between two layers.
+- Split with lines, and line-intersection points between two layers (done,
+  0.9.2). `spatial_split()` cuts each streamed feature against a resident blade
+  layer -- a polygon into the faces the blade carves out, a line into its arcs --
+  emitting one piece per row, and with `extract = "points"` returns the
+  intersection points of each feature with the blade instead.
 - Smooth (Chaikin) for line work (done, 0.9.2). `spatial_smooth()` rounds the
   corners of streamed lines and polygons by Chaikin corner-cutting, computed
   directly on the coordinates (no GEOS call). Densify and points-along are

@@ -1747,6 +1747,138 @@ spatial_knn <- function(x, y, k = 1L, geom = "geometry", coords = NULL,
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
+# -- split / line intersection (cut against a resident blade) -----------------
+
+# Split one geometry by the resident blade. A polygon's boundary is merged with
+# the blade, noded, and re-polygonized; the faces whose interior point falls
+# inside the original polygon are the pieces. A line is merged with the blade,
+# noded, and cast to single segments; the arcs that lie on the original line are
+# the pieces. A geometry the blade does not cut returns as a single piece, so a
+# feature never vanishes. Returns an sfc of one or more pieces.
+.split_one <- function(g, blade_u, crs) {
+  gs <- sf::st_sfc(g, crs = crs)
+  switch(class(g)[2L],
+    POLYGON = ,
+    MULTIPOLYGON = {
+      b     <- sf::st_sfc(sf::st_boundary(g), crs = crs)
+      noded <- sf::st_node(sf::st_union(c(b, blade_u)))
+      faces <- sf::st_collection_extract(sf::st_polygonize(noded), "POLYGON")
+      if (!length(faces)) return(gs)
+      ip   <- sf::st_point_on_surface(faces)
+      keep <- faces[lengths(sf::st_within(ip, gs)) > 0L]
+      if (length(keep)) keep else gs
+    },
+    LINESTRING = ,
+    MULTILINESTRING = {
+      noded <- sf::st_node(sf::st_union(c(gs, blade_u)))
+      segs  <- sf::st_cast(noded, "LINESTRING", warn = FALSE)
+      if (!length(segs)) return(gs)
+      keep <- segs[lengths(sf::st_covered_by(segs, gs)) > 0L]
+      if (length(keep)) keep else gs
+    },
+    gs)
+}
+
+# Intersection points of one geometry with the resident blade, as a single
+# (multi)point sfg; an empty geometry when they do not cross.
+.cross_points <- function(g, blade_u, crs) {
+  ip <- suppressWarnings(sf::st_intersection(sf::st_sfc(g, crs = crs), blade_u))
+  if (!length(ip)) return(sf::st_multipoint())
+  pts <- suppressWarnings(sf::st_collection_extract(ip, "POINT"))
+  if (!length(pts)) return(sf::st_multipoint())
+  sf::st_combine(pts)[[1L]]
+}
+
+.split_batch <- function(sb, blade_u, crs, extract) {
+  if (nrow(sb) == 0L) return(sb)
+  crs <- .as_crs(crs)
+  g <- sf::st_geometry(sb)
+  if (extract == "points") {
+    pts <- sf::st_sfc(lapply(seq_along(g),
+                             function(i) .cross_points(g[[i]], blade_u, crs)),
+                      crs = crs)
+    keep <- !sf::st_is_empty(pts)
+    out  <- sb[keep, , drop = FALSE]
+    sf::st_geometry(out) <- pts[keep]
+    out
+  } else {
+    pieces <- lapply(seq_along(g), function(i) .split_one(g[[i]], blade_u, crs))
+    np  <- lengths(pieces)
+    out <- sb[rep.int(seq_len(nrow(sb)), np), , drop = FALSE]
+    sf::st_geometry(out) <- sf::st_sfc(unlist(pieces, recursive = FALSE),
+                                       crs = crs)
+    rownames(out) <- NULL
+    out
+  }
+}
+
+#' Split a streamed layer by a resident blade, or return its crossing points
+#'
+#' Streams a large layer `x` through the engine and cuts each batch's geometry
+#' against a small resident `blade` layer (the QGIS "split with lines"), one
+#' batch at a time. With `extract = "pieces"` (the default) every feature is
+#' divided where the blade crosses it -- a polygon into the faces the blade carves
+#' out, a line into the arcs between crossings -- and each piece is emitted as its
+#' own row with the source attributes copied; a feature the blade does not cross
+#' passes through as a single piece. With `extract = "points"` the verb instead
+#' returns, per feature, the points where it meets the blade (the "line
+#' intersections" tool), dropping features that do not cross.
+#'
+#' The split is built from \pkg{sf}/GEOS noding and polygonization, so it expects
+#' projected or unprojected planar data; geographic coordinates are best
+#' projected first. The blade is dissolved to one geometry once and held resident
+#' while the left stream flows past. Geometry travels through the engine as
+#' hex-encoded WKB in a string column and the CRS is carried on the returned
+#' node; when `blade` carries no CRS it inherits the stream's. The \pkg{sf}
+#' package is an optional dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param blade An `sf` or `sfc` object whose geometry cuts the stream (typically
+#'   lines, but any geometry whose boundary can node `x`).
+#' @param extract `"pieces"` (default) to emit the split pieces, or `"points"`
+#'   to emit the intersection points of each feature with the blade.
+#'
+#' @return A `vectra_node`: with `extract = "pieces"`, one row per piece carrying
+#'   `x`'s attributes; with `extract = "points"`, one row per crossing feature
+#'   carrying its intersection points. Backed by temporary `.vtr` spills (removed
+#'   when the node is garbage-collected) and carrying the input CRS.
+#'
+#' @seealso [spatial_clip()] to cut against a mask without dividing into pieces,
+#'   [spatial_overlay()] to node two polygon layers into a partition,
+#'   [collect_sf()] to materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' sq <- sf::st_polygon(list(rbind(c(0, 0), c(4, 0), c(4, 4), c(0, 4), c(0, 0))))
+#' blade <- sf::st_sfc(sf::st_linestring(rbind(c(2, -1), c(2, 5))))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(
+#'   id = 1L, geometry = sf::st_as_binary(sf::st_sfc(sq), hex = TRUE)
+#' ), f)
+#'
+#' # Split the square into two halves along the blade.
+#' tbl(f) |> spatial_split(blade) |> collect_sf()
+#' unlink(f)
+#'
+#' @export
+spatial_split <- function(x, blade, extract = c("pieces", "points"),
+                          geom = "geometry", crs = NA, out_geom = NULL,
+                          flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed layer to split)")
+  if (!inherits(blade, "sf") && !inherits(blade, "sfc"))
+    stop("`blade` must be an sf or sfc object (the resident cutting layer)")
+  extract <- match.arg(extract)
+  crs   <- .resolve_crs(x, crs)
+  blade <- .align_resident_crs(blade, crs)
+  blade_u <- sf::st_set_crs(sf::st_union(sf::st_geometry(blade)), .as_crs(crs))
+  if (is.null(out_geom)) out_geom <- geom
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  .spatial_stream(x, function(sb) .split_batch(sb, blade_u, crs, extract),
+                  geom, coords = NULL, crs = crs, out_geom = out_geom,
+                  flush_rows = fr)
+}
+
 # -- dissolve (aggregate geometries by group) ---------------------------------
 
 # Composite group label for a batch: one string per row joining the `by`
