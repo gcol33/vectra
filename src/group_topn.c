@@ -138,15 +138,18 @@ static int champ_better(const ChampCol *oc, int64_t g,
     return desc ? (c > 0) : (c < 0);
 }
 
-/* Materialize champion column `col` (n_groups rows) into a fresh VecArray. */
-static VecArray champ_finish(const ChampCol *col, int64_t n_groups) {
+/* Materialize champion rows [lo, hi) of column `col` into a fresh VecArray, so
+   the winners can be emitted in bounded batches rather than all at once. */
+static VecArray champ_finish_range(const ChampCol *col, int64_t lo, int64_t hi) {
+    int64_t m = hi - lo;
     if (col->elem > 0) {
-        VecArray a = vec_array_alloc(col->type, n_groups);
+        VecArray a = vec_array_alloc(col->type, m);
         unsigned char *base = (unsigned char *)a.buf.i64;
-        for (int64_t g = 0; g < n_groups; g++) {
+        for (int64_t i = 0; i < m; i++) {
+            int64_t g = lo + i;
             if (col->valid[g]) {
-                vec_array_set_valid(&a, g);
-                memcpy(base + g * (int64_t)col->elem,
+                vec_array_set_valid(&a, i);
+                memcpy(base + i * (int64_t)col->elem,
                        col->fw + g * (int64_t)col->elem, (size_t)col->elem);
             }
         }
@@ -154,53 +157,70 @@ static VecArray champ_finish(const ChampCol *col, int64_t n_groups) {
     }
 
     int64_t total = 0;
-    for (int64_t g = 0; g < n_groups; g++)
+    for (int64_t g = lo; g < hi; g++)
         if (col->valid[g]) total += col->slen[g];
 
     VecArray a;
     memset(&a, 0, sizeof(a));
     a.type = VEC_STRING;
-    a.length = n_groups;
+    a.length = m;
     a.owns_data = 1;
-    int64_t vbytes = vec_validity_bytes(n_groups);
+    int64_t vbytes = vec_validity_bytes(m);
     a.validity = (uint8_t *)calloc((size_t)(vbytes > 0 ? vbytes : 1), 1);
-    a.buf.str.offsets = (int64_t *)malloc((size_t)(n_groups + 1) * sizeof(int64_t));
+    a.buf.str.offsets = (int64_t *)malloc((size_t)(m + 1) * sizeof(int64_t));
     a.buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
     if (!a.validity || !a.buf.str.offsets || !a.buf.str.data)
         vectra_error("group_topn: alloc failed (string output)");
     a.buf.str.data_len = total;
 
     int64_t off = 0;
-    for (int64_t g = 0; g < n_groups; g++) {
-        a.buf.str.offsets[g] = off;
+    for (int64_t i = 0; i < m; i++) {
+        int64_t g = lo + i;
+        a.buf.str.offsets[i] = off;
         if (col->valid[g]) {
-            vec_array_set_valid(&a, g);
+            vec_array_set_valid(&a, i);
             if (col->slen[g] > 0)
                 memcpy(a.buf.str.data + off, col->strs[g], (size_t)col->slen[g]);
             off += col->slen[g];
         }
     }
-    a.buf.str.offsets[n_groups] = off;
+    a.buf.str.offsets[m] = off;
     return a;
 }
 
-static VecBatch *group_topn_next_batch(VecNode *self) {
-    GroupTopNNode *gn = (GroupTopNNode *)self;
-    if (gn->done) return NULL;
-    gn->done = 1;
+/* Release champion storage. */
+static void champ_free(ChampCol *champ, int n_cols) {
+    if (!champ) return;
+    for (int c = 0; c < n_cols; c++) {
+        free(champ[c].valid);
+        if (champ[c].elem > 0) {
+            free(champ[c].fw);
+        } else {
+            for (int64_t g = 0; g < champ[c].cap; g++) free(champ[c].strs[g]);
+            free(champ[c].strs);
+            free(champ[c].slen);
+        }
+    }
+    free(champ);
+}
 
+/* Number of winner rows emitted per next_batch() call. */
+#define GROUP_TOPN_EMIT 131072
+
+/* One streaming pass over the child: assemble the per-group champions and store
+   them on the node. Working storage (key arena, hash table) is released here;
+   only the champions survive, to be emitted in bounded batches. */
+static void group_topn_build(GroupTopNNode *gn) {
     const VecSchema *cschema = &gn->child->output_schema;
     int n_cols = cschema->n_cols;
     int n_keys = gn->n_keys;
 
-    /* Champion storage, one slot per output column. */
     ChampCol *champ = (ChampCol *)calloc((size_t)n_cols, sizeof(ChampCol));
     for (int c = 0; c < n_cols; c++) {
         champ[c].type = cschema->col_types[c];
         champ[c].elem = vec_type_elem_size(cschema->col_types[c]);
     }
 
-    /* Distinct key values, appended once per new group; viewed for lookups. */
     VecArrayBuilder *key_arena = (VecArrayBuilder *)calloc(
         (size_t)(n_keys > 0 ? n_keys : 1), sizeof(VecArrayBuilder));
     for (int k = 0; k < n_keys; k++)
@@ -254,38 +274,50 @@ static VecBatch *group_topn_next_batch(VecNode *self) {
         vec_batch_free(batch);
     }
 
-    /* Assemble the result: one row per group, in first-appearance order. */
-    VecBatch *result = vec_batch_alloc(n_cols, n_groups);
-    for (int c = 0; c < n_cols; c++) {
-        result->columns[c] = champ_finish(&champ[c], n_groups);
-        const char *nm = cschema->col_names[c];
-        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
-        strcpy(result->col_names[c], nm);
-    }
-
-    /* Tear down working storage. */
-    for (int c = 0; c < n_cols; c++) {
-        free(champ[c].valid);
-        if (champ[c].elem > 0) {
-            free(champ[c].fw);
-        } else {
-            for (int64_t g = 0; g < champ[c].cap; g++) free(champ[c].strs[g]);
-            free(champ[c].strs);
-            free(champ[c].slen);
-        }
-    }
-    free(champ);
     for (int k = 0; k < n_keys; k++) vec_builder_free(&key_arena[k]);
     free(key_arena);
     free(arena_view);
     free(key_cols);
     vec_ht_free(&ht);
 
+    gn->champ = champ;
+    gn->n_cols = n_cols;
+    gn->n_groups = n_groups;
+    gn->emit_pos = 0;
+    gn->built = 1;
+}
+
+static VecBatch *group_topn_next_batch(VecNode *self) {
+    GroupTopNNode *gn = (GroupTopNNode *)self;
+    if (!gn->built) group_topn_build(gn);
+
+    ChampCol *champ = (ChampCol *)gn->champ;
+    if (gn->emit_pos >= gn->n_groups) {
+        champ_free(champ, gn->n_cols);
+        gn->champ = NULL;
+        return NULL;
+    }
+
+    int n_cols = gn->n_cols;
+    int64_t lo = gn->emit_pos;
+    int64_t hi = lo + GROUP_TOPN_EMIT;
+    if (hi > gn->n_groups) hi = gn->n_groups;
+
+    const VecSchema *cschema = &gn->child->output_schema;
+    VecBatch *result = vec_batch_alloc(n_cols, hi - lo);
+    for (int c = 0; c < n_cols; c++) {
+        result->columns[c] = champ_finish_range(&champ[c], lo, hi);
+        const char *nm = cschema->col_names[c];
+        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
+        strcpy(result->col_names[c], nm);
+    }
+    gn->emit_pos = hi;
     return result;
 }
 
 static void group_topn_free(VecNode *self) {
     GroupTopNNode *gn = (GroupTopNNode *)self;
+    champ_free((ChampCol *)gn->champ, gn->n_cols);   /* freed already if drained */
     gn->child->free_node(gn->child);
     free(gn->key_idx);
     vec_schema_free(&gn->base.output_schema);
@@ -303,7 +335,7 @@ GroupTopNNode *group_topn_node_create(VecNode *child, int n_keys,
     for (int k = 0; k < n_keys; k++) gn->key_idx[k] = key_idx[k];
     gn->order_idx = order_idx;
     gn->descending = descending;
-    gn->done = 0;
+    /* built/champ/n_cols/n_groups/emit_pos zeroed by calloc */
 
     gn->base.output_schema = vec_schema_copy(&child->output_schema);
     gn->base.next_batch = group_topn_next_batch;

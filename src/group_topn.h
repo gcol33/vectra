@@ -10,7 +10,14 @@ typedef struct {
     int      *key_idx;     /* indices of group-key columns in the child schema */
     int       order_idx;   /* index of the order column in the child schema */
     int       descending;  /* 0 = keep the minimum, 1 = keep the maximum */
-    int       done;
+    /* Output is built once (the full streaming pass over the child) and then
+       emitted in bounded row batches, so a downstream writer never sees all the
+       winners at once. */
+    int       built;       /* champions assembled? */
+    void     *champ;       /* ChampCol[n_cols] held until drained */
+    int       n_cols;
+    int64_t   n_groups;    /* total winners */
+    int64_t   emit_pos;    /* next winner row to emit */
 } GroupTopNNode;
 
 /* Streaming grouped argmin/argmax: one row per group, the row whose order

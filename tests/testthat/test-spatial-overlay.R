@@ -137,3 +137,27 @@ test_that("file overlay needs layer or query, and query without grid asks for gr
   expect_error(spatial_overlay(gp), "layer.*query")
   expect_error(spatial_overlay(gp, query = "SELECT * FROM lyr"), "grid")
 })
+
+test_that("st_write streams a resolved overlay and matches collect_sf", {
+  skip_if_not_installed("sf")
+  sq <- function(x, y, s) sf::st_polygon(list(rbind(
+    c(x, y), c(x+s, y), c(x+s, y+s), c(x, y+s), c(x, y))))
+  g <- vector("list", 30L); yr <- integer(30L); k <- 0L
+  for (i in 0:5) for (j in 0:4) { k <- k+1L; g[[k]] <- sq(i*600, j*600, 1000); yr[k] <- 1900L+k }
+  x <- sf::st_sf(year = yr, geometry = sf::st_sfc(g), crs = 3857)
+
+  resolve <- function() spatial_overlay(x, vars = "year") |>
+    group_by(piece_id) |> slice_min(year, n = 1, with_ties = FALSE)
+  out <- tempfile(fileext = ".gpkg"); on.exit(unlink(out))
+  sf::st_write(resolve(), out, crs = sf::st_crs(x), delete_dsn = TRUE, quiet = TRUE)
+  B <- sf::st_read(out, quiet = TRUE)
+  A <- collect_sf(resolve(), crs = sf::st_crs(x))
+
+  key <- function(s) { o <- order(s$piece_id, s$year, round(as.numeric(sf::st_area(s)), 6)); s[o, ] }
+  A <- key(A); B <- key(B)
+  expect_equal(nrow(A), nrow(B))
+  expect_identical(A$piece_id, B$piece_id)
+  expect_identical(A$year, B$year)
+  expect_equal(as.numeric(sf::st_area(A)), as.numeric(sf::st_area(B)), tolerance = 1e-9)
+  expect_true(sf::st_crs(B) == sf::st_crs(x))   # same CRS (label may differ)
+})

@@ -2299,6 +2299,53 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
   sf::st_sf(rest, geometry = g)
 }
 
+#' Stream a vectra node's geometry to a vector file
+#'
+#' An [sf::st_write()] method (also reached through [sf::write_sf()]) for a
+#' `vectra_node`: writes the result a batch at a time, appending each, so the
+#' whole layer is never held in memory. This is the streaming counterpart to
+#' `collect_sf(x) |> sf::st_write(...)` -- that route materializes every feature
+#' as an `sf` object first, which for a multi-million-feature result dominates
+#' memory; this route's peak is one batch.
+#'
+#' @param obj A `vectra_node` whose rows carry a hex-WKB geometry column (from
+#'   [spatial_overlay()], a grouped [slice_min()] / [slice_max()] resolution, a
+#'   `.vtr` scan, ...). It is consumed by the stream.
+#' @param dsn Destination data source name (file path).
+#' @param layer Layer name. `NULL` lets \pkg{sf} derive it from `dsn`.
+#' @param ... Unused; for S3 generic compatibility.
+#' @param geom Name of the hex-WKB geometry column. Default `"geometry"`.
+#' @param crs CRS to tag the output with. `NULL` takes the CRS carried on the
+#'   node.
+#' @param delete_dsn If `TRUE`, remove an existing `dsn` before writing.
+#' @param quiet Passed to [sf::st_write()].
+#'
+#' @return The `dsn`, invisibly.
+#' @seealso [collect_sf()] to materialize the whole result as one `sf` object.
+#' @exportS3Method sf::st_write
+st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
+                                 crs = NULL, delete_dsn = FALSE, quiet = TRUE) {
+  .check_sf()
+  if (is.null(crs)) crs <- obj$.crs
+  crs <- .as_crs(crs)
+  if (isTRUE(delete_dsn) && file.exists(dsn)) unlink(dsn)
+  nxt   <- .batch_cursor(obj)
+  first <- TRUE
+  repeat {
+    df <- nxt()
+    if (is.null(df)) break
+    if (!geom %in% names(df))
+      stop(sprintf("geometry column '%s' not found; pass geom=", geom))
+    g   <- sf::st_as_sfc(structure(df[[geom]], class = "WKB"), EWKB = FALSE)
+    g   <- sf::st_set_crs(g, crs)
+    sfb <- sf::st_sf(df[setdiff(names(df), geom)], geometry = g)
+    sf::st_write(sfb, dsn, layer = layer, append = !first, quiet = quiet)
+    first <- FALSE
+  }
+  if (first) stop("the query produced no rows to write")
+  invisible(dsn)
+}
+
 #' Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)
 #'
 #' Splits a polygon layer along all its own overlaps into disjoint pieces and

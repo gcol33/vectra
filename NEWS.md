@@ -17,6 +17,18 @@
   union this cut the distinct geometry count by about three quarters and the
   end-to-end run from roughly 50 to 17 minutes. Set `dedup = FALSE` to disable.
 
+## Streaming GeoPackage output
+
+* An [sf::st_write()] method for a `vectra_node` (also reached via
+  `sf::write_sf()`) writes a result to a vector file one batch at a time,
+  appending each, so a multi-million-feature output is never held in memory as
+  one `sf` object the way `collect_sf() |> st_write()` would. Resolving a dense
+  overlay and writing the ~3M-piece GeoPackage this way keeps peak memory near
+  the overlay's own (a few GB) instead of spiking on the write.
+* Grouped `slice_min()` / `slice_max()` (`n = 1`) now emits its winners in
+  bounded row batches rather than one block, so a downstream streaming writer
+  sees the result incrementally.
+
 ## Streaming grouped `slice_min()` / `slice_max()`
 
 * Grouped `slice_min()` / `slice_max()` with `n = 1, with_ties = FALSE` now

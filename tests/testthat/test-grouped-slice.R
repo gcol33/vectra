@@ -154,3 +154,19 @@ test_that("grouped slice recovers the per-group winner across types", {
     expect_equal(g$blob, r$blob)           # whole geometry-sized string kept
   }
 })
+
+test_that("grouped slice emits its winners in batches (crosses the emit boundary)", {
+  # More than one output batch (the operator emits 131072 winners per batch), so
+  # this exercises the row-range boundary in the chunked emit path.
+  N <- 140000L
+  d <- data.frame(g = 1:N, ord = sample.int(9999L, N, replace = TRUE),
+                  tag = sprintf("t%06d", 1:N), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f)); write_vtr(d, f)
+
+  out <- tbl(f) |> group_by(g) |> slice_min(ord, n = 1, with_ties = FALSE) |> collect()
+  out <- out[order(out$g), ]
+  expect_equal(nrow(out), N)                       # one winner per group
+  expect_identical(as.integer(out$g), 1:N)         # contiguous across the boundary
+  expect_identical(as.integer(out$ord), as.integer(d$ord))
+  expect_identical(out$tag, d$tag)                 # string column intact across batches
+})
