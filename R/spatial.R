@@ -1514,6 +1514,116 @@ spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
+# -- k-nearest neighbours (with distances) ------------------------------------
+
+# Find the k nearest resident-y features for each row of one decoded left batch
+# and return one row per (left, neighbour) pair: the left columns replicated,
+# plus the neighbour's rank (1 = nearest), its identifier `yid`, and the
+# distance. Distances come from the full left-by-y distance matrix (y is the
+# small resident side), reduced to the k smallest per left row.
+.knn_batch <- function(sb, yg, yid, k, rank_col, id_col, dist_col) {
+  ny <- length(yg)
+  kk <- min(as.integer(k), ny)
+  nl <- nrow(sb)
+  if (nl == 0L || kk == 0L) {
+    out <- sb[integer(0), , drop = FALSE]
+    out[[rank_col]] <- integer(0)
+    out[[id_col]]   <- yid[integer(0)]
+    out[[dist_col]] <- numeric(0)
+    return(out)
+  }
+  d <- matrix(as.numeric(sf::st_distance(sb, yg)), nrow = nl)
+  ord <- t(apply(d, 1L, order))[, seq_len(kk), drop = FALSE]
+  left_idx <- rep(seq_len(nl), each = kk)
+  nb_pos   <- as.integer(t(ord))
+  out <- sb[left_idx, , drop = FALSE]
+  out[[rank_col]] <- rep.int(seq_len(kk), nl)
+  out[[id_col]]   <- yid[nb_pos]
+  out[[dist_col]] <- d[cbind(left_idx, nb_pos)]
+  rownames(out) <- NULL
+  out
+}
+
+#' k nearest neighbours of a streamed layer, with distances
+#'
+#' Streams a large left side `x` through the engine and, for each feature, finds
+#' the `k` nearest features of a small resident layer `y`, returning one row per
+#' (left, neighbour) pair with the neighbour's rank, identifier, and distance.
+#' Where [spatial_join()] with [sf::st_nearest_feature] attaches only the single
+#' nearest match, this returns the top `k` and the distances themselves -- the
+#' nearest-`k` query and the building block of a distance matrix. The billion-row
+#' left stream never materializes; `y` (the candidate neighbours) stays resident.
+#'
+#' Distances are \pkg{sf}'s [sf::st_distance()]: planar (CRS units) on projected
+#' or unprojected planar data, great-circle (metres) on geographic coordinates
+#' with spherical geometry on (`sf::sf_use_s2()`). Each batch forms its
+#' left-by-`y` distance matrix, so `y` should be the small side; when `y` carries
+#' no CRS it inherits the stream's. The left geometry rides through unchanged
+#' (replicated once per neighbour). The \pkg{sf} package is an optional
+#' dependency (Suggests).
+#'
+#' @inheritParams spatial_map
+#' @param y An `sf` or `sfc` object: the resident candidate-neighbour layer.
+#' @param k Number of nearest neighbours to return per left feature (capped at
+#'   the number of `y` features). Default `1`.
+#' @param y_id Optional name of a column in `y` whose value identifies each
+#'   neighbour in the output. Default `NULL` uses `y`'s 1-based row index.
+#' @param id_col,dist_col,rank_col Names of the output columns holding the
+#'   neighbour identifier, the distance, and the 1-based rank (1 = nearest).
+#'   Defaults `"neighbor"`, `"distance"`, `"rank"`.
+#'
+#' @return A `vectra_node` of one row per (left, neighbour) pair -- `x`'s columns
+#'   (geometry included) plus the rank, neighbour identifier, and distance --
+#'   backed by temporary `.vtr` spills (removed when the node is garbage-
+#'   collected) and carrying the input CRS.
+#'
+#' @seealso [spatial_join()] for a nearest-feature attribute join, [collect_sf()]
+#'   to materialize as `sf`.
+#'
+#' @examplesIf requireNamespace("sf", quietly = TRUE)
+#' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
+#' towns <- sf::st_centroid(sf::st_geometry(nc))[1:5]
+#' towns <- sf::st_sf(town = nc$NAME[1:5], geometry = towns)
+#'
+#' set.seed(1)
+#' pts <- sf::st_coordinates(sf::st_sample(nc, 100))
+#' f <- tempfile(fileext = ".vtr")
+#' write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f)
+#'
+#' # The two nearest towns to each point, with distances.
+#' tbl(f) |>
+#'   spatial_knn(towns, k = 2, coords = c("x", "y"), crs = sf::st_crs(nc),
+#'               y_id = "town") |>
+#'   collect() |> head()
+#' unlink(f)
+#'
+#' @export
+spatial_knn <- function(x, y, k = 1L, geom = "geometry", coords = NULL,
+                        crs = NA, y_id = NULL, id_col = "neighbor",
+                        dist_col = "distance", rank_col = "rank",
+                        out_geom = NULL, flush_rows = NULL) {
+  .check_sf()
+  if (!inherits(x, "vectra_node"))
+    stop("`x` must be a vectra_node (the streamed left side)")
+  if (!inherits(y, "sf") && !inherits(y, "sfc"))
+    stop("`y` must be an sf or sfc object (the resident neighbour layer)")
+  if (!is.numeric(k) || length(k) != 1L || !is.finite(k) || k < 1)
+    stop("`k` must be a single positive integer")
+  crs <- .resolve_crs(x, crs)
+  y   <- .align_resident_crs(y, crs)
+  yg  <- sf::st_geometry(y)
+  yid <- if (is.null(y_id)) seq_len(length(yg)) else {
+    if (!inherits(y, "sf") || !y_id %in% names(y))
+      stop(sprintf("`y_id` column '%s' not found in `y`", y_id))
+    y[[y_id]]
+  }
+  if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
+  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  batch_fn <- function(sb)
+    .knn_batch(sb, yg, yid, k, rank_col, id_col, dist_col)
+  .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
+}
+
 # -- dissolve (aggregate geometries by group) ---------------------------------
 
 # Composite group label for a batch: one string per row joining the `by`

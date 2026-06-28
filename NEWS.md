@@ -53,6 +53,16 @@
   that should share a boundary. The reference layer stays resident while the left
   stream flows past one batch at a time.
 
+## `spatial_knn()`
+
+* New `spatial_knn()` finds, for each feature of a streamed layer, the `k`
+  nearest features of a small resident layer, returning one row per (left,
+  neighbour) pair with the neighbour's rank, identifier, and distance. Where
+  `spatial_join()` with `st_nearest_feature` attaches only the single nearest
+  match, this returns the top `k` and the distances -- the nearest-`k` query and
+  the building block of a distance matrix. Distances follow `sf::st_distance()`
+  (planar in CRS units, or great-circle metres when spherical geometry is on).
+
 # vectra 0.9.1
 
 ## `spatial_overlay()` noding and deduplication

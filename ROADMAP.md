@@ -79,8 +79,11 @@ group-and-combine direction already served by `spatial_dissolve()`.
 
 ## Tier 3 - analysis verbs
 
-- Distance matrix / k-nearest with returned distances. `spatial_join` finds the
-  nearest feature; this returns the distances and the top-k, not just the match.
+- Distance matrix / k-nearest with returned distances (done, 0.9.2).
+  `spatial_knn()` finds the `k` nearest resident-`y` features for each streamed
+  feature, returning one row per (left, neighbour) pair with rank, identifier,
+  and distance -- the top-`k` and the distances `spatial_join`'s nearest-feature
+  match does not give.
 - Split with lines, and line-intersection points between two layers.
 - Points along geometry, densify, and smooth (Chaikin / spline) for line work.
 
