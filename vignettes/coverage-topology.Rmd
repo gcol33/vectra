@@ -94,6 +94,20 @@ write_vtr(data.frame(id = 1L, geometry = st_as_binary(st_sfc(p), hex = TRUE)), h
 tbl(h) |> spatial_snap_grid(0.1) |> collect_sf()
 ```
 
+`spatial_snap()` instead pulls a streamed layer onto a resident reference layer:
+vertices and edges within `tolerance` of `y` are moved onto it, so two layers
+that should share a boundary line up exactly.
+
+```{r snap}
+ref  <- st_sfc(st_linestring(rbind(c(0, 0), c(10, 0))))
+line <- st_linestring(rbind(c(0, 0.2), c(5, 0.1), c(10, 0.2)))
+
+sn <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(id = 1L, geometry = st_as_binary(st_sfc(line), hex = TRUE)), sn)
+
+tbl(sn) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+```
+
 `spatial_eliminate()` cleans a polygon coverage by absorbing every feature
 smaller than `max_area` into a neighbour, the QGIS "Eliminate". Each sliver joins
 the neighbour it shares the longest border with, or the largest-area neighbour
@@ -262,5 +276,5 @@ measure 4. With `snap = TRUE` each point's geometry is replaced by its
 projection onto the matched line.
 
 ```{r cleanup, include = FALSE}
-unlink(c(f, g, h, e, s, m, tp, cl, n, v, l))
+unlink(c(f, g, h, sn, e, s, m, tp, cl, n, v, l))
 ```

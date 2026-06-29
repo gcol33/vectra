@@ -161,6 +161,24 @@ raise it for fewer, larger temporary files when rows are small, lower it when a
 single feature's geometry is heavy. The default of 500,000 suits point and
 small-polygon work.
 
+## Smooth geometry with spatial_smooth
+
+`spatial_smooth()` rounds the corners of every line and polygon by Chaikin
+corner-cutting, one batch at a time. Each pass replaces a vertex with two points
+along its adjacent edges, so sharp angles become a smooth curve; more
+`iterations` give a smoother result with more vertices. It is computed directly
+on the coordinates with no GEOS call, and open lines keep their endpoints.
+
+```{r smooth}
+zig <- st_linestring(rbind(c(0, 0), c(1, 1), c(2, 0), c(3, 1), c(4, 0)))
+f_zig <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  id = 1L, geometry = st_as_binary(st_sfc(zig), hex = TRUE)), f_zig)
+
+tbl(f_zig) |> spatial_smooth(iterations = 3) |> collect_sf()
+unlink(f_zig)
+```
+
 ## Select by location with spatial_filter
 
 The most-used vector tool keeps the features standing in a spatial relation to
@@ -256,6 +274,27 @@ column for planar data and through `st_intersection()` / `st_difference()` for
 the geographic-with-s2 and coordinate-assembled cases. Erase reverses the
 keep: `tbl(f_poly) |> spatial_clip(mask_region, erase = TRUE)` returns the 95
 counties with any area outside the region, each trimmed to that outside part.
+
+## Split geometry with spatial_split
+
+`spatial_split()` cuts each feature against a small resident `blade` layer, the
+QGIS "split with lines". A polygon is divided into the faces the blade carves
+out, a line into the arcs between crossings, and each piece is emitted as its own
+row with the source attributes copied. A feature the blade does not cross passes
+through whole. With `extract = "points"` the verb returns the crossing points
+instead.
+
+```{r split}
+square <- st_polygon(list(rbind(c(0, 0), c(4, 0), c(4, 4), c(0, 4), c(0, 0))))
+blade  <- st_sfc(st_linestring(rbind(c(2, -1), c(2, 5))))
+
+f_sq <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  id = 1L, geometry = st_as_binary(st_sfc(square), hex = TRUE)), f_sq)
+
+tbl(f_sq) |> spatial_split(blade) |> collect_sf()
+unlink(f_sq)
+```
 
 ## Tag features with spatial_join
 
@@ -391,6 +430,28 @@ layer it can open is the same operation, run past a fixed memory budget.
 unlink(fbig)
 ```
 
+## Nearest features with spatial_knn
+
+Where `spatial_join()` attaches the single nearest feature, `spatial_knn()`
+returns the `k` nearest features per streamed point, one row per pair, each with
+the rank (1 is nearest) and the distance. The candidate layer `y` is held
+resident while the points stream.
+
+```{r knn}
+towns <- suppressWarnings(st_centroid(st_geometry(nc)))[1:5]
+towns <- st_sf(town = nc$NAME[1:5], geometry = towns)
+
+set.seed(1)
+pts <- suppressWarnings(st_coordinates(st_sample(nc, 100)))
+f_pts <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f_pts)
+
+tbl(f_pts) |>
+  spatial_knn(towns, k = 2, coords = c("x", "y"), crs = crs_nc, y_id = "town") |>
+  collect() |> head()
+unlink(f_pts)
+```
+
 ## Merge geometries with spatial_dissolve
 
 Dissolve unions the geometries within each group into one feature, the GIS
@@ -498,6 +559,28 @@ exploded result, typically several times larger than the input, is what streams
 to disk. `mem_limit` caps the peak working set and `threads` sets the parallel
 overlay width; raise both for speed on a big machine, lower `mem_limit` for
 tighter memory.
+
+### A second layer
+
+Passing a second layer `y` nodes two layers into one planar partition and
+carries the attributes of the covering `x`-record and `y`-record onto each
+piece. A `how` argument selects which pieces to keep: `"intersection"` (covered
+by both, the default), `"union"` (every piece of either, the absent side filled
+with `NA`), `"identity"` (all of `x` split by `y`), or `"symdiff"` (pieces in
+exactly one layer).
+
+```{r overlay-two}
+zones <- st_sf(zone = c("A", "B"),
+               geometry = st_sfc(sq(0, 1.5), sq(1.5, 3)))
+
+inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+inter
+```
+
+Each piece now carries both its `year` (from the squares) and its `zone` (from
+the zone layer). `vars_y` narrows the carried `y` columns, and a name shared
+with an `x` column is disambiguated with a `.x` / `.y` suffix. A file-path `y`
+is read in batches with `layer_y` / `query_y`, the same way `x` is.
 
 ## Materializing and round-tripping
 
