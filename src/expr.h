@@ -44,7 +44,8 @@ typedef enum {
     EXPR_CASE_WHEN,        /* case_when(cond1 ~ val1, ...) */
     EXPR_COALESCE,         /* coalesce(a, b, c, ...) -> first non-NA */
     EXPR_PASTE,            /* paste(a, b, ..., sep) or paste0(a, b, ...) */
-    EXPR_STR_EXTRACT       /* str_extract(x, pattern) -> first regex match */
+    EXPR_STR_EXTRACT,      /* str_extract(x, pattern) -> first regex match */
+    EXPR_GEOM              /* libgeos op on a hex-WKB geometry column */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -117,6 +118,11 @@ struct VecExpr {
 
     /* EXPR_GREPL / EXPR_GSUB / EXPR_SUB: 1 = fixed match (default), 0 = regex */
     int fixed;
+
+    /* EXPR_GEOM: which libgeos op (see expr_geom.c). The geometry argument is
+       `operand`; a binary op's second geometry or a parameterized transform's
+       scalar argument is `right`. */
+    char geom_fn;
 };
 
 /* Allocate a new expression node */
@@ -139,6 +145,13 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
    as.Date, if_else, resolve, propagate). */
 VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
                                   const VecBatch *batch);
+
+/* Sub-dispatcher for geometry operations: a libgeos op (selected by
+   expr->geom_fn) over a hex-WKB geometry column. See expr_geom.c. */
+VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch);
+
+/* Result column type for a geometry op given its geom_fn discriminator. */
+VecType vec_expr_geom_result_type(char geom_fn);
 
 /* Walk an expression tree and mark all referenced column names.
    needed[i] is set to 1 if column col_names[i] is referenced. */

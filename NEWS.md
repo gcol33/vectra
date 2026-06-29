@@ -1,3 +1,38 @@
+# vectra 0.9.7
+
+## Geometry functions in mutate(), filter(), and summarise()
+
+* A family of `st_*` geometry functions now runs inside the expression verbs,
+  on the GEOS C library straight off the hex-WKB geometry column, with no
+  per-batch round-trip through `sf`. `tbl(f) |> filter(st_area(geometry) > 1e6)`
+  prunes the stream in C, and `mutate(geometry = st_centroid(geometry))` adds a
+  new hex-WKB geometry column. See `?geom_expressions`.
+* Measures (return a number): `st_area()`, `st_length()` / `st_perimeter()`,
+  `st_x()`, `st_y()`, `st_npoints()`, `st_ngeometries()`, and the binary
+  `st_distance()`.
+* Predicates (return TRUE/FALSE): unary `st_is_valid()`, `st_is_empty()`,
+  `st_is_simple()`, and the binary topological relations `st_intersects()`,
+  `st_within()`, `st_contains()`, `st_overlaps()`, `st_touches()`,
+  `st_crosses()`, `st_equals()`, `st_disjoint()`, `st_covers()`,
+  `st_covered_by()`. The second geometry is another geometry column, a constant
+  `sf`/`sfc` object (parsed once and reused across the stream), or a hex-WKB
+  string.
+* Transforms (return a geometry as hex-WKB): `st_centroid()`,
+  `st_point_on_surface()`, `st_boundary()`, `st_envelope()`,
+  `st_convex_hull()`, `st_make_valid()`, the parameterized `st_buffer(g, dist)`
+  and `st_simplify(g, tol)`, and the type name `st_geometry_type()`.
+* The per-row decode is parallelized with OpenMP. A missing or unparseable
+  geometry yields `NA` for that row rather than an error.
+
+## Bug fixes
+
+* Fixed installation failure on R-devel with clang 22 (CRAN's
+  `r-devel-linux-x86_64-fedora-clang`). Six source files included `<omp.h>`
+  directly after R's headers; clang 22's `omp.h` begins with a `declare
+  variant match(...)` clause that R's `match` -> `Rf_match` macro rewrote into
+  invalid syntax. All OpenMP usage now routes through `vec_omp.h`, which
+  forward-declares the runtime functions instead of including the wrapper.
+
 # vectra 0.9.6
 
 ## Network analysis

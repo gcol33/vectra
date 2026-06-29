@@ -23,9 +23,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 /* One line of the lower-envelope transform. `f` holds n sampled costs, `s2` is
  * the squared physical spacing. `d` receives the transformed line; `v` and `z`

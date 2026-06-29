@@ -32,9 +32,7 @@
 #include "libgeos.h"
 #include "vtr_geos.h"
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 #define overlay_geos_init      vtr_geos_ensure_api
 #define overlay_error_handler  vtr_geos_quiet_handler

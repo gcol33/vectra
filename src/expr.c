@@ -251,6 +251,9 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     case EXPR_PASTE:
     case EXPR_STR_EXTRACT:
         return vec_expr_eval_string(expr->kind, expr, batch);
+    /* Geometry operations — dispatched to expr_geom.c */
+    case EXPR_GEOM:
+        return vec_expr_eval_geom(expr, batch);
     /* case_when and coalesce — evaluated here directly */
     case EXPR_CASE_WHEN: {
         int64_t n = batch->n_rows;

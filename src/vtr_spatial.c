@@ -32,9 +32,7 @@
 #include "libgeos.h"
 #include "vtr_geos.h"
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 /* ---- predicate codes (x relates to resident y) --------------------------- */
 /* Each is evaluated with a prepared geometry on the resident y side, so the

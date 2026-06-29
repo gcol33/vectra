@@ -24,9 +24,7 @@
 #include <math.h>
 #include <stddef.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "vec_omp.h"
 
 #define WARP_NEAR     0
 #define WARP_BILINEAR 1

@@ -317,6 +317,61 @@
        seed = serialize_expr(expr[[4]], env, cols))
 }
 
+# Geometry functions: libgeos ops over a hex-WKB geometry column, run inside the
+# C engine off the column with no per-batch sf round-trip. Each name maps to a
+# single-character op code the C side dispatches on (see src/expr_geom.c).
+#   unary      geom -> double / bool / string / geometry
+#   parameter  geom, numeric -> geometry         (buffer, simplify)
+#   binary     geom, geom    -> double / bool     (distance, predicates)
+.GEOM_UNARY <- c(
+  st_area = "A", st_length = "L", st_perimeter = "L",
+  st_x = "X", st_y = "Y", st_npoints = "n", st_ngeometries = "g",
+  st_is_valid = "v", st_is_empty = "m", st_is_simple = "s",
+  st_geometry_type = "t",
+  st_centroid = "c", st_point_on_surface = "o", st_boundary = "b",
+  st_envelope = "e", st_convex_hull = "h", st_make_valid = "M")
+.GEOM_PARAM <- c(st_buffer = "B", st_simplify = "S")
+.GEOM_BINARY <- c(
+  st_distance = "D", st_intersects = "i", st_within = "w", st_contains = "C",
+  st_overlaps = "O", st_touches = "T", st_crosses = "R", st_equals = "Q",
+  st_disjoint = "J", st_covers = "K", st_covered_by = "V")
+
+# Resolve a binary op's second geometry: a geometry column reference, a constant
+# sf/sfc object (converted once to hex-WKB), or a hex-WKB string literal.
+.serialize_geom_arg <- function(a, env, cols) {
+  if (is.name(a) && !is.null(cols) && as.character(a) %in% cols)
+    return(serialize_expr(a, env, cols))
+  val <- tryCatch(eval(a, env), error = function(e) NULL)
+  if (inherits(val, "sf") || inherits(val, "sfc")) {
+    if (!requireNamespace("sf", quietly = TRUE))
+      stop("a constant sf/sfc geometry argument needs the sf package installed")
+    g <- sf::st_geometry(val)
+    if (length(g) > 1) g <- sf::st_union(g)
+    hex <- sf::st_as_binary(g, hex = TRUE)
+    return(list(kind = "lit_string", value = as.character(hex)[1]))
+  }
+  if (is.character(val) && length(val) == 1)
+    return(list(kind = "lit_string", value = val))
+  stop("second geometry argument must be a geometry column, an sf/sfc object, ",
+       "or a hex-WKB string")
+}
+
+.serialize_geom <- function(fn, expr, env, cols) {
+  if (fn %in% names(.GEOM_UNARY)) {
+    return(list(kind = "geom", fn = unname(.GEOM_UNARY[fn]),
+                operand = serialize_expr(expr[[2]], env, cols)))
+  }
+  if (fn %in% names(.GEOM_PARAM)) {
+    return(list(kind = "geom", fn = unname(.GEOM_PARAM[fn]),
+                operand = serialize_expr(expr[[2]], env, cols),
+                param = serialize_expr(expr[[3]], env, cols)))
+  }
+  # binary: distance / topological predicate
+  list(kind = "geom", fn = unname(.GEOM_BINARY[fn]),
+       operand = serialize_expr(expr[[2]], env, cols),
+       other = .serialize_geom_arg(expr[[3]], env, cols))
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch registry: maps function names to handler functions.
 # Adding a new expression type = one entry here + one handler above.
@@ -350,6 +405,8 @@ local({
              "jaro_winkler"),                            .serialize_fuzzy)
   register(c("%in%", "between"),                        .serialize_set_ops)
   register(c("resolve", "propagate"),                   .serialize_graph)
+  register(c(names(.GEOM_UNARY), names(.GEOM_PARAM),
+             names(.GEOM_BINARY)),                       .serialize_geom)
 })
 
 # ---------------------------------------------------------------------------

@@ -3,14 +3,26 @@
 
 /* OpenMP runtime declarations.
  *
- * We deliberately do NOT #include <omp.h>. clang 21's bundled omp.h
- * wrapper (/usr/lib/llvm-21/lib/clang/21/include/omp.h) contains a
- * "#pragma omp end declare variant" with no matching begin pragma,
- * which fails compilation on CRAN's r-devel-linux-x86_64-debian-clang
- * flavor and caused vectra 0.5.1 to be archived. The unbalanced pragma
- * is in the wrapper itself, so even an `#ifdef _OPENMP` guard around
- * `#include <omp.h>` doesn't help: when -fopenmp is on the compile
- * line, _OPENMP is defined and the broken wrapper is pulled in.
+ * We deliberately do NOT #include <omp.h>, and no other file in src/ may
+ * either: every translation unit that needs the OpenMP runtime includes
+ * this header instead. Two separate clang releases have shipped an omp.h
+ * that breaks vectra when pulled in after R's headers:
+ *
+ *   - clang 21's bundled omp.h wrapper contains a "#pragma omp end declare
+ *     variant" with no matching begin pragma, which failed compilation on
+ *     CRAN's r-devel-linux-x86_64-debian-clang flavor and caused vectra
+ *     0.5.1 to be archived.
+ *
+ *   - clang 22's omp.h opens with "#pragma omp begin declare variant
+ *     match(device={kind(host)})". R's Rinternals.h defines the macro
+ *     `match` -> `Rf_match`, so when omp.h is included after Rinternals.h
+ *     the `match` clause is rewritten to `Rf_match` and the directive no
+ *     longer parses ("expected 'match', 'adjust_args', or 'append_args'
+ *     clause"). This broke six files on r-devel-linux-x86_64-fedora-clang.
+ *
+ * Both are in the wrapper itself, so an `#ifdef _OPENMP` guard around
+ * `#include <omp.h>` doesn't help: when -fopenmp is on the compile line
+ * _OPENMP is defined and the broken wrapper is pulled in regardless.
  *
  * The fix: skip the wrapper. The few runtime functions we use are
  * forward-declared below; libomp symbols resolve at link time. The
