@@ -406,6 +406,7 @@ whose memory can be bounded, and names the ones it cannot.
 - [Larger-than-RAM strategy](large-data.html) for the spill and partition tiers
   in depth.
 - [Offloading](offload.html) for the cost grades the spatial tiers reuse.
+
 - [Species distribution modelling](sdm.html) for an end-to-end ecological
   workflow.
 - The function reference for every spatial verb and its arguments.

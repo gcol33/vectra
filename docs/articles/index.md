@@ -8,6 +8,12 @@
   vectra](https://gillescolling.com/vectra/articles/spatial.md):
 - [Streaming spatial
   operations](https://gillescolling.com/vectra/articles/streaming-spatial.md):
+- [Geometry functions in
+  expressions](https://gillescolling.com/vectra/articles/geometry-expressions.md):
+- [Coverage and
+  topology](https://gillescolling.com/vectra/articles/coverage-topology.md):
+- [Network
+  analysis](https://gillescolling.com/vectra/articles/networks.md):
 - [vectra Engine
   Reference](https://gillescolling.com/vectra/articles/engine.md):
 - [Format

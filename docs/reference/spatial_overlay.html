@@ -34,7 +34,7 @@ group_by(piece_id) |&amp;gt; slice_min(year)."></head><body><p>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -47,6 +47,9 @@ group_by(piece_id) |&amp;gt; slice_min(year)."></head><body><p>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
+    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
+    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
+    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -90,14 +93,24 @@ feature rather than dissolved. Resolve the duplicates with a grouped
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">spatial_overlay</span><span class="op">(</span></span>
 <span>  <span class="va">x</span>,</span>
+<span>  y <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  vars <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  vars_y <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  how <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"intersection"</span>, <span class="st">"union"</span>, <span class="st">"identity"</span>, <span class="st">"symdiff"</span><span class="op">)</span>,</span>
 <span>  piece <span class="op">=</span> <span class="st">"piece_id"</span>,</span>
 <span>  geom <span class="op">=</span> <span class="st">"geometry"</span>,</span>
 <span>  grid <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  precision <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  dedup <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  flush_rows <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  mem_limit <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  threads <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  quiet <span class="op">=</span> <span class="cn">TRUE</span></span>
+<span>  quiet <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  layer <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  query <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  layer_y <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  query_y <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  read_chunk <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -106,13 +119,37 @@ feature rather than dissolved. Resolve the duplicates with a grouped
 
 
 <dl><dt id="arg-x">x<a class="anchor" aria-label="anchor" href="#arg-x"></a></dt>
-<dd><p>An <code>sf</code> object with polygon or multipolygon geometry.</p></dd>
+<dd><p>An <code>sf</code> object with polygon or multipolygon geometry, or a single
+path to a vector file (e.g. a GeoPackage). A path is read in feature batches
+via <code>layer</code> / <code>query</code>, so the whole layer is never held in memory at once –
+peak memory then tracks the cleaned geometry, not the source size, which lets
+a larger-than-RAM layer overlay on a modest machine.</p></dd>
+
+
+<dt id="arg-y">y<a class="anchor" aria-label="anchor" href="#arg-y"></a></dt>
+<dd><p>Optional second layer to overlay <code>x</code> against, in the same forms <code>x</code>
+accepts (an <code>sf</code> object or a file path read via <code>layer_y</code> / <code>query_y</code>). It
+must share the CRS of <code>x</code>. <code>NULL</code> (the default) self-unions <code>x</code>.</p></dd>
 
 
 <dt id="arg-vars">vars<a class="anchor" aria-label="anchor" href="#arg-vars"></a></dt>
 <dd><p>Character vector of attribute columns of <code>x</code> to carry onto each
 piece. Default <code>NULL</code> keeps them all; name a subset to keep the streamed
 output narrow.</p></dd>
+
+
+<dt id="arg-vars-y">vars_y<a class="anchor" aria-label="anchor" href="#arg-vars-y"></a></dt>
+<dd><p>Character vector of attribute columns of <code>y</code> to carry onto each
+piece (two-layer overlay only). Default <code>NULL</code> keeps them all. A name shared
+with an <code>x</code> column is disambiguated with a <code>.x</code> / <code>.y</code> suffix in the output.</p></dd>
+
+
+<dt id="arg-how">how<a class="anchor" aria-label="anchor" href="#arg-how"></a></dt>
+<dd><p>For a two-layer overlay, which pieces to keep: <code>"intersection"</code>
+(covered by both layers; the default), <code>"union"</code> (every piece of either,
+the absent side's attributes filled with <code>NA</code>), <code>"identity"</code> (all of <code>x</code>,
+split by <code>y</code>, with <code>y</code>'s attributes where it covers and <code>NA</code> elsewhere), or
+<code>"symdiff"</code> (pieces in exactly one layer). Ignored when <code>y = NULL</code>.</p></dd>
 
 
 <dt id="arg-piece">piece<a class="anchor" aria-label="anchor" href="#arg-piece"></a></dt>
@@ -134,17 +171,38 @@ because an outlier coordinate inflated the magnitude), or <code>0</code> to disa
 snapping entirely.</p></dd>
 
 
+<dt id="arg-precision">precision<a class="anchor" aria-label="anchor" href="#arg-precision"></a></dt>
+<dd><p>Fixed-precision grid size, in CRS units, for noding the
+boundary linework. Noding on a fixed grid is deterministic and avoids the
+floating noder's repair-and-retry on dense overlapping linework, which is
+what makes a large dense layer feasible to overlay. It is far finer than
+<code>grid</code> so intersection points are not collapsed. <code>NULL</code> (the default)
+derives it from coordinate magnitude (<code>max(abs(st_bbox(x))) * 1e-13</code>); pass
+a number to override, or <code>0</code> to node in floating precision.</p></dd>
+
+
+<dt id="arg-dedup">dedup<a class="anchor" aria-label="anchor" href="#arg-dedup"></a></dt>
+<dd><p>Overlay one representative per group of byte-identical cleaned
+geometries and fan the per-record attributes back onto its pieces afterwards.
+Duplicates add no faces, so the result is identical; this only removes the
+redundant noding when many records are stacked over one site (common in
+WDPA-style data). <code>TRUE</code> by default; set <code>FALSE</code> to overlay every record.</p></dd>
+
+
 <dt id="arg-flush-rows">flush_rows<a class="anchor" aria-label="anchor" href="#arg-flush-rows"></a></dt>
 <dd><p>Exploded rows buffered before a spill flush. Defaults to
 <code>getOption("vectra.spatial_flush", 5e5)</code>.</p></dd>
 
 
 <dt id="arg-mem-limit">mem_limit<a class="anchor" aria-label="anchor" href="#arg-mem-limit"></a></dt>
-<dd><p>Approximate peak working-set budget in bytes. Components are
-grouped into chunks within this budget and each chunk is overlaid then
-spilled before the next, so memory stays bounded regardless of layer size.
-Raise it for more parallel throughput, lower it for tighter memory. Defaults
-to <code>getOption("vectra.overlay_mem_limit", 2e9)</code>.</p></dd>
+<dd><p>Approximate peak working-set budget in bytes, bounding the
+per-tile size (<code>tile_bytes = mem_limit / (threads * 24)</code>). It is a throughput
+knob with an interior optimum, not "bigger is faster": too small replicates
+features across many tiles, too large nodes too much linework per tile (a
+superlinear cost), and a budget of tens of GB runs slower than the default on
+a dense layer. Lower it for tighter memory. Defaults via
+<code>getOption("vectra.overlay_mem_limit", ...)</code> to a value that scales with
+<code>threads</code> to hold the per-tile size near its measured optimum.</p></dd>
 
 
 <dt id="arg-threads">threads<a class="anchor" aria-label="anchor" href="#arg-threads"></a></dt>
@@ -156,12 +214,36 @@ all available cores.</p></dd>
 <dt id="arg-quiet">quiet<a class="anchor" aria-label="anchor" href="#arg-quiet"></a></dt>
 <dd><p>If <code>FALSE</code>, show a text progress bar over the overlay chunks.</p></dd>
 
+
+<dt id="arg-layer">layer<a class="anchor" aria-label="anchor" href="#arg-layer"></a></dt>
+<dd><p>When <code>x</code> is a file path, the name of the layer to read. Ignored
+for an <code>sf</code> <code>x</code>. Supply this or <code>query</code>.</p></dd>
+
+
+<dt id="arg-query">query<a class="anchor" aria-label="anchor" href="#arg-query"></a></dt>
+<dd><p>When <code>x</code> is a file path, a SQL statement selecting the features to
+overlay (read in batches via <code>LIMIT</code>/<code>OFFSET</code>); use it instead of <code>layer</code>
+for a subset or join. With <code>query</code> and no <code>layer</code>, pass <code>grid</code> explicitly,
+since the layer extent cannot be read from the file metadata.</p></dd>
+
+
+<dt id="arg-layer-y-query-y">layer_y, query_y<a class="anchor" aria-label="anchor" href="#arg-layer-y-query-y"></a></dt>
+<dd><p>The <code>layer</code> / <code>query</code> equivalents for a file-path <code>y</code>.</p></dd>
+
+
+<dt id="arg-read-chunk">read_chunk<a class="anchor" aria-label="anchor" href="#arg-read-chunk"></a></dt>
+<dd><p>Features per read/parse batch. <code>NULL</code> (default) sizes it
+from available RAM. Smaller batches lower peak memory; larger ones do fewer
+round trips.</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A <code>vectra_node</code> over the exploded overlay (one row per piece per
-covering polygon), backed by temporary <code>.vtr</code> spills removed when the node
-is garbage-collected, carrying the CRS of <code>x</code> for <code><a href="collect_sf.html">collect_sf()</a></code>.</p>
+    <p>A <code>vectra_node</code> over the exploded overlay, backed by temporary <code>.vtr</code>
+spills removed when the node is garbage-collected, carrying the CRS of <code>x</code>
+for <code><a href="collect_sf.html">collect_sf()</a></code>. For a self-union it is one row per piece per covering
+polygon; for a two-layer overlay one row per piece per covering
+<code>x</code>-record / <code>y</code>-record pair, with the columns of both layers.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -175,9 +257,13 @@ grid derived from their own magnitude so the pieces come out disjoint and
 their areas reconstruct the union of the inputs, instead of drifting by the
 fraction of a percent that floating-point sliver artefacts on invalid input
 otherwise introduce. Inputs are also passed through <code><a href="https://r-spatial.github.io/sf/reference/valid.html" class="external-link">sf::st_make_valid()</a></code>.</p>
-<p>The input <code>x</code> must be a resident <code>sf</code> object: building the overlap graph and
-intersecting needs the geometries in memory. The exploded result, which is
-typically several times larger, is what streams to disk.</p>
+<p>With a second layer <code>y</code>, the same machinery overlays two layers instead of
+self-unioning one: both layers are noded together into one planar partition,
+and each piece carries the attributes of the <code>x</code> record and the <code>y</code> record
+that cover it. <code>how</code> selects which pieces to keep – the intersection (pieces
+covered by both), the union (every piece of either), <code>x</code> split by <code>y</code>
+(<code>"identity"</code>), or the parts in exactly one layer (<code>"symdiff"</code>). With
+<code>y = NULL</code> (the default) the function self-unions <code>x</code> and <code>how</code> is ignored.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -198,7 +284,14 @@ typically several times larger, is what streams to disk.</p>
 <span>  <span class="fu"><a href="group_by.html">group_by</a></span><span class="op">(</span><span class="va">piece_id</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="slice_head.html">slice_min</a></span><span class="op">(</span><span class="va">year</span>, n <span class="op">=</span> <span class="fl">1</span>, with_ties <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="collect_sf.html">collect_sf</a></span><span class="op">(</span><span class="op">)</span></span>
-<span><span class="va">first</span></span></code></pre></div>
+<span><span class="va">first</span></span>
+<span></span>
+<span><span class="co"># Two-layer overlay: intersect the squares with a zone layer, keeping both</span></span>
+<span><span class="co"># sets of attributes on each overlapping piece.</span></span>
+<span><span class="va">zones</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/sf.html" class="external-link">st_sf</a></span><span class="op">(</span>zone <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"A"</span>, <span class="st">"B"</span><span class="op">)</span>,</span>
+<span>                   geometry <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/sfc.html" class="external-link">st_sfc</a></span><span class="op">(</span><span class="fu">sq</span><span class="op">(</span><span class="fl">0</span>, <span class="fl">1.5</span><span class="op">)</span>, <span class="fu">sq</span><span class="op">(</span><span class="fl">1.5</span>, <span class="fl">3</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="va">inter</span> <span class="op">&lt;-</span> <span class="fu">spatial_overlay</span><span class="op">(</span><span class="va">polys</span>, <span class="va">zones</span>, how <span class="op">=</span> <span class="st">"intersection"</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect_sf.html">collect_sf</a></span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="va">inter</span></span></code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

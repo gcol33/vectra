@@ -203,6 +203,7 @@ tbl(f) |>
 For `st_distance()` and the binary predicates, the second argument can be:
 
 - another geometry column, compared row by row;
+
 - a constant `sf` or `sfc` object, parsed once and reused across the stream (a
   multi-feature object is unioned to one geometry);
 - a hex-WKB string.

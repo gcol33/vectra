@@ -639,6 +639,7 @@ native path is the common case, which is why the examples project up front.
 Four options tune the machinery:
 
 - `vectra.spatial_flush` (default 500,000): rows buffered before a spill flush.
+
 - `vectra.partition_budget`: rows held while routing a dissolve or partitioned
   join before flushing shards.
 - `vectra.overlay_mem_limit` (default 2 GB): the overlay's peak working-set

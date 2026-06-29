@@ -27,6 +27,8 @@ Write query results or data.frames to disk
   : Write query results or a data.frame to a SQLite table
 - [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md)
   : Write query results to a GeoTIFF file
+- [`st_write(`*`<vectra_node>`*`)`](https://gillescolling.com/vectra/reference/st_write.vectra_node.md)
+  : Stream a vectra node's geometry to a vector file
 
 ## GeoTIFF helpers
 
@@ -113,6 +115,63 @@ than RAM
   : Euclidean distance to the nearest feature (proximity)
 - [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
   : Materialize a spatial query as an sf object
+- [`geom_expressions`](https://gillescolling.com/vectra/reference/geom_expressions.md)
+  : Geometry functions inside mutate(), filter(), and summarise()
+
+## Geometry construction and cleaning
+
+Reshape, repair, simplify, and snap streamed vector geometry
+
+- [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md)
+  : Build a set-wise geometry construction, optionally per group
+- [`spatial_explode()`](https://gillescolling.com/vectra/reference/spatial_explode.md)
+  : Explode multipart geometries into single-part features
+- [`spatial_line_merge()`](https://gillescolling.com/vectra/reference/spatial_line_merge.md)
+  : Merge contiguous line segments into maximal lines
+- [`spatial_simplify()`](https://gillescolling.com/vectra/reference/spatial_simplify.md)
+  : Simplify a polygon coverage without tearing shared edges
+- [`spatial_smooth()`](https://gillescolling.com/vectra/reference/spatial_smooth.md)
+  : Smooth streamed line and polygon geometry
+- [`spatial_snap()`](https://gillescolling.com/vectra/reference/spatial_snap.md)
+  : Snap a streamed layer toward a resident reference layer
+- [`spatial_snap_grid()`](https://gillescolling.com/vectra/reference/spatial_snap_grid.md)
+  : Snap a streamed layer's coordinates to a fixed grid
+- [`spatial_eliminate()`](https://gillescolling.com/vectra/reference/spatial_eliminate.md)
+  : Merge sliver polygons into a neighbour
+- [`spatial_split()`](https://gillescolling.com/vectra/reference/spatial_split.md)
+  : Split a streamed layer by a resident blade, or return its crossing
+  points
+- [`spatial_centerline()`](https://gillescolling.com/vectra/reference/spatial_centerline.md)
+  : Trace the centerline (medial axis) of streamed polygons
+
+## Coverage and topology
+
+Shared-edge topology and polygonal faces of polygon coverages
+
+- [`spatial_topology()`](https://gillescolling.com/vectra/reference/spatial_topology.md)
+  : Build the shared-edge topology of a polygon coverage
+- [`spatial_polygonize()`](https://gillescolling.com/vectra/reference/spatial_polygonize.md)
+  : Build polygonal faces from a line network
+
+## Spatial networks
+
+Build routable graphs and solve shortest paths over line layers
+
+- [`spatial_network()`](https://gillescolling.com/vectra/reference/spatial_network.md)
+  : Build a routable network graph from a line layer
+- [`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md)
+  : Shortest paths and origin-destination costs over a network
+- [`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)
+  : Service areas and isochrones over a network
+
+## Spatial queries
+
+Nearest neighbours and linear referencing
+
+- [`spatial_knn()`](https://gillescolling.com/vectra/reference/spatial_knn.md)
+  : k nearest neighbours of a streamed layer, with distances
+- [`spatial_locate()`](https://gillescolling.com/vectra/reference/spatial_locate.md)
+  : Locate streamed points along a resident line layer
 
 ## File operations
 

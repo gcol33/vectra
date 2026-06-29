@@ -47,10 +47,11 @@ When `slice_min()`/`slice_max()` follow
 [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md),
 the n smallest/largest rows are taken within each group and the whole
 winning row is kept (every column, including geometry carried as a
-string). `with_ties = FALSE` returns exactly `n` rows per group via a
-deterministic ordered `row_number()`; `with_ties = TRUE` keeps rows tied
-at the nth value via min-rank. The grouped path buffers its input (like
-all window operations) rather than streaming.
+string). `with_ties = FALSE` returns exactly `n` rows per group;
+`with_ties = TRUE` keeps rows tied at the nth value via min-rank. The
+`n = 1`, `with_ties = FALSE` case streams: it holds only the running
+winner per group, so memory scales with the number of groups (the result
+size), not the input. Other grouped cases buffer their input.
 
 ## Examples
 

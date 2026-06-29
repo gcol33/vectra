@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -33,6 +33,9 @@
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
+    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
+    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
+    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -140,6 +143,13 @@
 
         </dt>
         <dd>Write query results to a GeoTIFF file</dd>
+
+        <dt>
+
+          <code><a href="st_write.vectra_node.html">st_write(<i>&lt;vectra_node&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Stream a vectra node's geometry to a vector file</dd>
       </dl></div><div class="section level2">
       <h2 id="geotiff-helpers">GeoTIFF helpers<a class="anchor" aria-label="anchor" href="#geotiff-helpers"></a></h2>
 
@@ -412,6 +422,168 @@
 
         </dt>
         <dd>Materialize a spatial query as an sf object</dd>
+
+        <dt>
+
+          <code><a href="geom_expressions.html">geom_expressions</a></code>
+
+        </dt>
+        <dd>Geometry functions inside mutate(), filter(), and summarise()</dd>
+      </dl></div><div class="section level2">
+      <h2 id="geometry-construction-and-cleaning">Geometry construction and cleaning<a class="anchor" aria-label="anchor" href="#geometry-construction-and-cleaning"></a></h2>
+
+      <div class="section-desc"><p>Reshape, repair, simplify, and snap streamed vector geometry</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_construct.html">spatial_construct()</a></code>
+
+        </dt>
+        <dd>Build a set-wise geometry construction, optionally per group</dd>
+
+        <dt>
+
+          <code><a href="spatial_explode.html">spatial_explode()</a></code>
+
+        </dt>
+        <dd>Explode multipart geometries into single-part features</dd>
+
+        <dt>
+
+          <code><a href="spatial_line_merge.html">spatial_line_merge()</a></code>
+
+        </dt>
+        <dd>Merge contiguous line segments into maximal lines</dd>
+
+        <dt>
+
+          <code><a href="spatial_simplify.html">spatial_simplify()</a></code>
+
+        </dt>
+        <dd>Simplify a polygon coverage without tearing shared edges</dd>
+
+        <dt>
+
+          <code><a href="spatial_smooth.html">spatial_smooth()</a></code>
+
+        </dt>
+        <dd>Smooth streamed line and polygon geometry</dd>
+
+        <dt>
+
+          <code><a href="spatial_snap.html">spatial_snap()</a></code>
+
+        </dt>
+        <dd>Snap a streamed layer toward a resident reference layer</dd>
+
+        <dt>
+
+          <code><a href="spatial_snap_grid.html">spatial_snap_grid()</a></code>
+
+        </dt>
+        <dd>Snap a streamed layer's coordinates to a fixed grid</dd>
+
+        <dt>
+
+          <code><a href="spatial_eliminate.html">spatial_eliminate()</a></code>
+
+        </dt>
+        <dd>Merge sliver polygons into a neighbour</dd>
+
+        <dt>
+
+          <code><a href="spatial_split.html">spatial_split()</a></code>
+
+        </dt>
+        <dd>Split a streamed layer by a resident blade, or return its crossing points</dd>
+
+        <dt>
+
+          <code><a href="spatial_centerline.html">spatial_centerline()</a></code>
+
+        </dt>
+        <dd>Trace the centerline (medial axis) of streamed polygons</dd>
+      </dl></div><div class="section level2">
+      <h2 id="coverage-and-topology">Coverage and topology<a class="anchor" aria-label="anchor" href="#coverage-and-topology"></a></h2>
+
+      <div class="section-desc"><p>Shared-edge topology and polygonal faces of polygon coverages</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_topology.html">spatial_topology()</a></code>
+
+        </dt>
+        <dd>Build the shared-edge topology of a polygon coverage</dd>
+
+        <dt>
+
+          <code><a href="spatial_polygonize.html">spatial_polygonize()</a></code>
+
+        </dt>
+        <dd>Build polygonal faces from a line network</dd>
+      </dl></div><div class="section level2">
+      <h2 id="spatial-networks">Spatial networks<a class="anchor" aria-label="anchor" href="#spatial-networks"></a></h2>
+
+      <div class="section-desc"><p>Build routable graphs and solve shortest paths over line layers</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_network.html">spatial_network()</a></code>
+
+        </dt>
+        <dd>Build a routable network graph from a line layer</dd>
+
+        <dt>
+
+          <code><a href="spatial_route.html">spatial_route()</a></code>
+
+        </dt>
+        <dd>Shortest paths and origin-destination costs over a network</dd>
+
+        <dt>
+
+          <code><a href="spatial_service_area.html">spatial_service_area()</a></code>
+
+        </dt>
+        <dd>Service areas and isochrones over a network</dd>
+      </dl></div><div class="section level2">
+      <h2 id="spatial-queries">Spatial queries<a class="anchor" aria-label="anchor" href="#spatial-queries"></a></h2>
+
+      <div class="section-desc"><p>Nearest neighbours and linear referencing</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_knn.html">spatial_knn()</a></code>
+
+        </dt>
+        <dd>k nearest neighbours of a streamed layer, with distances</dd>
+
+        <dt>
+
+          <code><a href="spatial_locate.html">spatial_locate()</a></code>
+
+        </dt>
+        <dd>Locate streamed points along a resident line layer</dd>
       </dl></div><div class="section level2">
       <h2 id="file-operations">File operations<a class="anchor" aria-label="anchor" href="#file-operations"></a></h2>
 

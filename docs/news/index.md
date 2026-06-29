@@ -1,6 +1,387 @@
 # Changelog
 
-## vectra 0.9.0
+## vectra 0.9.7
+
+### Geometry functions in mutate(), filter(), and summarise()
+
+- A family of `st_*` geometry functions now runs inside the expression
+  verbs, on the GEOS C library straight off the hex-WKB geometry column,
+  with no per-batch round-trip through `sf`.
+  `tbl(f) |> filter(st_area(geometry) > 1e6)` prunes the stream in C,
+  and `mutate(geometry = st_centroid(geometry))` adds a new hex-WKB
+  geometry column. See
+  [`?geom_expressions`](https://gillescolling.com/vectra/reference/geom_expressions.md).
+- Measures (return a number):
+  [`st_area()`](https://r-spatial.github.io/sf/reference/geos_measures.html),
+  [`st_length()`](https://r-spatial.github.io/sf/reference/geos_measures.html)
+  /
+  [`st_perimeter()`](https://r-spatial.github.io/sf/reference/geos_measures.html),
+  `st_x()`, `st_y()`, `st_npoints()`, `st_ngeometries()`, and the binary
+  [`st_distance()`](https://r-spatial.github.io/sf/reference/geos_measures.html).
+- Predicates (return TRUE/FALSE): unary
+  [`st_is_valid()`](https://r-spatial.github.io/sf/reference/valid.html),
+  [`st_is_empty()`](https://r-spatial.github.io/sf/reference/geos_query.html),
+  [`st_is_simple()`](https://r-spatial.github.io/sf/reference/geos_query.html),
+  and the binary topological relations
+  [`st_intersects()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_within()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_contains()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_overlaps()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_touches()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_crosses()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_equals()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_disjoint()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_covers()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  [`st_covered_by()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html).
+  The second geometry is another geometry column, a constant `sf`/`sfc`
+  object (parsed once and reused across the stream), or a hex-WKB
+  string.
+- Transforms (return a geometry as hex-WKB):
+  [`st_centroid()`](https://r-spatial.github.io/sf/reference/geos_unary.html),
+  [`st_point_on_surface()`](https://r-spatial.github.io/sf/reference/geos_unary.html),
+  [`st_boundary()`](https://r-spatial.github.io/sf/reference/geos_unary.html),
+  `st_envelope()`,
+  [`st_convex_hull()`](https://r-spatial.github.io/sf/reference/geos_unary.html),
+  [`st_make_valid()`](https://r-spatial.github.io/sf/reference/valid.html),
+  the parameterized `st_buffer(g, dist)` and `st_simplify(g, tol)`, and
+  the type name
+  [`st_geometry_type()`](https://r-spatial.github.io/sf/reference/st_geometry_type.html).
+- The per-row decode is parallelized with OpenMP. A missing or
+  unparseable geometry yields `NA` for that row rather than an error.
+
+### Documentation
+
+- New vignettes covering the spatial surface added since 0.9.1:
+  “Geometry functions in expressions” (the `st_*` functions inside
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)/[`filter()`](https://gillescolling.com/vectra/reference/filter.md)/
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)),
+  “Coverage and topology” (the set-wise verbs:
+  [`spatial_polygonize()`](https://gillescolling.com/vectra/reference/spatial_polygonize.md),
+  [`spatial_line_merge()`](https://gillescolling.com/vectra/reference/spatial_line_merge.md),
+  [`spatial_simplify()`](https://gillescolling.com/vectra/reference/spatial_simplify.md),
+  [`spatial_eliminate()`](https://gillescolling.com/vectra/reference/spatial_eliminate.md),
+  [`spatial_explode()`](https://gillescolling.com/vectra/reference/spatial_explode.md),
+  [`spatial_topology()`](https://gillescolling.com/vectra/reference/spatial_topology.md),
+  [`spatial_centerline()`](https://gillescolling.com/vectra/reference/spatial_centerline.md),
+  [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md),
+  [`spatial_snap_grid()`](https://gillescolling.com/vectra/reference/spatial_snap_grid.md),
+  [`spatial_locate()`](https://gillescolling.com/vectra/reference/spatial_locate.md)),
+  and “Network analysis”
+  ([`spatial_network()`](https://gillescolling.com/vectra/reference/spatial_network.md),
+  [`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md),
+  [`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)).
+
+### Bug fixes
+
+- Fixed installation failure on R-devel with clang 22 (CRAN’s
+  `r-devel-linux-x86_64-fedora-clang`). Six source files included
+  `<omp.h>` directly after R’s headers; clang 22’s `omp.h` begins with a
+  `declare variant match(...)` clause that R’s `match` -\> `Rf_match`
+  macro rewrote into invalid syntax. All OpenMP usage now routes through
+  `vec_omp.h`, which forward-declares the runtime functions instead of
+  including the wrapper.
+
+## vectra 0.9.6
+
+### Network analysis
+
+- [`spatial_network()`](https://gillescolling.com/vectra/reference/spatial_network.md)
+  builds a routable graph from a line layer: nodes at line endpoints
+  (snapped within `tolerance`), edges weighted by geometry length or a
+  `weight` column, optionally directed with one-way codes (`direction`,
+  `weight_to`). The graph and the shortest-path solver are native C (a
+  binary-heap Dijkstra over a CSR adjacency, no `igraph` dependency);
+  the graph is held resident in a `vectra_network` object, the network
+  counterpart of a resident `sf` `y`, while the query verbs stream.
+- [`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md)
+  streams a layer of origins past a resident network and returns the
+  shortest path from each origin to one or more destinations `to`, one
+  row per (origin, destination) with the cost and the route geometry.
+  With `geometry = FALSE` it returns only the cost, so a destination set
+  per origin is the origin-destination cost matrix in long form.
+  Unreachable pairs return an infinite cost rather than dropping the
+  row.
+- [`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)
+  streams origins and, per origin, returns the part of the network
+  reachable within a cost budget – the convex-hull service area
+  (`output = "polygon"`), the reachable edges (`"lines"`), or the
+  reachable nodes (`"nodes"`). A vector `cost` returns nested
+  travel-cost isochrone bands, one row per (origin, band).
+- The solver parallelises over a batch of origins with OpenMP; the graph
+  is the resident budget while the query side scales by streaming.
+
+## vectra 0.9.5
+
+### Coverage cleanup
+
+- [`spatial_eliminate()`](https://gillescolling.com/vectra/reference/spatial_eliminate.md)
+  cleans a polygon coverage by absorbing every feature smaller than
+  `max_area` into a neighbour (the QGIS “Eliminate”): each sliver joins
+  the neighbour it shares the longest border with, or the largest-area
+  neighbour with `into = "largest_area"`. An area-rooted union-find
+  collapses chains of slivers so a connected run flows to its single
+  largest member, whose attributes survive, and a sliver with no
+  neighbour is kept unchanged. Rides the partition tier alongside
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md).
+
+## vectra 0.9.4
+
+### Centerline and planar topology
+
+- [`spatial_centerline()`](https://gillescolling.com/vectra/reference/spatial_centerline.md)
+  traces the centerline (medial axis) of each streamed polygon from the
+  Voronoi diagram of its densified boundary: the Voronoi edges that fall
+  inside the polygon are its skeleton, merged into maximal lines.
+  `density` sets the boundary sampling and `prune` drops the short spurs
+  the skeleton grows toward convex corners. The usual approximation for
+  river or road centerlines from a filled shape; non-polygon geometry
+  passes through unchanged.
+- [`spatial_topology()`](https://gillescolling.com/vectra/reference/spatial_topology.md)
+  decomposes a polygon coverage into the arcs of its planar topology:
+  the unioned boundaries are noded so a shared border becomes one arc,
+  tagged with the identifiers of the (up to two) polygons on either side
+  – two for an internal shared edge, one for an outer edge. Rides the
+  partition tier and is the inverse of
+  [`spatial_polygonize()`](https://gillescolling.com/vectra/reference/spatial_polygonize.md).
+
+## vectra 0.9.3
+
+### Set-wise topology verbs and linear referencing
+
+- [`spatial_polygonize()`](https://gillescolling.com/vectra/reference/spatial_polygonize.md)
+  builds the polygonal faces enclosed by a line network (the QGIS
+  “Polygonize”, the inverse of taking polygon boundaries): a group’s
+  lines are unioned and noded, then the faces of that arrangement are
+  returned, one per row. Like
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
+  and
+  [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md)
+  it rides the partition tier, with an optional `by` to polygonize
+  within groups.
+- [`spatial_line_merge()`](https://gillescolling.com/vectra/reference/spatial_line_merge.md)
+  sews line segments that meet end to end into maximal linestrings (the
+  line counterpart of a dissolve), one row per chain; segments meeting
+  at a junction of degree greater than two stay separate.
+- [`spatial_simplify()`](https://gillescolling.com/vectra/reference/spatial_simplify.md)
+  simplifies a polygon coverage without tearing shared edges: boundaries
+  are unioned so a shared border is one line, noded into arcs, each arc
+  simplified once with its junction endpoints pinned, and
+  re-polygonized, so adjacent polygons stay edge-matched with no
+  slivers. This is the topology-preserving simplification a per-feature
+  `spatial_map(~ sf::st_simplify())` cannot give, because that
+  simplifies each polygon’s copy of a shared border independently. Each
+  simplified face keeps its source polygon’s attributes.
+- [`spatial_locate()`](https://gillescolling.com/vectra/reference/spatial_locate.md)
+  locates streamed points along a resident line layer (linear
+  referencing): each point gets its nearest line’s identifier, the
+  measure (distance along that line), and the perpendicular offset, with
+  an optional `snap` onto the line. The inverse (a measure back to a
+  point) is
+  [`sf::st_line_interpolate()`](https://r-spatial.github.io/sf/reference/st_line_project_point.html)
+  through
+  [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md).
+- The partition tier shared by
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md),
+  [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md),
+  and the three new set-wise verbs is now a single internal
+  `.partition_each` router rather than re-inlined in each verb.
+
+## vectra 0.9.2
+
+### Two-layer `spatial_overlay()`
+
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  gains a second layer `y`: instead of self-unioning one layer it nodes
+  two layers into one planar partition and carries the attributes of the
+  covering `x`-record and `y`-record onto each piece. A `how` argument
+  selects which pieces to keep – `"intersection"` (covered by both),
+  `"union"` (every piece of either, the absent side filled with `NA`),
+  `"identity"` (all of `x` split by `y`), or `"symdiff"` (pieces in
+  exactly one layer). `vars_y` selects the carried `y` columns, and a
+  name shared with an `x` column is disambiguated with a `.x` / `.y`
+  suffix. `y` accepts an `sf` object or a file path (`layer_y` /
+  `query_y`) read in batches, and must share the CRS of `x`. With
+  `y = NULL` (the default) the behaviour is unchanged. This reuses the
+  existing noding, deduplication, component-tiling, and streaming
+  machinery, so a two-layer overlay scales the same way the self-union
+  does.
+
+### `spatial_explode()`
+
+- New
+  [`spatial_explode()`](https://gillescolling.com/vectra/reference/spatial_explode.md)
+  streams a query and splits every multipart geometry into its
+  single-part components – a `MULTIPOLYGON` into one row per polygon, a
+  `MULTILINESTRING` into linestrings, a `MULTIPOINT` into points, and a
+  `GEOMETRYCOLLECTION` into its members (recursively) – copying the
+  source attributes onto each part. Single-part and empty geometries
+  pass through as one row. An optional `part` argument names a 1-based
+  part-index column. It is the streaming counterpart of the QGIS
+  “multipart to singleparts” tool, processing one batch at a time, and
+  the inverse of
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md).
+
+### `spatial_construct()`
+
+- New
+  [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md)
+  builds a set-wise geometry construction from a whole feature set – the
+  constructions a per-feature
+  [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
+  cannot express. A `kind` argument selects it: `"convex_hull"`,
+  `"concave_hull"`, `"envelope"`, `"oriented_box"`,
+  `"enclosing_circle"`, `"inscribed_circle"`, `"pole"` (the pole of
+  inaccessibility, the centre of the maximum inscribed circle),
+  `"voronoi"`, and `"delaunay"`. Like
+  [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
+  it rides the partition tier: a `by` argument routes the layer into one
+  shard per group and builds one construction per group, with `NULL`
+  constructing from the whole layer. The enclosing kinds emit one
+  feature per group; the tessellations emit one polygon per cell, each
+  carrying the group’s `by` values.
+
+### `spatial_snap_grid()` and `spatial_snap()`
+
+- New
+  [`spatial_snap_grid()`](https://gillescolling.com/vectra/reference/spatial_snap_grid.md)
+  rounds a streamed layer’s coordinates to a regular grid of a given
+  spacing and repairs the result, one batch at a time. It is the
+  fixed-precision snap-rounding
+  [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  applies internally, exposed as a standalone verb, so a layer can be
+  cleaned of slivers or pre-noded to a common precision without running
+  a full overlay. The snap runs in C straight off the hex-WKB column,
+  one cleaned geometry per input feature.
+- New
+  [`spatial_snap()`](https://gillescolling.com/vectra/reference/spatial_snap.md)
+  snaps a streamed layer’s vertices and edges toward a resident
+  reference layer when they lie within a tolerance (the QGIS “snap
+  geometries to layer”), closing the small gaps and overshoots between
+  two layers that should share a boundary. The reference layer stays
+  resident while the left stream flows past one batch at a time.
+
+### `spatial_knn()`
+
+- New
+  [`spatial_knn()`](https://gillescolling.com/vectra/reference/spatial_knn.md)
+  finds, for each feature of a streamed layer, the `k` nearest features
+  of a small resident layer, returning one row per (left, neighbour)
+  pair with the neighbour’s rank, identifier, and distance. Where
+  [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  with `st_nearest_feature` attaches only the single nearest match, this
+  returns the top `k` and the distances – the nearest-`k` query and the
+  building block of a distance matrix. Distances follow
+  [`sf::st_distance()`](https://r-spatial.github.io/sf/reference/geos_measures.html)
+  (planar in CRS units, or great-circle metres when spherical geometry
+  is on).
+
+### `spatial_smooth()`
+
+- New
+  [`spatial_smooth()`](https://gillescolling.com/vectra/reference/spatial_smooth.md)
+  rounds the corners of streamed lines and polygons by Chaikin
+  corner-cutting, one batch at a time. Each iteration replaces every
+  vertex with two points a quarter and three-quarters along its adjacent
+  edges; open lines keep their endpoints, polygon rings are cut
+  cyclically. The smoothing is computed directly on the coordinates (no
+  GEOS call), so it is dependency-light. Densifying and sampling points
+  along a line stay
+  [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
+  recipes (`~ sf::st_segmentize(.x, dfMaxLength)`,
+  `~ sf::st_line_sample(.x, n)`).
+
+### `spatial_split()`
+
+- New
+  [`spatial_split()`](https://gillescolling.com/vectra/reference/spatial_split.md)
+  cuts a streamed layer against a small resident `blade` layer (the QGIS
+  “split with lines”), one batch at a time: a polygon is divided into
+  the faces the blade carves out, a line into the arcs between
+  crossings, and each piece is emitted as its own row with the source
+  attributes copied. A feature the blade misses passes through as a
+  single piece. With `extract = "points"` it instead returns the points
+  where each feature meets the blade (the “line intersections” tool),
+  dropping features that do not cross. The split is built from /GEOS
+  noding and polygonization and expects planar coordinates.
+
+## vectra 0.9.1
+
+CRAN release: 2026-06-29
+
+### `spatial_overlay()` noding and deduplication
+
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  now nodes each tile with fixed-precision snap-rounding
+  (`GEOSUnaryUnionPrec`) at a grid derived from the layer extent,
+  instead of floating-point noding. Floating noding throws on dense
+  overlapping linework and falls back to a full snap-rounding retry of
+  the whole component, which on large protected-area layers dominated
+  the run. Fixed-precision noding is deterministic and single-pass, so
+  the per-tile cost is flat and the overlap coverage invariant holds
+  (`maxerr < 1e-4`) without the previous coverage warning. A new
+  `precision` argument overrides the derived grid size.
+- Byte-identical input geometries are now deduplicated before the
+  overlay (`dedup = TRUE`, the default): each distinct geometry is
+  overlaid once and its attributes fanned back to every duplicate
+  source, so a layer with repeated sites does the topology work once. On
+  a ~470k-feature world protected-area union this cut the distinct
+  geometry count by about three quarters and the end-to-end run from
+  roughly 50 to 17 minutes. Set `dedup = FALSE` to disable.
+
+### Streaming GeoPackage output
+
+- An \[sf::st_write()\] method for a `vectra_node` (also reached via
+  [`sf::write_sf()`](https://r-spatial.github.io/sf/reference/st_write.html))
+  writes a result to a vector file one batch at a time, appending each,
+  so a multi-million-feature output is never held in memory as one `sf`
+  object the way `collect_sf() |> st_write()` would. Resolving a dense
+  overlay and writing the ~3M-piece GeoPackage this way keeps peak
+  memory near the overlay’s own (a few GB) instead of spiking on the
+  write.
+- Grouped
+  [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  /
+  [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  (`n = 1`) now emits its winners in bounded row batches rather than one
+  block, so a downstream streaming writer sees the result incrementally.
+
+### Streaming grouped `slice_min()` / `slice_max()`
+
+- Grouped
+  [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  /
+  [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  with `n = 1, with_ties = FALSE` now streams: it holds only the running
+  winner per group, so peak memory scales with the number of groups (the
+  result size), not the input length. The previous path ranked every
+  input row through the window operator, which materialized all columns
+  – including a large geometry string column – and could exhaust memory
+  (`builder realloc failed (str data)`) when resolving a dense overlay
+  whose geometry dwarfs RAM. The whole winning row, geometry and all
+  attributes included, is still kept. Other grouped cases (`n > 1` or
+  `with_ties = TRUE`) are unchanged.
+
+### Lower-memory `spatial_overlay()`
+
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  now encodes and parses the input geometry a feature batch at a time
+  rather than materializing the whole layer’s WKB at once. Connected
+  components are derived from the bounding boxes after parsing, so the
+  result is byte-identical; only the transient input copy is bounded.
+  The batch size scales with available RAM (`read_chunk`, or
+  `getOption("vectra.overlay_parse_chunk")`), and the default
+  working-set budget is capped at half of total RAM when it can be
+  detected, so a many-core machine cannot scale the overlay past what it
+  can hold.
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  can read its input directly from a vector file (`x` a path, with
+  `layer =` or `query =`) instead of a pre-loaded `sf` object, reading
+  the layer in feature batches. The full layer is never held in memory,
+  so peak usage tracks the cleaned geometry rather than the source size:
+  a world protected-area layer that needs ~11 GB to load with
+  [`sf::st_read()`](https://r-spatial.github.io/sf/reference/st_read.html)
+  overlays in ~5 GB this way, bringing a larger-than-RAM layer within
+  reach of a 16 GB machine.
 
 ### Raster and vector toolbox
 

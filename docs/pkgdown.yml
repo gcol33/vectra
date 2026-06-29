@@ -2,11 +2,14 @@ pandoc: 3.9.0.2
 pkgdown: 2.2.0
 pkgdown_sha: ~
 articles:
+  coverage-topology: coverage-topology.html
   engine: engine.html
   formats: formats.html
+  geometry-expressions: geometry-expressions.html
   indexing: indexing.html
   joins: joins.html
   large-data: large-data.html
+  networks: networks.html
   offload: offload.html
   quickstart: quickstart.html
   schema: schema.html
@@ -14,7 +17,7 @@ articles:
   spatial: spatial.html
   streaming-spatial: streaming-spatial.html
   string-ops: string-ops.html
-last_built: 2026-06-26T14:40Z
+last_built: 2026-06-29T13:06Z
 urls:
   reference: https://gillescolling.com/vectra/reference
   article: https://gillescolling.com/vectra/articles

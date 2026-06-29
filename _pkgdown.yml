@@ -51,6 +51,7 @@ reference:
   - write_csv
   - write_sqlite
   - write_tiff
+  - st_write.vectra_node
 - title: GeoTIFF helpers
   desc: Metadata and point-sampling for GeoTIFF rasters
   contents:
@@ -95,6 +96,36 @@ reference:
   - rast_calc
   - proximity
   - collect_sf
+  - geom_expressions
+- title: Geometry construction and cleaning
+  desc: Reshape, repair, simplify, and snap streamed vector geometry
+  contents:
+  - spatial_construct
+  - spatial_explode
+  - spatial_line_merge
+  - spatial_simplify
+  - spatial_smooth
+  - spatial_snap
+  - spatial_snap_grid
+  - spatial_eliminate
+  - spatial_split
+  - spatial_centerline
+- title: Coverage and topology
+  desc: Shared-edge topology and polygonal faces of polygon coverages
+  contents:
+  - spatial_topology
+  - spatial_polygonize
+- title: Spatial networks
+  desc: Build routable graphs and solve shortest paths over line layers
+  contents:
+  - spatial_network
+  - spatial_route
+  - spatial_service_area
+- title: Spatial queries
+  desc: Nearest neighbours and linear referencing
+  contents:
+  - spatial_knn
+  - spatial_locate
 - title: File operations
   desc: Incremental updates to .vtr files
   contents:

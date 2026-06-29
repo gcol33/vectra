@@ -1108,6 +1108,7 @@ vignette with full coverage:
 - [Out-of-core GIS](spatial.html) for the streamed spatial toolbox (filter,
   clip, rasterize, zonal, focal, terrain, warp, partitioned spatial join).
 - [The execution engine](engine.html) for the pull-based plan in depth.
+
 - [Joins](joins.html), [string operations](string-ops.html),
   [indexing](indexing.html), and [larger-than-RAM strategy](large-data.html) for
   the verb families this tour samples.
