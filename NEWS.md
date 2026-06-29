@@ -1,3 +1,28 @@
+# vectra 0.9.6
+
+## Network analysis
+
+* `spatial_network()` builds a routable graph from a line layer: nodes at line
+  endpoints (snapped within `tolerance`), edges weighted by geometry length or a
+  `weight` column, optionally directed with one-way codes (`direction`,
+  `weight_to`). The graph and the shortest-path solver are native C (a
+  binary-heap Dijkstra over a CSR adjacency, no `igraph` dependency); the graph
+  is held resident in a `vectra_network` object, the network counterpart of a
+  resident `sf` `y`, while the query verbs stream.
+* `spatial_route()` streams a layer of origins past a resident network and
+  returns the shortest path from each origin to one or more destinations `to`,
+  one row per (origin, destination) with the cost and the route geometry. With
+  `geometry = FALSE` it returns only the cost, so a destination set per origin is
+  the origin-destination cost matrix in long form. Unreachable pairs return an
+  infinite cost rather than dropping the row.
+* `spatial_service_area()` streams origins and, per origin, returns the part of
+  the network reachable within a cost budget -- the convex-hull service area
+  (`output = "polygon"`), the reachable edges (`"lines"`), or the reachable
+  nodes (`"nodes"`). A vector `cost` returns nested travel-cost isochrone bands,
+  one row per (origin, band).
+* The solver parallelises over a batch of origins with OpenMP; the graph is the
+  resident budget while the query side scales by streaming.
+
 # vectra 0.9.5
 
 ## Coverage cleanup

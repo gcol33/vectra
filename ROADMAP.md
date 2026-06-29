@@ -146,20 +146,187 @@ memory at a time); `spatial_locate` is a resident-`y` streamed verb in the
   The merge target is one of a sliver's neighbours, not the sliver itself, so a
   per-feature `spatial_map` cannot express it; it rides the partition tier.
 
-## Tier 5 - network analysis (future, separate engine)
+## Tier 5 - network analysis (done, 0.9.6)
 
-Routing and reachability over a line network -- shortest path, service areas, an
-origin-destination cost matrix, travel-time isochrones (the QGIS network-analysis
-tools, `sfnetworks`/pgRouting). This is the one vector workflow a GIS user
-expects that vectra does not address, and it is the next genuine tier rather than
-a missing verb: it needs a graph built from the geometry (nodes at line
-endpoints, edges weighted by length or a cost column) and a shortest-path solver
-over it, not a geometry stream. A streamed design would build the node-edge graph
-from a line layer once (the partition tier already nodes and indexes lines), keep
-the graph resident, and stream the queries -- one row per origin for a cost
-matrix, one polygon per origin for a service area -- so the query side scales
-while the graph stays in memory. Out of scope for the current geometry tiers;
-recorded here as the deliberate boundary.
+Routing and reachability over a line network -- shortest path, origin-destination
+cost matrices, service areas, travel-time isochrones (the QGIS network-analysis
+tools, `sfnetworks`/pgRouting). The genuine separate tier rather than a missing
+verb: it needs a graph built from the geometry (nodes at line endpoints, edges
+weighted by length or a cost column) and a shortest-path solver over it, not a
+geometry stream. Shipped as `spatial_network()` + `spatial_route()` +
+`spatial_service_area()`, with a native-C binary-heap Dijkstra over a CSR
+adjacency (`src/network.c`, no `igraph` dependency). The pieces noted as future
+below -- contraction hierarchies, snap-to-edge origins, turn restrictions -- are
+not yet built.
+
+It still fits vectra's shape, though, by reusing the **resident-`y` streamed-`x`
+family** (`spatial_knn`, `spatial_locate`, `spatial_split`): build the node-edge
+graph from a line layer once, keep that graph resident, and stream the queries
+past it one batch at a time -- one row per origin for a service area, one row per
+(origin, destination) pair for a route or a cost-matrix cell. The graph is the
+resident budget (bounded by the network size, like a resident `y`); the query
+side scales like every other streamed verb. The graph never has to fit alongside
+the queries, and the queries never have to fit alongside each other.
+
+### The resident graph: `spatial_network()`
+
+One new door builds the graph and returns a `vectra_network` object -- the
+network counterpart of a resident `sf` `y`. Every query verb takes one.
+
+```r
+spatial_network(lines,
+                weight    = NULL,          # edge cost column; NULL -> geometry length
+                directed  = FALSE,
+                direction = NULL,          # column of "B"/"FT"/"TF" (or +/-/0) one-way codes
+                weight_to = NULL,          # reverse-direction cost on a directed graph
+                tolerance = 0,             # snap endpoints within this distance to one node
+                node_id   = NULL,          # carry a stable node identifier if present
+                geom = "geometry", crs = NA)
+```
+
+Build is one pass, the sort/partition tier:
+
+1. **Node the lines.** Split every line at its true intersections so a crossing
+   becomes a shared vertex, reusing the GEOS noding already behind
+   `spatial_overlay` / `spatial_split` (`st_node` / `GEOSNode`). Optional, gated
+   by an argument: a road graph where bridges must *not* connect to the road
+   under them needs raw endpoints, not noded crossings, so `node = FALSE` keeps
+   each input line one edge.
+2. **Dedup endpoints into node ids.** Snap coincident endpoints within
+   `tolerance` to a single node (the existing magnitude-relative snap grid), hash
+   the rounded coordinate to an integer node id. This is the same coincidence
+   collapse `spatial_eliminate`'s union-find and the overlay deduper already do.
+3. **Assemble CSR adjacency.** Compressed sparse row (one `int` offset per node,
+   `int` target + `double` weight per directed edge) -- the cache-friendly layout
+   Dijkstra wants, the same reason `.vtr` row groups are sized to L2/L3. A
+   directed graph emits the forward edge with `weight` and, unless the
+   `direction` code forbids it, the reverse with `weight_to %||% weight`.
+4. **Index the nodes.** Keep a `GEOSSTRtree` over node coordinates (the overlay
+   already builds these) so an off-network origin or destination snaps to its
+   nearest node -- or, with `snap = "edge"`, to the nearest point on the nearest
+   edge, splitting that edge virtually for the duration of one query.
+
+The object holds the CSR graph, the node coordinates + STRtree, the per-edge
+source line id (to rebuild route geometry), and the CRS. Peak memory is the graph,
+roughly `(2 doubles + 1 int) * nodes + (1 int + 1 double) * edges` -- megabytes
+for a national road network, resident for the life of the queries.
+
+### Query verbs (streamed `x` against the resident graph)
+
+Two query doors, split only where the **return genuinely differs in kind** (a
+route is a line, a cost is a number, a service area is a polygon) -- the same test
+that kept `spatial_overlay` one verb but `spatial_filter` separate from
+`spatial_join`.
+
+```r
+# Point-to-point and origin-destination shortest paths.
+spatial_route(x, network,
+              to       = NULL,        # destination: a column of node ids, an sf layer, or coords
+              geometry = TRUE,        # TRUE -> route lines; FALSE -> just the cost table (OD matrix)
+              cost_col = "cost",
+              ...)
+
+# Reachability within a cost budget: service areas and isochrones.
+spatial_service_area(x, network,
+                     cost   = NULL,   # scalar budget, or c(5, 10, 15) for nested isochrone bands
+                     output = c("polygon", "lines", "nodes"),
+                     band_col = "band",
+                     ...)
+```
+
+- **`spatial_route()`** snaps each streamed origin (and its paired destination)
+  to a node, runs the solver, and emits one row per (origin, destination) carrying
+  the total cost; with `geometry = TRUE` the row's geometry is the route line,
+  rebuilt by walking the predecessor pointers and concatenating the source edges'
+  coordinates. `geometry = FALSE` returns only the cost column, so the same verb
+  is the **OD cost matrix** when `to` is a destination set per origin (one row per
+  cell) -- route and matrix differ by one argument, not by a sibling function,
+  exactly the two-layer-overlay model.
+- **`spatial_service_area()`** runs one budget-bounded traversal per streamed
+  origin and emits, per origin, the reached subnetwork: `output = "nodes"` the
+  reachable nodes, `"lines"` the reachable edges, `"polygon"` their hull or buffer
+  (the isochrone). A vector `cost` returns nested bands, one row per (origin,
+  band), tagged in `band_col` -- travel-time isochrones fall straight out.
+
+Both ride `.spatial_stream` like `spatial_knn`: resident graph, streamed `x`, run
+files, a `ConcatNode` finalizer. The streaming contract holds -- peak query memory
+is one solver's label array (`O(nodes)`) per worker thread, not the origin count.
+
+### The solver (`src/network.c`, native C, `.Call`)
+
+Per the no-dependency-shortcuts rule, the graph and the solver are native C, not
+an `igraph` / `sfnetworks` dependency (a binary heap + Dijkstra over CSR is well
+under 200 lines). The geometry side -- noding, snapping, route-line assembly --
+goes through the libgeos C API already linked, not sf. sf stays a Suggests, used
+in tests as ground truth and for vector I/O only; no `igraph` dependency is added,
+keeping the self-contained-tarball property.
+
+- **Dijkstra**, label-setting with a binary heap, one run per origin;
+  early-terminate when every requested destination is settled (`spatial_route`)
+  or the cost budget is exceeded (`spatial_service_area`).
+- **Bidirectional Dijkstra** for a single (origin, destination) pair -- meet in
+  the middle, roughly halving the settled set on a point-to-point route.
+- **OpenMP across origins.** A batch of origins is embarrassingly parallel (the
+  graph is read-only), one `#pragma omp parallel for` over the batch with a
+  per-thread label/heap arena, the pattern `grepl`/`levenshtein` already use.
+- **Contraction hierarchies** are the standard speedup for many queries on a
+  large static graph: a one-time preprocessing pass (added to `spatial_network`
+  as `prepare = TRUE`) that makes each query orders of magnitude faster. Default
+  plain Dijkstra; CH is the noted future optimization, not the first cut.
+
+Unreachable destinations return `Inf` cost and empty geometry rather than
+dropping the row, so an OD matrix stays rectangular; connected-component counts
+are reported at build time so a disconnected graph is visible, not silently wrong
+(the input-totals sanity-check rule).
+
+### Cost-model framing
+
+This adds one entry to the three-tier vocabulary the docs already use:
+
+- **Resident index, streamed probes.** The graph is built once (a sort/partition
+  pass: node, dedup, index) and held resident; queries stream against it. The
+  same shape as `spatial_knn` / `spatial_join`'s resident `y` and `spatial_locate`
+  -- the resident object is a graph rather than an sf layer. Bounded by
+  `max(graph, one query's frontier per thread)`, never by the query count.
+
+### Build order (each phase ships independently, main branch)
+
+1. **`spatial_network()` + CSR build + node STRtree** -- R front door over a C
+   builder; recovery test that the graph's node/edge counts and a hand-checked
+   adjacency match a fixture.
+2. **`spatial_route()` (`geometry = FALSE`)** -- Dijkstra in `src/network.c`,
+   cost only. The smallest correct slice; recovery test vs `igraph::distances`.
+3. **`spatial_route()` geometry reconstruction** -- predecessor walk + edge
+   concatenation; route equals the `sfnetworks` path on a fixture.
+4. **`spatial_service_area()`** -- budget-bounded traversal, the three `output`
+   modes, nested-band isochrones.
+5. **Directed graphs + one-way codes**, snap-to-edge origins, bidirectional
+   Dijkstra for single pairs, OpenMP across a batch.
+6. **Contraction hierarchies** (`prepare = TRUE`) once a real network shows
+   plain Dijkstra is the bottleneck.
+7. A `vignettes/network.Rmd` showcase (a real road layer: route, OD matrix,
+   isochrones) and a `_pkgdown.yml` reference section.
+
+### Testing standard
+
+Recovery against an established router as ground truth (Suggests-only, tests
+only), never a shape smoke test:
+
+- shortest-path cost matches `igraph::distances` cell-for-cell on a fixture graph;
+- a reconstructed route equals the `sfnetworks` / `dodgr` path geometry;
+- service-area node sets match an independent BFS/Dijkstra to the budget;
+- streaming invariance: a multi-batch origin stream gives the identical result to
+  one batch (a streamed path must equal the resident path; divergence is a bug).
+
+### Out of scope (a further tier or a different package)
+
+- **Turn restrictions and turn costs** -- need an expanded (edge-based) graph;
+  note as a follow-on once the node-based engine lands.
+- **Time-dependent / multimodal routing** (timetables, transfers) -- a different
+  graph model and out of the static-geometry tier.
+- **Map-matching GPS traces to the network** -- depends on external reference data
+  and a probabilistic model; already listed under the out-of-scope geocoding/
+  conflation group.
 
 ## Out of scope (a different package)
 

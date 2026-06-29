@@ -90,6 +90,12 @@ SEXP C_warp_strip(SEXP win_sexp, SEXP win_dims_sexp, SEXP origin_sexp,
 /* Euclidean distance transform kernel (edt.c). */
 SEXP C_edt_strip(SEXP mat_sexp, SEXP dims_sexp, SEXP scale_sexp);
 
+/* Native shortest-path engine over a line-network graph (network.c). */
+SEXP C_network_build(SEXP from_sexp, SEXP to_sexp, SEXP w_sexp, SEXP nnodes_sexp);
+SEXP C_network_route(SEXP ptr, SEXP src_sexp, SEXP dst_sexp, SEXP want_path_sexp);
+SEXP C_network_service(SEXP ptr, SEXP src_sexp, SEXP budget_sexp);
+SEXP C_network_stats(SEXP ptr);
+
 /* GEOS-native vector overlay (vtr_overlay.c). */
 SEXP C_geos_version(void);
 SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp);
@@ -172,6 +178,10 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_terrain_strip",            (DL_FUNC) &C_terrain_strip,            8},
     {"C_warp_strip",               (DL_FUNC) &C_warp_strip,               7},
     {"C_edt_strip",                (DL_FUNC) &C_edt_strip,                3},
+    {"C_network_build",            (DL_FUNC) &C_network_build,            4},
+    {"C_network_route",            (DL_FUNC) &C_network_route,            4},
+    {"C_network_service",          (DL_FUNC) &C_network_service,          3},
+    {"C_network_stats",            (DL_FUNC) &C_network_stats,            1},
     {"C_geos_version",             (DL_FUNC) &C_geos_version,             0},
     {"C_overlay_parse",            (DL_FUNC) &C_overlay_parse,            3},
     {"C_overlay_components",       (DL_FUNC) &C_overlay_components,       1},
