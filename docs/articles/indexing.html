@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -117,11 +117,10 @@ to <code>.vtr</code>, then run queries with and without indexes to see
 what changes. The <code><a href="../reference/explain.html">explain()</a></code> function is our primary
 diagnostic tool throughout: it prints the query plan and annotates which
 optimizations fired.</p>
-<p>Understanding these mechanisms is not strictly necessary for using
-vectra. The engine applies everything it can without intervention. But
-knowing what the optimizer does (and what it cannot do) helps when
-designing file layouts, choosing row group sizes, and deciding whether
-an index is worth the disk space.</p>
+<p>The engine applies these optimizations on its own, without
+intervention. Knowing what the optimizer does (and what it cannot do)
+helps when designing file layouts, choosing row group sizes, and
+deciding whether an index is worth the disk space.</p>
 <p>We will start by creating a dataset to work with.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
@@ -388,9 +387,9 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Without index: 0.1 s</span></span>
+<span><span class="co">#&gt; Without index: 0.11 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.35 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.36 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a
@@ -543,7 +542,7 @@ site, or sample ID.</p>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index, %in% filter:"</span>, <span class="va">t_in_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index, %in% filter: 0.39 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index, %in% filter: 0.38 s</span></span></code></pre></div>
 <p>Without an index, the same query reads all row groups and filters in
 memory. The difference grows with file size.</p>
 </div>
@@ -938,11 +937,12 @@ consume hundreds of megabytes, and at that scale a streaming hash join
 against a <code>.vtr</code> file is the better approach.</p>
 <p>Blocks are also ephemeral. They live in the R session and are not
 persisted to disk. When the session ends, the block and its internal
-hash table disappear. This is by design: blocks are caches, not storage.
-If we need the reference table again in a later session, we
-re-materialize from the <code>.vtr</code> file, which takes a fraction
-of a second for small tables. There is no <code>.vtri</code>-style
-sidecar to maintain or worry about going stale.</p>
+hash table disappear. A block is a cache layer; the <code>.vtr</code>
+file stays the source of truth. If we need the reference table again in
+a later session, we re-materialize from the <code>.vtr</code> file,
+which takes a fraction of a second for small tables. There is no
+<code>.vtri</code>-style sidecar to maintain or worry about going
+stale.</p>
 <p>When a block is better than an index: the reference table is small
 (under 100k rows), lookups happen many times in the same session (e.g.,
 inside a loop or across multiple queries), and the lookup pattern is

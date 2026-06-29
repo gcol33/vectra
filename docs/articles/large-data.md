@@ -432,7 +432,7 @@ new_data_node <- tbl_csv(csv_2017) |>
 ```
 
 This produces a node whose schema matches a hypothetical archive that
-includes an `observer` column. The key point: because
+includes an `observer` column. Because
 [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
 accepts nodes, we can chain any transformation needed to match the
 target schema.
@@ -583,7 +583,6 @@ yesterday’s, then append only the additions. Combined with
 for removals, we can maintain an up-to-date archive without full
 rewrites.
 
-Note that
 [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
 performs a set-level diff on the key column. If a row exists in both
 snapshots with the same key but different values in other columns, it
@@ -1001,9 +1000,9 @@ pipelines that stay within our system’s limits. The central principle is
 “stream early, materialize late.” Every row that we can filter out
 before it reaches a materializing operation (a sort, a join build, a
 grouping hash table) is a row that never occupies memory. Pushing
-filters upstream is not just a performance optimization; for
-larger-than-RAM data, it can be the difference between a pipeline that
-completes and one that exhausts memory.
+filters upstream speeds up the pipeline, and for larger-than-RAM data it
+can be the difference between a pipeline that completes and one that
+exhausts memory.
 
 Here is a breakdown by operation type.
 

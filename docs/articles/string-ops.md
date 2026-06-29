@@ -315,8 +315,8 @@ vectra), the engine uses a direct substring search, which avoids the
 cost of compiling a regex automaton. For exact substring tests and
 simple replacements, this is the right choice.
 
-Note that vectra defaults to `fixed = TRUE`, which differs from base R
-where `fixed` defaults to `FALSE`. We chose this default because in our
+vectra defaults to `fixed = TRUE`, which differs from base R where
+`fixed` defaults to `FALSE`. We chose this default because in our
 experience the majority of string filtering and replacement tasks in
 data cleaning involve literal substrings, not regex patterns. When you
 need actual regex, pass `fixed = FALSE` explicitly. This is covered in

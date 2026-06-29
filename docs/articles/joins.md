@@ -405,9 +405,8 @@ unmatched portion of the right side.
 
 ## Filtering joins: semi and anti
 
-Filtering joins do not bring in columns from the right table. They use
-the right table purely as a lookup to decide which left rows to keep or
-discard.
+Filtering joins use the right table purely as a lookup, deciding which
+left rows to keep or discard without bringing in any of its columns.
 
 **Semi join.**
 [`semi_join()`](https://gillescolling.com/vectra/reference/left_join.md)

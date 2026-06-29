@@ -506,8 +506,8 @@ layer)": the overlap is retained once per contributing feature rather than
 dissolved away. It answers questions like "which protected areas, designated in
 which years, cover this exact patch of sea".
 
-Three overlapping squares designated in different years make the smallest honest
-example.
+Three overlapping squares designated in different years make the smallest
+meaningful example.
 
 ```{r overlay}
 sq <- function(a, b) st_polygon(list(rbind(
@@ -585,7 +585,7 @@ is read in batches with `layer_y` / `query_y`, the same way `x` is.
 ## Materializing and round-tripping
 
 Three exits bring a streamed result out. `collect()` returns the data.frame with
-geometry still a WKB string, which is what you want when the next step is a
+geometry still a WKB string, useful when the next step is a
 non-spatial verb or another `.vtr` write. `collect_sf()` decodes the WKB and
 reattaches the node's CRS, giving an `sf` object. `write_vtr()` on a node streams
 the result straight to a new `.vtr` file without ever holding it whole, so a

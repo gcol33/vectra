@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -449,9 +449,9 @@ unmatched portion of the right side.</p>
 <div class="section level2">
 <h2 id="filtering-joins-semi-and-anti">Filtering joins: semi and anti<a class="anchor" aria-label="anchor" href="#filtering-joins-semi-and-anti"></a>
 </h2>
-<p>Filtering joins do not bring in columns from the right table. They
-use the right table purely as a lookup to decide which left rows to keep
-or discard.</p>
+<p>Filtering joins use the right table purely as a lookup, deciding
+which left rows to keep or discard without bringing in any of its
+columns.</p>
 <p><strong>Semi join.</strong> <code><a href="../reference/left_join.html">semi_join()</a></code> answers: “which
 of my left rows have at least one match in the right table?” The output
 schema is identical to the left table.</p>

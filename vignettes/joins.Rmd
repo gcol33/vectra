@@ -305,8 +305,8 @@ memory overhead equal to the unmatched portion of the right side.
 
 ## Filtering joins: semi and anti
 
-Filtering joins do not bring in columns from the right table. They use the right
-table purely as a lookup to decide which left rows to keep or discard.
+Filtering joins use the right table purely as a lookup, deciding which left rows
+to keep or discard without bringing in any of its columns.
 
 **Semi join.** `semi_join()` answers: "which of my left rows have at least one
 match in the right table?" The output schema is identical to the left table.

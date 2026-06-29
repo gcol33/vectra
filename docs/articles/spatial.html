@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -154,7 +154,7 @@ var N=COLS*ROWS;
 var LX=GX+GW+70, LY=86, RH=15;
 var seed=20260625;function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;}
 var V=[];for(var i=0;i<N;i++){V.push(VA.clamp(0.18+0.62*((i%COLS)/(COLS-1))+0.18*(rnd()-0.5),0,1));}
-var PER=0.3, PERIOD=N*PER+1.8;
+var PER=0.42, PERIOD=N*PER+1.8;
 function cell(i){var c=i%COLS,r=Math.floor(i/COLS);return {c:c,r:r,cx:GX+c*TW+TW/2,cy:GY+r*TH+TH/2};}
 function draw(tc){VA.bg(x,W,H);
   VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('RASTER  ->  ONE ROW PER CELL',16,30);VA.noglow(x);
@@ -206,7 +206,7 @@ locator with an sf predicate, keeping or dropping whole features.</p>
 (function(){
 
 var s=VA.setup('sbl-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
-var PER=6.0,HOLD=1.6,PERIOD=PER+HOLD;
+var PER=8.0,HOLD=1.6,PERIOD=PER+HOLD;
 var poly=[[330,128],[470,116],[548,214],[472,322],[332,332],[262,216]];
 var seed=77;function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;}
 var P=[];for(var i=0;i<56;i++){P.push([60+rnd()*(W-120),64+rnd()*(H-118)]);}
@@ -216,7 +216,7 @@ function drawPoly(){x.save();VA.glow(x,C.amber,8);x.strokeStyle=C.amber;x.lineWi
 function draw(tc){VA.bg(x,W,H);
   VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('SELECT BY LOCATION',16,28);VA.noglow(x);
   drawPoly();
-  x.fillStyle=C.amber;x.font=VA.F(12,true);x.textAlign='left';x.fillText('study region',poly[5][0]-2,212);
+  x.fillStyle=C.amber;x.font=VA.F(12,true);x.textAlign='center';x.fillText('study region',405,222);
   var sweep=VA.clamp(tc/PER,0,1)*W;
   var kept=0,seen=0;
   for(var i=0;i<P.length;i++){var px=P[i][0],py=P[i][1];var reached=px<=sweep;var ins=inPoly(px,py);
@@ -270,7 +270,7 @@ pass.</p>
 
 var s=VA.setup('rz-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
 var GX=44,GW=W-88,COLS=16,ROWS=8,TW=GW/COLS,GY=150,TH=27,GH=ROWS*TH;
-var PERIOD=9.0;
+var PERIOD=12.0;
 var seed=531;function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;}
 var D=[];var cxC=10.5,cyC=4.5;
 for(var i=0;i<150;i++){var c=Math.round(VA.clamp(cxC+(rnd()-0.5)*9+(rnd()-0.5)*5,0,COLS-1));var r=Math.round(VA.clamp(cyC+(rnd()-0.5)*5+(rnd()-0.5)*3,0,ROWS-1));D.push([c,r,rnd()]);}
@@ -391,14 +391,13 @@ is a global shortest-path problem and stays resident:
 <div class="section level2">
 <h2 id="the-cost-model">The cost model<a class="anchor" aria-label="anchor" href="#the-cost-model"></a>
 </h2>
-<p>Each operation states its memory tier, so the toolbox reads as a cost
-model rather than a grab-bag. The tier tells you what a run holds
-resident.</p>
+<p>Each operation states the memory it needs to run. The three tiers
+below group the spatial verbs by how much a run keeps resident.</p>
 <canvas id="ct-cv" width="860" height="400" style="max-width:100%"></canvas><script>
 (function(){
 
 var s=VA.setup('ct-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
-var PERIOD=8.0;
+var PERIOD=10.0;
 var rows=[
  {name:'monoid fold',sub:'spatial_filter, rasterize, zonal',col:C.green,f:function(t){return 0.15+0.02*Math.sin(t*9);}},
  {name:'sort / partition',sub:'focal, terrain, warp, partitioned join',col:C.amber,f:function(t){return 0.16+0.2*(0.5-0.5*Math.cos(t*6.5));}},
@@ -441,12 +440,11 @@ tile-and-halo reads, <code><a href="../reference/proximity.html">proximity()</a>
 <strong>All-to-all.</strong> Inherently resident:
 <code><a href="../reference/spatial_overlay.html">spatial_overlay()</a></code> and operations such as Voronoi, Delaunay,
 convex hull, and global neighbour graphs. For these, collect the result
-and run sf or terra on it; vectra does not pretend to stream what is
-global by nature.</li>
+and run sf or terra on it.</li>
 </ul>
-<p>That boundary is the honest part. The streaming envelope covers the
-operations whose memory can be bounded, and names the ones it
-cannot.</p>
+<p>The streaming envelope covers every operation whose memory can be
+bounded. For the rest, vectra collects the result and hands it to sf or
+terra.</p>
 </div>
 <div class="section level2">
 <h2 id="where-to-go-next">Where to go next<a class="anchor" aria-label="anchor" href="#where-to-go-next"></a>

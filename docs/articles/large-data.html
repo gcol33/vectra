@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -444,7 +444,7 @@ One approach is to add the missing column with a default value in a
 <code class="sourceCode R"><span><span class="va">new_data_node</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_2017</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>observer <span class="op">=</span> <span class="cn">NA_character_</span><span class="op">)</span></span></code></pre></div>
 <p>This produces a node whose schema matches a hypothetical archive that
-includes an <code>observer</code> column. The key point: because
+includes an <code>observer</code> column. Because
 <code><a href="../reference/append_vtr.html">append_vtr()</a></code> accepts nodes, we can chain any transformation
 needed to match the target schema.</p>
 </div>
@@ -557,12 +557,11 @@ truly new rows to an archive:</p>
 against yesterday’s, then append only the additions. Combined with
 <code><a href="../reference/delete_vtr.html">delete_vtr()</a></code> for removals, we can maintain an up-to-date
 archive without full rewrites.</p>
-<p>Note that <code><a href="../reference/diff_vtr.html">diff_vtr()</a></code> performs a set-level diff on the
-key column. If a row exists in both snapshots with the same key but
-different values in other columns, it will not appear in either
-<code>$deleted</code> or <code>$added</code>. To detect modifications,
-we would need to compare the full row content after identifying shared
-keys.</p>
+<p><code><a href="../reference/diff_vtr.html">diff_vtr()</a></code> performs a set-level diff on the key column.
+If a row exists in both snapshots with the same key but different values
+in other columns, it will not appear in either <code>$deleted</code> or
+<code>$added</code>. To detect modifications, we would need to compare
+the full row content after identifying shared keys.</p>
 </div>
 <div class="section level2">
 <h2 id="external-sort">External sort<a class="anchor" aria-label="anchor" href="#external-sort"></a>
@@ -900,9 +899,9 @@ pipelines that stay within our system’s limits. The central principle is
 “stream early, materialize late.” Every row that we can filter out
 before it reaches a materializing operation (a sort, a join build, a
 grouping hash table) is a row that never occupies memory. Pushing
-filters upstream is not just a performance optimization; for
-larger-than-RAM data, it can be the difference between a pipeline that
-completes and one that exhausts memory.</p>
+filters upstream speeds up the pipeline, and for larger-than-RAM data it
+can be the difference between a pipeline that completes and one that
+exhausts memory.</p>
 <p>Here is a breakdown by operation type.</p>
 <p><strong>Constant-memory (streaming) operations.</strong>
 <code>filter</code>, <code>select</code>, <code>mutate</code>,

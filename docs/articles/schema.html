@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -473,10 +473,10 @@ goes missing:</p>
 <div class="section level2">
 <h2 id="reusing-the-schema">Reusing the schema<a class="anchor" aria-label="anchor" href="#reusing-the-schema"></a>
 </h2>
-<p>The schema object does not hold live data. It stores file paths and
-reopens fresh scan nodes each time <code><a href="../reference/lookup.html">lookup()</a></code> is called. This
-means the same schema works across multiple analyses without
-invalidating previous results.</p>
+<p>The schema object holds only file paths, reopening fresh scan nodes
+each time <code><a href="../reference/lookup.html">lookup()</a></code> is called. This means the same schema
+works across multiple analyses without invalidating previous
+results.</p>
 <div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Analysis 1: species composition by habitat</span></span>
 <span><span class="va">a1</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/lookup.html">lookup</a></span><span class="op">(</span><span class="va">s</span>, <span class="va">sp</span><span class="op">$</span><span class="va">name</span>, <span class="va">site</span><span class="op">$</span><span class="va">habitat</span>, .report <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -582,7 +582,7 @@ aggregate:</p>
 <span><span class="co">#&gt; 3     &lt;NA&gt;     1     1</span></span></code></pre></div>
 <p>This pipeline scans the fact table, joins only the species dimension
 (to get <code>family</code>), groups on it, and computes the
-aggregation. The site dimension is never touched.</p>
+aggregation, leaving the site dimension untouched.</p>
 <div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/lookup.html">lookup</a></span><span class="op">(</span><span class="va">s</span>, <span class="va">count</span>, <span class="va">site</span><span class="op">$</span><span class="va">habitat</span>, .report <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">habitat</span><span class="op">)</span> <span class="op">|&gt;</span></span>

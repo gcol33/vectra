@@ -23,9 +23,8 @@ changes. The
 function is our primary diagnostic tool throughout: it prints the query
 plan and annotates which optimizations fired.
 
-Understanding these mechanisms is not strictly necessary for using
-vectra. The engine applies everything it can without intervention. But
-knowing what the optimizer does (and what it cannot do) helps when
+The engine applies these optimizations on its own, without intervention.
+Knowing what the optimizer does (and what it cannot do) helps when
 designing file layouts, choosing row group sizes, and deciding whether
 an index is worth the disk space.
 
@@ -334,9 +333,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.1 s
+#> Without index: 0.11 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.35 s
+#> With index:    0.36 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -507,7 +506,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.39 s
+#> With index, %in% filter: 0.38 s
 ```
 
 Without an index, the same query reads all row groups and filters in
@@ -966,11 +965,11 @@ against a `.vtr` file is the better approach.
 
 Blocks are also ephemeral. They live in the R session and are not
 persisted to disk. When the session ends, the block and its internal
-hash table disappear. This is by design: blocks are caches, not storage.
-If we need the reference table again in a later session, we
-re-materialize from the `.vtr` file, which takes a fraction of a second
-for small tables. There is no `.vtri`-style sidecar to maintain or worry
-about going stale.
+hash table disappear. A block is a cache layer; the `.vtr` file stays
+the source of truth. If we need the reference table again in a later
+session, we re-materialize from the `.vtr` file, which takes a fraction
+of a second for small tables. There is no `.vtri`-style sidecar to
+maintain or worry about going stale.
 
 When a block is better than an index: the reference table is small
 (under 100k rows), lookups happen many times in the same session (e.g.,

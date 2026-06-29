@@ -239,9 +239,8 @@ raster and run a resident solver for it.
 
 ## The cost model
 
-Each operation states its memory tier, so the toolbox reads as a cost
-model rather than a grab-bag. The tier tells you what a run holds
-resident.
+Each operation states the memory it needs to run. The three tiers below
+group the spatial verbs by how much a run keeps resident.
 
 - **Monoid fold.** One batch at a time, bounded memory, no spill:
   [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md),
@@ -265,10 +264,11 @@ resident.
   [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
   and operations such as Voronoi, Delaunay, convex hull, and global
   neighbour graphs. For these, collect the result and run sf or terra on
-  it; vectra does not pretend to stream what is global by nature.
+  it.
 
-That boundary is the honest part. The streaming envelope covers the
-operations whose memory can be bounded, and names the ones it cannot.
+The streaming envelope covers every operation whose memory can be
+bounded. For the rest, vectra collects the result and hands it to sf or
+terra.
 
 ## Where to go next
 

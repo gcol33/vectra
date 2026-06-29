@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -152,7 +152,7 @@ in RAM, and how a lazy plan pulls one batch through.</p>
 
 var s=VA.setup('sm-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
 var PX=72,PY=58,PW=W-72-36,PH=H-58-66,RAM=0.74;
-var PERIOD=8.0;
+var PERIOD=10.0;
 function draw(tc){VA.bg(x,W,H);
   VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('MEMORY  AS  ROWS  ARE  PROCESSED',16,28);VA.noglow(x);
   x.strokeStyle=C.mut;x.lineWidth=1;x.beginPath();x.moveTo(PX,PY);x.lineTo(PX,PY+PH);x.lineTo(PX+PW,PY+PH);x.stroke();
@@ -180,7 +180,7 @@ is the difference.</p>
 (function(){
 
 var s=VA.setup('rb-cv'); if(!s)return; var x=s.ctx,W=s.w,H=s.h,C=VA.C;
-var BX=150,BW=W-150-40,RAM=0.7,ramX=BX+BW*RAM,BH=52,PERIOD=7.0;
+var BX=150,BW=W-150-40,RAM=0.7,ramX=BX+BW*RAM,BH=52,PERIOD=9.0;
 var rows=[
  {y:88,name:'in memory',over:true,segs:[['data',0.44,C.cyan],['working copy',0.34,C.amber],['R',0.15,C.purple]]},
  {y:176,name:'streaming',over:false,segs:[['batch',0.09,C.green],['R',0.15,C.purple]]}

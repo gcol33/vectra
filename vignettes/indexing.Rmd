@@ -36,10 +36,9 @@ queries with and without indexes to see what changes. The `explain()` function
 is our primary diagnostic tool throughout: it prints the query plan and
 annotates which optimizations fired.
 
-Understanding these mechanisms is not strictly necessary for using vectra. The
-engine applies everything it can without intervention. But knowing what the
-optimizer does (and what it cannot do) helps when designing file layouts, choosing
-row group sizes, and deciding whether an index is worth the disk space.
+The engine applies these optimizations on its own, without intervention. Knowing
+what the optimizer does (and what it cannot do) helps when designing file layouts,
+choosing row group sizes, and deciding whether an index is worth the disk space.
 
 We will start by creating a dataset to work with.
 
@@ -654,9 +653,9 @@ the better approach.
 
 Blocks are also ephemeral. They live in the R session and are not persisted
 to disk. When the session ends, the block and its internal hash table
-disappear. This is by design: blocks are caches, not storage. If we need
-the reference table again in a later session, we re-materialize from the
-`.vtr` file, which takes a fraction of a second for small tables. There is
+disappear. A block is a cache layer; the `.vtr` file stays the source of truth.
+If we need the reference table again in a later session, we re-materialize from
+the `.vtr` file, which takes a fraction of a second for small tables. There is
 no `.vtri`-style sidecar to maintain or worry about going stale.
 
 When a block is better than an index: the reference table is small (under

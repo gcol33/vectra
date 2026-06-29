@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -374,13 +374,12 @@ regular expression. When <code>fixed = TRUE</code> (the default in
 vectra), the engine uses a direct substring search, which avoids the
 cost of compiling a regex automaton. For exact substring tests and
 simple replacements, this is the right choice.</p>
-<p>Note that vectra defaults to <code>fixed = TRUE</code>, which differs
-from base R where <code>fixed</code> defaults to <code>FALSE</code>. We
-chose this default because in our experience the majority of string
-filtering and replacement tasks in data cleaning involve literal
-substrings, not regex patterns. When you need actual regex, pass
-<code>fixed = FALSE</code> explicitly. This is covered in the next
-section.</p>
+<p>vectra defaults to <code>fixed = TRUE</code>, which differs from base
+R where <code>fixed</code> defaults to <code>FALSE</code>. We chose this
+default because in our experience the majority of string filtering and
+replacement tasks in data cleaning involve literal substrings, not regex
+patterns. When you need actual regex, pass <code>fixed = FALSE</code>
+explicitly. This is covered in the next section.</p>
 <div class="section level3">
 <h3 id="filtering-with-grepl">Filtering with grepl<a class="anchor" aria-label="anchor" href="#filtering-with-grepl"></a>
 </h3>

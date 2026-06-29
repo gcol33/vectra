@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -618,7 +618,7 @@ feature rather than dissolved away. It answers questions like “which
 protected areas, designated in which years, cover this exact patch of
 sea”.</p>
 <p>Three overlapping squares designated in different years make the
-smallest honest example.</p>
+smallest meaningful example.</p>
 <div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sq</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">a</span>, <span class="va">b</span><span class="op">)</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st.html" class="external-link">st_polygon</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">b</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">b</span>, <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="fl">0</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
@@ -716,14 +716,13 @@ with <code>layer_y</code> / <code>query_y</code>, the same way
 <h2 id="materializing-and-round-tripping">Materializing and round-tripping<a class="anchor" aria-label="anchor" href="#materializing-and-round-tripping"></a>
 </h2>
 <p>Three exits bring a streamed result out. <code><a href="../reference/collect.html">collect()</a></code>
-returns the data.frame with geometry still a WKB string, which is what
-you want when the next step is a non-spatial verb or another
-<code>.vtr</code> write. <code><a href="../reference/collect_sf.html">collect_sf()</a></code> decodes the WKB and
-reattaches the node’s CRS, giving an <code>sf</code> object.
-<code><a href="../reference/write_vtr.html">write_vtr()</a></code> on a node streams the result straight to a new
-<code>.vtr</code> file without ever holding it whole, so a multi-step
-spatial pipeline can land its output on disk under the same fixed memory
-budget it ran in.</p>
+returns the data.frame with geometry still a WKB string, useful when the
+next step is a non-spatial verb or another <code>.vtr</code> write.
+<code><a href="../reference/collect_sf.html">collect_sf()</a></code> decodes the WKB and reattaches the node’s CRS,
+giving an <code>sf</code> object. <code><a href="../reference/write_vtr.html">write_vtr()</a></code> on a node
+streams the result straight to a new <code>.vtr</code> file without ever
+holding it whole, so a multi-step spatial pipeline can land its output
+on disk under the same fixed memory budget it ran in.</p>
 <div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">out</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span></span>

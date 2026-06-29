@@ -389,10 +389,9 @@ lookup(s, count, sp$name, .join = "inner") |> collect()
 
 ## Reusing the schema
 
-The schema object does not hold live data. It stores file paths and
-reopens fresh scan nodes each time
-[`lookup()`](https://gillescolling.com/vectra/reference/lookup.md) is
-called. This means the same schema works across multiple analyses
+The schema object holds only file paths, reopening fresh scan nodes each
+time [`lookup()`](https://gillescolling.com/vectra/reference/lookup.md)
+is called. This means the same schema works across multiple analyses
 without invalidating previous results.
 
 ``` r
@@ -512,8 +511,8 @@ lookup(s, count, sp$family, .report = FALSE) |>
 ```
 
 This pipeline scans the fact table, joins only the species dimension (to
-get `family`), groups on it, and computes the aggregation. The site
-dimension is never touched.
+get `family`), groups on it, and computes the aggregation, leaving the
+site dimension untouched.
 
 ``` r
 

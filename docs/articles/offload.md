@@ -26,18 +26,17 @@ escape is to approximate (sketches such as HyperLogLog and quantile
 sketches).
 
 The **external-memory model** assumes bounded RAM and a disk to spill
-to, with cost measured in input/output volume. Here the picture changes
-completely. Any computable reduction over data that fits on disk is
-feasible; the lower bounds above do not bind, because they assumed the
-data could not be stored. The exact median is a sort followed by reading
-the middle element. The exact distinct count is a sort followed by a
-scan. What varies between reductions is the I/O cost, not whether they
-can be done. The only hard limit is data that exceeds the disk.
+to, with cost measured in input/output volume. Any computable reduction
+over data that fits on disk is feasible; the lower bounds above do not
+bind, because they assumed the data could not be stored. The exact
+median is a sort followed by reading the middle element. The exact
+distinct count is a sort followed by a scan. What varies between
+reductions is the I/O cost, not whether they can be done. The only hard
+limit is data that exceeds the disk.
 
-`vectra` lives in the second model. So the design question is never “is
-this fittable” but “which cost tier does it land in,” and the rest of
-this article is about reading that tier off the structure of the
-reduction.
+`vectra` lives in the second model. The design question is which cost
+tier a reduction lands in, and the rest of this article is about reading
+that tier off the structure of the reduction.
 
 ## When a reduction streams in one pass
 
@@ -110,9 +109,9 @@ accumulator.
 
 ## The offload functor
 
-A generalized linear model does not fit in one pass. Iteratively
-reweighted least squares reweights every row by the current coefficient
-estimate, so the data must be read once per iteration.
+A generalized linear model needs several passes over the data.
+Iteratively reweighted least squares reweights every row by the current
+coefficient estimate, so the data must be read once per iteration.
 [`biglm::bigglm()`](https://rdrr.io/pkg/biglm/man/bigglm.html) does
 exactly this, and
 [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)
@@ -146,9 +145,9 @@ s
 #>   note             : temp spill, removed when the node is garbage-collected
 ```
 
-Printing an offloaded node shows its cost grade, the honest label for
-what the stream costs. A plain node reports a streaming scan; an
-offloaded node reports the replay cache.
+Printing an offloaded node shows its cost grade, the label for what the
+stream costs. A plain node reports a streaming scan; an offloaded node
+reports the replay cache.
 [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
 shows the same grade alongside the plan.
 

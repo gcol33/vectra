@@ -622,7 +622,7 @@ like “which protected areas, designated in which years, cover this exact
 patch of sea”.
 
 Three overlapping squares designated in different years make the
-smallest honest example.
+smallest meaningful example.
 
 ``` r
 
@@ -727,9 +727,8 @@ the same way `x` is.
 
 Three exits bring a streamed result out.
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
-returns the data.frame with geometry still a WKB string, which is what
-you want when the next step is a non-spatial verb or another `.vtr`
-write.
+returns the data.frame with geometry still a WKB string, useful when the
+next step is a non-spatial verb or another `.vtr` write.
 [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
 decodes the WKB and reattaches the node’s CRS, giving an `sf` object.
 [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
