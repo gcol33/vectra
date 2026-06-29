@@ -3,7 +3,20 @@
 spatial_join()) into memory and rebuilds an sf object from its hex-WKB
 geometry column. The CRS defaults to the one carried on the node."><meta property="og:description" content="Collects a vectra_node (typically the result of spatial_map() or
 spatial_join()) into memory and rebuilds an sf object from its hex-WKB
-geometry column. The CRS defaults to the one carried on the node."></head><body>
+geometry column. The CRS defaults to the one carried on the node."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -130,6 +143,5 @@ column) or reduce it with <code><a href="collect_chunked.html">collect_chunked()
 
 
 
-  
-</body></html>
+  </body></html>
 

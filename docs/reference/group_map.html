@@ -9,7 +9,20 @@ gather the results. Each shard is read into memory as a data.frame and passed
 to .f together with its key, so a model that couples rows within a group
 becomes a set of independent per-shard fits. This is the per-group
 counterpart to collect_chunked(), which instead merges every shard into a
-single accumulator."></head><body>
+single accumulator."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -164,6 +177,5 @@ partitioned monoidal reduce.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

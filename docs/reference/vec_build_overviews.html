@@ -5,7 +5,20 @@ with the chosen kernel. Reading via vec_read_window(level = L)
 picks tiles at level L; the file's n_levels is updated in place."><meta property="og:description" content="Appends n_levels - 1 reduced-resolution copies of the raster to the
 file. Each level is computed by 2x downsampling the previous level
 with the chosen kernel. Reading via vec_read_window(level = L)
-picks tiles at level L; the file's n_levels is updated in place."></head><body>
+picks tiles at level L; the file's n_levels is updated in place."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -121,6 +134,5 @@ rasters; <code>"mode"</code> for categorical/land-cover.</p></dd>
 
 
 
-  
-</body></html>
+  </body></html>
 

@@ -11,7 +11,20 @@ geometry column, one row at a time, with no per-batch round-trip through
 sf: tbl(f) |&amp;gt; filter(st_area(geometry) &amp;gt; 1e6) prunes the stream in C,
 and mutate(centroid = st_centroid(geometry)) adds a new hex-WKB geometry
 column. The computation is planar, in the geometry's own coordinate units,
-exactly as the streaming spatial verbs are."></head><body>
+exactly as the streaming spatial verbs are."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -236,6 +249,5 @@ a resident reference layer.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

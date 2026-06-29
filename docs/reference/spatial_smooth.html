@@ -11,7 +11,20 @@ two points a quarter and three-quarters of the way along its adjacent edges,
 so sharp angles become a sequence of short chamfers that read as a smooth
 curve; more iterations give a smoother result with more vertices. Open lines
 keep their endpoints (keep_ends); polygon rings are cut cyclically and shrink
-slightly, as Chaikin smoothing does. Point geometry passes through unchanged."></head><body>
+slightly, as Chaikin smoothing does. Point geometry passes through unchanged."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -177,6 +190,5 @@ the CRS is carried on the returned node; use <code><a href="collect_sf.html">col
 
 
 
-  
-</body></html>
+  </body></html>
 

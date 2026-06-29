@@ -3,7 +3,20 @@
 the .vtr file. The index maps key hashes to row group indices, enabling
 O(1) row group identification for equality predicates (filter(col == value))."><meta property="og:description" content="Builds a persistent hash index stored as a .vtri sidecar file alongside
 the .vtr file. The index maps key hashes to row group indices, enabling
-O(1) row group identification for equality predicates (filter(col == value))."></head><body>
+O(1) row group identification for equality predicates (filter(col == value))."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -122,6 +135,5 @@ zone-map pruning and binary search on sorted columns.</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

@@ -13,7 +13,20 @@ projected into the source coordinate reference system when the two CRSs differ
 fractional source pixels, and sampled from the bounded source window those
 coordinates fall in. The output is assembled in memory or streamed straight
 back to a new .vec, so the whole output grid is never resident; the source
-is read in bounded windows rather than held whole."></head><body>
+is read in bounded windows rather than held whole."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -186,6 +199,5 @@ codes differ; otherwise <code>warp()</code> resamples within a shared CRS and ne
 
 
 
-  
-</body></html>
+  </body></html>
 

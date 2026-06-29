@@ -15,7 +15,20 @@ polygon layer (each pixel is assigned the polygon its centre falls in). The
 per-zone running moments (count, sum, sum of squares, min, max) are folded in
 memory as strips arrive, so peak memory is one strip plus the small per-zone
 table regardless of raster size. This is the monoid fold tier of the
-spatial toolbox: bounded memory, a single streaming pass, no spill."></head><body>
+spatial toolbox: bounded memory, a single streaming pass, no spill."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -187,6 +200,5 @@ must share the value raster's dimensions and geotransform.</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

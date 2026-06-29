@@ -17,7 +17,20 @@ line. With snap = TRUE the point geometry is moved onto the line at that
 measure. This is the two-layer companion to a per-feature
 sf::st_line_interpolate, which goes the other way (a measure back to a
 point); the billion-row point stream never materializes, while line (the
-reference network) stays resident."></head><body>
+reference network) stays resident."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -217,6 +230,5 @@ materialize as <code>sf</code>.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

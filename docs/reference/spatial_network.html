@@ -11,7 +11,20 @@ held resident in an external pointer and passed to spatial_route() and
 spatial_service_area(), which stream origin (and destination) batches past
 it. This is the network counterpart of a resident sf y in spatial_knn():
 the graph is the resident budget (bounded by the network size), while the
-query side scales by streaming."></head><body>
+query side scales by streaming."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -181,6 +194,5 @@ unless they share an endpoint. The graph and the Dijkstra solver are native C;
 
 
 
-  
-</body></html>
+  </body></html>
 

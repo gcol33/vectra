@@ -5,7 +5,20 @@ and aggregation is handled by vectra's C engine — no SQL parsing needed.
 No data is read until collect() is called."><meta property="og:description" content="Opens a SQLite database and lazily scans a table. Column types are inferred
 from declared types in the CREATE TABLE statement. All filtering, grouping,
 and aggregation is handled by vectra's C engine — no SQL parsing needed.
-No data is read until collect() is called."></head><body>
+No data is read until collect() is called."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -119,6 +132,5 @@ No data is read until <code><a href="collect.html">collect()</a></code> is calle
 
 
 
-  
-</body></html>
+  </body></html>
 

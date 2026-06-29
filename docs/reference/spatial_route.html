@@ -13,7 +13,20 @@ origin and destination is snapped to its nearest graph node; the solver
 total cost and, by default, the route geometry. With geometry = FALSE only
 the cost is returned, so a destination set per origin yields the
 origin-destination cost matrix in long form. The billion-origin stream never
-materialises; the graph stays resident."></head><body>
+materialises; the graph stays resident."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -213,6 +226,5 @@ reachability, <code><a href="collect_sf.html">collect_sf()</a></code> to materia
 
 
 
-  
-</body></html>
+  </body></html>
 

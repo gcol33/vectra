@@ -13,7 +13,20 @@ per point, and a GEOMETRYCOLLECTION one row per member (recursively). The
 attributes of the source feature are copied onto each part. Already
 single-part geometries pass through unchanged, as does an empty geometry
 (kept as one row). This is the streaming counterpart of the QGIS
-"multipart to singleparts" tool and of sf::st_cast() to a single-part type.'></head><body>
+"multipart to singleparts" tool and of sf::st_cast() to a single-part type.'><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -174,6 +187,5 @@ merge features the other way, <code><a href="collect_sf.html">collect_sf()</a></
 
 
 
-  
-</body></html>
+  </body></html>
 

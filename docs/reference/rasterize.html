@@ -11,7 +11,20 @@ flow past the engine, so peak memory is the grid plus one batch regardless of
 how many points there are – the streaming counterpart to running
 terra::rasterize() on a point set that has to fit in RAM. Each point's
 coordinate is mapped to its grid cell through the raster geotransform and the
-per-cell value is accumulated in C."></head><body>
+per-cell value is accumulated in C."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -227,6 +240,5 @@ coverage rasterization is out of scope here.</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

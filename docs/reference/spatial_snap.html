@@ -11,7 +11,20 @@ toward a small resident reference layer y when they lie within tolerance
 Vertices and edges of x closer than tolerance to y are pulled onto y,
 which closes the small gaps and overshoots between two layers that should
 share a boundary. The reference layer stays resident while the billion-row
-left stream flows past; the snap itself is sf's sf::st_snap()."></head><body>
+left stream flows past; the snap itself is sf's sf::st_snap()."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -184,6 +197,5 @@ optional dependency (Suggests).</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

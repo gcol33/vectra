@@ -15,7 +15,20 @@ out, a line into the arcs between crossings – and each piece is emitted as its
 own row with the source attributes copied; a feature the blade does not cross
 passes through as a single piece. With extract = &quot;points&quot; the verb instead
 returns, per feature, the points where it meets the blade (the &quot;line
-intersections&quot; tool), dropping features that do not cross."></head><body>
+intersections&quot; tool), dropping features that do not cross."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -188,6 +201,5 @@ package is an optional dependency (Suggests).</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

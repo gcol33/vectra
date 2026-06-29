@@ -13,7 +13,20 @@ patches). By default this clips – the intersection with the mask, the GIS
 erase = TRUE it instead erases – the difference, the &quot;Erase&quot;/&quot;Difference&quot;
 tool – keeping the parts of x outside mask. The mask is dissolved to a
 single geometry once and held resident while the billion-row left stream
-flows past one batch at a time."></head><body>
+flows past one batch at a time."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -193,6 +206,5 @@ cutting them, <code><a href="spatial_map.html">spatial_map()</a></code> for per-
 
 
 
-  
-</body></html>
+  </body></html>
 

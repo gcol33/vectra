@@ -3,7 +3,20 @@
 materializing the full result in memory. For data.frame inputs, the data
 is written directly."><meta property="og:description" content="For vectra_node inputs, data is streamed batch-by-batch to disk without
 materializing the full result in memory. For data.frame inputs, the data
-is written directly."></head><body>
+is written directly."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -114,6 +127,5 @@ is written directly.</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

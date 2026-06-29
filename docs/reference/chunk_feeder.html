@@ -13,7 +13,20 @@ with reset = TRUE it rewinds to the beginning of the data, and called with
 reset = FALSE it returns the next chunk as a data.frame, or NULL once the
 data is exhausted. This lets bigglm() fit a generalized linear model on a
 dataset larger than RAM, streaming each iteratively reweighted pass through
-the engine without ever holding the full design matrix."></head><body>
+the engine without ever holding the full design matrix."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -155,6 +168,5 @@ single-pass reductions that vectra drives.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

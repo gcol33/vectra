@@ -3,7 +3,20 @@
 lookup() to resolve columns from dimension tables without writing
 explicit joins."><meta property="og:description" content="Registers a fact table with named dimension links. The schema enables
 lookup() to resolve columns from dimension tables without writing
-explicit joins."></head><body>
+explicit joins."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -126,6 +139,5 @@ the dimension aliases used in <code><a href="lookup.html">lookup()</a></code> (e
 
 
 
-  
-</body></html>
+  </body></html>
 

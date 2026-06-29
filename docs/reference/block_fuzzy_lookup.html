@@ -3,7 +3,20 @@
 materialized block. Optionally uses exact-match blocking on a second column
 (e.g., genus) to reduce the search space."><meta property="og:description" content="Computes string distances between query keys and a string column in a
 materialized block. Optionally uses exact-match blocking on a second column
-(e.g., genus) to reduce the search space."></head><body>
+(e.g., genus) to reduce the search space."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -139,6 +152,5 @@ values for blocking. Required when <code>block_col</code> is provided.</p></dd>
 
 
 
-  
-</body></html>
+  </body></html>
 

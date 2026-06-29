@@ -5,7 +5,20 @@ inferred from the x/y coordinate arrays. Missing pixels are written as NaN
 (or the type-appropriate nodata value for integer pixel types)."><meta property="og:description" content="The data must contain x and y columns (pixel center coordinates) and
 one or more numeric band columns. Grid dimensions and geotransform are
 inferred from the x/y coordinate arrays. Missing pixels are written as NaN
-(or the type-appropriate nodata value for integer pixel types)."></head><body>
+(or the type-appropriate nodata value for integer pixel types)."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -178,6 +191,5 @@ corrupt outputs larger than 4 GB. Tiled BigTIFF is not yet supported.</p></dd>
 
 
 
-  
-</body></html>
+  </body></html>
 

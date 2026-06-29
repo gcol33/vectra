@@ -2,6 +2,8 @@
 
 ## vectra 0.9.7
 
+CRAN release: 2026-06-29
+
 ### Geometry functions in mutate(), filter(), and summarise()
 
 - A family of `st_*` geometry functions now runs inside the expression

@@ -7,7 +7,20 @@ single-pass world of collect_chunked() to out-of-core fits."><meta property="og:
 rows, so every later pass is a disk scan instead of a re-run of the upstream
 pipeline. The materialization streams batch by batch, so peak memory stays at
 one batch regardless of result size. This is the bridge from the bounded
-single-pass world of collect_chunked() to out-of-core fits."></head><body>
+single-pass world of collect_chunked() to out-of-core fits."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -177,6 +190,5 @@ instance.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

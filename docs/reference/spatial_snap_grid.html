@@ -15,7 +15,20 @@ merges near-coincident vertices and removes the slivers that floating-point
 coordinates leave between shared boundaries, so a layer can be cleaned (or
 pre-noded to a common precision) without running a full overlay. Snapping is
 done in C straight off the hex-WKB column; one cleaned geometry comes back per
-input feature, so attributes ride through untouched."></head><body>
+input feature, so attributes ride through untouched."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -176,6 +189,5 @@ The <span class="pkg">sf</span> package is an optional dependency (Suggests).</p
 
 
 
-  
-</body></html>
+  </body></html>
 

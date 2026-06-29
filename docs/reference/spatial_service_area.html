@@ -11,7 +11,20 @@ the service area, or, with several budgets, nested travel-cost isochrone bands.
 Each origin is snapped to its nearest graph node and a budget-bounded Dijkstra
 (native C) collects the reachable nodes; the reachable set is returned as the
 convex hull (output = "polygon", the generalised service area), the
-reachable edges ("lines"), or the reachable nodes ("nodes").'></head><body>
+reachable edges ("lines"), or the reachable nodes ("nodes").'><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -203,6 +216,5 @@ shortest paths, <code><a href="collect_sf.html">collect_sf()</a></code> to mater
 
 
 
-  
-</body></html>
+  </body></html>
 

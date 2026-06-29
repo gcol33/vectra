@@ -7,7 +7,20 @@ rasterize()."><meta property="og:description" content="Computes, for every cell 
 distance to the nearest feature cell, in CRS units. Feature cells are the
 non-NA cells by default, or the cells whose value is in target. This is the
 raster proximity / Euclidean-distance staple, the distance companion to
-rasterize()."></head><body>
+rasterize()."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -172,6 +185,5 @@ clip a raster to a polygon layer.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

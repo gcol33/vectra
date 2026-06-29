@@ -11,7 +11,20 @@ covers [origin_x + cx * cellsize_x, origin_x + (cx + 1) * cellsize_x) and
 likewise in y, so a coordinate maps to the cell floor((coord - origin) / cellsize). Pick a cellsize comparable to the scale of the join (large
 enough that most cells hold a workable shard, small enough that one cell's
 features fit in memory); for an extended-on-extended join choose it larger
-than the left features."></head><body>
+than the left features."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -124,6 +137,5 @@ than the left features.</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

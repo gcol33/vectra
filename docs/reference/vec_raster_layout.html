@@ -3,7 +3,20 @@
 (band, time, ty, tx)) or "pixel" (Phase 6b transpose layout — one
 tile per (band, ty, tx) holding the full time stack).'><meta property="og:description" content='Returns "image" (default Phase 6 layout — one tile per
 (band, time, ty, tx)) or "pixel" (Phase 6b transpose layout — one
-tile per (band, ty, tx) holding the full time stack).'></head><body>
+tile per (band, ty, tx) holding the full time stack).'><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -97,6 +110,5 @@ tile per <code>(band, ty, tx)</code> holding the full time stack).</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

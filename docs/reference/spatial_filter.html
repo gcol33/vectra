@@ -13,7 +13,20 @@ semi_join(): rows are filtered, never duplicated, and no columns are added,
 so the output carries x's schema unchanged. With negate = TRUE it keeps
 the rows that do not match (select by location, inverted). The billion-row
 left stream never materializes; y (a study region, habitat patches, a
-coastline buffer, ...) stays resident."></head><body>
+coastline buffer, ...) stays resident."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -206,6 +219,5 @@ to cut geometry against a mask, <code><a href="filter.html">filter()</a></code> 
 
 
 
-  
-</body></html>
+  </body></html>
 

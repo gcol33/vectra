@@ -5,7 +5,20 @@ The pointer is auto-finalized when garbage collected; call
 vec_close_raster() to release earlier."><meta property="og:description" content="Lazy open: parses the header and tile index but does not decode any
 tiles. Returns a list with metadata and an external pointer handle.
 The pointer is auto-finalized when garbage collected; call
-vec_close_raster() to release earlier."></head><body>
+vec_close_raster() to release earlier."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -102,6 +115,5 @@ The pointer is auto-finalized when garbage collected; call
 
 
 
-  
-</body></html>
+  </body></html>
 

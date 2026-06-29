@@ -11,7 +11,20 @@ Strip layout; the writer supports "none", "deflate", and "lzw"
 compression. LZW also applies horizontal differencing (Predictor 2)
 for integer pixel types, which dramatically improves compression on
 smooth raster data and matches the layout most production GIS tools
-produce by default. Tiled and BigTIFF output land in a follow-up.'></head><body>
+produce by default. Tiled and BigTIFF output land in a follow-up.'><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -118,6 +131,5 @@ by <code><a href="vec_open_raster.html">vec_open_raster()</a></code>. If a handl
 
 
 
-  
-</body></html>
+  </body></html>
 

@@ -3,7 +3,20 @@
 to the VECR raster format. Each tile is encoded as a self-describing tdc
 block (PRED_2D + BYTE_SHUFFLE + LZ)."><meta property="og:description" content="Writes a row-major raster (one band) or a band-major 3D array (multi-band)
 to the VECR raster format. Each tile is encoded as a self-describing tdc
-block (PRED_2D + BYTE_SHUFFLE + LZ)."></head><body>
+block (PRED_2D + BYTE_SHUFFLE + LZ)."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -156,6 +169,5 @@ tile records its own codec spec. Default <code>"fast"</code>.</p></dd>
 
 
 
-  
-</body></html>
+  </body></html>
 

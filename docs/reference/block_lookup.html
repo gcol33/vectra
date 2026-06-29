@@ -3,7 +3,20 @@
 Returns all rows where the column value matches one of the query keys.
 Hash indices are built lazily on first use and cached for subsequent calls."><meta property="og:description" content="Performs a hash lookup on a string column of a materialized block.
 Returns all rows where the column value matches one of the query keys.
-Hash indices are built lazily on first use and cached for subsequent calls."></head><body>
+Hash indices are built lazily on first use and cached for subsequent calls."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -124,6 +137,5 @@ plus all columns from the block, for each (query, block_row) match pair.</p>
 
 
 
-  
-</body></html>
+  </body></html>
 

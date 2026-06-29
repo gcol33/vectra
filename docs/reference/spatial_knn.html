@@ -11,7 +11,20 @@ the k nearest features of a small resident layer y, returning one row per
 Where spatial_join() with sf::st_nearest_feature attaches only the single
 nearest match, this returns the top k and the distances themselves – the
 nearest-k query and the building block of a distance matrix. The billion-row
-left stream never materializes; y (the candidate neighbours) stays resident."></head><body>
+left stream never materializes; y (the candidate neighbours) stays resident."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -208,6 +221,5 @@ to materialize as <code>sf</code>.</p></div>
 
 
 
-  
-</body></html>
+  </body></html>
 

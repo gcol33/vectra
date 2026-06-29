@@ -7,7 +7,20 @@ never see a partial file."><meta property="og:description" content="For vectra_n
 or another .vtr), data is streamed batch-by-batch to disk without
 materializing the full result in memory. Each batch becomes one row group.
 The output file is written atomically (via temp file + rename) so readers
-never see a partial file."></head><body>
+never see a partial file."><script>
+(function () {
+  var D = String.fromCharCode(36);
+  window.MathJax = {
+    tex: {
+      inlineMath: [[D, D], ["\\(", "\\)"]],
+      displayMath: [[D + D, D + D], ["\\[", "\\]"]]
+    },
+    chtml: { linebreaks: { automatic: true, width: "90% container" } },
+    svg: { linebreaks: { automatic: true, width: "90% container" } },
+    options: { renderActions: { addMenu: [] } }
+  };
+})();
+</script></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -178,6 +191,5 @@ Combines with <code>quantize</code> for maximum effect.</p></dd>
 
 
 
-  
-</body></html>
+  </body></html>
 
