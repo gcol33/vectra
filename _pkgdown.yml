@@ -5,7 +5,18 @@ template:
   bslib:
     preset: sandstone
   includes:
-    in_header: pkgdown/mathjax-config.html
+    in_header: |
+      <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [["$", "$"], ["\\(", "\\)"]],
+          displayMath: [["$$", "$$"], ["\\[", "\\]"]]
+        },
+        chtml: { linebreaks: { automatic: true, width: "90% container" } },
+        svg: { linebreaks: { automatic: true, width: "90% container" } },
+        options: { renderActions: { addMenu: [] } }
+      };
+      </script>
 navbar:
   structure:
     left:
