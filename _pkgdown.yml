@@ -21,11 +21,6 @@ articles:
   navbar: ~
   contents:
   - quickstart
-  - spatial
-  - streaming-spatial
-  - geometry-expressions
-  - coverage-topology
-  - networks
   - engine
   - formats
   - joins
@@ -33,8 +28,13 @@ articles:
   - string-ops
   - indexing
   - large-data
-  - sdm
   - offload
+  - spatial
+  - streaming-spatial
+  - geometry-expressions
+  - coverage-topology
+  - networks
+  - sdm
 reference:
 - title: Data sources
   desc: Open files for lazy query execution
@@ -52,88 +52,6 @@ reference:
   - write_sqlite
   - write_tiff
   - st_write.vectra_node
-- title: GeoTIFF helpers
-  desc: Metadata and point-sampling for GeoTIFF rasters
-  contents:
-  - tiff_extract_points
-  - tiff_metadata
-  - tiff_band_names
-  - tiff_crs
-- title: Raster data cubes
-  desc: Read and write .vec rasters and time cubes out of core
-  contents:
-  - vec_open_raster
-  - vec_close_raster
-  - vec_raster_layout
-  - vec_raster_times
-  - vec_read_window
-  - vec_read_time_slice
-  - vec_read_pixel_series
-  - vec_extract_points
-  - vec_build_overviews
-  - vec_write_raster
-  - vec_write_time_cube
-  - vec_to_tiff
-- title: Spatial operations
-  desc: Stream sf vector operations one batch at a time, for vector data larger than RAM
-  contents:
-  - spatial_map
-  - spatial_join
-  - grid
-  - spatial_filter
-  - spatial_clip
-  - spatial_dissolve
-  - spatial_overlay
-  - rasterize
-  - polygonize
-  - contours
-  - zonal
-  - focal
-  - terrain
-  - warp
-  - mask
-  - mosaic
-  - rast_calc
-  - proximity
-  - collect_sf
-  - geom_expressions
-- title: Geometry construction and cleaning
-  desc: Reshape, repair, simplify, and snap streamed vector geometry
-  contents:
-  - spatial_construct
-  - spatial_explode
-  - spatial_line_merge
-  - spatial_simplify
-  - spatial_smooth
-  - spatial_snap
-  - spatial_snap_grid
-  - spatial_eliminate
-  - spatial_split
-  - spatial_centerline
-- title: Coverage and topology
-  desc: Shared-edge topology and polygonal faces of polygon coverages
-  contents:
-  - spatial_topology
-  - spatial_polygonize
-- title: Spatial networks
-  desc: Build routable graphs and solve shortest paths over line layers
-  contents:
-  - spatial_network
-  - spatial_route
-  - spatial_service_area
-- title: Spatial queries
-  desc: Nearest neighbours and linear referencing
-  contents:
-  - spatial_knn
-  - spatial_locate
-- title: File operations
-  desc: Incremental updates to .vtr files
-  contents:
-  - append_vtr
-  - delete_vtr
-  - diff_vtr
-  - create_index
-  - has_index
 - title: Single-table verbs
   desc: Transform, filter, and reshape
   contents:
@@ -198,9 +116,91 @@ reference:
   - offload
   - group_map
   - group_modify
+- title: File operations
+  desc: Incremental updates to .vtr files
+  contents:
+  - append_vtr
+  - delete_vtr
+  - diff_vtr
+  - create_index
+  - has_index
 - title: Diagnostics
   contents:
   - explain
   - collect
   - glimpse
   - print.vectra_node
+- title: Raster data cubes
+  desc: Read and write .vec rasters and time cubes out of core
+  contents:
+  - vec_open_raster
+  - vec_close_raster
+  - vec_raster_layout
+  - vec_raster_times
+  - vec_read_window
+  - vec_read_time_slice
+  - vec_read_pixel_series
+  - vec_extract_points
+  - vec_build_overviews
+  - vec_write_raster
+  - vec_write_time_cube
+  - vec_to_tiff
+- title: GeoTIFF helpers
+  desc: Metadata and point-sampling for GeoTIFF rasters
+  contents:
+  - tiff_extract_points
+  - tiff_metadata
+  - tiff_band_names
+  - tiff_crs
+- title: Spatial operations
+  desc: Stream sf vector operations one batch at a time, for vector data larger than RAM
+  contents:
+  - spatial_map
+  - spatial_join
+  - grid
+  - spatial_filter
+  - spatial_clip
+  - spatial_dissolve
+  - spatial_overlay
+  - rasterize
+  - polygonize
+  - contours
+  - zonal
+  - focal
+  - terrain
+  - warp
+  - mask
+  - mosaic
+  - rast_calc
+  - proximity
+  - collect_sf
+  - geom_expressions
+- title: Geometry construction and cleaning
+  desc: Reshape, repair, simplify, and snap streamed vector geometry
+  contents:
+  - spatial_construct
+  - spatial_explode
+  - spatial_line_merge
+  - spatial_simplify
+  - spatial_smooth
+  - spatial_snap
+  - spatial_snap_grid
+  - spatial_eliminate
+  - spatial_split
+  - spatial_centerline
+- title: Coverage and topology
+  desc: Shared-edge topology and polygonal faces of polygon coverages
+  contents:
+  - spatial_topology
+  - spatial_polygonize
+- title: Spatial networks
+  desc: Build routable graphs and solve shortest paths over line layers
+  contents:
+  - spatial_network
+  - spatial_route
+  - spatial_service_area
+- title: Spatial queries
+  desc: Nearest neighbours and linear referencing
+  contents:
+  - spatial_knn
+  - spatial_locate

@@ -30,164 +30,6 @@ Write query results or data.frames to disk
 - [`st_write(`*`<vectra_node>`*`)`](https://gillescolling.com/vectra/reference/st_write.vectra_node.md)
   : Stream a vectra node's geometry to a vector file
 
-## GeoTIFF helpers
-
-Metadata and point-sampling for GeoTIFF rasters
-
-- [`tiff_extract_points()`](https://gillescolling.com/vectra/reference/tiff_extract_points.md)
-  : Extract raster values at point coordinates
-- [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md)
-  : Read GDAL_METADATA from a GeoTIFF
-- [`tiff_band_names()`](https://gillescolling.com/vectra/reference/tiff_band_names.md)
-  : Read per-band names from a GeoTIFF
-- [`tiff_crs()`](https://gillescolling.com/vectra/reference/tiff_crs.md)
-  : Read CRS metadata from a GeoTIFF
-
-## Raster data cubes
-
-Read and write .vec rasters and time cubes out of core
-
-- [`vec_open_raster()`](https://gillescolling.com/vectra/reference/vec_open_raster.md)
-  : Open a .vec raster
-- [`vec_close_raster()`](https://gillescolling.com/vectra/reference/vec_close_raster.md)
-  : Close a .vec raster handle
-- [`vec_raster_layout()`](https://gillescolling.com/vectra/reference/vec_raster_layout.md)
-  : Tile layout of an open .vec raster
-- [`vec_raster_times()`](https://gillescolling.com/vectra/reference/vec_raster_times.md)
-  : Distinct time stamps stored in a .vec time cube
-- [`vec_read_window()`](https://gillescolling.com/vectra/reference/vec_read_window.md)
-  : Read a window of pixels from a .vec raster
-- [`vec_read_time_slice()`](https://gillescolling.com/vectra/reference/vec_read_time_slice.md)
-  : Read a single time slice from a .vec time cube
-- [`vec_read_pixel_series()`](https://gillescolling.com/vectra/reference/vec_read_pixel_series.md)
-  : Read the full time series at a single pixel from a .vec time cube
-- [`vec_extract_points()`](https://gillescolling.com/vectra/reference/vec_extract_points.md)
-  : Extract band values at (x, y) points from a .vec raster
-- [`vec_build_overviews()`](https://gillescolling.com/vectra/reference/vec_build_overviews.md)
-  : Build overview pyramids for a .vec raster
-- [`vec_write_raster()`](https://gillescolling.com/vectra/reference/vec_write_raster.md)
-  : Write a raster matrix or 3D array to a .vec raster file
-- [`vec_write_time_cube()`](https://gillescolling.com/vectra/reference/vec_write_time_cube.md)
-  : Write a 4D time-cube raster to .vec
-- [`vec_to_tiff()`](https://gillescolling.com/vectra/reference/vec_to_tiff.md)
-  : Export a .vec raster to GeoTIFF
-
-## Spatial operations
-
-Stream sf vector operations one batch at a time, for vector data larger
-than RAM
-
-- [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
-  : Stream a query through an sf transform
-- [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
-  : Spatial join a streamed query against a resident sf object
-- [`grid()`](https://gillescolling.com/vectra/reference/grid.md) :
-  Define a uniform grid for a partitioned spatial join
-- [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
-  : Keep streamed rows by their spatial relation to a resident layer
-- [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md)
-  : Clip or erase a streamed layer against a resident mask
-- [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
-  : Dissolve geometries by group
-- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
-  : Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)
-- [`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md)
-  : Rasterize a streamed point layer onto a fixed grid
-- [`polygonize()`](https://gillescolling.com/vectra/reference/polygonize.md)
-  : Vectorise a raster into polygons
-- [`contours()`](https://gillescolling.com/vectra/reference/contours.md)
-  : Extract contour iso-lines from a streamed raster
-- [`zonal()`](https://gillescolling.com/vectra/reference/zonal.md) :
-  Summarise raster values within zones
-- [`focal()`](https://gillescolling.com/vectra/reference/focal.md) :
-  Moving-window (focal) statistics over a streamed raster
-- [`terrain()`](https://gillescolling.com/vectra/reference/terrain.md) :
-  Terrain derivatives from a streamed elevation raster
-- [`warp()`](https://gillescolling.com/vectra/reference/warp.md) :
-  Resample or reproject a streamed raster onto a target grid
-- [`mask()`](https://gillescolling.com/vectra/reference/mask.md) : Mask
-  a streamed raster to a polygon layer
-- [`mosaic()`](https://gillescolling.com/vectra/reference/mosaic.md) :
-  Merge aligned rasters onto a common grid
-- [`rast_calc()`](https://gillescolling.com/vectra/reference/rast_calc.md)
-  : Cellwise calculation over aligned rasters (map algebra)
-- [`proximity()`](https://gillescolling.com/vectra/reference/proximity.md)
-  : Euclidean distance to the nearest feature (proximity)
-- [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-  : Materialize a spatial query as an sf object
-- [`geom_expressions`](https://gillescolling.com/vectra/reference/geom_expressions.md)
-  : Geometry functions inside mutate(), filter(), and summarise()
-
-## Geometry construction and cleaning
-
-Reshape, repair, simplify, and snap streamed vector geometry
-
-- [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md)
-  : Build a set-wise geometry construction, optionally per group
-- [`spatial_explode()`](https://gillescolling.com/vectra/reference/spatial_explode.md)
-  : Explode multipart geometries into single-part features
-- [`spatial_line_merge()`](https://gillescolling.com/vectra/reference/spatial_line_merge.md)
-  : Merge contiguous line segments into maximal lines
-- [`spatial_simplify()`](https://gillescolling.com/vectra/reference/spatial_simplify.md)
-  : Simplify a polygon coverage without tearing shared edges
-- [`spatial_smooth()`](https://gillescolling.com/vectra/reference/spatial_smooth.md)
-  : Smooth streamed line and polygon geometry
-- [`spatial_snap()`](https://gillescolling.com/vectra/reference/spatial_snap.md)
-  : Snap a streamed layer toward a resident reference layer
-- [`spatial_snap_grid()`](https://gillescolling.com/vectra/reference/spatial_snap_grid.md)
-  : Snap a streamed layer's coordinates to a fixed grid
-- [`spatial_eliminate()`](https://gillescolling.com/vectra/reference/spatial_eliminate.md)
-  : Merge sliver polygons into a neighbour
-- [`spatial_split()`](https://gillescolling.com/vectra/reference/spatial_split.md)
-  : Split a streamed layer by a resident blade, or return its crossing
-  points
-- [`spatial_centerline()`](https://gillescolling.com/vectra/reference/spatial_centerline.md)
-  : Trace the centerline (medial axis) of streamed polygons
-
-## Coverage and topology
-
-Shared-edge topology and polygonal faces of polygon coverages
-
-- [`spatial_topology()`](https://gillescolling.com/vectra/reference/spatial_topology.md)
-  : Build the shared-edge topology of a polygon coverage
-- [`spatial_polygonize()`](https://gillescolling.com/vectra/reference/spatial_polygonize.md)
-  : Build polygonal faces from a line network
-
-## Spatial networks
-
-Build routable graphs and solve shortest paths over line layers
-
-- [`spatial_network()`](https://gillescolling.com/vectra/reference/spatial_network.md)
-  : Build a routable network graph from a line layer
-- [`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md)
-  : Shortest paths and origin-destination costs over a network
-- [`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)
-  : Service areas and isochrones over a network
-
-## Spatial queries
-
-Nearest neighbours and linear referencing
-
-- [`spatial_knn()`](https://gillescolling.com/vectra/reference/spatial_knn.md)
-  : k nearest neighbours of a streamed layer, with distances
-- [`spatial_locate()`](https://gillescolling.com/vectra/reference/spatial_locate.md)
-  : Locate streamed points along a resident line layer
-
-## File operations
-
-Incremental updates to .vtr files
-
-- [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
-  : Append rows to an existing .vtr file
-- [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md)
-  : Logically delete rows from a .vtr file
-- [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
-  : Compute the logical diff between two .vtr files
-- [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
-  : Create a hash index on a .vtr file column
-- [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
-  : Check if a hash index exists for a .vtr column
-
 ## Single-table verbs
 
 Transform, filter, and reshape
@@ -301,6 +143,21 @@ Spill a query to disk and stream it back, for out-of-core fits
   [`group_modify()`](https://gillescolling.com/vectra/reference/group_map.md)
   : Apply a function to each shard of a partition
 
+## File operations
+
+Incremental updates to .vtr files
+
+- [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  : Append rows to an existing .vtr file
+- [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md)
+  : Logically delete rows from a .vtr file
+- [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
+  : Compute the logical diff between two .vtr files
+- [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  : Create a hash index on a .vtr file column
+- [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  : Check if a hash index exists for a .vtr column
+
 ## Diagnostics
 
 - [`explain()`](https://gillescolling.com/vectra/reference/explain.md) :
@@ -311,3 +168,146 @@ Spill a query to disk and stream it back, for out-of-core fits
   Get a glimpse of a vectra table
 - [`print(`*`<vectra_node>`*`)`](https://gillescolling.com/vectra/reference/print.vectra_node.md)
   : Print a vectra query node
+
+## Raster data cubes
+
+Read and write .vec rasters and time cubes out of core
+
+- [`vec_open_raster()`](https://gillescolling.com/vectra/reference/vec_open_raster.md)
+  : Open a .vec raster
+- [`vec_close_raster()`](https://gillescolling.com/vectra/reference/vec_close_raster.md)
+  : Close a .vec raster handle
+- [`vec_raster_layout()`](https://gillescolling.com/vectra/reference/vec_raster_layout.md)
+  : Tile layout of an open .vec raster
+- [`vec_raster_times()`](https://gillescolling.com/vectra/reference/vec_raster_times.md)
+  : Distinct time stamps stored in a .vec time cube
+- [`vec_read_window()`](https://gillescolling.com/vectra/reference/vec_read_window.md)
+  : Read a window of pixels from a .vec raster
+- [`vec_read_time_slice()`](https://gillescolling.com/vectra/reference/vec_read_time_slice.md)
+  : Read a single time slice from a .vec time cube
+- [`vec_read_pixel_series()`](https://gillescolling.com/vectra/reference/vec_read_pixel_series.md)
+  : Read the full time series at a single pixel from a .vec time cube
+- [`vec_extract_points()`](https://gillescolling.com/vectra/reference/vec_extract_points.md)
+  : Extract band values at (x, y) points from a .vec raster
+- [`vec_build_overviews()`](https://gillescolling.com/vectra/reference/vec_build_overviews.md)
+  : Build overview pyramids for a .vec raster
+- [`vec_write_raster()`](https://gillescolling.com/vectra/reference/vec_write_raster.md)
+  : Write a raster matrix or 3D array to a .vec raster file
+- [`vec_write_time_cube()`](https://gillescolling.com/vectra/reference/vec_write_time_cube.md)
+  : Write a 4D time-cube raster to .vec
+- [`vec_to_tiff()`](https://gillescolling.com/vectra/reference/vec_to_tiff.md)
+  : Export a .vec raster to GeoTIFF
+
+## GeoTIFF helpers
+
+Metadata and point-sampling for GeoTIFF rasters
+
+- [`tiff_extract_points()`](https://gillescolling.com/vectra/reference/tiff_extract_points.md)
+  : Extract raster values at point coordinates
+- [`tiff_metadata()`](https://gillescolling.com/vectra/reference/tiff_metadata.md)
+  : Read GDAL_METADATA from a GeoTIFF
+- [`tiff_band_names()`](https://gillescolling.com/vectra/reference/tiff_band_names.md)
+  : Read per-band names from a GeoTIFF
+- [`tiff_crs()`](https://gillescolling.com/vectra/reference/tiff_crs.md)
+  : Read CRS metadata from a GeoTIFF
+
+## Spatial operations
+
+Stream sf vector operations one batch at a time, for vector data larger
+than RAM
+
+- [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
+  : Stream a query through an sf transform
+- [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  : Spatial join a streamed query against a resident sf object
+- [`grid()`](https://gillescolling.com/vectra/reference/grid.md) :
+  Define a uniform grid for a partitioned spatial join
+- [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
+  : Keep streamed rows by their spatial relation to a resident layer
+- [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md)
+  : Clip or erase a streamed layer against a resident mask
+- [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
+  : Dissolve geometries by group
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  : Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)
+- [`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md)
+  : Rasterize a streamed point layer onto a fixed grid
+- [`polygonize()`](https://gillescolling.com/vectra/reference/polygonize.md)
+  : Vectorise a raster into polygons
+- [`contours()`](https://gillescolling.com/vectra/reference/contours.md)
+  : Extract contour iso-lines from a streamed raster
+- [`zonal()`](https://gillescolling.com/vectra/reference/zonal.md) :
+  Summarise raster values within zones
+- [`focal()`](https://gillescolling.com/vectra/reference/focal.md) :
+  Moving-window (focal) statistics over a streamed raster
+- [`terrain()`](https://gillescolling.com/vectra/reference/terrain.md) :
+  Terrain derivatives from a streamed elevation raster
+- [`warp()`](https://gillescolling.com/vectra/reference/warp.md) :
+  Resample or reproject a streamed raster onto a target grid
+- [`mask()`](https://gillescolling.com/vectra/reference/mask.md) : Mask
+  a streamed raster to a polygon layer
+- [`mosaic()`](https://gillescolling.com/vectra/reference/mosaic.md) :
+  Merge aligned rasters onto a common grid
+- [`rast_calc()`](https://gillescolling.com/vectra/reference/rast_calc.md)
+  : Cellwise calculation over aligned rasters (map algebra)
+- [`proximity()`](https://gillescolling.com/vectra/reference/proximity.md)
+  : Euclidean distance to the nearest feature (proximity)
+- [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+  : Materialize a spatial query as an sf object
+- [`geom_expressions`](https://gillescolling.com/vectra/reference/geom_expressions.md)
+  : Geometry functions inside mutate(), filter(), and summarise()
+
+## Geometry construction and cleaning
+
+Reshape, repair, simplify, and snap streamed vector geometry
+
+- [`spatial_construct()`](https://gillescolling.com/vectra/reference/spatial_construct.md)
+  : Build a set-wise geometry construction, optionally per group
+- [`spatial_explode()`](https://gillescolling.com/vectra/reference/spatial_explode.md)
+  : Explode multipart geometries into single-part features
+- [`spatial_line_merge()`](https://gillescolling.com/vectra/reference/spatial_line_merge.md)
+  : Merge contiguous line segments into maximal lines
+- [`spatial_simplify()`](https://gillescolling.com/vectra/reference/spatial_simplify.md)
+  : Simplify a polygon coverage without tearing shared edges
+- [`spatial_smooth()`](https://gillescolling.com/vectra/reference/spatial_smooth.md)
+  : Smooth streamed line and polygon geometry
+- [`spatial_snap()`](https://gillescolling.com/vectra/reference/spatial_snap.md)
+  : Snap a streamed layer toward a resident reference layer
+- [`spatial_snap_grid()`](https://gillescolling.com/vectra/reference/spatial_snap_grid.md)
+  : Snap a streamed layer's coordinates to a fixed grid
+- [`spatial_eliminate()`](https://gillescolling.com/vectra/reference/spatial_eliminate.md)
+  : Merge sliver polygons into a neighbour
+- [`spatial_split()`](https://gillescolling.com/vectra/reference/spatial_split.md)
+  : Split a streamed layer by a resident blade, or return its crossing
+  points
+- [`spatial_centerline()`](https://gillescolling.com/vectra/reference/spatial_centerline.md)
+  : Trace the centerline (medial axis) of streamed polygons
+
+## Coverage and topology
+
+Shared-edge topology and polygonal faces of polygon coverages
+
+- [`spatial_topology()`](https://gillescolling.com/vectra/reference/spatial_topology.md)
+  : Build the shared-edge topology of a polygon coverage
+- [`spatial_polygonize()`](https://gillescolling.com/vectra/reference/spatial_polygonize.md)
+  : Build polygonal faces from a line network
+
+## Spatial networks
+
+Build routable graphs and solve shortest paths over line layers
+
+- [`spatial_network()`](https://gillescolling.com/vectra/reference/spatial_network.md)
+  : Build a routable network graph from a line layer
+- [`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md)
+  : Shortest paths and origin-destination costs over a network
+- [`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)
+  : Service areas and isochrones over a network
+
+## Spatial queries
+
+Nearest neighbours and linear referencing
+
+- [`spatial_knn()`](https://gillescolling.com/vectra/reference/spatial_knn.md)
+  : k nearest neighbours of a streamed layer, with distances
+- [`spatial_locate()`](https://gillescolling.com/vectra/reference/spatial_locate.md)
+  : Locate streamed points along a resident line layer

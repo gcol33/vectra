@@ -48,11 +48,6 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
-    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
-    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
-    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
-    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
-    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -60,8 +55,13 @@
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
-    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
     <li><a class="dropdown-item" href="../articles/offload.html">Offloading: streaming, monoids, and out-of-core fits</a></li>
+    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
+    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
+    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
+    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
+    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
@@ -388,9 +388,9 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Without index: 0.09 s</span></span>
+<span><span class="co">#&gt; Without index: 0.11 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.36 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.34 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a

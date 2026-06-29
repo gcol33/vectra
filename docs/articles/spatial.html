@@ -48,11 +48,6 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
-    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
-    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
-    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
-    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
-    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -60,8 +55,13 @@
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
-    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
     <li><a class="dropdown-item" href="../articles/offload.html">Offloading: streaming, monoids, and out-of-core fits</a></li>
+    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
+    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
+    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
+    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
+    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
@@ -404,7 +404,7 @@ var rows=[
  {name:'sort / partition',sub:'focal, terrain, warp, partitioned join',col:C.amber,f:function(t){return 0.16+0.2*(0.5-0.5*Math.cos(t*6.5));}},
  {name:'all-to-all',sub:'self-overlay, voronoi, neighbour graphs',col:C.red,f:function(t){return VA.clamp(t,0,1)*0.9+0.05;}}
 ];
-var PX=212,PW=W-212-92,BH=56,GAP=36,TOP=74;
+var PX=310,PW=W-310-92,BH=56,GAP=36,TOP=74;
 function draw(tc){VA.bg(x,W,H);
   VA.glow(x,C.cyan,7);x.fillStyle=C.cyan;x.textAlign='left';x.font=VA.F(15,true);x.fillText('COST-MODEL TIERS  ::  MEMORY OVER A RUN',16,28);VA.noglow(x);
   var t=tc/PERIOD;
@@ -417,7 +417,7 @@ function draw(tc){VA.bg(x,W,H);
     x.globalAlpha=1;
     if(t<1){var cx2=PX+steps;x.strokeStyle=C.cyan;VA.glow(x,C.cyan,5);x.beginPath();x.moveTo(cx2,y);x.lineTo(cx2,y+BH);x.stroke();VA.noglow(x);}
     x.fillStyle=rw.col;x.font=VA.F(14,true);x.textAlign='right';x.fillText(rw.name,PX-14,y+24);
-    x.fillStyle=C.mut;x.font=VA.F(10);x.fillText(rw.sub,PX-14,y+40);
+    x.fillStyle=C.mut;x.font=VA.F(9);x.fillText(rw.sub,PX-14,y+40);
     x.fillStyle=C.red;x.font=VA.F(10);x.textAlign='left';x.fillText('RAM',PX+PW+8,y-3);}
   x.fillStyle=C.mut;x.font=VA.F(11);x.textAlign='center';x.fillText('fold and partition stay under the RAM line; all-to-all reaches it',W/2,H-16);
   VA.scan(x,W,H);

@@ -31,11 +31,6 @@
       <ul class="navbar-nav me-auto"><li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
-    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
-    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
-    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
-    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
-    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -43,8 +38,13 @@
     <li><a class="dropdown-item" href="../articles/string-ops.html">String Operations and Fuzzy Matching</a></li>
     <li><a class="dropdown-item" href="../articles/indexing.html">Indexing and Query Optimization</a></li>
     <li><a class="dropdown-item" href="../articles/large-data.html">Working with Large Data</a></li>
-    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
     <li><a class="dropdown-item" href="../articles/offload.html">Offloading: streaming, monoids, and out-of-core fits</a></li>
+    <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
+    <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
+    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
+    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
+    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
+    <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
   </ul></li>
 <li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -150,484 +150,6 @@
 
         </dt>
         <dd>Stream a vectra node's geometry to a vector file</dd>
-      </dl></div><div class="section level2">
-      <h2 id="geotiff-helpers">GeoTIFF helpers<a class="anchor" aria-label="anchor" href="#geotiff-helpers"></a></h2>
-
-      <div class="section-desc"><p>Metadata and point-sampling for GeoTIFF rasters</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="tiff_extract_points.html">tiff_extract_points()</a></code>
-
-        </dt>
-        <dd>Extract raster values at point coordinates</dd>
-
-        <dt>
-
-          <code><a href="tiff_metadata.html">tiff_metadata()</a></code>
-
-        </dt>
-        <dd>Read GDAL_METADATA from a GeoTIFF</dd>
-
-        <dt>
-
-          <code><a href="tiff_band_names.html">tiff_band_names()</a></code>
-
-        </dt>
-        <dd>Read per-band names from a GeoTIFF</dd>
-
-        <dt>
-
-          <code><a href="tiff_crs.html">tiff_crs()</a></code>
-
-        </dt>
-        <dd>Read CRS metadata from a GeoTIFF</dd>
-      </dl></div><div class="section level2">
-      <h2 id="raster-data-cubes">Raster data cubes<a class="anchor" aria-label="anchor" href="#raster-data-cubes"></a></h2>
-
-      <div class="section-desc"><p>Read and write .vec rasters and time cubes out of core</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="vec_open_raster.html">vec_open_raster()</a></code>
-
-        </dt>
-        <dd>Open a .vec raster</dd>
-
-        <dt>
-
-          <code><a href="vec_close_raster.html">vec_close_raster()</a></code>
-
-        </dt>
-        <dd>Close a .vec raster handle</dd>
-
-        <dt>
-
-          <code><a href="vec_raster_layout.html">vec_raster_layout()</a></code>
-
-        </dt>
-        <dd>Tile layout of an open .vec raster</dd>
-
-        <dt>
-
-          <code><a href="vec_raster_times.html">vec_raster_times()</a></code>
-
-        </dt>
-        <dd>Distinct time stamps stored in a .vec time cube</dd>
-
-        <dt>
-
-          <code><a href="vec_read_window.html">vec_read_window()</a></code>
-
-        </dt>
-        <dd>Read a window of pixels from a .vec raster</dd>
-
-        <dt>
-
-          <code><a href="vec_read_time_slice.html">vec_read_time_slice()</a></code>
-
-        </dt>
-        <dd>Read a single time slice from a .vec time cube</dd>
-
-        <dt>
-
-          <code><a href="vec_read_pixel_series.html">vec_read_pixel_series()</a></code>
-
-        </dt>
-        <dd>Read the full time series at a single pixel from a .vec time cube</dd>
-
-        <dt>
-
-          <code><a href="vec_extract_points.html">vec_extract_points()</a></code>
-
-        </dt>
-        <dd>Extract band values at (x, y) points from a .vec raster</dd>
-
-        <dt>
-
-          <code><a href="vec_build_overviews.html">vec_build_overviews()</a></code>
-
-        </dt>
-        <dd>Build overview pyramids for a .vec raster</dd>
-
-        <dt>
-
-          <code><a href="vec_write_raster.html">vec_write_raster()</a></code>
-
-        </dt>
-        <dd>Write a raster matrix or 3D array to a .vec raster file</dd>
-
-        <dt>
-
-          <code><a href="vec_write_time_cube.html">vec_write_time_cube()</a></code>
-
-        </dt>
-        <dd>Write a 4D time-cube raster to .vec</dd>
-
-        <dt>
-
-          <code><a href="vec_to_tiff.html">vec_to_tiff()</a></code>
-
-        </dt>
-        <dd>Export a .vec raster to GeoTIFF</dd>
-      </dl></div><div class="section level2">
-      <h2 id="spatial-operations">Spatial operations<a class="anchor" aria-label="anchor" href="#spatial-operations"></a></h2>
-
-      <div class="section-desc"><p>Stream sf vector operations one batch at a time, for vector data larger than RAM</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="spatial_map.html">spatial_map()</a></code>
-
-        </dt>
-        <dd>Stream a query through an sf transform</dd>
-
-        <dt>
-
-          <code><a href="spatial_join.html">spatial_join()</a></code>
-
-        </dt>
-        <dd>Spatial join a streamed query against a resident sf object</dd>
-
-        <dt>
-
-          <code><a href="grid.html">grid()</a></code>
-
-        </dt>
-        <dd>Define a uniform grid for a partitioned spatial join</dd>
-
-        <dt>
-
-          <code><a href="spatial_filter.html">spatial_filter()</a></code>
-
-        </dt>
-        <dd>Keep streamed rows by their spatial relation to a resident layer</dd>
-
-        <dt>
-
-          <code><a href="spatial_clip.html">spatial_clip()</a></code>
-
-        </dt>
-        <dd>Clip or erase a streamed layer against a resident mask</dd>
-
-        <dt>
-
-          <code><a href="spatial_dissolve.html">spatial_dissolve()</a></code>
-
-        </dt>
-        <dd>Dissolve geometries by group</dd>
-
-        <dt>
-
-          <code><a href="spatial_overlay.html">spatial_overlay()</a></code>
-
-        </dt>
-        <dd>Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)</dd>
-
-        <dt>
-
-          <code><a href="rasterize.html">rasterize()</a></code>
-
-        </dt>
-        <dd>Rasterize a streamed point layer onto a fixed grid</dd>
-
-        <dt>
-
-          <code><a href="polygonize.html">polygonize()</a></code>
-
-        </dt>
-        <dd>Vectorise a raster into polygons</dd>
-
-        <dt>
-
-          <code><a href="contours.html">contours()</a></code>
-
-        </dt>
-        <dd>Extract contour iso-lines from a streamed raster</dd>
-
-        <dt>
-
-          <code><a href="zonal.html">zonal()</a></code>
-
-        </dt>
-        <dd>Summarise raster values within zones</dd>
-
-        <dt>
-
-          <code><a href="focal.html">focal()</a></code>
-
-        </dt>
-        <dd>Moving-window (focal) statistics over a streamed raster</dd>
-
-        <dt>
-
-          <code><a href="terrain.html">terrain()</a></code>
-
-        </dt>
-        <dd>Terrain derivatives from a streamed elevation raster</dd>
-
-        <dt>
-
-          <code><a href="warp.html">warp()</a></code>
-
-        </dt>
-        <dd>Resample or reproject a streamed raster onto a target grid</dd>
-
-        <dt>
-
-          <code><a href="mask.html">mask()</a></code>
-
-        </dt>
-        <dd>Mask a streamed raster to a polygon layer</dd>
-
-        <dt>
-
-          <code><a href="mosaic.html">mosaic()</a></code>
-
-        </dt>
-        <dd>Merge aligned rasters onto a common grid</dd>
-
-        <dt>
-
-          <code><a href="rast_calc.html">rast_calc()</a></code>
-
-        </dt>
-        <dd>Cellwise calculation over aligned rasters (map algebra)</dd>
-
-        <dt>
-
-          <code><a href="proximity.html">proximity()</a></code>
-
-        </dt>
-        <dd>Euclidean distance to the nearest feature (proximity)</dd>
-
-        <dt>
-
-          <code><a href="collect_sf.html">collect_sf()</a></code>
-
-        </dt>
-        <dd>Materialize a spatial query as an sf object</dd>
-
-        <dt>
-
-          <code><a href="geom_expressions.html">geom_expressions</a></code>
-
-        </dt>
-        <dd>Geometry functions inside mutate(), filter(), and summarise()</dd>
-      </dl></div><div class="section level2">
-      <h2 id="geometry-construction-and-cleaning">Geometry construction and cleaning<a class="anchor" aria-label="anchor" href="#geometry-construction-and-cleaning"></a></h2>
-
-      <div class="section-desc"><p>Reshape, repair, simplify, and snap streamed vector geometry</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="spatial_construct.html">spatial_construct()</a></code>
-
-        </dt>
-        <dd>Build a set-wise geometry construction, optionally per group</dd>
-
-        <dt>
-
-          <code><a href="spatial_explode.html">spatial_explode()</a></code>
-
-        </dt>
-        <dd>Explode multipart geometries into single-part features</dd>
-
-        <dt>
-
-          <code><a href="spatial_line_merge.html">spatial_line_merge()</a></code>
-
-        </dt>
-        <dd>Merge contiguous line segments into maximal lines</dd>
-
-        <dt>
-
-          <code><a href="spatial_simplify.html">spatial_simplify()</a></code>
-
-        </dt>
-        <dd>Simplify a polygon coverage without tearing shared edges</dd>
-
-        <dt>
-
-          <code><a href="spatial_smooth.html">spatial_smooth()</a></code>
-
-        </dt>
-        <dd>Smooth streamed line and polygon geometry</dd>
-
-        <dt>
-
-          <code><a href="spatial_snap.html">spatial_snap()</a></code>
-
-        </dt>
-        <dd>Snap a streamed layer toward a resident reference layer</dd>
-
-        <dt>
-
-          <code><a href="spatial_snap_grid.html">spatial_snap_grid()</a></code>
-
-        </dt>
-        <dd>Snap a streamed layer's coordinates to a fixed grid</dd>
-
-        <dt>
-
-          <code><a href="spatial_eliminate.html">spatial_eliminate()</a></code>
-
-        </dt>
-        <dd>Merge sliver polygons into a neighbour</dd>
-
-        <dt>
-
-          <code><a href="spatial_split.html">spatial_split()</a></code>
-
-        </dt>
-        <dd>Split a streamed layer by a resident blade, or return its crossing points</dd>
-
-        <dt>
-
-          <code><a href="spatial_centerline.html">spatial_centerline()</a></code>
-
-        </dt>
-        <dd>Trace the centerline (medial axis) of streamed polygons</dd>
-      </dl></div><div class="section level2">
-      <h2 id="coverage-and-topology">Coverage and topology<a class="anchor" aria-label="anchor" href="#coverage-and-topology"></a></h2>
-
-      <div class="section-desc"><p>Shared-edge topology and polygonal faces of polygon coverages</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="spatial_topology.html">spatial_topology()</a></code>
-
-        </dt>
-        <dd>Build the shared-edge topology of a polygon coverage</dd>
-
-        <dt>
-
-          <code><a href="spatial_polygonize.html">spatial_polygonize()</a></code>
-
-        </dt>
-        <dd>Build polygonal faces from a line network</dd>
-      </dl></div><div class="section level2">
-      <h2 id="spatial-networks">Spatial networks<a class="anchor" aria-label="anchor" href="#spatial-networks"></a></h2>
-
-      <div class="section-desc"><p>Build routable graphs and solve shortest paths over line layers</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="spatial_network.html">spatial_network()</a></code>
-
-        </dt>
-        <dd>Build a routable network graph from a line layer</dd>
-
-        <dt>
-
-          <code><a href="spatial_route.html">spatial_route()</a></code>
-
-        </dt>
-        <dd>Shortest paths and origin-destination costs over a network</dd>
-
-        <dt>
-
-          <code><a href="spatial_service_area.html">spatial_service_area()</a></code>
-
-        </dt>
-        <dd>Service areas and isochrones over a network</dd>
-      </dl></div><div class="section level2">
-      <h2 id="spatial-queries">Spatial queries<a class="anchor" aria-label="anchor" href="#spatial-queries"></a></h2>
-
-      <div class="section-desc"><p>Nearest neighbours and linear referencing</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="spatial_knn.html">spatial_knn()</a></code>
-
-        </dt>
-        <dd>k nearest neighbours of a streamed layer, with distances</dd>
-
-        <dt>
-
-          <code><a href="spatial_locate.html">spatial_locate()</a></code>
-
-        </dt>
-        <dd>Locate streamed points along a resident line layer</dd>
-      </dl></div><div class="section level2">
-      <h2 id="file-operations">File operations<a class="anchor" aria-label="anchor" href="#file-operations"></a></h2>
-
-      <div class="section-desc"><p>Incremental updates to .vtr files</p></div>
-
-      <dl></dl></div><div class="section level2">
-
-
-
-
-      <dl><dt>
-
-          <code><a href="append_vtr.html">append_vtr()</a></code>
-
-        </dt>
-        <dd>Append rows to an existing .vtr file</dd>
-
-        <dt>
-
-          <code><a href="delete_vtr.html">delete_vtr()</a></code>
-
-        </dt>
-        <dd>Logically delete rows from a .vtr file</dd>
-
-        <dt>
-
-          <code><a href="diff_vtr.html">diff_vtr()</a></code>
-
-        </dt>
-        <dd>Compute the logical diff between two .vtr files</dd>
-
-        <dt>
-
-          <code><a href="create_index.html">create_index()</a></code>
-
-        </dt>
-        <dd>Create a hash index on a .vtr file column</dd>
-
-        <dt>
-
-          <code><a href="has_index.html">has_index()</a></code>
-
-        </dt>
-        <dd>Check if a hash index exists for a .vtr column</dd>
       </dl></div><div class="section level2">
       <h2 id="single-table-verbs">Single-table verbs<a class="anchor" aria-label="anchor" href="#single-table-verbs"></a></h2>
 
@@ -932,6 +454,50 @@
         </dt>
         <dd>Apply a function to each shard of a partition</dd>
       </dl></div><div class="section level2">
+      <h2 id="file-operations">File operations<a class="anchor" aria-label="anchor" href="#file-operations"></a></h2>
+
+      <div class="section-desc"><p>Incremental updates to .vtr files</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="append_vtr.html">append_vtr()</a></code>
+
+        </dt>
+        <dd>Append rows to an existing .vtr file</dd>
+
+        <dt>
+
+          <code><a href="delete_vtr.html">delete_vtr()</a></code>
+
+        </dt>
+        <dd>Logically delete rows from a .vtr file</dd>
+
+        <dt>
+
+          <code><a href="diff_vtr.html">diff_vtr()</a></code>
+
+        </dt>
+        <dd>Compute the logical diff between two .vtr files</dd>
+
+        <dt>
+
+          <code><a href="create_index.html">create_index()</a></code>
+
+        </dt>
+        <dd>Create a hash index on a .vtr file column</dd>
+
+        <dt>
+
+          <code><a href="has_index.html">has_index()</a></code>
+
+        </dt>
+        <dd>Check if a hash index exists for a .vtr column</dd>
+      </dl></div><div class="section level2">
       <h2 id="diagnostics">Diagnostics<a class="anchor" aria-label="anchor" href="#diagnostics"></a></h2>
 
 
@@ -968,6 +534,440 @@
 
         </dt>
         <dd>Print a vectra query node</dd>
+      </dl></div><div class="section level2">
+      <h2 id="raster-data-cubes">Raster data cubes<a class="anchor" aria-label="anchor" href="#raster-data-cubes"></a></h2>
+
+      <div class="section-desc"><p>Read and write .vec rasters and time cubes out of core</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="vec_open_raster.html">vec_open_raster()</a></code>
+
+        </dt>
+        <dd>Open a .vec raster</dd>
+
+        <dt>
+
+          <code><a href="vec_close_raster.html">vec_close_raster()</a></code>
+
+        </dt>
+        <dd>Close a .vec raster handle</dd>
+
+        <dt>
+
+          <code><a href="vec_raster_layout.html">vec_raster_layout()</a></code>
+
+        </dt>
+        <dd>Tile layout of an open .vec raster</dd>
+
+        <dt>
+
+          <code><a href="vec_raster_times.html">vec_raster_times()</a></code>
+
+        </dt>
+        <dd>Distinct time stamps stored in a .vec time cube</dd>
+
+        <dt>
+
+          <code><a href="vec_read_window.html">vec_read_window()</a></code>
+
+        </dt>
+        <dd>Read a window of pixels from a .vec raster</dd>
+
+        <dt>
+
+          <code><a href="vec_read_time_slice.html">vec_read_time_slice()</a></code>
+
+        </dt>
+        <dd>Read a single time slice from a .vec time cube</dd>
+
+        <dt>
+
+          <code><a href="vec_read_pixel_series.html">vec_read_pixel_series()</a></code>
+
+        </dt>
+        <dd>Read the full time series at a single pixel from a .vec time cube</dd>
+
+        <dt>
+
+          <code><a href="vec_extract_points.html">vec_extract_points()</a></code>
+
+        </dt>
+        <dd>Extract band values at (x, y) points from a .vec raster</dd>
+
+        <dt>
+
+          <code><a href="vec_build_overviews.html">vec_build_overviews()</a></code>
+
+        </dt>
+        <dd>Build overview pyramids for a .vec raster</dd>
+
+        <dt>
+
+          <code><a href="vec_write_raster.html">vec_write_raster()</a></code>
+
+        </dt>
+        <dd>Write a raster matrix or 3D array to a .vec raster file</dd>
+
+        <dt>
+
+          <code><a href="vec_write_time_cube.html">vec_write_time_cube()</a></code>
+
+        </dt>
+        <dd>Write a 4D time-cube raster to .vec</dd>
+
+        <dt>
+
+          <code><a href="vec_to_tiff.html">vec_to_tiff()</a></code>
+
+        </dt>
+        <dd>Export a .vec raster to GeoTIFF</dd>
+      </dl></div><div class="section level2">
+      <h2 id="geotiff-helpers">GeoTIFF helpers<a class="anchor" aria-label="anchor" href="#geotiff-helpers"></a></h2>
+
+      <div class="section-desc"><p>Metadata and point-sampling for GeoTIFF rasters</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="tiff_extract_points.html">tiff_extract_points()</a></code>
+
+        </dt>
+        <dd>Extract raster values at point coordinates</dd>
+
+        <dt>
+
+          <code><a href="tiff_metadata.html">tiff_metadata()</a></code>
+
+        </dt>
+        <dd>Read GDAL_METADATA from a GeoTIFF</dd>
+
+        <dt>
+
+          <code><a href="tiff_band_names.html">tiff_band_names()</a></code>
+
+        </dt>
+        <dd>Read per-band names from a GeoTIFF</dd>
+
+        <dt>
+
+          <code><a href="tiff_crs.html">tiff_crs()</a></code>
+
+        </dt>
+        <dd>Read CRS metadata from a GeoTIFF</dd>
+      </dl></div><div class="section level2">
+      <h2 id="spatial-operations">Spatial operations<a class="anchor" aria-label="anchor" href="#spatial-operations"></a></h2>
+
+      <div class="section-desc"><p>Stream sf vector operations one batch at a time, for vector data larger than RAM</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_map.html">spatial_map()</a></code>
+
+        </dt>
+        <dd>Stream a query through an sf transform</dd>
+
+        <dt>
+
+          <code><a href="spatial_join.html">spatial_join()</a></code>
+
+        </dt>
+        <dd>Spatial join a streamed query against a resident sf object</dd>
+
+        <dt>
+
+          <code><a href="grid.html">grid()</a></code>
+
+        </dt>
+        <dd>Define a uniform grid for a partitioned spatial join</dd>
+
+        <dt>
+
+          <code><a href="spatial_filter.html">spatial_filter()</a></code>
+
+        </dt>
+        <dd>Keep streamed rows by their spatial relation to a resident layer</dd>
+
+        <dt>
+
+          <code><a href="spatial_clip.html">spatial_clip()</a></code>
+
+        </dt>
+        <dd>Clip or erase a streamed layer against a resident mask</dd>
+
+        <dt>
+
+          <code><a href="spatial_dissolve.html">spatial_dissolve()</a></code>
+
+        </dt>
+        <dd>Dissolve geometries by group</dd>
+
+        <dt>
+
+          <code><a href="spatial_overlay.html">spatial_overlay()</a></code>
+
+        </dt>
+        <dd>Self-overlay a polygon layer into disjoint pieces (QGIS-style Union)</dd>
+
+        <dt>
+
+          <code><a href="rasterize.html">rasterize()</a></code>
+
+        </dt>
+        <dd>Rasterize a streamed point layer onto a fixed grid</dd>
+
+        <dt>
+
+          <code><a href="polygonize.html">polygonize()</a></code>
+
+        </dt>
+        <dd>Vectorise a raster into polygons</dd>
+
+        <dt>
+
+          <code><a href="contours.html">contours()</a></code>
+
+        </dt>
+        <dd>Extract contour iso-lines from a streamed raster</dd>
+
+        <dt>
+
+          <code><a href="zonal.html">zonal()</a></code>
+
+        </dt>
+        <dd>Summarise raster values within zones</dd>
+
+        <dt>
+
+          <code><a href="focal.html">focal()</a></code>
+
+        </dt>
+        <dd>Moving-window (focal) statistics over a streamed raster</dd>
+
+        <dt>
+
+          <code><a href="terrain.html">terrain()</a></code>
+
+        </dt>
+        <dd>Terrain derivatives from a streamed elevation raster</dd>
+
+        <dt>
+
+          <code><a href="warp.html">warp()</a></code>
+
+        </dt>
+        <dd>Resample or reproject a streamed raster onto a target grid</dd>
+
+        <dt>
+
+          <code><a href="mask.html">mask()</a></code>
+
+        </dt>
+        <dd>Mask a streamed raster to a polygon layer</dd>
+
+        <dt>
+
+          <code><a href="mosaic.html">mosaic()</a></code>
+
+        </dt>
+        <dd>Merge aligned rasters onto a common grid</dd>
+
+        <dt>
+
+          <code><a href="rast_calc.html">rast_calc()</a></code>
+
+        </dt>
+        <dd>Cellwise calculation over aligned rasters (map algebra)</dd>
+
+        <dt>
+
+          <code><a href="proximity.html">proximity()</a></code>
+
+        </dt>
+        <dd>Euclidean distance to the nearest feature (proximity)</dd>
+
+        <dt>
+
+          <code><a href="collect_sf.html">collect_sf()</a></code>
+
+        </dt>
+        <dd>Materialize a spatial query as an sf object</dd>
+
+        <dt>
+
+          <code><a href="geom_expressions.html">geom_expressions</a></code>
+
+        </dt>
+        <dd>Geometry functions inside mutate(), filter(), and summarise()</dd>
+      </dl></div><div class="section level2">
+      <h2 id="geometry-construction-and-cleaning">Geometry construction and cleaning<a class="anchor" aria-label="anchor" href="#geometry-construction-and-cleaning"></a></h2>
+
+      <div class="section-desc"><p>Reshape, repair, simplify, and snap streamed vector geometry</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_construct.html">spatial_construct()</a></code>
+
+        </dt>
+        <dd>Build a set-wise geometry construction, optionally per group</dd>
+
+        <dt>
+
+          <code><a href="spatial_explode.html">spatial_explode()</a></code>
+
+        </dt>
+        <dd>Explode multipart geometries into single-part features</dd>
+
+        <dt>
+
+          <code><a href="spatial_line_merge.html">spatial_line_merge()</a></code>
+
+        </dt>
+        <dd>Merge contiguous line segments into maximal lines</dd>
+
+        <dt>
+
+          <code><a href="spatial_simplify.html">spatial_simplify()</a></code>
+
+        </dt>
+        <dd>Simplify a polygon coverage without tearing shared edges</dd>
+
+        <dt>
+
+          <code><a href="spatial_smooth.html">spatial_smooth()</a></code>
+
+        </dt>
+        <dd>Smooth streamed line and polygon geometry</dd>
+
+        <dt>
+
+          <code><a href="spatial_snap.html">spatial_snap()</a></code>
+
+        </dt>
+        <dd>Snap a streamed layer toward a resident reference layer</dd>
+
+        <dt>
+
+          <code><a href="spatial_snap_grid.html">spatial_snap_grid()</a></code>
+
+        </dt>
+        <dd>Snap a streamed layer's coordinates to a fixed grid</dd>
+
+        <dt>
+
+          <code><a href="spatial_eliminate.html">spatial_eliminate()</a></code>
+
+        </dt>
+        <dd>Merge sliver polygons into a neighbour</dd>
+
+        <dt>
+
+          <code><a href="spatial_split.html">spatial_split()</a></code>
+
+        </dt>
+        <dd>Split a streamed layer by a resident blade, or return its crossing points</dd>
+
+        <dt>
+
+          <code><a href="spatial_centerline.html">spatial_centerline()</a></code>
+
+        </dt>
+        <dd>Trace the centerline (medial axis) of streamed polygons</dd>
+      </dl></div><div class="section level2">
+      <h2 id="coverage-and-topology">Coverage and topology<a class="anchor" aria-label="anchor" href="#coverage-and-topology"></a></h2>
+
+      <div class="section-desc"><p>Shared-edge topology and polygonal faces of polygon coverages</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_topology.html">spatial_topology()</a></code>
+
+        </dt>
+        <dd>Build the shared-edge topology of a polygon coverage</dd>
+
+        <dt>
+
+          <code><a href="spatial_polygonize.html">spatial_polygonize()</a></code>
+
+        </dt>
+        <dd>Build polygonal faces from a line network</dd>
+      </dl></div><div class="section level2">
+      <h2 id="spatial-networks">Spatial networks<a class="anchor" aria-label="anchor" href="#spatial-networks"></a></h2>
+
+      <div class="section-desc"><p>Build routable graphs and solve shortest paths over line layers</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_network.html">spatial_network()</a></code>
+
+        </dt>
+        <dd>Build a routable network graph from a line layer</dd>
+
+        <dt>
+
+          <code><a href="spatial_route.html">spatial_route()</a></code>
+
+        </dt>
+        <dd>Shortest paths and origin-destination costs over a network</dd>
+
+        <dt>
+
+          <code><a href="spatial_service_area.html">spatial_service_area()</a></code>
+
+        </dt>
+        <dd>Service areas and isochrones over a network</dd>
+      </dl></div><div class="section level2">
+      <h2 id="spatial-queries">Spatial queries<a class="anchor" aria-label="anchor" href="#spatial-queries"></a></h2>
+
+      <div class="section-desc"><p>Nearest neighbours and linear referencing</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="spatial_knn.html">spatial_knn()</a></code>
+
+        </dt>
+        <dd>k nearest neighbours of a streamed layer, with distances</dd>
+
+        <dt>
+
+          <code><a href="spatial_locate.html">spatial_locate()</a></code>
+
+        </dt>
+        <dd>Locate streamed points along a resident line layer</dd>
       </dl></div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>
