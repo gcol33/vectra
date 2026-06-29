@@ -24,6 +24,17 @@
 * The per-row decode is parallelized with OpenMP. A missing or unparseable
   geometry yields `NA` for that row rather than an error.
 
+## Documentation
+
+* New vignettes covering the spatial surface added since 0.9.1: "Geometry
+  functions in expressions" (the `st_*` functions inside `mutate()`/`filter()`/
+  `summarise()`), "Coverage and topology" (the set-wise verbs:
+  `spatial_polygonize()`, `spatial_line_merge()`, `spatial_simplify()`,
+  `spatial_eliminate()`, `spatial_explode()`, `spatial_topology()`,
+  `spatial_centerline()`, `spatial_construct()`, `spatial_snap_grid()`,
+  `spatial_locate()`), and "Network analysis" (`spatial_network()`,
+  `spatial_route()`, `spatial_service_area()`).
+
 ## Bug fixes
 
 * Fixed installation failure on R-devel with clang 22 (CRAN's

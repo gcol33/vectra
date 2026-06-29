@@ -1,0 +1,242 @@
+---
+title: "Geometry functions in expressions"
+author: "Gilles Colling"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Geometry functions in expressions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+has_sf <- requireNamespace("sf", quietly = TRUE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = has_sf
+)
+```
+
+vectra carries geometry through the engine as hex-encoded WKB in an ordinary
+string column. The verbs in
+[Streaming spatial operations](streaming-spatial.html) wrap whole sf operations
+around that column. This vignette covers the other half of the spatial surface:
+a family of `st_*` functions that work inside the expression verbs themselves,
+so a measure, a predicate, or a geometry transform is just another term in
+`mutate()`, `filter()`, or `summarise()`.
+
+These functions run on the GEOS C library straight off the WKB column, one row
+at a time, with no per-batch round-trip through sf. `filter(st_area(geometry) >
+1e6)` prunes the stream in C, and `mutate(here = st_centroid(geometry))` adds a
+new WKB geometry column that any later verb can read. The per-row decode is
+parallelised with OpenMP, so a measure over a large layer uses every core.
+
+```{r libs, message = FALSE}
+library(vectra)
+library(sf)
+```
+
+## A layer to work on
+
+The examples use the North Carolina counties shipped with sf. Writing the layer
+to a `.vtr` is the usual first step: the geometry becomes a hex-WKB string
+column (named `geometry` by convention), and the attributes ride alongside it.
+
+```{r data}
+nc <- st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
+
+f <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  NAME     = nc$NAME,
+  BIR74    = nc$BIR74,
+  geometry = st_as_binary(st_geometry(nc), hex = TRUE)
+), f)
+
+tbl(f)
+```
+
+The counties are stored in longitude and latitude, so every measure below is
+planar in those units, the same convention the streaming verbs follow. Project
+the layer first if you need metric areas or distances.
+
+## Measures
+
+A measure reads a geometry and returns a number, so it drops into `mutate()` as
+an ordinary column.
+
+```{r measures}
+tbl(f) |>
+  mutate(area   = st_area(geometry),
+         perim  = st_perimeter(geometry),
+         nverts = st_npoints(geometry)) |>
+  select(NAME, area, perim, nverts) |>
+  collect() |>
+  head()
+```
+
+`st_length()` returns the boundary length of a polygon (an alias of
+`st_perimeter()`) and the line length of a linestring. `st_ngeometries()`
+counts the parts of a multi-geometry. `st_x()` and `st_y()` read the coordinate
+of a point and return `NA` for anything that is not a point, which makes them
+most useful on a centroid:
+
+```{r coords}
+tbl(f) |>
+  mutate(centroid = st_centroid(geometry),
+         cx = st_x(centroid),
+         cy = st_y(centroid)) |>
+  select(NAME, cx, cy) |>
+  collect() |>
+  head()
+```
+
+A geometry-valued function such as `st_centroid()` produces a new WKB column
+(`centroid` above), and the next term reads it like any other column. That is
+the whole mechanism: geometry in, geometry or a scalar out, all as columns.
+
+## Predicates
+
+A unary predicate tests one geometry: `st_is_valid()`, `st_is_empty()`,
+`st_is_simple()`. A binary predicate tests a topological relation against a
+second geometry: `st_intersects()`, `st_within()`, `st_contains()`,
+`st_overlaps()`, `st_touches()`, `st_crosses()`, `st_equals()`,
+`st_disjoint()`, `st_covers()`, `st_covered_by()`.
+
+In `filter()` a predicate keeps the rows where the relation holds, the
+geometry-expression form of select-by-location:
+
+```{r predicate-filter}
+aoi <- st_as_sfc(st_bbox(c(xmin = -80, ymin = 35, xmax = -78, ymax = 36.5)),
+                 crs = st_crs(nc))
+
+tbl(f) |>
+  filter(st_intersects(geometry, aoi)) |>
+  collect() |>
+  nrow()
+```
+
+The second geometry here is a constant `sf` object. It is parsed once and shared
+read-only across every row, so testing a whole stream against one area of
+interest stays cheap. A multi-feature object is unioned to a single geometry
+first.
+
+In `mutate()` the same call returns a logical column, ready for a later verb:
+
+```{r predicate-mutate}
+tbl(f) |>
+  mutate(near_raleigh = st_intersects(geometry, aoi)) |>
+  filter(near_raleigh) |>
+  select(NAME) |>
+  collect() |>
+  head()
+```
+
+## Distance
+
+`st_distance()` returns the shortest planar distance to a second geometry,
+again a constant or another column:
+
+```{r distance}
+raleigh <- st_sfc(st_point(c(-78.64, 35.78)), crs = st_crs(nc))
+
+tbl(f) |>
+  mutate(centroid   = st_centroid(geometry),
+         d_raleigh  = st_distance(centroid, raleigh)) |>
+  select(NAME, d_raleigh) |>
+  arrange(d_raleigh) |>
+  collect() |>
+  head()
+```
+
+When the second argument is a geometry column instead of a constant, the
+distance is computed row by row between the two columns.
+
+## Aggregating a measure
+
+Because a measure is an ordinary numeric column, it aggregates like one. A
+grouped `summarise()` over a measure is a zonal total computed entirely in the
+stream:
+
+```{r summarise}
+tbl(f) |>
+  mutate(area = st_area(geometry)) |>
+  summarise(total_area = sum(area), counties = n()) |>
+  collect()
+```
+
+## Transforms
+
+A transform returns a geometry, so it builds a new WKB column. Materialise it
+with `collect_sf()`, which reads the WKB column back into an `sf` object (point
+it at the column with `geom =`, and pass the `crs` the layer was stored in).
+
+```{r transforms}
+hulls <- tbl(f) |>
+  mutate(geometry = st_convex_hull(geometry)) |>
+  select(NAME, geometry) |>
+  collect_sf(crs = st_crs(nc))
+
+hulls
+```
+
+The transform set is `st_centroid()`, `st_point_on_surface()` (a point
+guaranteed to lie on the geometry), `st_boundary()`, `st_envelope()` (the
+bounding rectangle), `st_convex_hull()`, `st_make_valid()` (repair an invalid
+geometry), and two parameterised forms: `st_buffer(g, dist)` and
+`st_simplify(g, tol)`. Buffering each county and reading the areas back:
+
+```{r buffer}
+tbl(f) |>
+  mutate(geometry = st_buffer(geometry, 0.1)) |>
+  select(NAME, geometry) |>
+  collect_sf(crs = st_crs(nc)) |>
+  st_area() |>
+  head()
+```
+
+`st_geometry_type()` returns the GEOS type name (`"Point"`, `"Polygon"`,
+`"MultiPolygon"`, and so on) as a string column.
+
+## The second geometry of a binary op
+
+For `st_distance()` and the binary predicates, the second argument can be:
+
+- another geometry column, compared row by row;
+- a constant `sf` or `sfc` object, parsed once and reused across the stream (a
+  multi-feature object is unioned to one geometry);
+- a hex-WKB string.
+
+## Missing geometry
+
+A missing (`NA`) or unparseable geometry, or an operation with no answer (the
+coordinate of a non-point, the distance to a missing geometry), yields `NA` for
+that row rather than stopping the query:
+
+```{r na}
+g <- tempfile(fileext = ".vtr")
+write_vtr(data.frame(
+  id = 1:4,
+  geometry = c(st_as_binary(st_geometry(nc)[1:3], hex = TRUE), NA)
+), g)
+
+tbl(g) |>
+  mutate(area = st_area(geometry)) |>
+  collect()
+```
+
+## Where this fits
+
+The `st_*` expressions are the scalar, per-row layer of vectra's spatial
+surface. They cover measures, predicates, and the common single-geometry
+transforms at the price of a column term, with no sf object built per batch. For
+an arbitrary per-feature transform that has no `st_*` form, reach for
+`spatial_map()`, which runs any sf-in, sf-out function over each feature. For
+constructions that read a whole feature set at once (dissolves, overlays, hulls
+of a group, planar topology), the set-wise `spatial_*` verbs in
+[Streaming spatial operations](streaming-spatial.html) and
+[Coverage and topology](coverage-topology.html) are the tools.
+
+```{r cleanup, include = FALSE}
+unlink(c(f, g))
+```

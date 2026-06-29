@@ -23,6 +23,9 @@ articles:
   - quickstart
   - spatial
   - streaming-spatial
+  - geometry-expressions
+  - coverage-topology
+  - networks
   - engine
   - formats
   - joins
