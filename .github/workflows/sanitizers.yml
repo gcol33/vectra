@@ -25,9 +25,9 @@ jobs:
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: gcol33/tdc
           token: ${{ secrets.TDC_TOKEN }}
@@ -117,7 +117,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: sanitizer-logs
           path: |

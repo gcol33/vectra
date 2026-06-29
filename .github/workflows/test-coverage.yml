@@ -28,9 +28,9 @@ jobs:
       ASAN_OPTIONS: verify_asan_link_order=0
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: gcol33/tdc
           token: ${{ secrets.TDC_TOKEN }}
@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-test-failures
           path: ${{ runner.temp }}/package

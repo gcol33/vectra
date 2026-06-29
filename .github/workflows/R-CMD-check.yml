@@ -33,9 +33,9 @@ jobs:
       TDC: ${{ github.workspace }}/tdc
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: gcol33/tdc
           token: ${{ secrets.TDC_TOKEN }}
