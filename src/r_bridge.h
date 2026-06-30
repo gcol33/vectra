@@ -50,6 +50,12 @@ SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
                        SEXP block_probe, SEXP block_build,
                        SEXP method, SEXP max_dist,
                        SEXP n_threads, SEXP suffix_y);
+SEXP C_interval_join_node(SEXP probe_xptr, SEXP build_xptr,
+                          SEXP start_probe, SEXP end_probe,
+                          SEXP start_build, SEXP end_build,
+                          SEXP block_probe, SEXP block_build,
+                          SEXP kind, SEXP closed,
+                          SEXP n_threads, SEXP suffix_y);
 
 /* Hash index */
 SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci);

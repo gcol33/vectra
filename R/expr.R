@@ -372,6 +372,62 @@
        other = .serialize_geom_arg(expr[[3]], env, cols))
 }
 
+# Embedding distance ops over a hex float32 embedding column (see expr_vec.c).
+# cosine and l2 are distances (smaller = nearer); dot is an inner product.
+.VEC_DIST <- c(cosine = "c", l2 = "e", dot = "d")
+
+# Resolve the query side of a distance op: an embedding column reference, or a
+# constant numeric query vector (encoded once to a hex float32 blob), or a
+# pre-encoded hex embedding string.
+.serialize_vec_query <- function(a, env, cols) {
+  if (is.name(a) && !is.null(cols) && as.character(a) %in% cols)
+    return(serialize_expr(a, env, cols))
+  val <- tryCatch(eval(a, env), error = function(e) NULL)
+  if (is.numeric(val))
+    return(list(kind = "lit_string", value = .embedding_hex(as.double(val))))
+  if (is.character(val) && length(val) == 1)
+    return(list(kind = "lit_string", value = val))
+  stop("the query argument to a distance op must be an embedding column or a ",
+       "numeric query vector")
+}
+
+.serialize_vecdist <- function(fn, expr, env, cols) {
+  list(kind = "vec_dist", fn = unname(.VEC_DIST[fn]),
+       operand = serialize_expr(expr[[2]], env, cols),
+       query = .serialize_vec_query(expr[[3]], env, cols))
+}
+
+# floor_time(t, unit): truncate a Date/POSIXct column to a calendar grid.
+# unit is a string like "hour", "15 min", "day", "3 months".
+.FLOOR_UNITS <- c(
+  sec = "s", second = "s", seconds = "s", secs = "s",
+  min = "n", minute = "n", minutes = "n", mins = "n",
+  hour = "h", hours = "h",
+  day = "d", days = "d",
+  week = "w", weeks = "w",
+  month = "M", months = "M",
+  quarter = "q", quarters = "q",
+  year = "y", years = "y")
+
+.parse_time_unit <- function(u) {
+  u <- trimws(tolower(u))
+  m <- regmatches(u, regexec("^([0-9]*)\\s*([a-z]+)$", u))[[1]]
+  if (length(m) != 3L) stop(sprintf("cannot parse time unit '%s'", u))
+  n <- if (nzchar(m[2])) as.integer(m[2]) else 1L
+  code <- .FLOOR_UNITS[[m[3]]]
+  if (is.null(code)) stop(sprintf("unknown time unit '%s'", m[3]))
+  list(n = n, code = code)
+}
+
+.serialize_floortime <- function(fn, expr, env, cols) {
+  u <- eval(expr[[3]], env)
+  if (!is.character(u) || length(u) != 1L)
+    stop("floor_time() unit must be a single string, e.g. \"1 hour\"")
+  pu <- .parse_time_unit(u)
+  list(kind = "floor_time", unit = pu$code, n = pu$n,
+       operand = serialize_expr(expr[[2]], env, cols))
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch registry: maps function names to handler functions.
 # Adding a new expression type = one entry here + one handler above.
@@ -407,6 +463,8 @@ local({
   register(c("resolve", "propagate"),                   .serialize_graph)
   register(c(names(.GEOM_UNARY), names(.GEOM_PARAM),
              names(.GEOM_BINARY)),                       .serialize_geom)
+  register(c("cosine", "l2", "dot"),                     .serialize_vecdist)
+  register(c("floor_time"),                              .serialize_floortime)
 })
 
 # ---------------------------------------------------------------------------

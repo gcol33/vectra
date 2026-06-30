@@ -16,7 +16,12 @@ typedef enum {
     WIN_CUMMAX,
     WIN_NTILE,
     WIN_PERCENT_RANK,
-    WIN_CUME_DIST
+    WIN_CUME_DIST,
+    WIN_ROLL_SUM,    /* time-based trailing rolling aggregates over `window` */
+    WIN_ROLL_MEAN,
+    WIN_ROLL_MIN,
+    WIN_ROLL_MAX,
+    WIN_ROLL_N
 } WinKind;
 
 typedef struct {
@@ -27,6 +32,8 @@ typedef struct {
     double     default_val;  /* for lag/lead: fill value */
     int        has_default;
     int        desc;         /* row_number/rank: descending order when nonzero */
+    char      *order_col;    /* roll_*: datetime column defining the window */
+    double     window;       /* roll_*: trailing window span in seconds */
 } WinSpec;
 
 typedef struct {

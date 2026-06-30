@@ -11,6 +11,7 @@
 #include "limit.h"
 #include "join.h"
 #include "fuzzy_join.h"
+#include "interval_join.h"
 #include "window.h"
 #include "concat.h"
 #include "expr.h"
@@ -290,6 +291,11 @@ static WinKind parse_win_kind(const char *s) {
     if (strcmp(s, "ntile") == 0) return WIN_NTILE;
     if (strcmp(s, "percent_rank") == 0) return WIN_PERCENT_RANK;
     if (strcmp(s, "cume_dist") == 0) return WIN_CUME_DIST;
+    if (strcmp(s, "roll_sum") == 0) return WIN_ROLL_SUM;
+    if (strcmp(s, "roll_mean") == 0) return WIN_ROLL_MEAN;
+    if (strcmp(s, "roll_min") == 0) return WIN_ROLL_MIN;
+    if (strcmp(s, "roll_max") == 0) return WIN_ROLL_MAX;
+    if (strcmp(s, "roll_n") == 0) return WIN_ROLL_N;
     vectra_error("unknown window function: %s", s);
     return WIN_LAG; /* unreachable */
 }
@@ -316,6 +322,8 @@ SEXP C_window_node(SEXP node_xptr, SEXP key_names_sexp, SEXP win_specs_sexp) {
         SEXP offset_sexp = list_get(spec, "offset");
         SEXP default_sexp = list_get(spec, "default");
         SEXP desc_sexp = list_get(spec, "desc");
+        const char *order = list_get_string(spec, "order");
+        SEXP window_sexp = list_get(spec, "window");
 
         specs[w].output_name = (char *)malloc(strlen(name) + 1);
         strcpy(specs[w].output_name, name);
@@ -324,6 +332,12 @@ SEXP C_window_node(SEXP node_xptr, SEXP key_names_sexp, SEXP win_specs_sexp) {
             specs[w].input_col = (char *)malloc(strlen(col) + 1);
             strcpy(specs[w].input_col, col);
         }
+        if (order) {
+            specs[w].order_col = (char *)malloc(strlen(order) + 1);
+            strcpy(specs[w].order_col, order);
+        }
+        specs[w].window = (window_sexp != R_NilValue && !Rf_isNull(window_sexp))
+                          ? Rf_asReal(window_sexp) : 0.0;
         specs[w].offset = (offset_sexp != R_NilValue) ? Rf_asInteger(offset_sexp) : 1;
         if (default_sexp != R_NilValue && !Rf_isNull(default_sexp)) {
             specs[w].default_val = Rf_asReal(default_sexp);
@@ -409,4 +423,74 @@ SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
         suffix_y
     );
     return wrap_node((VecNode *)fj);
+}
+
+/* --- C_interval_join_node --- */
+
+SEXP C_interval_join_node(SEXP probe_xptr, SEXP build_xptr,
+                          SEXP start_probe_sexp, SEXP end_probe_sexp,
+                          SEXP start_build_sexp, SEXP end_build_sexp,
+                          SEXP block_probe_sexp, SEXP block_build_sexp,
+                          SEXP kind_sexp, SEXP closed_sexp,
+                          SEXP n_threads_sexp, SEXP suffix_y_sexp) {
+    VecNode *probe = unwrap_node(probe_xptr);
+    R_ClearExternalPtr(probe_xptr);
+    VecNode *build = unwrap_node(build_xptr);
+    R_ClearExternalPtr(build_xptr);
+
+    const VecSchema *pschema = &probe->output_schema;
+    const VecSchema *bschema = &build->output_schema;
+
+    /* Resolve start/end interval columns */
+    const char *psn = CHAR(STRING_ELT(start_probe_sexp, 0));
+    const char *pen = CHAR(STRING_ELT(end_probe_sexp, 0));
+    const char *bsn = CHAR(STRING_ELT(start_build_sexp, 0));
+    const char *ben = CHAR(STRING_ELT(end_build_sexp, 0));
+    int p_start = vec_schema_find_col(pschema, psn);
+    int p_end   = vec_schema_find_col(pschema, pen);
+    int b_start = vec_schema_find_col(bschema, bsn);
+    int b_end   = vec_schema_find_col(bschema, ben);
+    if (p_start < 0) vectra_error("interval_join: probe start column not found: %s", psn);
+    if (p_end   < 0) vectra_error("interval_join: probe end column not found: %s", pen);
+    if (b_start < 0) vectra_error("interval_join: build start column not found: %s", bsn);
+    if (b_end   < 0) vectra_error("interval_join: build end column not found: %s", ben);
+
+    /* Interval columns must be numeric */
+    if (pschema->col_types[p_start] == VEC_STRING ||
+        pschema->col_types[p_end]   == VEC_STRING ||
+        bschema->col_types[b_start] == VEC_STRING ||
+        bschema->col_types[b_end]   == VEC_STRING)
+        vectra_error("interval_join: start/end columns must be numeric");
+
+    /* Optional blocking columns (must be string, like the fuzzy join) */
+    int probe_block = -1, build_block = -1;
+    if (block_probe_sexp != R_NilValue && block_build_sexp != R_NilValue) {
+        const char *bp = CHAR(STRING_ELT(block_probe_sexp, 0));
+        const char *bb = CHAR(STRING_ELT(block_build_sexp, 0));
+        probe_block = vec_schema_find_col(pschema, bp);
+        build_block = vec_schema_find_col(bschema, bb);
+        if (probe_block < 0) vectra_error("interval_join: probe block column not found: %s", bp);
+        if (build_block < 0) vectra_error("interval_join: build block column not found: %s", bb);
+        if (pschema->col_types[probe_block] != VEC_STRING ||
+            bschema->col_types[build_block] != VEC_STRING)
+            vectra_error("interval_join: blocking 'by' columns must be string");
+    }
+
+    const char *kind_str = CHAR(STRING_ELT(kind_sexp, 0));
+    IntervalJoinKind kind;
+    if (strcmp(kind_str, "inner") == 0)      kind = IJOIN_INNER;
+    else if (strcmp(kind_str, "left") == 0)  kind = IJOIN_LEFT;
+    else vectra_error("interval_join: unknown kind: %s", kind_str);
+
+    int closed = Rf_asLogical(closed_sexp) == TRUE ? 1 : 0;
+    int n_threads = INTEGER(n_threads_sexp)[0];
+    const char *suffix_y = CHAR(STRING_ELT(suffix_y_sexp, 0));
+
+    IntervalJoinNode *ij = interval_join_node_create(
+        probe, build,
+        p_start, p_end, b_start, b_end,
+        probe_block, build_block,
+        kind, closed, n_threads, suffix_y
+    );
+    return wrap_node((VecNode *)ij);
 }

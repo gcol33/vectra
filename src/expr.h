@@ -34,6 +34,7 @@ typedef enum {
     EXPR_PMAX,       /* pmax(x, y) -> numeric */
     EXPR_DATE_PART,  /* year/month/day/hour/minute/second extraction */
     EXPR_AS_DATE,    /* as.Date(string) -> double (days since epoch) */
+    EXPR_FLOOR_TIME, /* floor_time(t, unit): truncate epoch to a calendar grid */
     EXPR_LEVENSHTEIN,      /* levenshtein(x, pattern) -> int64 edit distance */
     EXPR_LEVENSHTEIN_NORM, /* levenshtein_norm(x, pattern) -> double 0.0-1.0 */
     EXPR_DL_DIST,          /* dl_dist(x, pattern) -> int64 Damerau-Levenshtein distance */
@@ -45,7 +46,8 @@ typedef enum {
     EXPR_COALESCE,         /* coalesce(a, b, c, ...) -> first non-NA */
     EXPR_PASTE,            /* paste(a, b, ..., sep) or paste0(a, b, ...) */
     EXPR_STR_EXTRACT,      /* str_extract(x, pattern) -> first regex match */
-    EXPR_GEOM              /* libgeos op on a hex-WKB geometry column */
+    EXPR_GEOM,             /* libgeos op on a hex-WKB geometry column */
+    EXPR_VEC_DIST          /* cosine/l2/dot over a hex float32 embedding column */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -101,6 +103,10 @@ struct VecExpr {
     /* EXPR_DATE_PART */
     char date_part;  /* 'Y'=year, 'M'=month, 'D'=day, 'h'=hour, 'm'=minute, 's'=second */
 
+    /* EXPR_FLOOR_TIME reuses date_part for the unit ('s' second, 'n' minute,
+       'h' hour, 'd' day, 'w' week, 'M' month, 'q' quarter, 'y' year) and
+       lit_i64 for the integer multiple. */
+
     /* EXPR_GSUB / EXPR_SUB */
     char *gsub_pattern;
     char *gsub_replacement;
@@ -123,6 +129,11 @@ struct VecExpr {
        `operand`; a binary op's second geometry or a parameterized transform's
        scalar argument is `right`. */
     char geom_fn;
+
+    /* EXPR_VEC_DIST: which distance (see expr_vec.c). The embedding column is
+       `operand`; a second embedding column rides on `left`, or a constant
+       query vector on `lit_str` (both hex float32). */
+    char vec_fn;
 };
 
 /* Allocate a new expression node */
@@ -149,6 +160,10 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
 /* Sub-dispatcher for geometry operations: a libgeos op (selected by
    expr->geom_fn) over a hex-WKB geometry column. See expr_geom.c. */
 VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch);
+
+/* Sub-dispatcher for embedding distance ops (cosine/l2/dot, selected by
+   expr->vec_fn) over a hex float32 embedding column. See expr_vec.c. */
+VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch);
 
 /* Result column type for a geometry op given its geom_fn discriminator. */
 VecType vec_expr_geom_result_type(char geom_fn);

@@ -472,10 +472,115 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
     case WIN_CUME_DIST:
         win_eval_cume_dist(input, start, seg_len, result);
         break;
+
+    default:  /* roll_* kinds are handled before this switch */
+        break;
     }
 
     (void)seg_len;
     return *result;
+}
+
+/* Normalize an order value to seconds: a Date (days since epoch) scales by
+   86400, a POSIXct (seconds) passes through. Same magnitude heuristic the
+   datetime expr ops use, so rolling windows given in seconds line up. */
+static inline double win_order_seconds(const VecArray *ord, int64_t row) {
+    double v = win_get_double(ord, row);
+    return (fabs(v) < 200000.0) ? v * 86400.0 : v;
+}
+
+static inline int win_is_roll(WinKind k) {
+    return k == WIN_ROLL_SUM || k == WIN_ROLL_MEAN || k == WIN_ROLL_MIN ||
+           k == WIN_ROLL_MAX || k == WIN_ROLL_N;
+}
+
+/* Time-based trailing rolling aggregate over one group's rows.
+   For each row, aggregates the value column over rows whose order value falls
+   in (order - window, order], inclusive of the row itself. NA values are
+   skipped (na.rm semantics). Writes results and validity into `out` directly.
+   `val` may be NULL for roll_n (count of rows). */
+static void win_roll_segment(WinKind kind, const VecArray *val,
+                             const VecArray *ord, const int64_t *rows,
+                             int64_t glen, double window, VecArray *out) {
+    if (glen == 0) return;
+
+    int64_t *idx = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+    int64_t *tmp = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+    for (int64_t j = 0; j < glen; j++) idx[j] = rows[j];
+    win_merge_sort(idx, tmp, glen, ord);   /* ascending by order value */
+
+    int is_minmax = (kind == WIN_ROLL_MIN || kind == WIN_ROLL_MAX);
+    int counts_only = (kind == WIN_ROLL_N);
+
+    double sum = 0.0;
+    int64_t cnt = 0;
+    int64_t *dq = is_minmax ? (int64_t *)malloc((size_t)glen * sizeof(int64_t)) : NULL;
+    int64_t dq_head = 0, dq_tail = 0;
+
+    int64_t left = 0;
+    for (int64_t j = 0; j < glen; j++) {
+        int64_t rj = idx[j];
+        int val_ok = (counts_only || (val && vec_array_is_valid(val, rj)));
+
+        /* include position j */
+        if (is_minmax) {
+            if (val_ok) {
+                double vj = win_get_double(val, rj);
+                while (dq_tail > dq_head) {
+                    double vb = win_get_double(val, idx[dq[dq_tail - 1]]);
+                    int worse = (kind == WIN_ROLL_MIN) ? (vb >= vj) : (vb <= vj);
+                    if (worse) dq_tail--; else break;
+                }
+                dq[dq_tail++] = j;
+            }
+        } else {
+            if (val_ok) {
+                if (!counts_only) sum += win_get_double(val, rj);
+                cnt++;
+            }
+        }
+
+        /* advance left edge: trailing window is (order(rj) - window, order(rj)],
+           so drop rows at or before the lower bound (open on the left). */
+        double thr = win_order_seconds(ord, rj) - window;
+        while (left <= j && win_order_seconds(ord, idx[left]) <= thr) {
+            int64_t rl = idx[left];
+            if (!is_minmax) {
+                int lok = (counts_only || (val && vec_array_is_valid(val, rl)));
+                if (lok) {
+                    if (!counts_only) sum -= win_get_double(val, rl);
+                    cnt--;
+                }
+            }
+            left++;
+        }
+        if (is_minmax)
+            while (dq_tail > dq_head && dq[dq_head] < left) dq_head++;
+
+        /* emit */
+        switch (kind) {
+        case WIN_ROLL_SUM:
+            out->buf.dbl[rj] = sum; vec_array_set_valid(out, rj); break;
+        case WIN_ROLL_N:
+            out->buf.dbl[rj] = (double)cnt; vec_array_set_valid(out, rj); break;
+        case WIN_ROLL_MEAN:
+            if (cnt > 0) { out->buf.dbl[rj] = sum / (double)cnt; vec_array_set_valid(out, rj); }
+            else vec_array_set_null(out, rj);
+            break;
+        case WIN_ROLL_MIN:
+        case WIN_ROLL_MAX:
+            if (dq_tail > dq_head) {
+                out->buf.dbl[rj] = win_get_double(val, idx[dq[dq_head]]);
+                vec_array_set_valid(out, rj);
+            } else vec_array_set_null(out, rj);
+            break;
+        default: break;
+        }
+    }
+
+    free(dq);
+    free(tmp);
+    free(idx);
 }
 
 static VecBatch *window_next_batch(VecNode *self) {
@@ -632,6 +737,25 @@ static VecBatch *window_next_batch(VecNode *self) {
             vec_array_set_all_valid(&out);
             uint8_t *null_flags = (uint8_t *)calloc((size_t)n_rows, 1);
 
+            /* Time-based rolling: a separate per-group sweep over a sorted
+               order column, bypassing the row-order switch below. */
+            int roll = win_is_roll(ws->kind);
+            if (roll) {
+                if (!ws->order_col)
+                    vectra_error("rolling window: order column required");
+                int oc = vec_schema_find_col(cschema, ws->order_col);
+                if (oc < 0)
+                    vectra_error("window: order column not found: %s", ws->order_col);
+                const VecArray *ord_arr = &cols[oc];
+#ifdef _OPENMP
+                #pragma omp parallel for schedule(dynamic) if(n_groups > 64)
+#endif
+                for (int64_t g = 0; g < n_groups; g++)
+                    win_roll_segment(ws->kind, in_arr, ord_arr,
+                                     grp_rows[g], grp_lens[g], ws->window, &out);
+            }
+            int64_t g_lim = roll ? 0 : n_groups;
+
             /* Each group is independent — parallelize the outer loop.
                All rank-like sorts use win_merge_sort (thread-safe, no globals).
                Writes to out.buf.dbl[rows[j]] are safe because each row belongs
@@ -640,7 +764,7 @@ static VecBatch *window_next_batch(VecNode *self) {
 #ifdef _OPENMP
             #pragma omp parallel for schedule(dynamic) if(n_groups > 64)
 #endif
-            for (int64_t g = 0; g < n_groups; g++) {
+            for (int64_t g = 0; g < g_lim; g++) {
                 int64_t glen = grp_lens[g];
                 int64_t *rows = grp_rows[g];
 
@@ -821,6 +945,9 @@ static VecBatch *window_next_batch(VecNode *self) {
                 case WIN_CUME_DIST:
                     win_grp_cume_dist(in_arr, rows, glen, out.buf.dbl);
                     break;
+
+                default:  /* roll_* kinds are handled before this switch */
+                    break;
                 }
             }
 
@@ -881,10 +1008,23 @@ static VecBatch *window_next_batch(VecNode *self) {
         }
 
         VecArray out = vec_array_alloc(VEC_DOUBLE, n_rows);
-        win_eval_segment(ws->kind, in_col >= 0 ? &cols[in_col] : NULL,
-                         0, n_rows, n_rows,
-                         ws->offset, ws->default_val, ws->has_default,
-                         ws->desc, &out);
+        if (win_is_roll(ws->kind)) {
+            if (!ws->order_col)
+                vectra_error("rolling window: order column required");
+            int oc = vec_schema_find_col(cschema, ws->order_col);
+            if (oc < 0)
+                vectra_error("window: order column not found: %s", ws->order_col);
+            int64_t *all_rows = (int64_t *)malloc((size_t)n_rows * sizeof(int64_t));
+            for (int64_t r = 0; r < n_rows; r++) all_rows[r] = r;
+            win_roll_segment(ws->kind, in_col >= 0 ? &cols[in_col] : NULL,
+                             &cols[oc], all_rows, n_rows, ws->window, &out);
+            free(all_rows);
+        } else {
+            win_eval_segment(ws->kind, in_col >= 0 ? &cols[in_col] : NULL,
+                             0, n_rows, n_rows,
+                             ws->offset, ws->default_val, ws->has_default,
+                             ws->desc, &out);
+        }
         result->columns[n_cols + w] = out;
         result->col_names[n_cols + w] = (char *)malloc(
             strlen(ws->output_name) + 1);
@@ -905,6 +1045,7 @@ static void window_free(VecNode *self) {
     for (int w = 0; w < wn->n_wins; w++) {
         free(wn->win_specs[w].output_name);
         free(wn->win_specs[w].input_col);
+        free(wn->win_specs[w].order_col);
     }
     free(wn->win_specs);
     vec_schema_free(&wn->base.output_schema);

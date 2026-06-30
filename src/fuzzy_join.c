@@ -103,239 +103,6 @@ static void fmbuf_free(FuzzyMatchBuf *buf) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Partition helpers                                                   */
-/* ------------------------------------------------------------------ */
-
-static void partition_push(FuzzyPartition *p, int64_t row) {
-    vec_grow_to((void **)&p->rows, &p->capacity, p->n_rows + 1,
-                sizeof(int64_t), "FuzzyPartition");
-    p->rows[p->n_rows++] = row;
-}
-
-static void partition_free(FuzzyPartition *p) {
-    free(p->rows);
-    p->rows = NULL;
-    p->n_rows = 0;
-    p->capacity = 0;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Materialize a child node into flat VecArrays                       */
-/* ------------------------------------------------------------------ */
-
-static void materialize_side(VecNode *child, int ncols,
-                             VecArray **out_cols, int64_t *out_nrows) {
-    VecArrayBuilder *builders = (VecArrayBuilder *)calloc(
-        (size_t)ncols, sizeof(VecArrayBuilder));
-    if (!builders) vectra_error("alloc failed in fuzzy_join materialize");
-
-    const VecSchema *schema = &child->output_schema;
-    for (int c = 0; c < ncols; c++)
-        builders[c] = vec_builder_init(schema->col_types[c]);
-
-    VecBatch *batch;
-    while ((batch = child->next_batch(child)) != NULL) {
-        if (!batch->sel) {
-            for (int c = 0; c < ncols; c++)
-                vec_builder_append_array(&builders[c], &batch->columns[c]);
-        } else {
-            int64_t n_logical = vec_batch_logical_rows(batch);
-            for (int c = 0; c < ncols; c++)
-                vec_builder_reserve(&builders[c], n_logical);
-            for (int64_t li = 0; li < n_logical; li++) {
-                int64_t pi = vec_batch_physical_row(batch, li);
-                for (int c = 0; c < ncols; c++)
-                    vec_builder_append_one(&builders[c],
-                                           &batch->columns[c], pi);
-            }
-        }
-        vec_batch_free(batch);
-    }
-
-    int64_t nrows = builders[0].length;
-    VecArray *cols = (VecArray *)malloc((size_t)ncols * sizeof(VecArray));
-    if (!cols) vectra_error("alloc failed in fuzzy_join materialize");
-    for (int c = 0; c < ncols; c++)
-        cols[c] = vec_builder_finish(&builders[c]);
-    free(builders);
-
-    *out_cols = cols;
-    *out_nrows = nrows;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Build partitions by blocking key (hash-based grouping)             */
-/* ------------------------------------------------------------------ */
-
-/* FNV-1a for a string */
-static uint64_t hash_string(const char *s, int64_t len) {
-    uint64_t h = 14695981039346656037ULL;
-    for (int64_t i = 0; i < len; i++)
-        h = (h ^ (uint8_t)s[i]) * 1099511628211ULL;
-    return h;
-}
-
-/* Hash table for mapping block key strings to partition IDs */
-typedef struct {
-    int64_t   n_slots;
-    int64_t  *part_id;      /* partition ID at slot, or -1 */
-    uint64_t *slot_hash;    /* hash at slot */
-    /* Key storage: pointer + length into the source VecArray */
-    const char **slot_key;
-    int64_t    *slot_key_len;
-    int64_t     n_parts;    /* number of unique partitions so far */
-} BlockHT;
-
-static BlockHT block_ht_create(int64_t estimated_groups) {
-    BlockHT ht;
-    int64_t n_slots = 64;
-    while (n_slots < estimated_groups * 2) n_slots *= 2;
-    ht.n_slots = n_slots;
-    ht.part_id = (int64_t *)malloc((size_t)n_slots * sizeof(int64_t));
-    ht.slot_hash = (uint64_t *)malloc((size_t)n_slots * sizeof(uint64_t));
-    ht.slot_key = (const char **)calloc((size_t)n_slots, sizeof(const char *));
-    ht.slot_key_len = (int64_t *)calloc((size_t)n_slots, sizeof(int64_t));
-    ht.n_parts = 0;
-    if (!ht.part_id || !ht.slot_hash)
-        vectra_error("alloc failed for BlockHT");
-    memset(ht.part_id, -1, (size_t)n_slots * sizeof(int64_t));
-    return ht;
-}
-
-static void block_ht_free(BlockHT *ht) {
-    free(ht->part_id);
-    free(ht->slot_hash);
-    free((void *)ht->slot_key);
-    free(ht->slot_key_len);
-}
-
-/* Find or insert a block key, return partition ID */
-static int64_t block_ht_find_or_insert(BlockHT *ht,
-                                        const char *key, int64_t key_len,
-                                        uint64_t hash) {
-    int64_t mask = ht->n_slots - 1;
-    int64_t slot = (int64_t)(hash & (uint64_t)mask);
-    for (;;) {
-        if (ht->part_id[slot] == -1) {
-            /* New partition */
-            int64_t pid = ht->n_parts++;
-            ht->part_id[slot] = pid;
-            ht->slot_hash[slot] = hash;
-            ht->slot_key[slot] = key;
-            ht->slot_key_len[slot] = key_len;
-            return pid;
-        }
-        if (ht->slot_hash[slot] == hash &&
-            ht->slot_key_len[slot] == key_len &&
-            memcmp(ht->slot_key[slot], key, (size_t)key_len) == 0) {
-            return ht->part_id[slot];
-        }
-        slot = (slot + 1) & mask;
-    }
-}
-
-static void build_partitions(FuzzyJoinNode *fj) {
-    int has_block = (fj->probe_block_col >= 0 && fj->build_block_col >= 0);
-
-    if (!has_block) {
-        /* No blocking: single partition with all rows */
-        fj->n_parts = 1;
-        fj->probe_parts = (FuzzyPartition *)calloc(1, sizeof(FuzzyPartition));
-        fj->build_parts = (FuzzyPartition *)calloc(1, sizeof(FuzzyPartition));
-
-        fj->probe_parts[0].rows = (int64_t *)malloc(
-            (size_t)fj->p_nrows * sizeof(int64_t));
-        fj->probe_parts[0].n_rows = fj->p_nrows;
-        fj->probe_parts[0].capacity = fj->p_nrows;
-        for (int64_t i = 0; i < fj->p_nrows; i++)
-            fj->probe_parts[0].rows[i] = i;
-
-        fj->build_parts[0].rows = (int64_t *)malloc(
-            (size_t)fj->b_nrows * sizeof(int64_t));
-        fj->build_parts[0].n_rows = fj->b_nrows;
-        fj->build_parts[0].capacity = fj->b_nrows;
-        for (int64_t i = 0; i < fj->b_nrows; i++)
-            fj->build_parts[0].rows[i] = i;
-        return;
-    }
-
-    /* Estimate partition count from build side */
-    int64_t est_parts = fj->b_nrows / 50;
-    if (est_parts < 64) est_parts = 64;
-    BlockHT ht = block_ht_create(est_parts);
-
-    /* Capacity for partitions — will grow via realloc */
-    int64_t parts_cap = est_parts;
-    FuzzyPartition *b_parts = (FuzzyPartition *)calloc(
-        (size_t)parts_cap, sizeof(FuzzyPartition));
-    if (!b_parts) vectra_error("alloc failed for build partitions");
-
-    /* Partition build side */
-    const VecArray *b_block = &fj->b_cols[fj->build_block_col];
-    for (int64_t r = 0; r < fj->b_nrows; r++) {
-        if (!vec_array_is_valid(b_block, r)) continue;
-        const char *key = str_ptr(b_block, r);
-        int64_t klen = str_len(b_block, r);
-        uint64_t h = hash_string(key, klen);
-        int64_t pid = block_ht_find_or_insert(&ht, key, klen, h);
-
-        /* Grow partition array if needed */
-        if (pid >= parts_cap) {
-            int64_t new_cap = parts_cap * 2;
-            while (pid >= new_cap) new_cap *= 2;
-            b_parts = (FuzzyPartition *)realloc(b_parts,
-                (size_t)new_cap * sizeof(FuzzyPartition));
-            if (!b_parts) vectra_error("realloc failed for build partitions");
-            memset(b_parts + parts_cap, 0,
-                   (size_t)(new_cap - parts_cap) * sizeof(FuzzyPartition));
-            parts_cap = new_cap;
-        }
-        partition_push(&b_parts[pid], r);
-    }
-
-    int64_t n_parts = ht.n_parts;
-
-    /* Allocate probe partitions (same count) */
-    FuzzyPartition *p_parts = (FuzzyPartition *)calloc(
-        (size_t)n_parts, sizeof(FuzzyPartition));
-    if (!p_parts) vectra_error("alloc failed for probe partitions");
-
-    /* Partition probe side using same hash table */
-    const VecArray *p_block = &fj->p_cols[fj->probe_block_col];
-    for (int64_t r = 0; r < fj->p_nrows; r++) {
-        if (!vec_array_is_valid(p_block, r)) continue;
-        const char *key = str_ptr(p_block, r);
-        int64_t klen = str_len(p_block, r);
-        uint64_t h = hash_string(key, klen);
-
-        /* Look up only — don't create new partitions for probe keys
-           absent from build (they can't match anything) */
-        int64_t mask = ht.n_slots - 1;
-        int64_t slot = (int64_t)(h & (uint64_t)mask);
-        int64_t pid = -1;
-        for (;;) {
-            if (ht.part_id[slot] == -1) break;  /* not found */
-            if (ht.slot_hash[slot] == h &&
-                ht.slot_key_len[slot] == klen &&
-                memcmp(ht.slot_key[slot], key, (size_t)klen) == 0) {
-                pid = ht.part_id[slot];
-                break;
-            }
-            slot = (slot + 1) & mask;
-        }
-        if (pid >= 0) {
-            partition_push(&p_parts[pid], r);
-        }
-    }
-
-    block_ht_free(&ht);
-
-    fj->n_parts = n_parts;
-    fj->probe_parts = p_parts;
-    fj->build_parts = b_parts;
-}
-
-/* ------------------------------------------------------------------ */
 /*  Parallel match phase                                               */
 /* ------------------------------------------------------------------ */
 
@@ -367,8 +134,8 @@ static void fuzzy_match_phase(FuzzyJoinNode *fj) {
     #pragma omp parallel for schedule(dynamic, 1) num_threads(n_threads)
 #endif
     for (int64_t p = 0; p < fj->n_parts; p++) {
-        FuzzyPartition *pp = &fj->probe_parts[p];
-        FuzzyPartition *bp = &fj->build_parts[p];
+        JoinPartition *pp = &fj->probe_parts[p];
+        JoinPartition *bp = &fj->build_parts[p];
         if (pp->n_rows == 0 || bp->n_rows == 0) continue;
 
 #ifdef _OPENMP
@@ -505,19 +272,24 @@ static VecBatch *fuzzy_join_next_batch(VecNode *self) {
     FuzzyJoinNode *fj = (FuzzyJoinNode *)self;
 
     if (fj->state == FSTATE_MATERIALIZE) {
-        /* Materialize both sides */
-        materialize_side(fj->probe_node,
-                         fj->probe_node->output_schema.n_cols,
-                         &fj->p_cols, &fj->p_nrows);
+        /* Materialize both sides (shared join machinery) */
+        join_materialize_side(fj->probe_node,
+                              fj->probe_node->output_schema.n_cols,
+                              &fj->p_cols, &fj->p_nrows);
         fj->p_ncols = fj->probe_node->output_schema.n_cols;
 
-        materialize_side(fj->build_node,
-                         fj->build_node->output_schema.n_cols,
-                         &fj->b_cols, &fj->b_nrows);
+        join_materialize_side(fj->build_node,
+                              fj->build_node->output_schema.n_cols,
+                              &fj->b_cols, &fj->b_nrows);
         fj->b_ncols = fj->build_node->output_schema.n_cols;
 
-        /* Partition by block key */
-        build_partitions(fj);
+        /* Partition by block key (shared blocking machinery) */
+        JoinPartitionSet ps = join_partition_build(
+            fj->p_cols, fj->p_nrows, fj->probe_block_col,
+            fj->b_cols, fj->b_nrows, fj->build_block_col);
+        fj->probe_parts = ps.probe_parts;
+        fj->build_parts = ps.build_parts;
+        fj->n_parts = ps.n_parts;
 
         /* Parallel fuzzy match */
         fuzzy_match_phase(fj);
@@ -622,17 +394,9 @@ static void fuzzy_join_free(VecNode *self) {
         free(fj->b_cols);
     }
 
-    /* Free partitions */
-    if (fj->probe_parts) {
-        for (int64_t i = 0; i < fj->n_parts; i++)
-            partition_free(&fj->probe_parts[i]);
-        free(fj->probe_parts);
-    }
-    if (fj->build_parts) {
-        for (int64_t i = 0; i < fj->n_parts; i++)
-            partition_free(&fj->build_parts[i]);
-        free(fj->build_parts);
-    }
+    /* Free partitions (shared blocking machinery) */
+    join_partition_free(fj->probe_parts, fj->n_parts);
+    join_partition_free(fj->build_parts, fj->n_parts);
 
     free(fj->matches);
     free(fj->suffix_y);

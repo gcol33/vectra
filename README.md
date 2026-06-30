@@ -101,6 +101,48 @@ tbl("taxa.vtr") |>
 `filter()` and `mutate()`, alongside `nchar()`, `substr()`, `grepl()`, `gsub()` and the rest
 of the string toolkit.
 
+## Spatial data, out of core
+
+Same idea, applied to geometry: read and write layers larger than memory, running the GIS
+operations you would otherwise do in sf. Geometry rides through as WKB in an ordinary
+column, so the spatial verbs stream one batch at a time like the rest. Tag a billion-point
+stream with the polygon each point falls in, holding the polygons plus one batch in memory:
+
+```r
+library(sf)
+
+tbl("gps_pings.vtr") |>
+  spatial_join(zones_sf, join = st_intersects) |>
+  count(zone_id) |>
+  collect()
+```
+
+`st_*` geometry functions evaluate inside `filter()` and `mutate()`, computed in C on the
+GEOS library straight off the geometry column:
+
+```r
+tbl("parcels.vtr") |>
+  filter(st_area(geometry) > 1e6) |>
+  mutate(centroid = st_centroid(geometry)) |>
+  collect_sf()
+```
+
+Raster operations stream strip by strip over the tiled `.vec` format, so a grid larger
+than memory passes through `zonal()`, `focal()`, `terrain()`, `warp()`, and map algebra
+one tile-row at a time:
+
+```r
+r <- vec_open_raster("dem.vec")
+terrain(r, c("slope", "aspect", "hillshade"))     # Horn's method over haloed strips
+zonal(r, watersheds_sf, fun = c("mean", "sd"))    # per-zone, one strip resident
+```
+
+The toolbox reaches further: vector-raster bridges (`rasterize()`, `polygonize()`,
+`contours()`), planar overlay and coverage cleaning (`spatial_overlay()`,
+`spatial_dissolve()`, `spatial_eliminate()`), and routing on a line network
+(`spatial_network()`, `spatial_route()`, `spatial_service_area()`). Geometry stays with
+GEOS through libgeos; `sf` is needed only for vector format I/O and reprojection.
+
 ## Star schemas instead of flat-table column creep
 
 Register dimension tables once, then pull columns from any of them; joins are built for
@@ -210,6 +252,8 @@ pak::pak("gcol33/vectra")
 
 ## Documentation
 
+Engine:
+
 - [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html)
 - [Engine Reference](https://gillescolling.com/vectra/articles/engine.html)
 - [Format Backends](https://gillescolling.com/vectra/articles/formats.html)
@@ -218,6 +262,15 @@ pak::pak("gcol33/vectra")
 - [String Operations](https://gillescolling.com/vectra/articles/string-ops.html)
 - [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html)
 - [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html)
+- [Offloading and Out-of-core Fits](https://gillescolling.com/vectra/articles/offload.html)
+
+Spatial:
+
+- [Out-of-core GIS](https://gillescolling.com/vectra/articles/spatial.html)
+- [Streaming Spatial Operations](https://gillescolling.com/vectra/articles/streaming-spatial.html)
+- [Geometry Functions in Expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html)
+- [Coverage and Topology](https://gillescolling.com/vectra/articles/coverage-topology.html)
+- [Network Analysis](https://gillescolling.com/vectra/articles/networks.html)
 - [Species Distribution Models](https://gillescolling.com/vectra/articles/sdm.html)
 
 ## Support

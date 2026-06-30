@@ -122,6 +122,84 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
         vec_array_free(s); free(s);
         return out;
     }
+    case EXPR_FLOOR_TIME: {
+        /* Truncate an epoch value to a calendar grid. The input is a Date
+           (days since epoch) or POSIXct (seconds since epoch), detected by
+           magnitude like EXPR_DATE_PART; the result is returned in the same
+           scale so it stays a valid Date / POSIXct value. */
+        VecArray *o = vec_expr_eval(expr->operand, batch);
+        if (o->type == VEC_INT64) {
+            VecArray *t = vec_coerce(o, VEC_DOUBLE);
+            vec_array_free(o); free(o); o = t;
+        }
+        int64_t n = expr->lit_i64;
+        if (n < 1) n = 1;
+        char unit = expr->date_part;
+
+        /* seconds in a fixed-width unit (0 for calendar units) */
+        double unit_secs = 0.0;
+        switch (unit) {
+        case 's': unit_secs = 1.0; break;
+        case 'n': unit_secs = 60.0; break;
+        case 'h': unit_secs = 3600.0; break;
+        case 'd': unit_secs = 86400.0; break;
+        case 'w': unit_secs = 604800.0; break;
+        case 'M': case 'q': case 'y': break;  /* calendar */
+        default: vectra_error("floor_time: unknown unit '%c'", unit);
+        }
+
+        int64_t len = o->length;
+        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
+        *out = vec_array_alloc(VEC_DOUBLE, len);
+
+        for (int64_t i = 0; i < len; i++) {
+            if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+            vec_array_set_valid(out, i);
+            double val = o->buf.dbl[i];
+            int is_date = fabs(val) < 200000.0;
+            double secs = is_date ? val * 86400.0 : val;
+            double floored;
+
+            if (unit_secs > 0.0) {
+                double bucket = (double)n * unit_secs;
+                floored = floor(secs / bucket) * bucket;
+            } else {
+                time_t ts = (time_t)floor(secs);
+                struct tm tm_val;
+#ifdef _WIN32
+                gmtime_s(&tm_val, &ts);
+#else
+                gmtime_r(&ts, &tm_val);
+#endif
+                tm_val.tm_hour = 0; tm_val.tm_min = 0; tm_val.tm_sec = 0;
+                tm_val.tm_mday = 1;
+                tm_val.tm_isdst = 0;
+                if (unit == 'y') {
+                    int y = tm_val.tm_year + 1900;
+                    int fy = (int)floor((double)(y - 1970) / (double)n) * n + 1970;
+                    tm_val.tm_year = fy - 1900;
+                    tm_val.tm_mon = 0;
+                } else if (unit == 'q') {
+                    tm_val.tm_mon = (tm_val.tm_mon / 3) * 3;
+                } else { /* month */
+                    int total = (tm_val.tm_year + 1900) * 12 + tm_val.tm_mon;
+                    int fm = (int)floor((double)total / (double)n) * n;
+                    tm_val.tm_year = fm / 12 - 1900;
+                    tm_val.tm_mon = fm % 12;
+                }
+#ifdef _WIN32
+                ts = _mkgmtime(&tm_val);
+#else
+                ts = timegm(&tm_val);
+#endif
+                floored = (double)ts;
+            }
+
+            out->buf.dbl[i] = is_date ? floored / 86400.0 : floored;
+        }
+        vec_array_free(o); free(o);
+        return out;
+    }
     case EXPR_IF_ELSE: {
         VecArray *cond = vec_expr_eval(expr->cond, batch);
         VecArray *then_v = vec_expr_eval(expr->then_expr, batch);

@@ -1,43 +1,37 @@
-## Feature release
+## Submission
 
-0.8.2 is a feature update to the version currently published on CRAN
-(0.7.1). It adds streamed spatial operations and group-aware row slicing
-on top of the existing columnar engine, with no breaking changes to the
-public verbs or the `.vtr` / `.vec` on-disk formats. It also fixes an
-`ifelse()` result-type bug for branches of differing type.
+This release fixes the UndefinedBehaviorSanitizer report on the M1 sanitizer
+check (M1-SAN), flagged on the CRAN check page with a request to correct before
+2026-07-14.
 
-New user-visible functions:
+Cause: the bulk-copy fast path in `df_to_batch()` (src/r_bridge_core.c) called
+`memcpy()` over a double column unconditionally. When the written data frame
+has zero rows, `REAL()` hands back a degenerate (zero-length) pointer; passing
+it to `memcpy()` had clang's alignment sanitizer report a misaligned load of a
+`double *`. The copy is now skipped when the column has no rows, so the
+degenerate pointer is never accessed. This was a regression introduced when the
+per-element copy loop was replaced by a single `memcpy()`; the old loop simply
+did not execute for an empty column.
 
-* `spatial_map(x, fn)` streams a lazy query through an `sf` transform
-  one batch at a time, so a per-feature geometry operation runs on a
-  table larger than RAM at one-batch peak memory.
-* `spatial_join(x, y, join)` joins a streamed left side against a small
-  resident `sf` object with an `sf` binary predicate (the spatial
-  analogue of a hash join with the small side resident).
-* `spatial_overlay(x)` splits a polygon layer along its own overlaps into
-  disjoint pieces (single-layer union overlay), streamed to a `.vtr`.
-* `collect_sf(x)` materializes a spatial query as an `sf` object.
-
-Geometry rides through the engine as hex-encoded WKB in an ordinary
-string column (no new column type); topology stays with `sf`/GEOS. `sf`
-is added to Suggests and is used only in examples and tests, all guarded
-by `requireNamespace()`.
-
-This release also makes `slice_min()` and `slice_max()` respect
-`group_by()` (top-n within each group, keeping the whole winning row)
-and gives `row_number()` an optional ordering column. No new dependency.
+This version also adds new features (embedding columns and distance functions,
+time-series resampling, time-based rolling aggregates, and interval joins); see
+NEWS.md.
 
 ## Test environments
 
-* local Windows 11, R 4.6.0 (GCC 14.3.0 via Rtools 46) -- 0/0/0
-* win-builder, R-devel and R-release (x86_64) -- Status: OK
-* GitHub Actions: macOS, Windows, ubuntu-latest (R-devel, R-release,
-  R-oldrel-1)
-* GitHub Actions: ASAN/UBSAN job on Linux (gcc -fsanitize=address,undefined)
+* Local: Windows 11, R 4.6.0 -- 0 errors | 0 warnings | 0 notes
+* win-builder: R-devel (ucrt)
+* GitHub Actions: ubuntu-latest (R-devel, R-release, R-oldrel-1),
+  macOS-release, windows-release
 
 ## R CMD check results
 
-0 errors, 0 warnings, 0 notes.
+0 errors | 0 warnings | 0 notes expected. win-builder may report:
+
+    Days since last update: N
+
+if the previous version was published recently; this resubmission corrects the
+M1-SAN sanitizer report.
 
 ## Reverse dependencies
 

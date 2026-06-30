@@ -2,6 +2,7 @@
 #define VECTRA_FUZZY_JOIN_H
 
 #include "types.h"
+#include "join_partition.h"
 
 /* Distance method for fuzzy matching */
 typedef enum {
@@ -23,13 +24,6 @@ typedef struct {
     int64_t     count;
     int64_t     capacity;
 } FuzzyMatchBuf;
-
-/* Partition: row indices into a materialized side sharing the same block key */
-typedef struct {
-    int64_t *rows;      /* row indices into materialized arrays */
-    int64_t  n_rows;
-    int64_t  capacity;
-} FuzzyPartition;
 
 /* State machine */
 typedef enum {
@@ -67,9 +61,9 @@ typedef struct {
     int64_t     b_nrows;
 
     /* Partitions (one per unique block key value) */
-    FuzzyPartition *probe_parts;
-    FuzzyPartition *build_parts;
-    int64_t         n_parts;
+    JoinPartition *probe_parts;
+    JoinPartition *build_parts;
+    int64_t        n_parts;
 
     /* Match results (merged from all threads) */
     FuzzyMatch *matches;

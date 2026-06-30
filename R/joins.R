@@ -363,3 +363,88 @@ fuzzy_join.vectra_node <- function(x, y, by, method = "dl", max_dist = 0.2,
                     suffix)
   structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
 }
+
+
+# Split a `c("probe" = "build")` pair (or a bare "col" shared by both sides)
+# into its probe and build column names.
+.split_join_pair <- function(v, arg) {
+  if (!is.character(v) || length(v) != 1)
+    stop(sprintf("%s must be a character vector of length 1 (optionally named %s), got length %d",
+                 arg, "c(\"probe\" = \"build\")", length(v)))
+  probe <- names(v)
+  build <- unname(v)
+  if (is.null(probe) || probe == "") probe <- build
+  list(probe = probe, build = build)
+}
+
+#' Interval (range overlap) join of two vectra tables
+#'
+#' Joins each row of `x` to every row of `y` whose `[start, end]` interval
+#' overlaps it -- the one-dimensional analogue of a spatial bounding-box join
+#' (`data.table::foverlaps`, `GenomicRanges::findOverlaps`). An optional
+#' equality key in `by` restricts overlap testing to rows that share that key
+#' (a chromosome, a sensor id), the same role a regular join's `by` plays.
+#'
+#' Both sides are read into memory, then within each `by` group a sweep over
+#' the interval endpoints emits each overlapping pair once, scaling with the
+#' number of overlaps rather than the product of the row counts.
+#'
+#' @param x A `vectra_node` (the streamed / probe side).
+#' @param y A `vectra_node` (the resident / build side).
+#' @param start The interval start columns, as `c("x_col" = "y_col")` or a
+#'   single name shared by both sides.
+#' @param end The interval end columns, in the same form as `start`.
+#' @param by Optional equality key restricting overlap to rows that match on
+#'   it, as `c("x_col" = "y_col")` or a single shared name. `NULL` (default)
+#'   tests every pair.
+#' @param type `"inner"` (default) keeps only overlapping pairs; `"left"`
+#'   keeps every `x` row, filling `y` columns with `NA` where nothing overlaps.
+#' @param closed Logical. `TRUE` (default) counts intervals that touch at an
+#'   endpoint as overlapping; `FALSE` requires a strictly positive overlap.
+#' @param n_threads Integer. OpenMP threads for the per-group sweep. Default `4L`.
+#' @param suffix Character. Suffix appended to `y` column names that collide
+#'   with `x` names. Default `".y"`.
+#'
+#' @return A `vectra_node` with all `x` columns followed by all `y` columns
+#'   (suffixed on collision).
+#'
+#' @export
+interval_join <- function(x, y, start, end, by = NULL,
+                          type = c("inner", "left"), closed = TRUE,
+                          n_threads = 4L, suffix = ".y") {
+  UseMethod("interval_join")
+}
+
+#' @export
+interval_join.vectra_node <- function(x, y, start, end, by = NULL,
+                                      type = c("inner", "left"), closed = TRUE,
+                                      n_threads = 4L, suffix = ".y") {
+  if (!inherits(y, "vectra_node"))
+    stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
+  type <- match.arg(type)
+  if (!is.logical(closed) || length(closed) != 1 || is.na(closed))
+    stop("closed must be TRUE or FALSE")
+  if (!is.numeric(n_threads) || length(n_threads) != 1 || n_threads < 1)
+    stop(sprintf("n_threads must be a positive integer, got %s", deparse(n_threads)))
+
+  s <- .split_join_pair(start, "start")
+  e <- .split_join_pair(end, "end")
+
+  block_probe <- NULL
+  block_build <- NULL
+  if (!is.null(by)) {
+    b <- .split_join_pair(by, "by")
+    block_probe <- b$probe
+    block_build <- b$build
+  }
+
+  new_xptr <- .Call(C_interval_join_node,
+                    x$.node, y$.node,
+                    s$probe, e$probe,
+                    s$build, e$build,
+                    block_probe, block_build,
+                    type, as.logical(closed),
+                    as.integer(n_threads),
+                    suffix)
+  structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
+}

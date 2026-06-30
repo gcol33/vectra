@@ -1,3 +1,33 @@
+# vectra 0.9.8
+
+## New features
+
+* Embedding columns. `as_embedding()` packs numeric vectors into a hex float32
+  blob held in an ordinary character column. The distance functions `cosine()`
+  (cosine distance), `l2()` (Euclidean distance), and `dot()` (inner product)
+  decode the blob inside the engine and run inside `mutate()` / `filter()`,
+  parallelized over rows. Pair them with `slice_min()` / `slice_max()` for
+  nearest-neighbour search.
+* Time-series resampling. `resample()` buckets a `Date` / `POSIXct` column to a
+  calendar grid and aggregates within each bucket, the time-series form of
+  `group_by()` + `summarise()`. `floor_time()` exposes the bucket key on its
+  own for use inside `mutate()` / `filter()`.
+* Time-based rolling aggregates inside `mutate()`: `roll_sum()`, `roll_mean()`,
+  `roll_min()`, `roll_max()`, and `roll_n()` over a trailing datetime window
+  `(time - every, time]`, respecting an upstream `group_by()`.
+* `interval_join()` joins two tables on range overlap: a row of `x` matches a
+  row of `y` when their `[start, end]` intervals overlap. Supports an optional
+  equality key, inner or left output, and open or closed interval ends.
+
+## Bug fixes
+
+* `write_vtr()` no longer triggers an UndefinedBehaviorSanitizer report when the
+  written data frame has a zero-row double column (CRAN M1 sanitizer check). The
+  bulk-copy fast path in `df_to_batch()` called `memcpy()` over the column
+  unconditionally; for an empty column `REAL()` yields a degenerate pointer that
+  clang's alignment sanitizer flagged. The copy is now skipped when there are no
+  rows.
+
 # vectra 0.9.7
 
 ## Geometry functions in mutate(), filter(), and summarise()

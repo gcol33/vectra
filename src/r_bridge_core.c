@@ -258,10 +258,12 @@ VecBatch *df_to_batch(SEXP df) {
             for (int64_t i = 0; i < n_rows; i++) {
                 if (ISNAN(dp[i])) { has_na = 1; break; }
             }
-            if (!has_na) {
-                /* Bulk copy — no NAs */
+            if (!has_na && n_rows > 0) {
+                /* Bulk copy — no NAs. A zero-length column has no data and
+                 * REAL() can hand back a degenerate pointer, so skip the
+                 * copy rather than pass it to memcpy. */
                 memcpy(arr.buf.dbl, dp, (size_t)n_rows * sizeof(double));
-            } else {
+            } else if (has_na) {
                 for (int64_t i = 0; i < n_rows; i++) {
                     if (ISNA(dp[i]) || ISNAN(dp[i])) {
                         vec_array_set_null(&arr, i);
@@ -789,6 +791,44 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         SEXP other = list_get(lst, "other");
         if (other != R_NilValue) e->right = parse_expr(other, schema);
         e->result_type = vec_expr_geom_result_type(e->geom_fn);
+        return e;
+    }
+    if (strcmp(kind, "floor_time") == 0) {
+        const char *unit = list_get_string(lst, "unit");
+        if (!unit) vectra_error("floor_time missing 'unit'");
+        VecExpr *e = vec_expr_alloc(EXPR_FLOOR_TIME);
+        e->date_part = unit[0];
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        SEXP nn = list_get(lst, "n");
+        e->lit_i64 = 1;
+        if (nn != R_NilValue) {
+            if (TYPEOF(nn) == REALSXP) e->lit_i64 = (int64_t)REAL(nn)[0];
+            else if (TYPEOF(nn) == INTSXP) e->lit_i64 = (int64_t)INTEGER(nn)[0];
+        }
+        e->result_type = VEC_DOUBLE;
+        return e;
+    }
+    if (strcmp(kind, "vec_dist") == 0) {
+        const char *fn = list_get_string(lst, "fn");
+        if (!fn) vectra_error("vec_dist expression missing 'fn'");
+        VecExpr *e = vec_expr_alloc(EXPR_VEC_DIST);
+        e->vec_fn = fn[0];
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+        /* Second operand: a constant query vector (lit_string) or another
+           embedding column. Mutually exclusive. */
+        SEXP query = list_get(lst, "query");
+        if (query != R_NilValue) {
+            SEXP q_kind = list_get(query, "kind");
+            if (q_kind != R_NilValue && TYPEOF(q_kind) == STRSXP &&
+                strcmp(CHAR(STRING_ELT(q_kind, 0)), "lit_string") == 0) {
+                const char *s = CHAR(STRING_ELT(list_get(query, "value"), 0));
+                e->lit_str = (char *)malloc(strlen(s) + 1);
+                strcpy(e->lit_str, s);
+            } else {
+                e->left = parse_expr(query, schema);
+            }
+        }
+        e->result_type = VEC_DOUBLE;
         return e;
     }
 

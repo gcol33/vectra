@@ -1,4 +1,13 @@
-# vectra vector GIS roadmap
+# vectra roadmap
+
+Two parts:
+
+1. **Vector GIS** (below) -- geometry verbs a QGIS or `sf`/`terra` user expects,
+   that vectra does not yet stream.
+2. **Beyond spatial** (end of file) -- other data domains the engine could
+   support, sorted by architectural fit.
+
+# Vector GIS
 
 Scope: vector geometry verbs a QGIS or `sf`/`terra` user expects, that vectra
 does not yet stream. Each entry states what the operation does, why it cannot be
@@ -364,3 +373,102 @@ so neither is its own tier:
   overlay is the model: one `spatial_overlay`, optional `y =` and `how =`).
 - CRS is threaded from the input node and never hardcoded, as in the current
   spatial verbs.
+
+# Beyond spatial - other domains vectra could support
+
+vectra's spatial support works because geometry fits a specific shape the engine
+is good at: an **opaque self-describing blob per cell** (hex-WKB) that gets
+**decoded and computed on per-row in C**, dispatched through `expr` (the `st_*`
+family), parallelized with OpenMP, and streamed so the working set never has to
+fit in RAM. Anything matching that shape is a natural extension. Candidates are
+sorted by how cleanly they map onto the engine and how much they would matter to
+climate-ecology / bioacoustics work.
+
+## Tier 1 - best architectural fit + own domain
+
+### N-dimensional climate cubes (NetCDF / Zarr / HDF5)
+
+Where larger-than-RAM bites hardest in climate ecology. The `tiff_scan` pattern
+(pixels -> rows with x, y, band) already proves the model; NetCDF/Zarr generalize
+it to (lon, lat, time, level) -> rows with value columns.
+
+- Slots in as a new `nc_scan` / `zarr_scan` backend next to `csv_scan` /
+  `tiff_scan`, plus a `tbl_netcdf()` entry point.
+- Hard part: chunk-aligned streaming so one Zarr/NetCDF chunk maps to one row
+  group. This maps onto the existing row-group scan with zone-map pruning -- a
+  bbox/time-range predicate prunes chunks the same way `==` prunes via the hash
+  index.
+- Payoff: turns "I can't open this CMIP6 file" into a lazy query.
+
+### Genomic intervals + sequence data
+
+Two sub-fits:
+
+- **Interval overlap joins** (done). `interval_join()` overlaps each `x` row's
+  `[start, end]` against every `y` row's range, with an optional equality `by`
+  key (a chromosome) and `inner`/`left` modes. Both sides materialize resident,
+  then a per-block sweep-line over the endpoints emits each overlapping pair
+  once (output-sensitive, not all-pairs). The blocking-partition and
+  materialization machinery is shared with the fuzzy join
+  (`src/join_partition.c`); the matcher is `src/interval_join.c`.
+- **Sequence ops** (`seq_*`: reverse-complement, k-mer, GC content, translate,
+  edit-distance to a reference). These map onto `expr` exactly like `st_*` does --
+  a self-describing string column (the sequence), decoded and computed per-row,
+  OpenMP over rows. `levenshtein` / `dl_dist` are already parallelized; alignment
+  is the same kernel shape. VCF/BED/FASTA scan backends feed it.
+
+## Tier 2 - clean fit, broad appeal
+
+### Vector / embedding columns + similarity search (done)
+
+`as_embedding()` packs numeric vectors into a hex float32 blob stored in an
+ordinary string column (the hex-WKB geometry precedent, kept ASCII so it
+round-trips any codec). `cosine()`, `l2()`, and `dot()` decode the blob inside
+the engine, one row per thread (`src/expr_vec.c`), against either a constant
+query vector or a second embedding column. Nearest-neighbour search is
+`mutate(d = cosine(emb, q)) |> slice_min(d, n = k)`, reusing the existing
+`topn` node with no engine change. Restoring the dictionary-defer fast path for
+duplicated wide-string columns (the known tdc regression) would also speed bulk
+embedding scans.
+
+### Time-series resampling + rolling ops (done)
+
+Dates already ride as `VEC_DOUBLE` + a `Date`/`POSIXct` annotation, so the work
+was expression and verb level: `floor_time(t, unit)` truncates an epoch column
+to a calendar grid (`src/expr_datetime.c`), `resample(t, every, ...)` composes
+`floor_time` + `group_by` + `summarise` for calendar-grid downsampling, and
+`roll_sum`/`roll_mean`/`roll_min`/`roll_max`/`roll_n` are time-based trailing
+windows on the existing window node (per-group sort then a two-pointer sweep,
+monotonic deque for min/max; `src/window.c`). A floored/bucket column collects
+as numeric epoch (the project node does not re-attach the date class to a
+computed column); reclassing on the way out is the remaining nicety. Gap-filling
+is not yet built.
+
+## Tier 3 - possible, weaker fit
+
+### Text corpora / full-text
+
+The string + regex + fuzzy machinery is already rich; tokenization, n-grams,
+TF-IDF, and a postings-list index would make vectra a larger-than-RAM corpus
+engine. Fits, but less differentiated from existing tools than the tiers above.
+
+### Audio / signal frames
+
+Bioacoustics-relevant (spectrograms, MFCCs from larger-than-RAM audio), but
+signal ops are windowed across rows rather than per-row, so they fight the
+pull-based model more than geometry does. Doable as a windowed node, not as cheap
+as the `st_*` analogy suggests.
+
+## Suggested next steps
+
+- **NetCDF/Zarr scan** -- most acute larger-than-RAM problem in the actual
+  workflow, the `tiff_scan` backend already shows the path, and chunk-pruning
+  reuses the existing zone-map machinery. The one heavy item left here: it needs
+  an external library (netcdf-c / HDF5 or a Zarr reader), which cuts against the
+  self-contained-tarball property, so it wants its own design pass.
+- **Sequence ops** (`seq_*`: reverse-complement, k-mer, GC content, translate)
+  -- the `expr_vec` / `expr_string` per-row decode shape now has two precedents
+  to follow.
+- Smaller follow-ons to what shipped: re-attach the date class to a resampled
+  bucket column, gap-filling for time series, and a fused NN node if the
+  distance-column memory ever matters.

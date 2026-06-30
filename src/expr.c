@@ -254,6 +254,9 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     /* Geometry operations — dispatched to expr_geom.c */
     case EXPR_GEOM:
         return vec_expr_eval_geom(expr, batch);
+    /* Embedding distance operations — dispatched to expr_vec.c */
+    case EXPR_VEC_DIST:
+        return vec_expr_eval_vec(expr, batch);
     /* case_when and coalesce — evaluated here directly */
     case EXPR_CASE_WHEN: {
         int64_t n = batch->n_rows;
@@ -411,6 +414,7 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     case EXPR_PMAX:
     case EXPR_DATE_PART:
     case EXPR_AS_DATE:
+    case EXPR_FLOOR_TIME:
     case EXPR_IF_ELSE:
     case EXPR_RESOLVE:
     case EXPR_PROPAGATE:

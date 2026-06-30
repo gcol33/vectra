@@ -6,7 +6,20 @@
 # Known window function names
 .win_fns <- c("lag", "lead", "row_number", "rank", "dense_rank",
               "cumsum", "cummean", "cummin", "cummax",
-              "ntile", "percent_rank", "cume_dist")
+              "ntile", "percent_rank", "cume_dist",
+              "roll_sum", "roll_mean", "roll_min", "roll_max", "roll_n")
+
+# Convert a time-window string ("1 hour", "15 min") to seconds. Rolling
+# windows must be fixed-width; calendar units (month/quarter/year) vary in
+# length and are rejected.
+.window_seconds <- function(u) {
+  pu <- .parse_time_unit(u)
+  secs <- c(s = 1, n = 60, h = 3600, d = 86400, w = 604800)[pu$code]
+  if (is.na(secs))
+    stop("a rolling window must be a fixed unit (sec/min/hour/day/week), ",
+         "not month/quarter/year")
+  pu$n * unname(secs)
+}
 
 # Check if an expression is a window function call
 is_window_call <- function(expr) {
@@ -103,6 +116,23 @@ parse_window_spec <- function(expr, output_name) {
     col <- as.character(expr[[2]])
     return(list(name = output_name, kind = fn, col = col,
                 offset = 1L, default = NULL))
+  }
+
+  # Time-based rolling aggregates: roll_*(value, time, every).
+  if (fn %in% c("roll_sum", "roll_mean", "roll_min", "roll_max")) {
+    col <- as.character(expr[[2]])
+    order <- as.character(expr[[3]])
+    win <- .window_seconds(eval(expr[[4]]))
+    return(list(name = output_name, kind = fn, col = col,
+                order = order, window = win, offset = 1L, default = NULL))
+  }
+
+  # roll_n(time, every): count of rows in the trailing window (no value column).
+  if (fn == "roll_n") {
+    order <- as.character(expr[[2]])
+    win <- .window_seconds(eval(expr[[3]]))
+    return(list(name = output_name, kind = "roll_n", col = NULL,
+                order = order, window = win, offset = 1L, default = NULL))
   }
 
   stop(sprintf("unsupported window function: %s", fn))
