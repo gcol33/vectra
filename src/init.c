@@ -101,7 +101,7 @@ SEXP C_geos_version(void);
 SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp);
 SEXP C_overlay_components(SEXP bbox_sexp);
 SEXP C_overlay_group(SEXP wkb_list);
-SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp, SEXP prec_sexp);
+SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp, SEXP prec_sexp, SEXP pip_sexp);
 
 /* GEOS-native streaming spatial verbs (vtr_spatial.c). */
 SEXP C_geos_locator_build(SEXP wkb_list);
@@ -187,7 +187,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_overlay_parse",            (DL_FUNC) &C_overlay_parse,            3},
     {"C_overlay_components",       (DL_FUNC) &C_overlay_components,       1},
     {"C_overlay_group",            (DL_FUNC) &C_overlay_group,            1},
-    {"C_overlay_run",              (DL_FUNC) &C_overlay_run,              5},
+    {"C_overlay_run",              (DL_FUNC) &C_overlay_run,              6},
     {"C_geos_locator_build",       (DL_FUNC) &C_geos_locator_build,       1},
     {"C_geos_filter",              (DL_FUNC) &C_geos_filter,              6},
     {"C_geos_join",                (DL_FUNC) &C_geos_join,                5},

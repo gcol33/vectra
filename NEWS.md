@@ -1,3 +1,29 @@
+# vectra 0.9.9
+
+## Faster `spatial_overlay()`
+
+* Each distinct input geometry is decoded from its stored WKB once per overlay
+  batch and shared, read-only, across every tile it falls in. A feature that
+  spans many tiles was previously decoded again in each of them; on a dense
+  world protected-area union a single large feature can recur in thousands of
+  tiles, which made WKB decoding the largest single cost of the overlay. The
+  per-tile clipping, noding, and attribution are unchanged, so the result is
+  identical.
+* A piece is a face of the arrangement of all input boundaries, so it lies
+  wholly inside or outside every input up to snap-rounding slivers along the
+  boundary. `spatial_overlay()` now credits each whole face to the inputs whose
+  interior contains the face's representative point, and the piece geometry is
+  that face. This replaces intersecting every face with each partially covering
+  input, the largest remaining cost once decoding is shared; per-input covered
+  area stays within about the noding precision times the face perimeter of the
+  exact value (well inside the 1e-4 coverage tolerance), and thin boundary
+  slivers no longer appear as separate pieces. Pass `exact = TRUE` to restore
+  the previous behaviour, where each face is intersected with every covering
+  input and credited that exact area.
+* Together these take the end-to-end ~470k-feature world protected-area union
+  from about 15 minutes to about 5, with the coverage invariant still holding
+  exactly (0 offenders), on a 32-thread desktop.
+
 # vectra 0.9.8
 
 ## New features

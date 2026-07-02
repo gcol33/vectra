@@ -137,35 +137,39 @@ static void emit_piece(GEOSContextHandle_t ctx, GEOSWKBWriter *writer, OutList *
  * `rect` (NULL for none) into disjoint pieces, appending them to `out`. Inputs
  * are pre-repaired and pre-snapped (see C_overlay_partition), so this only parses,
  * keeps areal parts, and clips -- no makeValid, no setPrecision. */
-static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKBWriter *writer,
-                         const unsigned char **ptrs, const size_t *lens,
+static void process_tile(GEOSContextHandle_t ctx, GEOSWKBWriter *writer,
+                         GEOSGeometry * const *base, const double *base_area, const int *uniq,
                          const int *members, int nmem, const double *rect,
-                         OutList *out, double *inarea, int *gface, double prec) {
+                         OutList *out, double *inarea, int *gface, double prec, int pip) {
     GEOSGeometry **poly = (GEOSGeometry **) calloc((size_t) nmem, sizeof(GEOSGeometry *));
+    unsigned char *owned = (unsigned char *) calloc((size_t) nmem, 1);
     const GEOSPreparedGeometry **prep =
         (const GEOSPreparedGeometry **) calloc((size_t) nmem, sizeof(const GEOSPreparedGeometry *));
     int *store = (int *) malloc((size_t) nmem * sizeof(int));
-    if (poly == NULL || prep == NULL || store == NULL) error("vectra overlay: out of memory");
+    if (poly == NULL || owned == NULL || prep == NULL || store == NULL) error("vectra overlay: out of memory");
 
     GEOSSTRtree *tree = GEOSSTRtree_create_r(ctx, 10);
     int live = 0;
     for (int k = 0; k < nmem; k++) {
         store[k] = k;
-        GEOSGeometry *g = GEOSWKBReader_read_r(ctx, reader, ptrs[members[k]], lens[members[k]]);
+        int uu = uniq[members[k]];
+        GEOSGeometry *bg = base[uu];           /* decoded once per batch; shared, read-only */
+        GEOSGeometry *g = bg;                   /* the tile-local geometry (clipped or shared) */
+        int own = 0;
         int straddles = 0;
-        if (g != NULL && rect != NULL) {
+        if (bg != NULL && rect != NULL) {
             /* Only a feature whose bounding box leaves the tile needs clipping; one
              * that sits wholly inside the tile is unchanged by the clip and is
              * already valid from the partition pass, so it skips the clip, the
-             * validity check and the repair below -- the common case in a tile. */
+             * validity check and the repair below -- the common case in a tile. The
+             * shared base geometry is used directly; only a straddler makes a copy. */
             double xmin, ymin, xmax, ymax;
-            straddles = !(GEOSGeom_getExtent_r(ctx, g, &xmin, &ymin, &xmax, &ymax) &&
+            straddles = !(GEOSGeom_getExtent_r(ctx, bg, &xmin, &ymin, &xmax, &ymax) &&
                           xmin >= rect[0] && ymin >= rect[1] &&
                           xmax <= rect[2] && ymax <= rect[3]);
         }
-        if (g != NULL && rect != NULL && straddles) {
-            GEOSGeometry *gc = GEOSClipByRect_r(ctx, g, rect[0], rect[1], rect[2], rect[3]);
-            GEOSGeom_destroy_r(ctx, g);
+        if (bg != NULL && rect != NULL && straddles) {
+            GEOSGeometry *gc = GEOSClipByRect_r(ctx, bg, rect[0], rect[1], rect[2], rect[3]);
             /* GEOSClipByRect is a fast rectangle clip with no validity guarantee:
              * on a multi-ring polygon it can return an invalid geometry whose area
              * and point-in-polygon tests disagree, so the clip would be measured
@@ -179,13 +183,10 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
             }
             g = (gc != NULL) ? areal_only(ctx, gc) : NULL;
             if (gc != NULL) GEOSGeom_destroy_r(ctx, gc);
-        } else if (g != NULL) {
-            GEOSGeometry *ga = areal_only(ctx, g);
-            GEOSGeom_destroy_r(ctx, g);
-            g = ga;
+            own = (g != NULL);
         }
-        poly[k] = g;
-        inarea[members[k]] = areal_area(ctx, g);
+        poly[k] = g; owned[k] = (unsigned char) own;
+        inarea[members[k]] = own ? areal_area(ctx, g) : (g != NULL ? base_area[uu] : 0.0);
         if (g != NULL) {
             prep[k] = GEOSPrepare_r(ctx, g);
             GEOSSTRtree_insert_r(ctx, tree, g, &store[k]);
@@ -232,32 +233,41 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
                     if (GEOSisEmpty_r(ctx, face)) continue;
                     double fa = areal_area(ctx, face);
                     if (fa <= 0.0) continue;
-                    /* A face produced by noding the snapped boundaries can straddle
-                     * an input edge at coarse precision, so the piece a covering
-                     * input gets is the face clipped to that input -- credited the
-                     * intersection area, not the whole face. The common case (face
-                     * wholly inside the input) skips the clip. This keeps each
-                     * input's pieces summing to its area regardless of the grid. */
+                    /* Each arrangement face is an atomic cell of the noded input
+                     * boundaries, so it lies wholly inside or outside every input
+                     * but for snap-rounding slivers along the boundary. A single
+                     * interior point therefore decides coverage: the whole face is
+                     * credited to each input containing that point, with an area
+                     * error bounded by the noding precision times the face
+                     * perimeter. The exact path instead clips the face to each
+                     * partially covering input and credits the intersection area. */
+                    GEOSGeometry *fpt = pip ? GEOSPointOnSurface_r(ctx, face) : NULL;
                     cand.n = 0;
                     GEOSSTRtree_query_r(ctx, tree, face, strtree_cb, &cand);
                     int fid = -1;
                     for (int c = 0; c < cand.n; c++) {
                         int k = cand.idx[c];
                         if (poly[k] == NULL) continue;
-                        if (!GEOSPreparedIntersects_r(ctx, prep[k], face)) continue;
                         const GEOSGeometry *piece = NULL;
                         GEOSGeometry *clip = NULL;
                         double a;
-                        if (GEOSPreparedContains_r(ctx, prep[k], face)) {
+                        if (pip) {
+                            if (fpt == NULL) break;
+                            if (!GEOSPreparedIntersects_r(ctx, prep[k], fpt)) continue;
                             piece = face; a = fa;
                         } else {
-                            GEOSGeometry *inter = GEOSIntersection_r(ctx, face, poly[k]);
-                            clip = (inter != NULL) ? areal_only(ctx, inter) : NULL;
-                            if (inter != NULL) GEOSGeom_destroy_r(ctx, inter);
-                            if (clip == NULL) continue;
-                            a = areal_area(ctx, clip);
-                            if (a <= 1e-9 * fa) { GEOSGeom_destroy_r(ctx, clip); continue; }
-                            piece = clip;
+                            if (!GEOSPreparedIntersects_r(ctx, prep[k], face)) continue;
+                            if (GEOSPreparedContains_r(ctx, prep[k], face)) {
+                                piece = face; a = fa;
+                            } else {
+                                GEOSGeometry *inter = GEOSIntersection_r(ctx, face, poly[k]);
+                                clip = (inter != NULL) ? areal_only(ctx, inter) : NULL;
+                                if (inter != NULL) GEOSGeom_destroy_r(ctx, inter);
+                                if (clip == NULL) continue;
+                                a = areal_area(ctx, clip);
+                                if (a <= 1e-9 * fa) { GEOSGeom_destroy_r(ctx, clip); continue; }
+                                piece = clip;
+                            }
                         }
                         if (fid < 0) {
 #ifdef _OPENMP
@@ -270,6 +280,7 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
                         emit_piece(ctx, writer, out, piece, members[k], a, fid);
                         if (clip != NULL) GEOSGeom_destroy_r(ctx, clip);
                     }
+                    if (fpt != NULL) GEOSGeom_destroy_r(ctx, fpt);
                 }
                 free(cand.idx);
                 GEOSGeom_destroy_r(ctx, faces);
@@ -279,10 +290,10 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBReader *reader, GEOSWKB
 
     for (int k = 0; k < nmem; k++) {
         if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
-        if (poly[k] != NULL) GEOSGeom_destroy_r(ctx, poly[k]);
+        if (owned[k] && poly[k] != NULL) GEOSGeom_destroy_r(ctx, poly[k]);
     }
     GEOSSTRtree_destroy_r(ctx, tree);
-    free(poly); free((void *) prep); free(store);
+    free(poly); free(owned); free((void *) prep); free(store);
 }
 
 /* ---- partition: clean + bbox + components -------------------------------- */
@@ -495,18 +506,23 @@ SEXP C_overlay_group(SEXP wkb_list) {
  *   n_threads : INTSXP(1) OpenMP threads (<=0 -> all cores)
  *   prec      : REALSXP(1) noding grid size; >0 nodes at fixed precision
  *               (snap-rounding on that grid), 0 nodes in floating precision
+ *   pip       : LGLSXP(1) attribution mode; TRUE credits each whole arrangement
+ *               face to the inputs containing its interior point (fast, pieces
+ *               are the faces), FALSE clips each face to every covering input
+ *               (exact per-input intersection areas)
  * returns VECSXP(5): hex-WKB pieces (one per face x covering input), INTSXP
  *                    origin (1-based chunk index of the covering input), piece
  *                    areas, input areas (per chunk input, clipped), INTSXP face
  *                    (1-based id shared by the rows from one polygonised face). */
 SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp,
-                   SEXP prec_sexp) {
+                   SEXP prec_sexp, SEXP pip_sexp) {
     overlay_geos_init();
     int m = (int) Rf_length(wkb_chunk);
     int nthreads = (Rf_length(nthreads_sexp) > 0) ? INTEGER(nthreads_sexp)[0] : 0;
     int have_rects = (rects_sexp != R_NilValue && Rf_length(rects_sexp) >= 4);
     const double *rects = have_rects ? REAL(rects_sexp) : NULL;
     double prec = (Rf_length(prec_sexp) > 0) ? REAL(prec_sexp)[0] : 0.0;
+    int pip = (Rf_length(pip_sexp) > 0) && (LOGICAL(pip_sexp)[0] == TRUE);
 
     const unsigned char **ptrs =
         (const unsigned char **) R_alloc((size_t) m, sizeof(const unsigned char *));
@@ -515,6 +531,30 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
         SEXP raw = VECTOR_ELT(wkb_chunk, i);
         ptrs[i] = (const unsigned char *) RAW(raw);
         lens[i] = (size_t) Rf_length(raw);
+    }
+
+    /* Map each chunk input to a distinct feature. Tile replication makes the same
+     * feature recur across many tiles as the SAME underlying RAW vector, so equal
+     * WKB pointers identify one feature; it is decoded once and the tiles share it.
+     * uniq[i] is the feature's dense id; rep[u] is a chunk position holding it. */
+    int *uniq = (int *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(int));
+    int *rep  = (int *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(int));
+    int nuniq = 0;
+    {
+        size_t hcap = 1; while (hcap < (size_t) (2 * m + 1)) hcap <<= 1;
+        size_t hmask = hcap - 1;
+        int *hslot = (int *) R_Calloc(hcap, int);   /* stores i+1; 0 = empty */
+        for (int i = 0; i < m; i++) {
+            uintptr_t key = (uintptr_t) ptrs[i];
+            size_t h = (size_t) (key * 1099511628211ULL) & hmask;
+            for (;;) {
+                int s = hslot[h];
+                if (s == 0) { hslot[h] = i + 1; rep[nuniq] = i; uniq[i] = nuniq++; break; }
+                if (ptrs[s - 1] == ptrs[i]) { uniq[i] = uniq[s - 1]; break; }
+                h = (h + 1) & hmask;
+            }
+        }
+        R_Free(hslot);
     }
 
     const int *job = INTEGER(job_chunk);
@@ -529,16 +569,47 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
 
     double *inarea = (double *) R_Calloc((size_t) m, double);
 
+    int cap = 1;
 #ifdef _OPENMP
-    {   /* clamp to the team cap (R CMD check two-core limit), then to job count */
-        int cap = omp_get_max_threads();
-        if (nthreads <= 0 || nthreads > cap) nthreads = cap;
-    }
+    cap = omp_get_max_threads();   /* team cap (R CMD check two-core limit) */
+    if (nthreads <= 0 || nthreads > cap) nthreads = cap;
     if (nthreads > njobs) nthreads = njobs > 0 ? njobs : 1;
 #else
     nthreads = 1;
 #endif
     int nw = nthreads > 0 ? nthreads : 1;
+
+    /* Decode each distinct feature once, in parallel, into a shared read-only base
+     * geometry. The envelope is warmed here so the tile loop only reads the base
+     * (extent test, clip, boundary, prepare) without racing on lazy state. */
+    GEOSGeometry **base = (GEOSGeometry **) R_Calloc((size_t) (nuniq > 0 ? nuniq : 1), GEOSGeometry *);
+    double *base_area = (double *) R_Calloc((size_t) (nuniq > 0 ? nuniq : 1), double);
+    int dthreads = cap; if (dthreads > nuniq) dthreads = nuniq > 0 ? nuniq : 1;
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(dthreads)
+#endif
+    {
+        GEOSContextHandle_t dctx = GEOS_init_r();
+        GEOSContext_setErrorMessageHandler_r(dctx, overlay_error_handler, NULL);
+        GEOSWKBReader *dreader = GEOSWKBReader_create_r(dctx);
+#ifdef _OPENMP
+        #pragma omp for schedule(dynamic, 64)
+#endif
+        for (int u = 0; u < nuniq; u++) {
+            int i = rep[u];
+            GEOSGeometry *g0 = GEOSWKBReader_read_r(dctx, dreader, ptrs[i], lens[i]);
+            GEOSGeometry *g = (g0 != NULL) ? areal_only(dctx, g0) : NULL;
+            if (g0 != NULL) GEOSGeom_destroy_r(dctx, g0);
+            if (g != NULL) {
+                double xmin, ymin, xmax, ymax;
+                GEOSGeom_getExtent_r(dctx, g, &xmin, &ymin, &xmax, &ymax);  /* warm envelope */
+                base_area[u] = areal_area(dctx, g);
+            }
+            base[u] = g;
+        }
+        GEOSWKBReader_destroy_r(dctx, dreader);
+        GEOS_finish_r(dctx);
+    }
     OutList *worker = (OutList *) R_alloc((size_t) nw, sizeof(OutList));
     for (int t = 0; t < nw; t++) ol_init(&worker[t]);
     int g_face = 0;   /* dense piece-id source, shared across jobs/threads */
@@ -549,16 +620,14 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
         int tid = omp_get_thread_num();
         GEOSContextHandle_t ctx = GEOS_init_r();
         GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
         GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
         #pragma omp for schedule(dynamic, 1)
         for (int j = 0; j < njobs; j++) {
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
-            process_tile(ctx, reader, writer, ptrs, lens, jmemb[j], jsize[j],
-                         rect, &worker[tid], inarea, &g_face, prec);
+            process_tile(ctx, writer, base, base_area, uniq, jmemb[j], jsize[j],
+                         rect, &worker[tid], inarea, &g_face, prec, pip);
         }
-        GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);
         GEOS_finish_r(ctx);
     }
@@ -566,19 +635,24 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
     {
         GEOSContextHandle_t ctx = GEOS_init_r();
         GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
         GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
         for (int j = 0; j < njobs; j++) {
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
-            process_tile(ctx, reader, writer, ptrs, lens, jmemb[j], jsize[j],
+            process_tile(ctx, writer, base, base_area, uniq, jmemb[j], jsize[j],
                          rect, &worker[0], inarea, &g_face, prec);
         }
-        GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);
         GEOS_finish_r(ctx);
     }
 #endif
+
+    {   /* free the shared base geometries (any context may destroy them) */
+        GEOSContextHandle_t fctx = GEOS_init_r();
+        for (int u = 0; u < nuniq; u++) if (base[u] != NULL) GEOSGeom_destroy_r(fctx, base[u]);
+        GEOS_finish_r(fctx);
+    }
+    R_Free(base); R_Free(base_area);
 
     size_t total = 0;
     for (int t = 0; t < nw; t++) total += worker[t].n;

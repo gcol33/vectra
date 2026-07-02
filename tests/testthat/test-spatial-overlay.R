@@ -94,6 +94,38 @@ test_that("coverage invariant: piece areas sum to each input's area", {
   expect_equal(cov, truth, tolerance = 1e-6)
 })
 
+test_that("exact and point attribution both satisfy the coverage invariant", {
+  # nested + offset squares -> high coverage multiplicity in the centre
+  geoms <- sf::st_sfc(mk(0, 6, 0, 6), mk(1, 5, 1, 5), mk(2, 4, 2, 4),
+                      mk(3, 7, 3, 7), mk(-1, 3, -1, 3))
+  polys <- sf::st_sf(id = seq_along(geoms), geometry = geoms)
+  truth <- as.numeric(sf::st_area(sf::st_geometry(polys)))
+  for (ex in c(FALSE, TRUE)) {
+    df    <- spatial_overlay(polys, vars = "id", exact = ex) |> collect()
+    g     <- sf::st_as_sfc(structure(df$geometry, class = "WKB"), EWKB = FALSE)
+    cov   <- tapply(as.numeric(sf::st_area(g)), df$id, sum)
+    cov   <- as.numeric(cov[order(as.integer(names(cov)))])
+    expect_equal(cov, truth, tolerance = 1e-4,
+                 info = sprintf("exact = %s", ex))
+  }
+})
+
+test_that("both attribution modes agree on non-degenerate geometry", {
+  polys <- sf::st_sf(year = c(1990L, 2010L), geometry = sf::st_sfc(mk(0, 2), mk(1, 3)))
+  a <- spatial_overlay(polys, exact = FALSE) |> collect()
+  b <- spatial_overlay(polys, exact = TRUE)  |> collect()
+  expect_equal(length(unique(a$piece_id)), 3L)
+  expect_equal(length(unique(b$piece_id)), 3L)
+  expect_equal(nrow(a), nrow(b))
+})
+
+test_that("exact must be a single logical", {
+  polys <- sf::st_sf(year = 1L, geometry = sf::st_sfc(mk(0, 1)))
+  expect_error(spatial_overlay(polys, exact = NA), "single logical")
+  expect_error(spatial_overlay(polys, exact = "yes"), "single logical")
+  expect_error(spatial_overlay(polys, exact = c(TRUE, FALSE)), "single logical")
+})
+
 test_that("invalid input polygons are repaired before overlay", {
   # self-intersecting bowtie repaired to two triangles, overlapped by a square
   bowtie <- sf::st_polygon(list(rbind(c(0, 0), c(2, 2), c(2, 0), c(0, 2), c(0, 0))))

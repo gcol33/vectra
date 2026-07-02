@@ -15,6 +15,7 @@ spatial_overlay(
   grid = NULL,
   precision = NULL,
   dedup = TRUE,
+  exact = FALSE,
   flush_rows = NULL,
   mem_limit = NULL,
   threads = NULL,
@@ -77,6 +78,17 @@ geometries and fan the per-record attributes back onto its pieces afterwards.
 Duplicates add no faces, so the result is identical; this only removes the
 redundant noding when many records are stacked over one site (common in
 WDPA-style data). \code{TRUE} by default; set \code{FALSE} to overlay every record.}
+
+\item{exact}{How a piece is credited to the inputs that cover it. Each piece is
+a face of the arrangement of all input boundaries, so it lies wholly inside or
+outside every input up to snap-rounding slivers along the boundary. With
+\code{FALSE} (the default) the whole face is credited to each input whose interior
+contains the face's representative point, and the piece geometry is the face;
+per-input covered area is then exact up to about the noding precision times the
+face perimeter. With \code{TRUE} each face is intersected with every partially
+covering input and credited that intersection area, giving areas exact to the
+snapping grid at the cost of extra geometry work and thin boundary slivers as
+separate pieces.}
 
 \item{flush_rows}{Exploded rows buffered before a spill flush. Defaults to
 \code{getOption("vectra.spatial_flush", 5e5)}.}
