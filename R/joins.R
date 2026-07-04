@@ -72,18 +72,26 @@ left_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 }
 
 # Internal: shared implementation for standard joins (left, inner, full)
+# Single R entry point for every join node: threads the resolved memory budget
+# (the grace-hash spill threshold) so all joins share one source of truth. When
+# the build side exceeds the budget, the C engine spills to a partitioned join.
+.join_node <- function(left, right, kind, lkeys, rkeys, sx, sy,
+                       mem = vectra_mem()) {
+  .Call(C_join_node, left, right, kind, lkeys, rkeys, sx, sy, as.numeric(mem))
+}
+
 join_impl <- function(x, y, by, suffix, type) {
   keys <- parse_join_keys(x, y, by)
-  new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    type, keys$left, keys$right, suffix[1], suffix[2])
+  new_xptr <- .join_node(x$.node, y$.node,
+                         type, keys$left, keys$right, suffix[1], suffix[2])
   structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
 }
 
 # Internal: shared implementation for filtering joins (semi, anti)
 filter_join_impl <- function(x, y, by, type) {
   keys <- parse_join_keys(x, y, by)
-  new_xptr <- .Call(C_join_node, x$.node, y$.node,
-                    type, keys$left, keys$right, ".x", ".y")
+  new_xptr <- .join_node(x$.node, y$.node,
+                         type, keys$left, keys$right, ".x", ".y")
   structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
 }
 
@@ -131,8 +139,8 @@ right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...)
   y_schema <- .Call(C_node_schema, y$.node)
 
   # Swap: build on left (x), probe with right (y)
-  new_xptr <- .Call(C_join_node, y$.node, x$.node,
-                    "left", keys$right, keys$left, suffix[2], suffix[1])
+  new_xptr <- .join_node(y$.node, x$.node,
+                         "left", keys$right, keys$left, suffix[2], suffix[1])
   result_node <- structure(list(.node = new_xptr, .path = NULL),
                            class = "vectra_node")
   schema <- .Call(C_node_schema, result_node$.node)

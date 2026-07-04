@@ -1,3 +1,29 @@
+# vectra 0.9.10
+
+## One memory knob for the whole engine
+
+* A single ceiling, `options(vectra.memory = "8GB")`, now governs every part of
+  the engine that buffers before spilling. It is resolved by the new exported
+  `vectra_mem()` (accepts a byte count or a `"512MB"` / `"8GB"` string). The
+  auto-detected default is half of system RAM, floored at 1 GB; an explicit
+  value is honored as given. Row-group size (`batch_size`) is a separate
+  cache-locality control and is unaffected.
+* The external sort's spill threshold, the self-overlay working-set cap, and the
+  streaming spatial flush / partition-routing buffers all derive their budget
+  from `vectra_mem()` instead of separate constants. The per-subsystem options
+  `vectra.spatial_flush`, `vectra.partition_budget`, `vectra.overlay_mem_limit`,
+  and `vectra.overlay_parse_chunk` are removed; per-call `flush_rows` (an
+  explicit row cap) remains the override on the streaming spatial verbs and
+  `offload()`.
+
+## Joins spill to disk instead of running out of memory
+
+* When a join's build (right) side outgrows `vectra_mem()`, the engine switches
+  to a grace-hash join: both sides are hash-partitioned by key into run-files
+  and joined one partition at a time, so peak memory stays bounded. The result
+  is identical to the in-memory join for every kind (inner, left, right, full,
+  semi, anti), including composite keys and many-to-many matches.
+
 # vectra 0.9.9
 
 ## Faster `spatial_overlay()`

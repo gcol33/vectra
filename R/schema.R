@@ -219,8 +219,8 @@ lookup.vectra_schema <- function(.schema, ..., .join = "left", .report = TRUE) {
     lnk <- .schema$dims[[dim_name]]
     dim_node <- reopen_node(lnk$node)
     keys <- parse_join_keys(node, dim_node, lnk$key)
-    new_xptr <- .Call(C_join_node, node$.node, dim_node$.node,
-                      .join, keys$left, keys$right, ".x", ".y")
+    new_xptr <- .join_node(node$.node, dim_node$.node,
+                           .join, keys$left, keys$right, ".x", ".y")
     node <- structure(list(.node = new_xptr, .path = NULL),
                       class = "vectra_node")
   }
@@ -261,8 +261,8 @@ report_unmatched <- function(schema, needed_dims) {
     dim_node <- reopen_node(lnk$node)
     keys <- parse_join_keys(fact_node, dim_node, lnk$key)
 
-    anti_xptr <- .Call(C_join_node, fact_node$.node, dim_node$.node,
-                       "anti", keys$left, keys$right, ".x", ".y")
+    anti_xptr <- .join_node(fact_node$.node, dim_node$.node,
+                            "anti", keys$left, keys$right, ".x", ".y")
     anti_node <- structure(list(.node = anti_xptr, .path = NULL),
                            class = "vectra_node")
     anti_df <- .Call(C_collect, anti_node$.node)

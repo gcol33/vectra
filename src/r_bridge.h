@@ -22,7 +22,7 @@ SEXP C_topn_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP n);
 SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names, SEXP order_col, SEXP desc);
 SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
                  SEXP kind, SEXP left_keys, SEXP right_keys,
-                 SEXP suffix_x, SEXP suffix_y);
+                 SEXP suffix_x, SEXP suffix_y, SEXP mem);
 SEXP C_window_node(SEXP node_xptr, SEXP key_names, SEXP win_specs);
 SEXP C_concat_node(SEXP node_xptrs);
 SEXP C_write_csv(SEXP node_xptr, SEXP path);

@@ -35,7 +35,9 @@
 #' from: the external sort's spill threshold, the self-overlay tile cap, spatial
 #' run-file flushes, partition routing, and the spilling hash join. Resolution
 #' order is an explicit `limit`, then `getOption("vectra.memory")`, then a default
-#' of half the detected system RAM. The result is floored at 1 GB.
+#' of half the detected system RAM. The auto-detected default is floored at 1 GB;
+#' an explicit `limit` or option is honored as given (down to 1 KB), so a smaller
+#' budget can be requested deliberately.
 #'
 #' Set the session budget with `options(vectra.memory = "8GB")` (a string with a
 #' K/M/G/T suffix) or `options(vectra.memory = 8e9)` (a byte count). Row-group
@@ -51,13 +53,17 @@
 #' vectra_mem("4GB")
 vectra_mem <- function(limit = NULL) {
   raw <- if (!is.null(limit)) limit else getOption("vectra.memory", NULL)
-  bytes <- if (is.null(raw)) {
+  if (is.null(raw)) {
+    # Auto-detected default: half of RAM, floored at 1 GB so a tiny or
+    # undetectable machine still gets a workable budget.
     ram <- .sys_ram_bytes()
-    if (is.na(ram)) 4 * 1024^3 else 0.5 * ram
+    bytes <- if (is.na(ram)) 4 * 1024^3 else 0.5 * ram
+    max(bytes, .VECTRA_MEM_FLOOR)
   } else {
-    .parse_bytes(raw)
+    # An explicit budget is honored as given (a small 1 KB sanity floor only),
+    # so a user who asks for "512MB" gets it and tests can force spill paths.
+    max(.parse_bytes(raw), 1024)
   }
-  max(bytes, .VECTRA_MEM_FLOOR)
 }
 
 # Convert a byte budget to a row count given an estimated bytes-per-row, for

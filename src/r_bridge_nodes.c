@@ -241,7 +241,7 @@ SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names_sexp,
 
 SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
                  SEXP kind_sexp, SEXP left_keys_sexp, SEXP right_keys_sexp,
-                 SEXP suffix_x_sexp, SEXP suffix_y_sexp) {
+                 SEXP suffix_x_sexp, SEXP suffix_y_sexp, SEXP mem_sexp) {
     VecNode *left = unwrap_node(left_xptr);
     R_ClearExternalPtr(left_xptr);
     VecNode *right = unwrap_node(right_xptr);
@@ -275,7 +275,9 @@ SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
     const char *sx = CHAR(STRING_ELT(suffix_x_sexp, 0));
     const char *sy = CHAR(STRING_ELT(suffix_y_sexp, 0));
 
-    JoinNode *jn = join_node_create(left, right, kind, n_keys, keys, sx, sy);
+    int64_t mem_budget = (int64_t)Rf_asReal(mem_sexp);
+    JoinNode *jn = join_node_create(left, right, kind, n_keys, keys, sx, sy,
+                                    mem_budget, get_r_tempdir());
     return wrap_node((VecNode *)jn);
 }
 

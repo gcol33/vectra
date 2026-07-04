@@ -53,6 +53,19 @@ typedef struct {
     char     *suffix_x;
     char     *suffix_y;
 
+    /* Grace-hash spill: when the materialized build side exceeds mem_budget
+       bytes, both sides are hash-partitioned to run-files and joined one
+       partition at a time. mem_budget <= 0 disables spilling (unbounded). */
+    int64_t   mem_budget;
+    char     *temp_dir;       /* directory for partition spill files */
+
+    int        spill;         /* 1 = partitioned spill mode active */
+    int        n_parts;       /* partition count (K) */
+    char     **left_parts;    /* K left-side partition .vtr paths */
+    char     **right_parts;   /* K right-side partition .vtr paths */
+    int        cur_part;      /* partition currently being joined */
+    VecNode   *sub_join;      /* active sub-join over cur_part (owns its scans) */
+
     /* State machine */
     JoinState state;
 
@@ -86,6 +99,7 @@ typedef struct {
 
 JoinNode *join_node_create(VecNode *left, VecNode *right,
                            JoinKind kind, int n_keys, JoinKey *keys,
-                           const char *suffix_x, const char *suffix_y);
+                           const char *suffix_x, const char *suffix_y,
+                           int64_t mem_budget, const char *temp_dir);
 
 #endif /* VECTRA_JOIN_H */

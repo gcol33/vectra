@@ -19,7 +19,9 @@ The single memory ceiling every buffering subsystem derives its working budget
 from: the external sort's spill threshold, the self-overlay tile cap, spatial
 run-file flushes, partition routing, and the spilling hash join. Resolution
 order is an explicit \code{limit}, then \code{getOption("vectra.memory")}, then a default
-of half the detected system RAM. The result is floored at 1 GB.
+of half the detected system RAM. The auto-detected default is floored at 1 GB;
+an explicit \code{limit} or option is honored as given (down to 1 KB), so a smaller
+budget can be requested deliberately.
 }
 \details{
 Set the session budget with \code{options(vectra.memory = "8GB")} (a string with a
