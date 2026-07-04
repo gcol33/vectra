@@ -11,9 +11,6 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Default memory budget: 1 GB */
-#define DEFAULT_MEM_BUDGET (1024LL * 1024 * 1024)
-
 /* Row group size for spill files */
 #define SPILL_RG_SIZE 65536
 
@@ -931,7 +928,7 @@ static void sort_free(VecNode *self) {
 }
 
 SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
-                           const char *temp_dir) {
+                           const char *temp_dir, int64_t mem_budget) {
     SortNode *sn = (SortNode *)calloc(1, sizeof(SortNode));
     if (!sn) vectra_error("alloc failed for SortNode");
 
@@ -939,7 +936,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->n_keys     = n_keys;
     sn->keys       = keys;
     sn->phase      = SORT_INIT;
-    sn->mem_budget = DEFAULT_MEM_BUDGET;
+    sn->mem_budget = mem_budget;
 
     if (temp_dir) {
         sn->temp_dir = (char *)malloc(strlen(temp_dir) + 1);

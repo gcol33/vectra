@@ -13,7 +13,6 @@
 #                            independent per-shard fits.
 # The external-sort instance is the existing arrange() (already disk-backed).
 
-.PARTITION_BUDGET <- 1e6        # rows buffered before a routing flush
 
 # -- cost grade ---------------------------------------------------------------
 
@@ -105,6 +104,11 @@ grade_of <- function(x) {
 #'   the returned node is garbage-collected.
 #' @param compress Compression for spill files, passed to [write_vtr()]:
 #'   `"fast"` (default), `"small"`, or `"none"`.
+#' @param flush_rows Row cap on each shard buffer during partition routing.
+#'   `NULL` (the default) instead flushes once the buffered bytes cross the
+#'   streaming memory budget (a fraction of [vectra_mem()], set with
+#'   `options(vectra.memory = )`); an explicit value caps each buffer at that
+#'   many rows.
 #'
 #' @return A `vectra_node` (no `by`) or a `vectra_partition` (with `by`), each
 #'   carrying a cost grade shown by [print()] and [explain()].
@@ -131,7 +135,8 @@ grade_of <- function(x) {
 #' @export
 offload <- function(x, by = NULL, n = NULL,
                     method = c("auto", "level", "range", "hash"),
-                    path = NULL, compress = c("fast", "small", "none")) {
+                    path = NULL, compress = c("fast", "small", "none"),
+                    flush_rows = NULL) {
   if (!inherits(x, "vectra_node"))
     stop("`x` must be a vectra_node (build one with tbl(), tbl_csv(), ...)")
   method <- match.arg(method)
@@ -161,9 +166,8 @@ offload <- function(x, by = NULL, n = NULL,
   if (method %in% c("range", "hash") && is.null(n))
     n <- if (method == "range") 8L else 16L
 
-  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
   spec <- .partition_spec(spill, by, method, n)
-  res <- .partition_router(spill, spec$assign, budget)
+  res <- .partition_router(spill, spec$assign, flush_rows)
 
   labels <- spec$order(names(res$runs))
   shards <- lapply(labels, function(lab) .concat_runs(res$runs[[lab]]))
@@ -188,8 +192,10 @@ offload <- function(x, by = NULL, n = NULL,
   attr(p, ".grade") <- new_offload_grade(
     tier = sprintf("partition by '%s' (%s)", by, method),
     passes = "1 spill + 1 routing pass",
-    peak = sprintf("O(routing budget = %g rows), or O(one shard) when collected",
-                   budget),
+    peak = if (is.null(flush_rows))
+      "O(streaming memory budget), or O(one shard) when collected"
+    else sprintf("O(routing budget = %g rows), or O(one shard) when collected",
+                 flush_rows),
     io = "O(n)",
     note = "localizes coupling so each shard fits in RAM")
   class(p) <- c("vectra_partition", "list")
@@ -264,7 +270,11 @@ offload <- function(x, by = NULL, n = NULL,
 # One streaming pass: route each batch's rows to per-label buffers, flush to a
 # run-file when the buffered row count crosses the budget. Each label ends as a
 # set of run-files (a lazy concat downstream). Bounded by the budget.
-.partition_router <- function(spill, assign, budget) {
+.partition_router <- function(spill, assign, budget = NULL) {
+  # Default (budget NULL): flush all shard buffers once the buffered bytes cross
+  # the streaming memory budget. An explicit budget caps by total buffered rows.
+  by_rows <- !is.null(budget)
+  limit   <- if (by_rows) budget else .stream_bytes()
   st <- new.env(parent = emptyenv())
   st$buffers <- list(); st$runs <- list(); st$counts <- list()
   st$buffered <- 0; st$n <- 0
@@ -292,8 +302,9 @@ offload <- function(x, by = NULL, n = NULL,
     for (lab in names(idx))
       st$buffers[[lab]] <- c(st$buffers[[lab]],
                              list(chunk[idx[[lab]], , drop = FALSE]))
-    st$buffered <- st$buffered + nrow(chunk)
-    if (st$buffered >= budget) flush_all()
+    st$buffered <- st$buffered +
+      (if (by_rows) nrow(chunk) else as.numeric(utils::object.size(chunk)))
+    if (st$buffered >= limit) flush_all()
   }
   flush_all()
   list(runs = st$runs, counts = st$counts, n = st$n)

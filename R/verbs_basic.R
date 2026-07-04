@@ -44,9 +44,15 @@ arrange.vectra_node <- function(.data, ...) {
     }
   }
 
-  new_xptr <- .Call(C_sort_node, .data$.node, col_names, desc_flags)
+  new_xptr <- .sort_node(.data$.node, col_names, desc_flags)
   structure(list(.node = new_xptr, .path = .data$.path,
                  .groups = .data$.groups), class = "vectra_node")
+}
+
+# Single R entry point for every sort node: threads the resolved memory budget
+# (the external-sort spill threshold) so all sorts share one source of truth.
+.sort_node <- function(node, col_names, desc, mem = vectra_mem()) {
+  .Call(C_sort_node, node, col_names, desc, as.numeric(mem))
 }
 
 #' Mark a column for descending sort order

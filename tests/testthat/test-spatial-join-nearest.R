@@ -55,10 +55,10 @@ test_that("two-sided nearest is invariant to the partition budget", {
   on.exit(unlink(c(fl, ft)))
 
   run <- function(budget) {
-    old <- options(vectra.partition_budget = budget); on.exit(options(old))
     r <- collect(tbl(fl) |>
       spatial_join(tbl(ft), coords = c("x", "y"),
-                   join = sf::st_nearest_feature, partition = grid(7)))
+                   join = sf::st_nearest_feature, partition = grid(7),
+                   flush_rows = budget))
     r[order(r$id), "tid"]
   }
   expect_equal(run(20), run(1e6))

@@ -146,7 +146,8 @@ SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names_sexp, SEXP agg_specs_sexp) 
 
 /* --- C_sort_node --- */
 
-SEXP C_sort_node(SEXP node_xptr, SEXP col_names_sexp, SEXP desc_sexp) {
+SEXP C_sort_node(SEXP node_xptr, SEXP col_names_sexp, SEXP desc_sexp,
+                 SEXP mem_sexp) {
     VecNode *child = unwrap_node(node_xptr);
     R_ClearExternalPtr(node_xptr);
 
@@ -163,7 +164,9 @@ SEXP C_sort_node(SEXP node_xptr, SEXP col_names_sexp, SEXP desc_sexp) {
         keys[k].descending = LOGICAL(desc_sexp)[k];
     }
 
-    SortNode *sn = sort_node_create(child, n_keys, keys, get_r_tempdir());
+    int64_t mem_budget = (int64_t)Rf_asReal(mem_sexp);
+    SortNode *sn = sort_node_create(child, n_keys, keys, get_r_tempdir(),
+                                    mem_budget);
     return wrap_node((VecNode *)sn);
 }
 

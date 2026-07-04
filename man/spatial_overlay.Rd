@@ -90,17 +90,20 @@ covering input and credited that intersection area, giving areas exact to the
 snapping grid at the cost of extra geometry work and thin boundary slivers as
 separate pieces.}
 
-\item{flush_rows}{Exploded rows buffered before a spill flush. Defaults to
-\code{getOption("vectra.spatial_flush", 5e5)}.}
+\item{flush_rows}{Exploded rows buffered before a spill flush. \code{NULL}
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of \code{\link[=vectra_mem]{vectra_mem()}}, set with
+\code{options(vectra.memory = )}); an explicit value caps each buffer at that
+many rows.}
 
 \item{mem_limit}{Approximate peak working-set budget in bytes, bounding the
 per-tile size (\code{tile_bytes = mem_limit / (threads * 24)}). It is a throughput
 knob with an interior optimum, not "bigger is faster": too small replicates
 features across many tiles, too large nodes too much linework per tile (a
 superlinear cost), and a budget of tens of GB runs slower than the default on
-a dense layer. Lower it for tighter memory. Defaults via
-\code{getOption("vectra.overlay_mem_limit", ...)} to a value that scales with
-\code{threads} to hold the per-tile size near its measured optimum.}
+a dense layer. Lower it for tighter memory. \code{NULL} (the default) scales with
+\code{threads} to hold the per-tile size near its measured optimum, capped by the
+session budget \code{\link[=vectra_mem]{vectra_mem()}} (\code{options(vectra.memory = )}).}
 
 \item{threads}{Number of OpenMP threads for the per-component overlay within a
 chunk. \code{0} (the default, via \code{getOption("vectra.overlay_threads", 0)}) uses

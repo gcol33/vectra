@@ -10,7 +10,8 @@ offload(
   n = NULL,
   method = c("auto", "level", "range", "hash"),
   path = NULL,
-  compress = c("fast", "small", "none")
+  compress = c("fast", "small", "none"),
+  flush_rows = NULL
 )
 }
 \arguments{
@@ -33,6 +34,12 @@ the returned node is garbage-collected.}
 
 \item{compress}{Compression for spill files, passed to \code{\link[=write_vtr]{write_vtr()}}:
 \code{"fast"} (default), \code{"small"}, or \code{"none"}.}
+
+\item{flush_rows}{Row cap on each shard buffer during partition routing.
+\code{NULL} (the default) instead flushes once the buffered bytes cross the
+streaming memory budget (a fraction of \code{\link[=vectra_mem]{vectra_mem()}}, set with
+\code{options(vectra.memory = )}); an explicit value caps each buffer at that
+many rows.}
 }
 \value{
 A \code{vectra_node} (no \code{by}) or a \code{vectra_partition} (with \code{by}), each

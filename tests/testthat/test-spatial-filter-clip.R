@@ -56,11 +56,8 @@ test_that("spatial_filter matches sf across multi-batch streaming", {
 
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(pts, f, batch_size = 500L)            # several read batches
-  old <- options(vectra.spatial_flush = 700)      # several spill flushes
-  on.exit(options(old), add = TRUE)
-
   got <- tbl(f) |>
-    spatial_filter(region, coords = c("x", "y"), crs = NA) |>
+    spatial_filter(region, coords = c("x", "y"), crs = NA, flush_rows = 700) |>
     collect()
   expect_equal(sort(got$id), sort(want))
 })
@@ -125,11 +122,8 @@ test_that("spatial_clip matches sf across multi-batch streaming", {
   df <- data.frame(pid = xs, geometry = sf::st_as_binary(geoms, hex = TRUE))
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(df, f, batch_size = 7L)
-  old <- options(vectra.spatial_flush = 11)
-  on.exit(options(old), add = TRUE)
-
   mask <- sf::st_sfc(make_square(10.5, 40.5, 0, 1))
-  got <- tbl(f) |> spatial_clip(mask, crs = NA) |> collect_sf()
+  got <- tbl(f) |> spatial_clip(mask, crs = NA, flush_rows = 11) |> collect_sf()
 
   resident <- sf::st_sf(pid = xs, geometry = geoms)
   ref <- suppressWarnings(sf::st_intersection(resident, sf::st_union(mask)))

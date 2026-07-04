@@ -17,8 +17,6 @@
 # This mirrors offload(by = ...): batch cursor -> per-batch work -> run-files ->
 # a ConcatNode with a finalizer that clears the temp spills.
 
-.SPATIAL_FLUSH <- 5e5      # transformed rows buffered before a run-file flush
-
 .check_sf <- function() {
   if (!requireNamespace("sf", quietly = TRUE))
     stop("spatial operations require the 'sf' package; install it with ",
@@ -347,8 +345,7 @@
 # what it can hold. An explicit mem_limit always wins.
 .overlay_mem_default <- function(nthreads) {
   thread_scaled <- .OVERLAY_TILE_TGT * .OVERLAY_FACTOR * max(as.integer(nthreads), 1L)
-  ram <- .sys_ram_bytes()
-  if (is.na(ram)) thread_scaled else min(thread_scaled, 0.5 * ram)
+  min(thread_scaled, vectra_mem())
 }
 
 # Features per parse chunk. The parse materializes the raw WKB for its chunk only,
@@ -366,8 +363,7 @@
   else as.integer(.OVERLAY_PARSE_CHUNK * max(0.25, min(1, ram / 16e9)))
 }
 # Batch size for reads/parse, RAM-scaled, overridable, and (sf path) capped at n.
-.overlay_chunk_size <- function()
-  as.integer(getOption("vectra.overlay_parse_chunk", .overlay_chunk_ram()))
+.overlay_chunk_size <- function() .overlay_chunk_ram()
 .overlay_parse_chunk <- function(n)
   max(1L, min(as.integer(n), .overlay_chunk_size()))
 
@@ -513,23 +509,28 @@
 # of per-batch data.frames into a lazy node. `push()` records the schema from the
 # first frame it sees (even an empty one), so `finish()` can emit a correctly
 # typed empty node when nothing matched. Returns a list of `push` and `finish`.
-.run_accumulator <- function(flush_rows) {
+.run_accumulator <- function(flush_rows = NULL) {
   st <- new.env(parent = emptyenv())
-  st$buf <- list(); st$buffered <- 0L; st$runs <- character(0); st$template <- NULL
+  st$buf <- list(); st$buffered <- 0; st$runs <- character(0); st$template <- NULL
+  # Default (flush_rows NULL): flush when the buffered bytes cross the streaming
+  # memory budget. An explicit flush_rows caps the buffer by row count instead.
+  by_rows <- !is.null(flush_rows)
+  limit   <- if (by_rows) flush_rows else .stream_bytes()
 
   flush <- function() {
     if (!length(st$buf)) return(invisible())
     df <- if (length(st$buf) == 1L) st$buf[[1]] else do.call(rbind, st$buf)
     rf <- tempfile(fileext = ".vtr"); write_vtr(df, rf)
-    st$runs <- c(st$runs, rf); st$buf <- list(); st$buffered <- 0L
+    st$runs <- c(st$runs, rf); st$buf <- list(); st$buffered <- 0
   }
 
   push <- function(df) {
     if (is.null(st$template)) st$template <- df[0, , drop = FALSE]
     if (nrow(df)) {
       st$buf <- c(st$buf, list(df))
-      st$buffered <- st$buffered + nrow(df)
-      if (st$buffered >= flush_rows) flush()
+      st$buffered <- st$buffered +
+        (if (by_rows) nrow(df) else as.numeric(utils::object.size(df)))
+      if (st$buffered >= limit) flush()
     }
     invisible()
   }
@@ -653,8 +654,11 @@
 #' @param out_geom Name of the output geometry column. Defaults to `geom`
 #'   (or `"geometry"` when `coords` is used).
 #' @param flush_rows Transformed rows buffered before a spill flush. Larger
-#'   values mean fewer, bigger temporary files. Defaults to
-#'   `getOption("vectra.spatial_flush", 5e5)`.
+#'   values mean fewer, bigger temporary files. `NULL`
+#'   (the default) instead flushes once a spill buffer's size crosses the
+#'   streaming memory budget (a fraction of [vectra_mem()], set with
+#'   `options(vectra.memory = )`); an explicit value caps each buffer at that
+#'   many rows.
 #'
 #' @return A `vectra_node` backed by temporary `.vtr` spills (removed when the
 #'   node is garbage-collected), carrying the output CRS for [collect_sf()].
@@ -686,7 +690,7 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
   fn <- rlang::as_function(fn)
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   .spatial_stream(x, fn, geom, coords, crs, out_geom, fr)
 }
 
@@ -739,7 +743,7 @@ spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
     stop("`part` must be a single column name, or NULL")
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- geom
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   .spatial_stream(x, function(sb) .explode_batch(sb, part),
                   geom, coords = NULL, crs = crs, out_geom = out_geom,
                   flush_rows = fr)
@@ -850,7 +854,7 @@ spatial_join <- function(x, y, join = NULL, geom = "geometry", coords = NULL,
   if (is.null(join)) join <- sf::st_intersects
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   dots <- list(...)
 
   if (!is.null(partition)) {
@@ -1061,7 +1065,11 @@ print.vectra_grid <- function(x, ...) {
 # route them to per-cell run-files flushed when the budget is crossed. Returns
 # the named list of run-file paths per cell label. Handles the row replication
 # the right side needs (augment may return more rows than it received).
-.cell_router <- function(cursor, augment, budget) {
+.cell_router <- function(cursor, augment, budget = NULL) {
+  # Default (budget NULL): flush all cell buffers once the buffered bytes cross
+  # the streaming memory budget. An explicit budget caps by total buffered rows.
+  by_rows <- !is.null(budget)
+  limit   <- if (by_rows) budget else .stream_bytes()
   st <- new.env(parent = emptyenv())
   st$buffers <- list(); st$runs <- list(); st$buffered <- 0
   flush_one <- function(lab) {
@@ -1082,8 +1090,9 @@ print.vectra_grid <- function(x, ...) {
     for (lab in names(idx))
       st$buffers[[lab]] <- c(st$buffers[[lab]],
                              list(aug[idx[[lab]], , drop = FALSE]))
-    st$buffered <- st$buffered + nrow(aug)
-    if (st$buffered >= budget) flush_all()
+    st$buffered <- st$buffered +
+      (if (by_rows) nrow(aug) else as.numeric(utils::object.size(aug)))
+    if (st$buffered >= limit) flush_all()
   }
   flush_all()
   st$runs
@@ -1108,7 +1117,6 @@ print.vectra_grid <- function(x, ...) {
 .spatial_join_partition <- function(x, y, join, g, geom, coords,
                                     y_geom, y_coords, crs, left, suffix,
                                     out_geom, fr, dots) {
-  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
   halo <- identical(join, sf::st_nearest_feature)
 
   lruns <- .cell_router(
@@ -1116,7 +1124,7 @@ print.vectra_grid <- function(x, ...) {
     function(chunk) {
       chunk[[".cell"]] <- .left_cell_labels(chunk, geom, coords, crs, g)
       .coerce_for_vtr(chunk)
-    }, budget)
+    }, fr)
   on.exit(unlink(unlist(lruns, use.names = FALSE)), add = TRUE)
 
   # An empty right sf with y's attribute schema, for left cells with no right
@@ -1128,7 +1136,7 @@ print.vectra_grid <- function(x, ...) {
       if (is.null(ytmpl$sf))
         ytmpl$sf <- .sf_decode_chunk(chunk, y_geom, y_coords, crs)[0, ]
       .coerce_for_vtr(.right_replicate(chunk, y_geom, y_coords, crs, g))
-    }, budget)
+    }, fr)
   on.exit(unlink(unlist(rruns, use.names = FALSE)), add = TRUE)
 
   acc <- .run_accumulator(fr)
@@ -1221,7 +1229,7 @@ spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
     stop("`y` must be an sf or sfc object (the resident locator layer)")
   crs <- .resolve_crs(x, crs)
   y   <- .align_resident_crs(y, crs)
-  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr  <- flush_rows
   dots <- list(...)
   acc <- .run_accumulator(fr)
   empty_geom <- if (is.null(coords)) geom else "geometry"
@@ -1345,7 +1353,7 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
   mask   <- .align_resident_crs(mask, crs)
   mask_u <- sf::st_union(sf::st_geometry(mask))   # one resident mask geometry
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
 
   # Native path: cut each batch's hex-WKB geometry against the resident mask in
   # C (intersection to clip, difference to erase), parsing the mask once. The
@@ -1448,7 +1456,7 @@ spatial_snap_grid <- function(x, size, geom = "geometry", crs = NA,
     stop("`size` must be a single positive number (the grid spacing)")
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- geom
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   nt <- .spatial_threads()
   .spatial_stream(x, function(sb) .snap_grid_batch(sb, size, nt),
                   geom, coords = NULL, crs = crs, out_geom = out_geom,
@@ -1509,7 +1517,7 @@ spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
   y    <- .align_resident_crs(y, crs)
   yg   <- sf::st_geometry(y)
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   batch_fn <- function(sb) sf::st_snap(sb, yg, tolerance = tolerance)
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
@@ -1631,7 +1639,7 @@ spatial_smooth <- function(x, iterations = 2L, keep_ends = TRUE,
   iterations <- as.integer(iterations)
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- geom
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   .spatial_stream(x, function(sb) .smooth_batch(sb, iterations, keep_ends),
                   geom, coords = NULL, crs = crs, out_geom = out_geom,
                   flush_rows = fr)
@@ -1741,7 +1749,7 @@ spatial_knn <- function(x, y, k = 1L, geom = "geometry", coords = NULL,
     y[[y_id]]
   }
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   batch_fn <- function(sb)
     .knn_batch(sb, yg, yid, k, rank_col, id_col, dist_col)
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
@@ -1873,7 +1881,7 @@ spatial_split <- function(x, blade, extract = c("pieces", "points"),
   blade <- .align_resident_crs(blade, crs)
   blade_u <- sf::st_set_crs(sf::st_union(sf::st_geometry(blade)), .as_crs(crs))
   if (is.null(out_geom)) out_geom <- geom
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   .spatial_stream(x, function(sb) .split_batch(sb, blade_u, crs, extract),
                   geom, coords = NULL, crs = crs, out_geom = out_geom,
                   flush_rows = fr)
@@ -3150,16 +3158,19 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #'   covering input and credited that intersection area, giving areas exact to the
 #'   snapping grid at the cost of extra geometry work and thin boundary slivers as
 #'   separate pieces.
-#' @param flush_rows Exploded rows buffered before a spill flush. Defaults to
-#'   `getOption("vectra.spatial_flush", 5e5)`.
+#' @param flush_rows Exploded rows buffered before a spill flush. `NULL`
+#'   (the default) instead flushes once a spill buffer's size crosses the
+#'   streaming memory budget (a fraction of [vectra_mem()], set with
+#'   `options(vectra.memory = )`); an explicit value caps each buffer at that
+#'   many rows.
 #' @param mem_limit Approximate peak working-set budget in bytes, bounding the
 #'   per-tile size (`tile_bytes = mem_limit / (threads * 24)`). It is a throughput
 #'   knob with an interior optimum, not "bigger is faster": too small replicates
 #'   features across many tiles, too large nodes too much linework per tile (a
 #'   superlinear cost), and a budget of tens of GB runs slower than the default on
-#'   a dense layer. Lower it for tighter memory. Defaults via
-#'   `getOption("vectra.overlay_mem_limit", ...)` to a value that scales with
-#'   `threads` to hold the per-tile size near its measured optimum.
+#'   a dense layer. Lower it for tighter memory. `NULL` (the default) scales with
+#'   `threads` to hold the per-tile size near its measured optimum, capped by the
+#'   session budget [vectra_mem()] (`options(vectra.memory = )`).
 #' @param threads Number of OpenMP threads for the per-component overlay within a
 #'   chunk. `0` (the default, via `getOption("vectra.overlay_threads", 0)`) uses
 #'   all available cores.
@@ -3238,8 +3249,7 @@ spatial_overlay <- function(x, y = NULL, vars = NULL, vars_y = NULL,
   nthreads <- threads   %||% getOption("vectra.overlay_threads",
                                        max(parallel::detectCores(), 1L))
   nthreads <- max(as.integer(nthreads), 1L)
-  mem      <- mem_limit %||% getOption("vectra.overlay_mem_limit",
-                                       .overlay_mem_default(nthreads))
+  mem      <- mem_limit %||% .overlay_mem_default(nthreads)
 
   # Read and parse the input: an in-memory sf object, or a file source (a path
   # with layer= or query=) read in feature batches so the whole layer is never
@@ -3339,7 +3349,7 @@ spatial_overlay <- function(x, y = NULL, vars = NULL, vars_y = NULL,
                            "%d threads, grid=%.4g, noding=%.3g"),
                     n_orig, n, max(comp), length(jobs), nthreads, grid, precision))
 
-  fr        <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr        <- flush_rows
   acc       <- .run_accumulator(fr)
   # Seed the schema from the combined template so an empty two-layer result (e.g.
   # an intersection with no overlaps) still finishes as a correctly typed node.

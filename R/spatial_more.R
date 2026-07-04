@@ -571,8 +571,11 @@ proximity <- function(x, target = NULL, band = 1L, path = NULL, dtype = "f32",
 #' @param values Name of the output value column. Default `"value"`.
 #' @param crs Coordinate reference system recorded on the node. Defaults to the
 #'   raster's EPSG, else unknown.
-#' @param flush_rows Rows buffered before a spill flush. Defaults to
-#'   `getOption("vectra.spatial_flush", 5e5)`.
+#' @param flush_rows Rows buffered before a spill flush. `NULL`
+#'   (the default) instead flushes once a spill buffer's size crosses the
+#'   streaming memory budget (a fraction of [vectra_mem()], set with
+#'   `options(vectra.memory = )`); an explicit value caps each buffer at that
+#'   many rows.
 #'
 #' @return A `vectra_node` with the value column and a hex-WKB `geometry` column,
 #'   materialise it with [collect_sf()].
@@ -600,7 +603,7 @@ polygonize <- function(x, band = 1L, dissolve = TRUE, na_rm = TRUE,
   TS <- max(1L, as.integer(r$tile_size))
   if (identical(crs, NA) && !is.null(r$epsg) && r$epsg > 0L) crs <- r$epsg
   rcrs <- .as_crs(crs)
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   acc <- .run_accumulator(fr)
 
   tiles_y <- (H + TS - 1L) %/% TS
@@ -714,8 +717,11 @@ polygonize <- function(x, band = 1L, dissolve = TRUE, na_rm = TRUE,
 #'   segments.
 #' @param crs Coordinate reference system recorded on the node. Defaults to the
 #'   raster's EPSG, else unknown.
-#' @param flush_rows Rows buffered before a spill flush. Defaults to
-#'   `getOption("vectra.spatial_flush", 5e5)`.
+#' @param flush_rows Rows buffered before a spill flush. `NULL`
+#'   (the default) instead flushes once a spill buffer's size crosses the
+#'   streaming memory budget (a fraction of [vectra_mem()], set with
+#'   `options(vectra.memory = )`); an explicit value caps each buffer at that
+#'   many rows.
 #'
 #' @return A `vectra_node` with a `level` column and a hex-WKB `geometry` column,
 #'   materialise it with [collect_sf()].
@@ -744,7 +750,7 @@ contours <- function(x, levels, band = 1L, merge = TRUE, crs = NA,
   TS <- max(1L, as.integer(r$tile_size))
   if (identical(crs, NA) && !is.null(r$epsg) && r$epsg > 0L) crs <- r$epsg
   rcrs <- .as_crs(crs)
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   acc <- .run_accumulator(fr)
 
   tiles_y <- (H + TS - 1L) %/% TS

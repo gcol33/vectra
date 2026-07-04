@@ -52,5 +52,5 @@ tbl("readings.vtr") |>
 
 }
 \seealso{
-\code{\link[terra:resample]{resample()}}
+\code{\link[=resample]{resample()}}
 }

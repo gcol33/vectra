@@ -38,8 +38,11 @@ hold the identifiers of the polygons on either side of each arc. Default
 \code{c("face1", "face2")}.}
 
 \item{flush_rows}{Transformed rows buffered before a spill flush. Larger
-values mean fewer, bigger temporary files. Defaults to
-\code{getOption("vectra.spatial_flush", 5e5)}.}
+values mean fewer, bigger temporary files. \code{NULL}
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of \code{\link[=vectra_mem]{vectra_mem()}}, set with
+\code{options(vectra.memory = )}); an explicit value caps each buffer at that
+many rows.}
 }
 \value{
 A \code{vectra_node} of one row per arc -- the arc geometry plus the two

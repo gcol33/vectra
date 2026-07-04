@@ -71,11 +71,9 @@ test_that("spatial_join survives multi-batch streaming and many spill flushes", 
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(pts, f, batch_size = 1000L)   # 5 row groups -> 5 read batches
 
-  old <- options(vectra.spatial_flush = 1500)  # force multiple run-file flushes
-  on.exit(options(old), add = TRUE)
-
   res <- tbl(f) |>
-    spatial_join(polys["pid"], coords = c("x", "y"), crs = NA) |>
+    spatial_join(polys["pid"], coords = c("x", "y"), crs = NA,
+                 flush_rows = 1500) |>
     collect()
 
   expect_equal(nrow(res), n)

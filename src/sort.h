@@ -26,10 +26,14 @@ typedef struct {
     void     *merge;        /* opaque MergeState* for multi-run merge */
 } SortNode;
 
+/* Default sort spill threshold, and the floor vectra_mem() enforces. */
+#define VECTRA_SORT_MEM_DEFAULT (1024LL * 1024 * 1024)
+
 /* Create a sort node.
    temp_dir: directory for spill files (NULL = in-memory only).
+   mem_budget: spill threshold in bytes (0 = unlimited, never spills).
    Takes ownership of the keys array. */
 SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
-                           const char *temp_dir);
+                           const char *temp_dir, int64_t mem_budget);
 
 #endif /* VECTRA_SORT_H */

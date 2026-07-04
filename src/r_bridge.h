@@ -16,7 +16,7 @@ SEXP C_node_plan(SEXP node_xptr);
 SEXP C_filter_node(SEXP node_xptr, SEXP expr_list);
 SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists);
 SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names, SEXP agg_specs);
-SEXP C_sort_node(SEXP node_xptr, SEXP col_names, SEXP desc);
+SEXP C_sort_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP mem);
 SEXP C_limit_node(SEXP node_xptr, SEXP n);
 SEXP C_topn_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP n);
 SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names, SEXP order_col, SEXP desc);

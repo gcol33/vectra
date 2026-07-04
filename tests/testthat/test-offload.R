@@ -140,9 +140,7 @@ test_that("multi-flush routing (tiny budget) still reproduces the input", {
   write_vtr(df, f, batch_size = 25)
 
   # Force many flushes so shards become multi-run concats.
-  old <- options(vectra.partition_budget = 50)
-  on.exit(options(old), add = TRUE)
-  p <- offload(tbl(f), by = "g")
+  p <- offload(tbl(f), by = "g", flush_rows = 50)
   rebuilt <- do.call(rbind, lapply(p, collect))
   expect_equal(sort(rebuilt$x), sort(df$x))
   expect_equal(sum(attr(p, ".counts")), nrow(df))

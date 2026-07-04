@@ -18,7 +18,7 @@ A numeric (epoch) column.
 }
 \description{
 Truncates a \code{Date} or \code{POSIXct} column down to a unit boundary -- the basis
-for time bucketing. Usable inside \code{\link[=mutate]{mutate()}} / \code{\link[=filter]{filter()}}; \code{\link[terra:resample]{resample()}}
+for time bucketing. Usable inside \code{\link[=mutate]{mutate()}} / \code{\link[=filter]{filter()}}; \code{\link[=resample]{resample()}}
 calls it for you.
 }
 \details{
@@ -29,5 +29,5 @@ collects as the underlying numeric epoch; wrap with \code{as.POSIXct(x, origin =
 need the class back.
 }
 \seealso{
-\code{\link[terra:resample]{resample()}}
+\code{\link[=resample]{resample()}}
 }

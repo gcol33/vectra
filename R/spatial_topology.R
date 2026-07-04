@@ -364,7 +364,7 @@ spatial_locate <- function(x, line, geom = "geometry", coords = NULL, crs = NA,
     line[[y_id]]
   }
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   batch_fn <- function(sb)
     .locate_batch(sb, yg, yid, id_col, measure_col, dist_col, snap)
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
@@ -485,7 +485,7 @@ spatial_centerline <- function(x, density = NULL, prune = 0,
     stop("`prune` must be a single non-negative number")
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- geom
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   .spatial_stream(x, function(sb) .centerline_batch(sb, density, prune, crs),
                   geom, coords = NULL, crs = crs, out_geom = out_geom,
                   flush_rows = fr)
@@ -741,12 +741,10 @@ spatial_eliminate <- function(x, max_area, by = NULL,
     stop(sprintf("column(s) not found in the stream: %s",
                  paste(miss, collapse = ", ")))
 
-  budget <- getOption("vectra.partition_budget", .PARTITION_BUDGET)
-  res <- .partition_router(spill, .dissolve_assign(by), budget)
+  res <- .partition_router(spill, .dissolve_assign(by), flush_rows)
   on.exit(unlink(unlist(res$runs, use.names = FALSE)), add = TRUE)
 
-  fr  <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
-  acc <- .run_accumulator(fr)
+  acc <- .run_accumulator(flush_rows)
   for (lab in sort(names(res$runs))) {
     df  <- collect(.concat_runs(res$runs[[lab]]))
     out <- group_fn(df)

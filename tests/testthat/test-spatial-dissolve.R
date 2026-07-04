@@ -103,11 +103,9 @@ test_that("streamed dissolve equals the single-batch resident dissolve", {
                    stringsAsFactors = FALSE)
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(df, f, batch_size = 9L)                 # several read batches
-  old <- options(vectra.spatial_flush = 13,
-                 vectra.partition_budget = 17)      # several routing flushes
-  on.exit(options(old), add = TRUE)
-
-  got <- tbl(f) |> spatial_dissolve(by = "band", crs = NA) |> collect_sf()
+  # small flush_rows forces several routing + spill flushes
+  got <- tbl(f) |> spatial_dissolve(by = "band", crs = NA, flush_rows = 13) |>
+    collect_sf()
   got <- got[order(got$band), ]
 
   resident <- sf::st_sf(band = band, geometry = geoms)

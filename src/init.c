@@ -124,7 +124,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_filter_node",  (DL_FUNC) &C_filter_node,   2},
     {"C_project_node",   (DL_FUNC) &C_project_node,  3},
     {"C_group_agg_node", (DL_FUNC) &C_group_agg_node, 3},
-    {"C_sort_node",      (DL_FUNC) &C_sort_node,       3},
+    {"C_sort_node",      (DL_FUNC) &C_sort_node,       4},
     {"C_limit_node",     (DL_FUNC) &C_limit_node,      2},
     {"C_topn_node",      (DL_FUNC) &C_topn_node,       4},
     {"C_group_topn_node",(DL_FUNC) &C_group_topn_node, 4},

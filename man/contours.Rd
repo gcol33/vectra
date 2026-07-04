@@ -21,8 +21,11 @@ segments.}
 \item{crs}{Coordinate reference system recorded on the node. Defaults to the
 raster's EPSG, else unknown.}
 
-\item{flush_rows}{Rows buffered before a spill flush. Defaults to
-\code{getOption("vectra.spatial_flush", 5e5)}.}
+\item{flush_rows}{Rows buffered before a spill flush. \code{NULL}
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of \code{\link[=vectra_mem]{vectra_mem()}}, set with
+\code{options(vectra.memory = )}); an explicit value caps each buffer at that
+many rows.}
 }
 \value{
 A \code{vectra_node} with a \code{level} column and a hex-WKB \code{geometry} column,

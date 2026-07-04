@@ -253,7 +253,7 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
 
   new_xptr <- .Call(C_group_agg_node, node$.node, grp_names, agg_specs)
   if (sort) {
-    sort_xptr <- .Call(C_sort_node, new_xptr, cnt_name, TRUE)
+    sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
     return(structure(list(.node = sort_xptr, .path = node$.path), class = "vectra_node"))
   }
   structure(list(.node = new_xptr, .path = node$.path), class = "vectra_node")
@@ -284,7 +284,7 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
 
   new_xptr <- .Call(C_group_agg_node, x$.node, key_names, agg_specs)
   if (sort) {
-    sort_xptr <- .Call(C_sort_node, new_xptr, cnt_name, TRUE)
+    sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
     return(structure(list(.node = sort_xptr, .path = x$.path), class = "vectra_node"))
   }
   structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")

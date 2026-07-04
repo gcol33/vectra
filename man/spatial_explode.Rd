@@ -31,8 +31,11 @@ CRS the upstream node carries, or unknown.}
 source feature, 1-based. Default \code{NULL} adds no such column.}
 
 \item{flush_rows}{Transformed rows buffered before a spill flush. Larger
-values mean fewer, bigger temporary files. Defaults to
-\code{getOption("vectra.spatial_flush", 5e5)}.}
+values mean fewer, bigger temporary files. \code{NULL}
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of \code{\link[=vectra_mem]{vectra_mem()}}, set with
+\code{options(vectra.memory = )}); an explicit value caps each buffer at that
+many rows.}
 }
 \value{
 A \code{vectra_node} of single-part features, backed by temporary \code{.vtr}

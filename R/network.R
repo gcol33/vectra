@@ -373,7 +373,7 @@ spatial_route <- function(x, network, to, to_id = NULL, geometry = TRUE,
   }
 
   out_geom <- out_geom %||% (if (is.null(coords)) geom else "geometry")
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   acc <- .run_accumulator(fr)
   nxt <- .batch_cursor(x)
   repeat {
@@ -478,7 +478,7 @@ spatial_service_area <- function(x, network, cost,
   crs <- .resolve_crs(x, crs)
   if (is.na(.as_crs(crs))) crs <- network$crs
   out_geom <- out_geom %||% "geometry"
-  fr <- flush_rows %||% getOption("vectra.spatial_flush", .SPATIAL_FLUSH)
+  fr <- flush_rows
   acc <- .run_accumulator(fr)
   nxt <- .batch_cursor(x)
   repeat {

@@ -688,7 +688,8 @@ GroupAggNode *group_agg_node_create(VecNode *child,
             sort_keys[k].col_index = idx;
             sort_keys[k].descending = 0;
         }
-        SortNode *sn = sort_node_create(child, n_keys, sort_keys, temp_dir);
+        SortNode *sn = sort_node_create(child, n_keys, sort_keys, temp_dir,
+                                        VECTRA_SORT_MEM_DEFAULT);
         child = (VecNode *)sn;
         ga->use_sorted = 1;
     }
