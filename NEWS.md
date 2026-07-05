@@ -1,3 +1,37 @@
+# vectra 0.10.2
+
+## `kmer()` k-mer spectrum node
+
+* `kmer(x, seq, k, by = , canonical = )` counts every k-mer of a nucleotide
+  column, grouped by zero or more key columns, returning one row per distinct
+  (group, k-mer) with a `kmer` string and an integer `count`. It is the
+  set-wise companion to the per-row `seq_*` family: a blocking step like
+  `summarise()`, but only the k-mer table is held, not the input, so a spectrum
+  over a larger-than-RAM read set stays bounded. Each k-mer is packed into 2
+  bits per base and counted in a native open-addressing hash (k in `1:32`); a
+  window containing any non-`ACGT` base is skipped, matching dedicated k-mer
+  counters. `canonical = TRUE` collapses a k-mer with its reverse complement.
+  Recovery-tested against a hand-rolled tabulation (ungrouped, by-group,
+  canonical, non-ACGT skipping, streaming invariance).
+
+* Internal: the group-key store (`KeyArena`) shared by `summarise()` and
+  `kmer()`, and the 2-bit base encoding shared by `seq_*` and `kmer()`, are now
+  single-sourced (`key_arena`, `seq_util`).
+
+## Fixes
+
+* Reading a `.vtr` no longer holds an OS file handle open for the scan node's
+  whole lifetime. The reader loads the row-group index into memory at open and
+  reopens the file per read (as the parallel reader already did), so an idle
+  scan node -- one created or already collected but not yet garbage-collected --
+  keeps no descriptor. A tight `tbl(f) |> collect()` loop previously leaked one
+  handle per iteration until the OS refused further opens and `vtr1_open_tdc`
+  failed (crashing when the failure landed mid-decode); it now runs unbounded.
+* A data.frame lifted into a lazy node (`tbl_xlsx()`, and the data.frame inputs
+  to `write_csv()` / `write_sqlite()` / `write_tiff()`) now owns its temporary
+  `.vtr` for the node's lifetime and unlinks it when the node is freed, instead
+  of deleting it when the creating call returned.
+
 # vectra 0.10.1
 
 ## FASTA / FASTQ streaming scan backends

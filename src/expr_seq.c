@@ -40,6 +40,7 @@
 #include "array.h"
 #include "error.h"
 #include "string_distance.h"
+#include "seq_util.h"
 #include "vec_omp.h"
 #include <stdlib.h>
 #include <string.h>
@@ -90,17 +91,6 @@ static inline char seq_transcribe_base(char b) {
     case 'T': return 'U'; case 't': return 'u';
     case 'U': return 'T'; case 'u': return 't';
     default:  return b;
-    }
-}
-
-/* Base -> 2-bit code (A=0, C=1, G=2, T/U=3); -1 for anything else. */
-static inline int seq_base2bit(char b) {
-    switch (b) {
-    case 'A': case 'a': return 0;
-    case 'C': case 'c': return 1;
-    case 'G': case 'g': return 2;
-    case 'T': case 't': case 'U': case 'u': return 3;
-    default:  return -1;
     }
 }
 

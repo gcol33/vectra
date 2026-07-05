@@ -475,7 +475,16 @@ typedef struct {
 } Vtr1TdcRowgroup;
 
 struct Vtr1TdcFile {
+    /* The whole row-group index is read into memory at open, after which no
+     * persistent OS file handle is held: each read reopens the path and closes
+     * it again (the parallel reader already opens per-thread handles the same
+     * way). Holding a handle for the file's lifetime meant an idle scan node --
+     * one created or already collected but not yet GC-finalized -- kept a .vtr
+     * descriptor open, so a loop of tbl()|>collect() leaked one per iteration
+     * until the OS refused further opens. fp is non-NULL only transiently
+     * during open, before the index is copied out. */
     FILE             *fp;
+    char             *path;       /* reopened per read; owned */
     VecSchema         schema;
     uint32_t          n_rowgroups;
     Vtr1TdcRowgroup  *rowgroups;  /* length n_rowgroups */
@@ -496,7 +505,8 @@ static void vtr1_tdc_file_destroy(Vtr1TdcFile *f) {
     }
     free(f->col_sorted);
     vec_schema_free(&f->schema);
-    if (f->fp) fclose(f->fp);
+    if (f->fp) fclose(f->fp);   /* only set on an open-time error path */
+    free(f->path);
     free(f);
 }
 
@@ -609,6 +619,15 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
         return NULL;
     }
     f->fp = fp;
+    f->path = (char *)malloc(strlen(path) + 1);
+    if (!f->path) {
+        for (int i = 0; i < n_cols; i++) { free(names[i]); free(user_anns[i]); }
+        free(names); free(types); free(user_anns);
+        vtr1_tdc_file_destroy(f);
+        tdc_stream_decoder_close(&dec);
+        return NULL;
+    }
+    memcpy(f->path, path, strlen(path) + 1);
     f->schema = vec_schema_create(n_cols, names, types);
     /* Hand user-annotation ownership over to the schema. */
     for (int i = 0; i < n_cols; i++) {
@@ -711,6 +730,9 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
     }
 
     tdc_stream_decoder_close(&dec);
+    /* Index is fully in memory now; drop the OS handle. Reads reopen f->path. */
+    fclose(f->fp);
+    f->fp = NULL;
     return f;
 }
 
@@ -916,12 +938,20 @@ VecBatch *vtr1_read_rowgroup_tdc_defer(Vtr1TdcFile *file, uint32_t rg_idx,
                      rg_idx, file->n_rowgroups);
     }
 
+    /* Reopen the file for this read rather than holding a handle for the
+       Vtr1TdcFile's lifetime; block offsets in the index are absolute, so a
+       fresh handle seeks identically. */
+    FILE *fp = fopen(file->path, "rb");
+    if (!fp) vectra_error("vtr1: cannot reopen '%s' for read", file->path);
+    setvbuf(fp, NULL, _IOFBF, 256 * 1024);
+
     uint8_t *scratch = NULL;
     size_t   scratch_cap = 0;
-    VecBatch *batch = read_rg_tdc_with_fp(file, rg_idx, col_mask, file->fp,
+    VecBatch *batch = read_rg_tdc_with_fp(file, rg_idx, col_mask, fp,
                                           &scratch, &scratch_cap, direct_bufs,
                                           defer_str_dict);
     free(scratch);
+    fclose(fp);
     return batch;
 }
 

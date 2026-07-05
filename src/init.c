@@ -117,6 +117,7 @@ SEXP C_geos_points_to_hex(SEXP x_sexp, SEXP y_sexp);
 static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr",    (DL_FUNC) &C_write_vtr,    7},
     {"C_scan_node",    (DL_FUNC) &C_scan_node,     1},
+    {"C_scan_node_temp", (DL_FUNC) &C_scan_node_temp, 1},
     {"C_collect",      (DL_FUNC) &C_collect,       1},
     {"C_node_optimize",   (DL_FUNC) &C_node_optimize,   1},
     {"C_node_next_batch", (DL_FUNC) &C_node_next_batch, 1},
@@ -125,6 +126,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_filter_node",  (DL_FUNC) &C_filter_node,   2},
     {"C_project_node",   (DL_FUNC) &C_project_node,  3},
     {"C_group_agg_node", (DL_FUNC) &C_group_agg_node, 3},
+    {"C_kmer_node",      (DL_FUNC) &C_kmer_node,       5},
     {"C_sort_node",      (DL_FUNC) &C_sort_node,       4},
     {"C_limit_node",     (DL_FUNC) &C_limit_node,      2},
     {"C_topn_node",      (DL_FUNC) &C_topn_node,       4},

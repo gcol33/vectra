@@ -5,6 +5,7 @@
 #include "filter.h"
 #include "project.h"
 #include "group_agg.h"
+#include "kmer.h"
 #include "sort.h"
 #include "topn.h"
 #include "group_topn.h"
@@ -142,6 +143,31 @@ SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names_sexp, SEXP agg_specs_sexp) 
     GroupAggNode *ga = group_agg_node_create(child, n_keys, key_names,
                                               n_aggs, specs, get_r_tempdir());
     return wrap_node((VecNode *)ga);
+}
+
+/* --- C_kmer_node --- */
+
+SEXP C_kmer_node(SEXP node_xptr, SEXP seq_col_sexp, SEXP k_sexp,
+                 SEXP canonical_sexp, SEXP key_names_sexp) {
+    VecNode *child = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+
+    const char *seq_col = CHAR(STRING_ELT(seq_col_sexp, 0));
+    int k = Rf_asInteger(k_sexp);
+    int canonical = Rf_asLogical(canonical_sexp) == TRUE;
+
+    int n_keys = Rf_length(key_names_sexp);
+    char **key_names = (char **)malloc((size_t)(n_keys > 0 ? n_keys : 1)
+                                       * sizeof(char *));
+    for (int i = 0; i < n_keys; i++) {
+        const char *nm = CHAR(STRING_ELT(key_names_sexp, i));
+        key_names[i] = (char *)malloc(strlen(nm) + 1);
+        strcpy(key_names[i], nm);
+    }
+
+    KmerNode *kn = kmer_node_create(child, seq_col, k, canonical,
+                                    n_keys, key_names);
+    return wrap_node((VecNode *)kn);
 }
 
 /* --- C_sort_node --- */

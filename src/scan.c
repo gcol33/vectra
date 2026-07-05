@@ -776,6 +776,7 @@ static void scan_free(VecNode *self) {
     free(sn->col_mask);
     free(sn->rg_bitmap);
     if (sn->index) vtri_close(sn->index);
+    if (sn->delete_on_free && sn->vtr_path) remove(sn->vtr_path);
     free(sn->vtr_path);
     vec_schema_free(&sn->base.output_schema);
     free(sn);

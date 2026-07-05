@@ -11,12 +11,17 @@
 #'   (typically `parent.frame()`).
 #' @return A `vectra_node`.
 #' @noRd
-df_to_node <- function(df, envir = parent.frame()) {
-
+# Lift a data.frame into a lazy node via a temporary .vtr. The scratch file is
+# owned by the scan node (C_scan_node_temp) and unlinked when that node is
+# freed -- when a write_*() consumer frees the pipeline, or at GC for a node
+# returned to the user (tbl_xlsx). Tying cleanup to the caller's frame would
+# delete the file before a returned node is ever collected.
+df_to_node <- function(df) {
   tmp <- tempfile(fileext = ".vtr")
-  do.call(on.exit, list(substitute(unlink(tmp)), add = TRUE), envir = envir)
   write_vtr(df, tmp)
-  tbl(tmp)
+  path <- normalizePath(tmp, mustWork = TRUE)
+  xptr <- .Call(C_scan_node_temp, path)
+  structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 
 check_scalar_string <- function(x, name = deparse(substitute(x))) {

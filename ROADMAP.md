@@ -124,10 +124,10 @@ never materializes. Mirrors the `csv_scan` backend; both share the renamed
   and plain; streaming invariance across batch sizes; deliberately truncated /
   malformed files error.
 
-### Phase A3 -- k-mer spectrum node (0.10.2)
+### Phase A3 -- k-mer spectrum node (0.10.2) -- SHIPPED
 
 k-mer counting is set-wise (one row per distinct k-mer per group), so it is a
-node, not a scalar expr -- the `group_agg` shape.
+node, not a scalar expr -- the `group_agg` shape. Shipped in 0.10.2.
 
 ```r
 tbl_fasta("genome.fa") |> kmer(seq, k = 6, by = id)   # -> id, kmer, count
@@ -135,10 +135,14 @@ tbl_fasta("genome.fa") |> kmer(seq, k = 6, by = id)   # -> id, kmer, count
 
 - Canonical-k-mer option (collapse a k-mer with its reverse-complement).
 - **Files:** `src/kmer.c` node (open-addressing hash over the 2-bit packed k-mer,
-  the `n_distinct` hash-set pattern), `R/seq_verbs.R`, bridge in
-  `src/r_bridge_nodes.c`.
-- **Tests:** counts match a hand-rolled R k-mer tabulation on a fixture; canonical
-  option verified; streaming invariance (multi-batch == single-batch).
+  keyed on (group id, packed k-mer); k in 1..32, non-ACGT windows skipped),
+  `R/seq_verbs.R`, bridge `C_kmer_node` in `src/r_bridge_nodes.c`. The group-key
+  store is the shared `src/key_arena.c` (extracted from `group_agg`); the 2-bit
+  base encoding is the shared `src/seq_util.h`.
+- **Tests:** `tests/testthat/test-kmer.R` -- counts match a hand-rolled R k-mer
+  tabulation (ungrouped and by-group), canonical option verified, non-ACGT
+  window skipping, streaming invariance (multi-batch == single-batch), k = 32
+  packing, and out-of-range k rejected.
 
 ### Phase A4 -- BED interval scan (0.10.3)
 

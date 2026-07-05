@@ -8,6 +8,7 @@
 SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress, SEXP col_types,
                  SEXP quantize, SEXP spatial);
 SEXP C_scan_node(SEXP path);
+SEXP C_scan_node_temp(SEXP path);
 SEXP C_collect(SEXP node_xptr);
 SEXP C_node_optimize(SEXP node_xptr);
 SEXP C_node_next_batch(SEXP node_xptr);
@@ -16,6 +17,8 @@ SEXP C_node_plan(SEXP node_xptr);
 SEXP C_filter_node(SEXP node_xptr, SEXP expr_list);
 SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists);
 SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names, SEXP agg_specs);
+SEXP C_kmer_node(SEXP node_xptr, SEXP seq_col, SEXP k, SEXP canonical,
+                 SEXP key_names);
 SEXP C_sort_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP mem);
 SEXP C_limit_node(SEXP node_xptr, SEXP n);
 SEXP C_topn_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP n);

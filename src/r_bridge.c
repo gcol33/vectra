@@ -421,6 +421,17 @@ SEXP C_scan_node(SEXP path) {
     return wrap_node((VecNode *)sn);
 }
 
+/* Scan over a temporary .vtr owned by the node: the file is unlinked when the
+   node is freed. Used by df_to_node() so a data.frame lifted into a lazy node
+   (tbl_xlsx, and the data.frame write_*() paths) owns its scratch file for the
+   node's whole lifetime instead of relying on the caller's stack frame. */
+SEXP C_scan_node_temp(SEXP path) {
+    const char *fpath = CHAR(STRING_ELT(path, 0));
+    ScanNode *sn = scan_node_create(fpath, NULL, 0);
+    sn->delete_on_free = 1;
+    return wrap_node((VecNode *)sn);
+}
+
 /* --- C_collect --- */
 
 SEXP C_collect(SEXP node_xptr) {

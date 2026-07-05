@@ -24,6 +24,9 @@ typedef struct {
     VtrIndex      *index;          /* persistent hash index (NULL = none) */
     uint8_t       *rg_bitmap;      /* from hash index probe: 1 = visit this rg */
     char          *vtr_path;       /* path to .vtr file (for deferred index lookups) */
+    int            delete_on_free; /* 1 = unlink vtr_path when the node is freed
+                                      (a temp .vtr owned by this node, e.g. the
+                                      one df_to_node writes for tbl_xlsx) */
 } ScanNode;
 
 /* Create a scan node over a .vtr file.
