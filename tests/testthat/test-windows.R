@@ -216,3 +216,65 @@ test_that("dense_rank works with groups", {
   expect_equal(result$dr[result$g == "a"], c(2, 1, 2))
   expect_equal(result$dr[result$g == "b"], c(2, 1))
 })
+
+# --- spill-safe grouped path: order preservation and cross-batch groups ---
+
+test_that("grouped window preserves original row order (interleaved groups)", {
+  # Groups are interleaved, not contiguous: the spill-safe path sorts by key to
+  # process one group at a time, then restores arrival order via the row-id.
+  df <- data.frame(
+    g = c("b", "a", "b", "a", "b", "a"),
+    x = c(1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+    stringsAsFactors = FALSE
+  )
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> group_by(g) |>
+    mutate(cs = cumsum(x), rn = row_number()) |> collect()
+
+  # rows come back in original order, untouched
+  expect_equal(result$g, df$g)
+  expect_equal(result$x, df$x)
+  # cumulative sum runs in arrival order within each group
+  # b: x=1,3,5 -> 1,4,9 ; a: x=2,4,6 -> 2,6,12
+  expect_equal(result$cs, c(1, 2, 4, 6, 9, 12))
+  expect_equal(result$rn, c(1, 1, 2, 2, 3, 3))
+})
+
+test_that("grouped window is correct when a group spans many row groups", {
+  # batch_size below the group span forces groups to straddle batch boundaries,
+  # exercising cross-batch accumulation in the streaming pull.
+  set.seed(1)
+  df <- data.frame(
+    g = rep(c("a", "b", "c"), length.out = 300),
+    x = as.numeric(1:300),
+    stringsAsFactors = FALSE
+  )
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, batch_size = 16)
+
+  result <- tbl(f) |> group_by(g) |> mutate(cs = cumsum(x)) |> collect()
+
+  ref_cs <- ave(df$x, df$g, FUN = cumsum)   # per-group cumsum, order preserved
+  expect_equal(result$g, df$g)
+  expect_equal(result$x, df$x)
+  expect_equal(result$cs, ref_cs)
+})
+
+test_that("grouped window with NA keys groups the NAs together", {
+  df <- data.frame(
+    g = c("a", NA, "a", NA, "b"),
+    x = c(1.0, 2.0, 3.0, 4.0, 5.0),
+    stringsAsFactors = FALSE
+  )
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  result <- tbl(f) |> group_by(g) |> mutate(cs = cumsum(x)) |> collect()
+
+  ref_cs <- ave(df$x, addNA(factor(df$g)), FUN = cumsum)
+  expect_equal(result$g, df$g)
+  expect_equal(result$cs, ref_cs)
+})

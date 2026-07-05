@@ -7,6 +7,9 @@
 #include "builder.h"
 #include "coerce.h"
 #include "error.h"
+#include "sort.h"
+#include "rowid.h"
+#include "dropcol.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -583,8 +586,211 @@ static void win_roll_segment(WinKind kind, const VecArray *val,
     free(idx);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Spill-safe streaming path: one group per pull from a sorted child  */
+/* ------------------------------------------------------------------ */
+
+/* Value equality for two same-typed cells, both assumed valid. */
+static int win_value_equal(const VecArray *a, int64_t ia,
+                           const VecArray *b, int64_t ib) {
+    switch (a->type) {
+    case VEC_INT64:
+    case VEC_INT32:
+    case VEC_INT16:
+    case VEC_INT8:
+        return vec_array_get_int(a, ia) == vec_array_get_int(b, ib);
+    case VEC_DOUBLE:
+        return a->buf.dbl[ia] == b->buf.dbl[ib];
+    case VEC_BOOL:
+        return a->buf.bln[ia] == b->buf.bln[ib];
+    case VEC_STRING: {
+        int64_t sa = a->buf.str.offsets[ia], ea = a->buf.str.offsets[ia + 1];
+        int64_t sb = b->buf.str.offsets[ib], eb = b->buf.str.offsets[ib + 1];
+        int64_t la = ea - sa, lb = eb - sb;
+        if (la != lb) return 0;
+        return la == 0 || memcmp(a->buf.str.data + sa,
+                                 b->buf.str.data + sb, (size_t)la) == 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* Does row `ar` of `acols` carry the same group key as the snapshot `gkey`
+   (a compact n_keys array holding the current group's key at row 0)? Two NA
+   key values compare equal, so NAs form one group (dplyr semantics). */
+static int win_group_key_equal(const VecArray *acols, int64_t ar,
+                               const VecArray *gkey, const int *key_idx,
+                               int n_keys) {
+    for (int k = 0; k < n_keys; k++) {
+        const VecArray *a = &acols[key_idx[k]];
+        const VecArray *g = &gkey[k];
+        int av = vec_array_is_valid(a, ar);
+        int gv = vec_array_is_valid(g, 0);
+        if (av != gv) return 0;
+        if (!av) continue;                 /* both NA -> same group */
+        if (!win_value_equal(a, ar, g, 0)) return 0;
+    }
+    return 1;
+}
+
+/* Snapshot row `ar`'s key columns into a standalone compact array (one row
+   each), so the group key survives across batch boundaries and frees. */
+static VecArray *win_snapshot_keys(const VecArray *acols, int64_t ar,
+                                   const int *key_idx, int n_keys) {
+    VecArray *g = (VecArray *)malloc((size_t)n_keys * sizeof(VecArray));
+    for (int k = 0; k < n_keys; k++) {
+        VecArrayBuilder b = vec_builder_init(acols[key_idx[k]].type);
+        vec_builder_append_one(&b, &acols[key_idx[k]], ar);
+        g[k] = vec_builder_finish(&b);
+    }
+    return g;
+}
+
+static void win_free_keys(VecArray *g, int n_keys) {
+    if (!g) return;
+    for (int k = 0; k < n_keys; k++) vec_array_free(&g[k]);
+    free(g);
+}
+
+/* Pull the next contiguous group from the sorted child into freshly finished
+   VecArrays (one per child column). Groups are contiguous because the child is
+   sorted on the key columns, and ordered within the group by the trailing
+   row-id, so cumulative windows see original arrival order. Returns the group
+   columns and sets *out_glen; returns NULL when the child is exhausted. */
+static VecArray *win_pull_group(WindowNode *wn, int n_cols, int64_t *out_glen) {
+    const VecSchema *cschema = &wn->child->output_schema;
+
+    if (!wn->hold_batch) {
+        wn->hold_batch = wn->child->next_batch(wn->child);
+        wn->hold_pos = 0;
+        wn->hold_n = wn->hold_batch ? vec_batch_logical_rows(wn->hold_batch) : 0;
+        if (!wn->hold_batch) return NULL;
+    }
+
+    VecArrayBuilder *gb = (VecArrayBuilder *)calloc((size_t)n_cols,
+                                                    sizeof(VecArrayBuilder));
+    for (int c = 0; c < n_cols; c++)
+        gb[c] = vec_builder_init(cschema->col_types[c]);
+
+    VecArray *gkey = NULL;
+    int have_key = 0;
+    int64_t glen = 0;
+
+    for (;;) {
+        while (wn->hold_pos < wn->hold_n) {
+            int64_t pr = vec_batch_physical_row(wn->hold_batch, wn->hold_pos);
+            if (have_key) {
+                if (!win_group_key_equal(wn->hold_batch->columns, pr,
+                                         gkey, wn->key_idx, wn->n_keys))
+                    goto group_done;      /* boundary; leave row for next call */
+            } else {
+                gkey = win_snapshot_keys(wn->hold_batch->columns, pr,
+                                         wn->key_idx, wn->n_keys);
+                have_key = 1;
+            }
+            for (int c = 0; c < n_cols; c++)
+                vec_builder_append_one(&gb[c], &wn->hold_batch->columns[c], pr);
+            glen++;
+            wn->hold_pos++;
+        }
+        vec_batch_free(wn->hold_batch);
+        wn->hold_batch = wn->child->next_batch(wn->child);
+        wn->hold_pos = 0;
+        wn->hold_n = wn->hold_batch ? vec_batch_logical_rows(wn->hold_batch) : 0;
+        if (!wn->hold_batch) break;       /* last group ends at stream end */
+    }
+
+group_done:
+    win_free_keys(gkey, wn->n_keys);
+    VecArray *cols = (VecArray *)malloc((size_t)n_cols * sizeof(VecArray));
+    for (int c = 0; c < n_cols; c++)
+        cols[c] = vec_builder_finish(&gb[c]);
+    free(gb);
+    *out_glen = glen;
+    return cols;
+}
+
+/* Build one output batch for a single materialized group held in
+   cols[0..n_cols-1] (each of length glen). The pass-through columns are moved
+   into the result; each window column is evaluated over the whole [0, glen)
+   segment, reusing the same kernels as the ungrouped path. */
+static VecBatch *win_segment_batch(WindowNode *wn, VecArray *cols, int n_cols,
+                                   int64_t glen, const VecSchema *cschema) {
+    int out_ncols = wn->base.output_schema.n_cols;
+    VecBatch *result = vec_batch_alloc(out_ncols, glen);
+
+    for (int c = 0; c < n_cols; c++) {
+        result->columns[c] = cols[c];     /* move ownership */
+        const char *nm = cschema->col_names[c];
+        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
+        strcpy(result->col_names[c], nm);
+    }
+
+    for (int w = 0; w < wn->n_wins; w++) {
+        WinSpec *ws = &wn->win_specs[w];
+        int in_col = -1;
+        if (ws->input_col) {
+            in_col = vec_schema_find_col(cschema, ws->input_col);
+            if (in_col < 0)
+                vectra_error("window: column not found: %s", ws->input_col);
+        }
+
+        VecArray out = vec_array_alloc(VEC_DOUBLE, glen);
+        const VecArray *in_arr = (in_col >= 0) ? &result->columns[in_col] : NULL;
+
+        if (win_is_roll(ws->kind)) {
+            if (!ws->order_col)
+                vectra_error("rolling window: order column required");
+            int oc = vec_schema_find_col(cschema, ws->order_col);
+            if (oc < 0)
+                vectra_error("window: order column not found: %s", ws->order_col);
+            int64_t *all_rows = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
+            for (int64_t r = 0; r < glen; r++) all_rows[r] = r;
+            win_roll_segment(ws->kind, in_arr, &result->columns[oc],
+                             all_rows, glen, ws->window, &out);
+            free(all_rows);
+        } else {
+            win_eval_segment(ws->kind, in_arr, 0, glen, glen,
+                             ws->offset, ws->default_val, ws->has_default,
+                             ws->desc, &out);
+        }
+
+        result->columns[n_cols + w] = out;
+        result->col_names[n_cols + w] = (char *)malloc(
+            strlen(ws->output_name) + 1);
+        strcpy(result->col_names[n_cols + w], ws->output_name);
+    }
+
+    return result;
+}
+
+/* Streaming next_batch: emit one group per call, in group-sorted order. The
+   restore sort above this node returns the rows to original order. */
+static VecBatch *window_stream_next(WindowNode *wn) {
+    if (wn->done) return NULL;
+    const VecSchema *cschema = &wn->child->output_schema;
+    int n_cols = cschema->n_cols;
+
+    int64_t glen = 0;
+    VecArray *cols = win_pull_group(wn, n_cols, &glen);
+    if (!cols || glen == 0) {
+        if (cols) {
+            for (int c = 0; c < n_cols; c++) vec_array_free(&cols[c]);
+            free(cols);
+        }
+        wn->done = 1;
+        return NULL;
+    }
+
+    VecBatch *result = win_segment_batch(wn, cols, n_cols, glen, cschema);
+    free(cols);   /* arrays were moved into result */
+    return result;
+}
+
 static VecBatch *window_next_batch(VecNode *self) {
     WindowNode *wn = (WindowNode *)self;
+    if (wn->streaming) return window_stream_next(wn);
     if (wn->done) return NULL;
     wn->done = 1;
 
@@ -1039,9 +1245,11 @@ static VecBatch *window_next_batch(VecNode *self) {
 
 static void window_free(VecNode *self) {
     WindowNode *wn = (WindowNode *)self;
+    if (wn->hold_batch) vec_batch_free(wn->hold_batch);
     wn->child->free_node(wn->child);
     for (int k = 0; k < wn->n_keys; k++) free(wn->key_names[k]);
     free(wn->key_names);
+    free(wn->key_idx);
     for (int w = 0; w < wn->n_wins; w++) {
         free(wn->win_specs[w].output_name);
         free(wn->win_specs[w].input_col);
@@ -1052,20 +1260,71 @@ static void window_free(VecNode *self) {
     free(wn);
 }
 
-WindowNode *window_node_create(VecNode *child,
-                               int n_keys, char **key_names,
-                               int n_wins, WinSpec *win_specs) {
+/* Row-id column name for the spill-safe streaming pipeline. Unlikely to clash
+   with a user column; the projection at the top drops it before results reach
+   R, so it is never visible. */
+#define WIN_ROWID_COL "__vtr_window_rowid"
+
+VecNode *window_node_create(VecNode *child,
+                            int n_keys, char **key_names,
+                            int n_wins, WinSpec *win_specs,
+                            const char *temp_dir) {
+    /* Grouped windows with a spill directory take the streaming path: sort by
+       the group keys (plus a row-id tiebreak) so each group is contiguous and
+       in arrival order, process one group at a time, then restore row order.
+       Peak memory is one group, not the whole table. Ungrouped windows (a
+       single global partition) or a NULL temp_dir fall back to the in-memory
+       node below. */
+    int streaming = (temp_dir != NULL && n_keys > 0);
+
+    VecNode *src = child;          /* node the window node reads from */
+    int rowid_idx = -1;
+
+    if (streaming) {
+        RowIdNode *rid = rowid_node_create(child, WIN_ROWID_COL);
+        const VecSchema *rs = &rid->base.output_schema;
+        rowid_idx = rs->n_cols - 1;
+
+        SortKey *sk = (SortKey *)malloc((size_t)(n_keys + 1) * sizeof(SortKey));
+        for (int k = 0; k < n_keys; k++) {
+            int idx = vec_schema_find_col(rs, key_names[k]);
+            if (idx < 0)
+                vectra_error("window: group column not found: %s", key_names[k]);
+            sk[k].col_index = idx;
+            sk[k].descending = 0;
+        }
+        sk[n_keys].col_index = rowid_idx;   /* stable arrival order per group */
+        sk[n_keys].descending = 0;
+        SortNode *sn = sort_node_create((VecNode *)rid, n_keys + 1, sk,
+                                        temp_dir, VECTRA_SORT_MEM_DEFAULT);
+        src = (VecNode *)sn;
+    }
+
     WindowNode *wn = (WindowNode *)calloc(1, sizeof(WindowNode));
     if (!wn) vectra_error("alloc failed for WindowNode");
-    wn->child = child;
+    wn->child = src;
     wn->n_keys = n_keys;
     wn->key_names = key_names;
     wn->n_wins = n_wins;
     wn->win_specs = win_specs;
     wn->done = 0;
+    wn->streaming = streaming;
+    wn->key_idx = NULL;
+    wn->rowid_idx = rowid_idx;
+    wn->hold_batch = NULL;
+    wn->hold_pos = 0;
+    wn->hold_n = 0;
 
-    /* Output schema: child schema + window columns (all double) */
-    const VecSchema *cs = &child->output_schema;
+    const VecSchema *cs = &src->output_schema;
+
+    if (streaming) {
+        wn->key_idx = (int *)malloc((size_t)n_keys * sizeof(int));
+        for (int k = 0; k < n_keys; k++)
+            wn->key_idx[k] = vec_schema_find_col(cs, key_names[k]);
+    }
+
+    /* Output schema: src columns (child cols, plus row-id when streaming) +
+       window columns (all double). */
     int out_n = cs->n_cols + n_wins;
     char **names = (char **)malloc((size_t)out_n * sizeof(char *));
     VecType *types = (VecType *)malloc((size_t)out_n * sizeof(VecType));
@@ -1077,7 +1336,6 @@ WindowNode *window_node_create(VecNode *child,
         names[cs->n_cols + w] = win_specs[w].output_name;
         types[cs->n_cols + w] = VEC_DOUBLE;
     }
-
     wn->base.output_schema = vec_schema_create(out_n, names, types);
     free(names);
     free(types);
@@ -1085,7 +1343,20 @@ WindowNode *window_node_create(VecNode *child,
     wn->base.next_batch = window_next_batch;
     wn->base.kind = "WindowNode";
     wn->base.free_node = window_free;
-    wn->base.row_count_hint = child->row_count_hint;
+    wn->base.row_count_hint = src->row_count_hint;
 
-    return wn;
+    if (!streaming)
+        return (VecNode *)wn;
+
+    /* Restore original row order: sort by the row-id (unique, arrival order). */
+    SortKey *rk = (SortKey *)malloc(sizeof(SortKey));
+    rk[0].col_index = rowid_idx;   /* row-id keeps its position in wn's schema */
+    rk[0].descending = 0;
+    SortNode *restore = sort_node_create((VecNode *)wn, 1, rk,
+                                         temp_dir, VECTRA_SORT_MEM_DEFAULT);
+
+    /* Drop the row-id by position, leaving child columns + window columns in
+       the same layout the in-memory path produces. */
+    DropColNode *drop = dropcol_node_create((VecNode *)restore, rowid_idx);
+    return (VecNode *)drop;
 }

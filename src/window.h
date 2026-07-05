@@ -44,10 +44,28 @@ typedef struct {
     int       n_wins;
     WinSpec  *win_specs;
     int       done;
+
+    /* Spill-safe streaming path (grouped windows with a temp dir). When set,
+       `child` is a sort node keyed on the group columns plus a trailing row-id,
+       so each group arrives contiguous and in original within-group order; the
+       node materializes one group at a time instead of the whole table. */
+    int       streaming;
+    int      *key_idx;     /* group key column indices in child schema */
+    int       rowid_idx;   /* row-id column index in child schema (-1 if none) */
+    VecBatch *hold_batch;  /* current sorted batch being consumed */
+    int64_t   hold_pos;    /* logical cursor into hold_batch */
+    int64_t   hold_n;      /* logical rows in hold_batch */
 } WindowNode;
 
-WindowNode *window_node_create(VecNode *child,
-                               int n_keys, char **key_names,
-                               int n_wins, WinSpec *win_specs);
+/* Returns the top of a small node pipeline. For grouped windows with a
+   `temp_dir`, that is a (row-id -> sort -> window -> restore-sort -> drop
+   row-id) chain whose peak memory is one group, not the whole table; for
+   ungrouped windows (or a NULL temp_dir) it is a plain in-memory window node.
+   Either way the returned node's output schema is child columns + window
+   columns, in original row order. */
+VecNode *window_node_create(VecNode *child,
+                            int n_keys, char **key_names,
+                            int n_wins, WinSpec *win_specs,
+                            const char *temp_dir);
 
 #endif /* VECTRA_WINDOW_H */

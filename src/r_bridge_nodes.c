@@ -378,8 +378,9 @@ SEXP C_window_node(SEXP node_xptr, SEXP key_names_sexp, SEXP win_specs_sexp) {
                         ? Rf_asLogical(desc_sexp) : 0;
     }
 
-    WindowNode *wn = window_node_create(child, n_keys, key_names, n_wins, specs);
-    return wrap_node((VecNode *)wn);
+    VecNode *top = window_node_create(child, n_keys, key_names, n_wins, specs,
+                                      get_r_tempdir());
+    return wrap_node(top);
 }
 
 /* --- C_concat_node --- */

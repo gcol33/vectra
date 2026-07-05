@@ -1,3 +1,17 @@
+# vectra 0.10.4
+
+## Spill-safe grouped window functions
+
+* Grouped window functions (`group_by()` followed by `mutate()` with
+  `row_number()`, `rank()`, `lag()`, `cumsum()`, `roll_sum()`, and the rest) no
+  longer materialize the whole table in memory. The window node now sorts on the
+  group keys (external, spill-safe), processes one group at a time, and restores
+  the original row order, so peak memory is a single group rather than the full
+  input -- the same bound `group_by() |> summarise()` already had. Results are
+  unchanged: rows come back in original order, and cumulative windows still run
+  in arrival order within each group. Ungrouped windows (a single global
+  partition) are unaffected.
+
 # vectra 0.10.3
 
 ## Bug fixes
