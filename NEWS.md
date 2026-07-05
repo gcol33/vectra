@@ -1,6 +1,6 @@
 # vectra 0.10.4
 
-## Spill-safe grouped window functions
+## Spill-safe window functions
 
 * Grouped window functions (`group_by()` followed by `mutate()` with
   `row_number()`, `rank()`, `lag()`, `cumsum()`, `roll_sum()`, and the rest) no
@@ -9,8 +9,15 @@
   the original row order, so peak memory is a single group rather than the full
   input -- the same bound `group_by() |> summarise()` already had. Results are
   unchanged: rows come back in original order, and cumulative windows still run
-  in arrival order within each group. Ungrouped windows (a single global
-  partition) are unaffected.
+  in arrival order within each group.
+
+* Ungrouped cumulative windows (`mutate(cs = cumsum(x))` and the rest of the
+  `cumsum`/`cummean`/`cummin`/`cummax`/`row_number()` family, with no
+  `group_by()`) now stream one batch at a time with O(1) running state, so a
+  running aggregate over a larger-than-RAM table holds only one batch. Ordered
+  ungrouped windows that need the whole table sorted (`rank()`, `dense_rank()`,
+  `percent_rank()`, `cume_dist()`, `row_number(col)`, `roll_*()`, `lag()`,
+  `lead()`, `ntile()`) keep the in-memory path.
 
 # vectra 0.10.3
 

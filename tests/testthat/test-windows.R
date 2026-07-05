@@ -263,6 +263,38 @@ test_that("grouped window is correct when a group spans many row groups", {
   expect_equal(result$cs, ref_cs)
 })
 
+test_that("ungrouped cumulative window streams across many row groups", {
+  # batch_size well below the row count forces the running state to carry across
+  # batch boundaries in the cumulative streaming path.
+  df <- data.frame(x = as.numeric(1:250))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, batch_size = 16)
+
+  result <- tbl(f) |>
+    mutate(cs = cumsum(x), cm = cummean(x), rn = row_number(),
+           cmi = cummin(x), cmx = cummax(x)) |> collect()
+
+  expect_equal(result$cs, cumsum(df$x))
+  expect_equal(result$cm, cumsum(df$x) / seq_along(df$x))
+  expect_equal(result$rn, as.numeric(seq_along(df$x)))
+  expect_equal(result$cmi, cummin(df$x))
+  expect_equal(result$cmx, cummax(df$x))
+})
+
+test_that("ungrouped cumsum propagates NA across row groups", {
+  x <- as.numeric(1:100)
+  x[40] <- NA
+  df <- data.frame(x = x)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, batch_size = 16)
+
+  result <- tbl(f) |> mutate(cs = cumsum(x)) |> collect()
+  expect_equal(result$cs[1:39], cumsum(x[1:39]))
+  expect_true(all(is.na(result$cs[40:100])))
+})
+
 test_that("grouped window with NA keys groups the NAs together", {
   df <- data.frame(
     g = c("a", NA, "a", NA, "b"),

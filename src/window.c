@@ -788,9 +788,104 @@ static VecBatch *window_stream_next(WindowNode *wn) {
     return result;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Cumulative streaming path: ungrouped, one batch of running state    */
+/* ------------------------------------------------------------------ */
+
+/* Per-spec running state carried across batches. */
+typedef struct {
+    double  acc;        /* running sum (cumsum/cummean) or extremum (cummin/max) */
+    int64_t cnt;        /* count of values folded so far */
+    int64_t rn;         /* running row number */
+    int     poisoned;   /* an NA has been seen -> the rest are NA (R semantics) */
+} WinCumState;
+
+/* A spec streams in a single forward pass with O(1) state when it is a
+   forward-cumulative aggregate or an unordered row_number. Ordered variants
+   (rank family, row_number(col), rolling, lag/lead, ntile) need the whole
+   partition and are handled by the in-memory path. */
+static int win_spec_cum_streamable(const WinSpec *ws) {
+    switch (ws->kind) {
+    case WIN_CUMSUM:
+    case WIN_CUMMEAN:
+    case WIN_CUMMIN:
+    case WIN_CUMMAX:
+        return 1;
+    case WIN_ROW_NUMBER:
+        return ws->input_col == NULL;   /* unordered row_number only */
+    default:
+        return 0;
+    }
+}
+
+static VecBatch *window_cum_next(WindowNode *wn) {
+    VecBatch *b = wn->child->next_batch(wn->child);
+    if (!b) return NULL;
+    b = vec_batch_compact(b);           /* drop any selection vector */
+
+    const VecSchema *cschema = &wn->child->output_schema;
+    int n_cols = cschema->n_cols;
+    int64_t n = b->n_rows;
+    WinCumState *state = (WinCumState *)wn->cum_state;
+
+    VecArray *ncols = (VecArray *)realloc(
+        b->columns, (size_t)(n_cols + wn->n_wins) * sizeof(VecArray));
+    char **nnames = (char **)realloc(
+        b->col_names, (size_t)(n_cols + wn->n_wins) * sizeof(char *));
+    if (!ncols || !nnames) vectra_error("window: realloc failed");
+    b->columns = ncols;
+    b->col_names = nnames;
+
+    for (int w = 0; w < wn->n_wins; w++) {
+        WinSpec *ws = &wn->win_specs[w];
+        WinCumState *st = &state[w];
+        VecArray out = vec_array_alloc(VEC_DOUBLE, n);
+
+        int in_col = ws->input_col
+                     ? vec_schema_find_col(cschema, ws->input_col) : -1;
+        if (ws->input_col && in_col < 0)
+            vectra_error("window: column not found: %s", ws->input_col);
+        const VecArray *in_arr = (in_col >= 0) ? &b->columns[in_col] : NULL;
+
+        for (int64_t i = 0; i < n; i++) {
+            if (ws->kind == WIN_ROW_NUMBER) {
+                st->rn++;
+                vec_array_set_valid(&out, i);
+                out.buf.dbl[i] = (double)st->rn;
+                continue;
+            }
+            if (st->poisoned || !vec_array_is_valid(in_arr, i)) {
+                st->poisoned = 1;
+                vec_array_set_null(&out, i);
+                continue;
+            }
+            double v = win_get_double(in_arr, i);
+            switch (ws->kind) {
+            case WIN_CUMSUM:  st->acc += v; break;
+            case WIN_CUMMEAN: st->acc += v; break;
+            case WIN_CUMMIN:  st->acc = (st->cnt == 0 || v < st->acc) ? v : st->acc; break;
+            case WIN_CUMMAX:  st->acc = (st->cnt == 0 || v > st->acc) ? v : st->acc; break;
+            default: break;
+            }
+            st->cnt++;
+            vec_array_set_valid(&out, i);
+            out.buf.dbl[i] = (ws->kind == WIN_CUMMEAN)
+                             ? st->acc / (double)st->cnt : st->acc;
+        }
+
+        b->columns[n_cols + w] = out;
+        size_t ln = strlen(ws->output_name);
+        b->col_names[n_cols + w] = (char *)malloc(ln + 1);
+        memcpy(b->col_names[n_cols + w], ws->output_name, ln + 1);
+    }
+    b->n_cols = n_cols + wn->n_wins;
+    return b;
+}
+
 static VecBatch *window_next_batch(VecNode *self) {
     WindowNode *wn = (WindowNode *)self;
     if (wn->streaming) return window_stream_next(wn);
+    if (wn->cum_mode)  return window_cum_next(wn);
     if (wn->done) return NULL;
     wn->done = 1;
 
@@ -1250,6 +1345,7 @@ static void window_free(VecNode *self) {
     for (int k = 0; k < wn->n_keys; k++) free(wn->key_names[k]);
     free(wn->key_names);
     free(wn->key_idx);
+    free(wn->cum_state);
     for (int w = 0; w < wn->n_wins; w++) {
         free(wn->win_specs[w].output_name);
         free(wn->win_specs[w].input_col);
@@ -1276,6 +1372,15 @@ VecNode *window_node_create(VecNode *child,
        single global partition) or a NULL temp_dir fall back to the in-memory
        node below. */
     int streaming = (temp_dir != NULL && n_keys > 0);
+
+    /* Ungrouped windows whose every spec is a forward-cumulative aggregate
+       stream one batch at a time with O(1) state, no sort needed. */
+    int cum_mode = 0;
+    if (!streaming && n_keys == 0 && n_wins > 0) {
+        cum_mode = 1;
+        for (int w = 0; w < n_wins; w++)
+            if (!win_spec_cum_streamable(&win_specs[w])) { cum_mode = 0; break; }
+    }
 
     VecNode *src = child;          /* node the window node reads from */
     int rowid_idx = -1;
@@ -1314,6 +1419,9 @@ VecNode *window_node_create(VecNode *child,
     wn->hold_batch = NULL;
     wn->hold_pos = 0;
     wn->hold_n = 0;
+    wn->cum_mode = cum_mode;
+    wn->cum_state = cum_mode
+        ? calloc((size_t)n_wins, sizeof(WinCumState)) : NULL;
 
     const VecSchema *cs = &src->output_schema;
 

@@ -55,6 +55,13 @@ typedef struct {
     VecBatch *hold_batch;  /* current sorted batch being consumed */
     int64_t   hold_pos;    /* logical cursor into hold_batch */
     int64_t   hold_n;      /* logical rows in hold_batch */
+
+    /* Cumulative streaming path (ungrouped windows whose every spec is a
+       forward-cumulative aggregate: cumsum/cummean/cummin/cummax or an
+       unordered row_number). Each output batch is computed from one child
+       batch plus O(1) running state, so peak memory is one batch. */
+    int       cum_mode;
+    void     *cum_state;   /* WinCumState[n_wins]; internal to window.c */
 } WindowNode;
 
 /* Returns the top of a small node pipeline. For grouped windows with a
