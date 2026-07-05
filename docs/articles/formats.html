@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-06-29</h4>
+            <h4 data-toc-skip class="date">2026-07-05</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/formats.Rmd" class="external-link"><code>vignettes/formats.Rmd</code></a></small>
       <div class="d-none name"><code>formats.Rmd</code></div>
@@ -158,11 +158,13 @@ count are in the file header; the actual values stay on disk until
 </h2>
 <p><code>.vtr</code> is vectra’s native binary columnar format. It
 stores data in row groups, where each row group contains all columns for
-a slice of rows. The current version (v4) applies a two-stage encoding
-stack per column per row group: first a logical encoding (dictionary for
-low-cardinality strings, delta for monotonic integers, or plain
-pass-through), then byte-level compression via Zstandard when it
-actually shrinks the data.</p>
+a slice of rows. Each column of each row group is compressed
+independently through vectra’s native <code>tdc</code> codec, a
+three-phase pipeline: a logical model (dictionary for strings, delta for
+monotonic integers, or plain pass-through), an optional transform chain
+(zigzag, byte-shuffle to cluster like-significance bytes), then a
+byte-level entropy coder (native LZ77 by default). No external
+compression library is linked; the codec is self-contained.</p>
 <p>This layout gives the scan node several optimization paths that other
 formats cannot support. Zone-map statistics (min/max per column per row
 group) let the engine skip entire row groups that cannot match a filter
@@ -241,7 +243,7 @@ calls.</p>
 <p><code><a href="../reference/write_csv.html">write_csv()</a></code> streams from any node. It writes a standard
 comma-separated file with a header row. There is no gzip output option;
 if we need compressed output, we convert to <code>.vtr</code> instead,
-which applies Zstandard automatically.</p>
+which compresses automatically.</p>
 <div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">f</span><span class="op">)</span></span>
@@ -680,7 +682,7 @@ Excel for one-off imports, GeoTIFF for raster data.</p>
 </tr>
 <tr class="odd">
 <td align="left">Compression</td>
-<td align="left">zstd</td>
+<td align="left">tdc (dict/delta + LZ)</td>
 <td align="left">gzip (read)</td>
 <td align="left">–</td>
 <td align="left">–</td>
