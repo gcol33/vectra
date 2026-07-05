@@ -1,474 +1,382 @@
 # vectra roadmap
 
-Two parts:
+vectra is a streaming, larger-than-RAM columnar engine. Everything it does well
+follows one shape: an **opaque self-describing blob per cell**, decoded and
+computed on **per row in C**, dispatched through `expr`, parallelized with
+OpenMP, and **streamed** so the working set never has to fit in RAM. Hex-WKB
+geometry (`st_*`) and hex-float32 embeddings (`cosine`/`l2`/`dot`) are the two
+existing proofs. The roadmap below extends that shape to new domains and closes
+the remaining edges of the spatial layer.
 
-1. **Vector GIS** (below) -- geometry verbs a QGIS or `sf`/`terra` user expects,
-   that vectra does not yet stream.
-2. **Beyond spatial** (end of file) -- other data domains the engine could
-   support, sorted by architectural fit.
+This document is forward-looking. Each **initiative** is a stack of **phases**;
+every phase ships independently on `main` behind its own version tag, with its
+own recovery tests, so the tree is always releasable. Version targets are
+indicative, not contractual -- ordering may shift with need.
 
-# Vector GIS
+---
 
-Scope: vector geometry verbs a QGIS or `sf`/`terra` user expects, that vectra
-does not yet stream. Each entry states what the operation does, why it cannot be
-expressed with the current verbs, and a sketch of how it would fit the existing
-API.
+## Status ledger (shipped)
 
-What already covers a lot, so it is not listed below:
+The vector-GIS verb roadmap is complete. Recorded here so the forward plan does
+not repeat it; detail lives in `NEWS.md` and git history.
 
-- Per-feature transforms (buffer, centroid, point-on-surface, simplify, boundary,
-  `st_cast` polygon/line conversions, reproject via `st_transform`, make-valid)
-  all run through `spatial_map(~ sf::fn(.x, ...))`, streamed batch at a time.
-- Erase / geometric difference against a mask is `spatial_clip(mask, erase = TRUE)`.
-- Dissolve / aggregate-by-attribute is `spatial_dissolve(by =)`.
-- Select-by-location is `spatial_filter`; point-in-polygon, nearest-feature, and
-  the two-sided grid-partitioned join are `spatial_join`.
-- Single-layer self-union overlay is `spatial_overlay`.
+| Area | Shipped | Version |
+|------|---------|---------|
+| Scalar geometry expressions (`st_*`: measures, 10 binary predicates, 3 unary, 8 transforms) | native GEOS off the WKB column, OpenMP per row | through 0.9.x |
+| Two-layer overlay (`spatial_overlay`, `how=`) | intersection / union / identity / symdiff, component-tiled, streamed | 0.9.2 |
+| Set-wise constructions (`spatial_construct`) | hull / concave / voronoi / delaunay / bbox family / pole | 0.9.2 |
+| Snap + topology cleanup (`spatial_snap`, `spatial_snap_grid`, `spatial_explode`) | | 0.9.2 |
+| Analysis verbs (`spatial_knn`, `spatial_split`, `spatial_smooth`) | | 0.9.2 |
+| Coverage + linear referencing (`spatial_polygonize`, `spatial_line_merge`, `spatial_simplify`, `spatial_locate`, `spatial_centerline`, `spatial_topology`, `spatial_eliminate`) | | 0.9.3-0.9.5 |
+| Network routing (`spatial_network`, `spatial_route`, `spatial_service_area`) | native-C binary-heap Dijkstra over CSR, directed + one-way, OpenMP across origins | 0.9.6 |
+| Raster engine (GeoTIFF + tiled `.vec`, `zonal`, `focal`, `terrain`, `warp` with PROJ reprojection, `rasterize`, `polygonize`, `contours`, `mask`, `mosaic`, `rast_calc`, `proximity`) | native C, no GDAL | 0.9.x |
+| Interval overlap joins (`interval_join`) | sweep-line, output-sensitive | 0.9.8 |
+| Embedding columns (`as_embedding`, `cosine`, `l2`, `dot`) | hex-float32 blob, per-row decode | 0.9.x |
+| Time resampling + rolling (`floor_time`, `resample`, `roll_*`) | | 0.9.8 |
+| Engine memory (`vectra.memory`, grace-hash join spill) | one budget knob, joins spill to disk | 0.9.10 |
+| Compression (`compress="small"` adaptive + parallel sweep, dict-defer string collect, all-null row-group prune) | | 0.9.11-0.9.12 |
 
-The gaps are the operations that need either two layers fused, or a set-wide
-construction that a per-feature map cannot produce.
+**What remains in GIS is deliberate, not a missing tier** -- see Initiative C for
+the small edges (vector reprojection ergonomics, CRS breadth, BigTIFF write,
+gap-fill) and "Out of scope" for what belongs in a different package
+(interpolation, spatial statistics, geocoding).
 
-## Tier 1 - two-layer overlay (done, 0.9.2)
+---
 
-`spatial_overlay()` takes an optional second layer `y` and nodes two layers into
-one planar partition, carrying the attributes of the covering `x`-record and
-`y`-record onto each piece. The self-union stays the default (`y = NULL`).
+## Priority ordering
 
-```r
-spatial_overlay(x, y = NULL, vars = NULL, vars_y = NULL,
-                how = c("intersection", "union", "identity", "symdiff"),
-                ...)
-```
+1. **Initiative A -- Genomics / sequence ops.** Cleanest architectural fit; two
+   existing precedents (`st_*`, embeddings) to copy; **no new external
+   dependency**, so it keeps the self-contained-tarball property and can start
+   immediately.
+2. **Initiative B -- Climate cubes (NetCDF / Zarr).** Highest leverage for the
+   actual climate-ecology workflow (the "I can't open this CMIP6 file" problem),
+   but it touches an external-library decision that cuts against the
+   self-contained tarball, so it opens with a design pass (Phase B0) before any
+   engine code.
+3. **Initiative C -- GIS completeness polish.** Small, high-clarity closes of the
+   known spatial edges; each is a day-scale phase, slot between larger work.
+4. **Initiative D -- Time-series / embedding follow-ons.** Nice-to-haves that
+   round out already-shipped verbs.
+5. **Initiative E -- Network follow-ons.** Only when a real network shows plain
+   Dijkstra is the bottleneck.
 
-- `y = NULL` -> self-union, unchanged.
-- `how = "intersection"` -> only the overlapping pieces, attributes from both.
-- `how = "union"` -> all pieces of both layers, the absent side filled with `NA`.
-- `how = "identity"` -> all of `x`, split by `y`, `y` attributes where covered.
-- `how = "symdiff"` -> pieces in exactly one layer (also the symmetric difference).
+---
 
-`vars_y` selects the carried `y` columns; a name shared with `x` is disambiguated
-with a `.x` / `.y` suffix. `y` accepts an `sf` object or a file path
-(`layer_y` / `query_y`) read in batches. It reuses the existing noding, dedup,
-component-tiling, and streaming machinery, so it scales like the self-union.
+## Initiative A -- Genomics: sequence ops + format backends
 
-## Tier 2 - set-wise geometry constructions (done, 0.9.2)
+**Goal.** Make vectra a larger-than-RAM engine for biological sequence data. A
+sequence (DNA / RNA / protein) is a self-describing ASCII string per cell -- the
+exact hex-WKB precedent -- so `seq_*` maps onto `expr` the way `st_*` does:
+decode per row, compute in C, OpenMP over rows. `levenshtein` / `dl_dist` are
+already parallelized, so edit-distance alignment is the same kernel shape.
 
-`spatial_construct()` builds one geometry (or a tessellation) from a whole set of
-features, the constructions a per-feature `spatial_map` cannot express because
-they need every feature in scope at once. A `kind` argument selects it:
+**Why not a per-feature `mutate`.** Reverse-complement, GC content, and translate
+are per-row and *do* fit `mutate`, but they need a native C kernel (not R string
+juggling) to stream at engine speed, and k-mer / alignment are set-wise or
+windowed and need their own node.
 
-- `"convex_hull"` and `"concave_hull"` of a feature set.
-- `"voronoi"` tessellation and `"delaunay"` triangulation of a point set.
-- minimum bounding geometry: `"envelope"`, `"oriented_box"`,
-  `"enclosing_circle"`.
-- `"inscribed_circle"` and `"pole"` (the QGIS pole of inaccessibility, the point
-  inside the shape farthest from its edges).
+### Phase A1 -- `seq_*` scalar expression family (0.10.0)
 
-It rides the partition tier like `spatial_dissolve`: a `by =` argument routes the
-layer into one shard per group and emits one construction per group (one polygon
-per cell for the tessellations), with `by = NULL` constructing from the whole
-layer. Peak memory is the routing budget, then one group's geometry.
-
-## Tier 2 - snapping and topology cleanup (done, 0.9.2)
-
-- `spatial_snap()` snaps the geometries of a streamed layer toward a resident
-  reference layer within a tolerance (vertex and edge snapping), the QGIS "snap
-  geometries to layer".
-- `spatial_snap_grid()` snaps coordinates to a fixed grid as a standalone verb,
-  exposing the fixed-precision snap-rounding the overlay noder uses internally so
-  a layer can be cleaned or pre-noded to a common precision without running a
-  full overlay.
-
-## Tier 2 - explode and collect as verbs
-
-`spatial_explode()` (done, 0.9.2) streams one row per single-part component of
-each multipart geometry, copying the source attributes onto each part, with an
-optional `part` index column. The inverse, collect-to-multipart, is the
-group-and-combine direction already served by `spatial_dissolve()`.
-
-## Tier 3 - analysis verbs
-
-- Distance matrix / k-nearest with returned distances (done, 0.9.2).
-  `spatial_knn()` finds the `k` nearest resident-`y` features for each streamed
-  feature, returning one row per (left, neighbour) pair with rank, identifier,
-  and distance -- the top-`k` and the distances `spatial_join`'s nearest-feature
-  match does not give.
-- Split with lines, and line-intersection points between two layers (done,
-  0.9.2). `spatial_split()` cuts each streamed feature against a resident blade
-  layer -- a polygon into the faces the blade carves out, a line into its arcs --
-  emitting one piece per row, and with `extract = "points"` returns the
-  intersection points of each feature with the blade instead.
-- Smooth (Chaikin) for line work (done, 0.9.2). `spatial_smooth()` rounds the
-  corners of streamed lines and polygons by Chaikin corner-cutting, computed
-  directly on the coordinates (no GEOS call). Densify and points-along are
-  per-feature transforms that already run through `spatial_map`
-  (`~ sf::st_segmentize(.x, dfMaxLength)` and `~ sf::st_line_sample(.x, n)`), so
-  they need no dedicated verb, as buffer and simplify do not.
-
-## Tier 4 - build geometry from a set, and linear referencing (done, 0.9.3-0.9.5)
-
-The operations that need either a whole set of features fused into new geometry,
-or a point located against a resident line layer. The three set-wise verbs ride
-the partition tier alongside `spatial_dissolve` and `spatial_construct` (shared
-`.partition_each` router: spill once, one shard per `by` group, one group in
-memory at a time); `spatial_locate` is a resident-`y` streamed verb in the
-`spatial_knn` / `spatial_split` family.
-
-- `spatial_polygonize()` builds the polygonal faces enclosed by a line network
-  (the QGIS "Polygonize", the inverse of taking boundaries): the group's lines
-  are unioned and noded, then the faces of that arrangement are returned, one per
-  row. Reuses the same `st_node` / `st_polygonize` path `spatial_split` uses to
-  carve polygons.
-- `spatial_line_merge()` sews line segments that meet end to end into maximal
-  linestrings (`st_line_merge`), the line counterpart of a dissolve; each maximal
-  chain is one row, and segments meeting at a junction of degree > 2 stay
-  separate.
-- `spatial_simplify()` simplifies a polygon **coverage** without tearing shared
-  edges: boundaries are unioned so a shared border is one line, noded into arcs,
-  each arc simplified once (junction endpoints pinned), and re-polygonized, so
-  adjacent polygons stay edge-matched with no slivers. This is the
-  topology-preserving simplification a per-feature `spatial_map(~ st_simplify())`
-  cannot give, because that simplifies each polygon's copy of a shared border
-  independently. Each simplified face inherits its source polygon's attributes.
-- `spatial_locate()` locates streamed points along a resident line layer
-  (linear referencing, `st_line_project`): each point gets the identifier of its
-  nearest line, the measure (distance along that line), and the perpendicular
-  offset, with an optional `snap` onto the line. The inverse direction (a measure
-  back to a point) is `sf::st_line_interpolate` through `spatial_map`.
-- `spatial_centerline()` (0.9.4) traces the medial axis of each streamed polygon
-  from the Voronoi diagram of its densified boundary: the Voronoi edges inside
-  the polygon are its skeleton, merged into lines, with an optional `prune` for
-  the short spurs toward convex corners. Per-feature streamed (one polygon at a
-  time), the approximation used for river or road centerlines from a filled
-  shape.
-- `spatial_topology()` (0.9.4) decomposes a polygon coverage into the arcs of its
-  planar topology: the unioned boundaries are noded so a shared border is one
-  arc, tagged with the identifiers of the (up to two) polygons on either side --
-  two for an internal edge, one for an outer edge. Rides the partition tier; the
-  "build topology" of a GIS, and the inverse of `spatial_polygonize`.
-- `spatial_eliminate()` (0.9.5) cleans a polygon coverage by absorbing every
-  feature smaller than `max_area` into a neighbour (the QGIS "Eliminate"): each
-  sliver joins the neighbour it shares the longest border with (or, with `into =
-  "largest_area"`, the largest neighbour), and an area-rooted union-find collapses
-  chains of slivers so a connected run flows to its single largest member, whose
-  attributes survive. A sliver with no neighbour is kept, so nothing vanishes.
-  The merge target is one of a sliver's neighbours, not the sliver itself, so a
-  per-feature `spatial_map` cannot express it; it rides the partition tier.
-
-## Tier 5 - network analysis (done, 0.9.6)
-
-Routing and reachability over a line network -- shortest path, origin-destination
-cost matrices, service areas, travel-time isochrones (the QGIS network-analysis
-tools, `sfnetworks`/pgRouting). The genuine separate tier rather than a missing
-verb: it needs a graph built from the geometry (nodes at line endpoints, edges
-weighted by length or a cost column) and a shortest-path solver over it, not a
-geometry stream. Shipped as `spatial_network()` + `spatial_route()` +
-`spatial_service_area()`, with a native-C binary-heap Dijkstra over a CSR
-adjacency (`src/network.c`, no `igraph` dependency). The pieces noted as future
-below -- contraction hierarchies, snap-to-edge origins, turn restrictions -- are
-not yet built.
-
-It still fits vectra's shape, though, by reusing the **resident-`y` streamed-`x`
-family** (`spatial_knn`, `spatial_locate`, `spatial_split`): build the node-edge
-graph from a line layer once, keep that graph resident, and stream the queries
-past it one batch at a time -- one row per origin for a service area, one row per
-(origin, destination) pair for a route or a cost-matrix cell. The graph is the
-resident budget (bounded by the network size, like a resident `y`); the query
-side scales like every other streamed verb. The graph never has to fit alongside
-the queries, and the queries never have to fit alongside each other.
-
-### The resident graph: `spatial_network()`
-
-One new door builds the graph and returns a `vectra_network` object -- the
-network counterpart of a resident `sf` `y`. Every query verb takes one.
+The smallest correct slice: operate on a sequence held in an ordinary string
+column, no new backend required.
 
 ```r
-spatial_network(lines,
-                weight    = NULL,          # edge cost column; NULL -> geometry length
-                directed  = FALSE,
-                direction = NULL,          # column of "B"/"FT"/"TF" (or +/-/0) one-way codes
-                weight_to = NULL,          # reverse-direction cost on a directed graph
-                tolerance = 0,             # snap endpoints within this distance to one node
-                node_id   = NULL,          # carry a stable node identifier if present
-                geom = "geometry", crs = NA)
+tbl_csv("reads.csv") |>
+  mutate(rc  = seq_revcomp(seq),
+         gc  = seq_gc(seq),
+         aa  = seq_translate(seq),          # frame 1, standard genetic code
+         d   = seq_dist(seq, ref_seq))      # edit distance to a reference column/literal
 ```
 
-Build is one pass, the sort/partition tier:
+- Functions: `seq_length`, `seq_revcomp`, `seq_complement`, `seq_reverse`,
+  `seq_gc`, `seq_translate` (codon table arg, default standard), `seq_transcribe`
+  (DNA<->RNA), `seq_dist` (reuses the levenshtein kernel; DL / Hamming variants
+  via arg), `seq_subseq(seq, start, width)`.
+- IUPAC ambiguity codes handled in complement / GC (documented behaviour).
+- Missing / non-sequence input -> `NA`, never an error (the `st_*` contract).
+- **Files:** `src/expr_seq.c` (kernel, per-row, `#pragma omp` above threshold via
+  `vec_omp.h` -- never include `<omp.h>`), name->discriminator maps in `R/expr.R`
+  (alongside the `st_*` block), doc topic `?seq_expressions` in `R/seq_expr.R`.
+- **Tests (recovery, not smoke):** every op checked cell-for-cell against
+  `Biostrings` (Suggests, tests only) on a fixture -- `reverseComplement`,
+  `translate`, `letterFrequency` for GC, `stringdist` for `seq_dist`. Random
+  sequences across seeds; ambiguity-code cases explicit.
 
-1. **Node the lines.** Split every line at its true intersections so a crossing
-   becomes a shared vertex, reusing the GEOS noding already behind
-   `spatial_overlay` / `spatial_split` (`st_node` / `GEOSNode`). Optional, gated
-   by an argument: a road graph where bridges must *not* connect to the road
-   under them needs raw endpoints, not noded crossings, so `node = FALSE` keeps
-   each input line one edge.
-2. **Dedup endpoints into node ids.** Snap coincident endpoints within
-   `tolerance` to a single node (the existing magnitude-relative snap grid), hash
-   the rounded coordinate to an integer node id. This is the same coincidence
-   collapse `spatial_eliminate`'s union-find and the overlay deduper already do.
-3. **Assemble CSR adjacency.** Compressed sparse row (one `int` offset per node,
-   `int` target + `double` weight per directed edge) -- the cache-friendly layout
-   Dijkstra wants, the same reason `.vtr` row groups are sized to L2/L3. A
-   directed graph emits the forward edge with `weight` and, unless the
-   `direction` code forbids it, the reverse with `weight_to %||% weight`.
-4. **Index the nodes.** Keep a `GEOSSTRtree` over node coordinates (the overlay
-   already builds these) so an off-network origin or destination snaps to its
-   nearest node -- or, with `snap = "edge"`, to the nearest point on the nearest
-   edge, splitting that edge virtually for the duration of one query.
+### Phase A2 -- FASTA / FASTQ scan backend (0.10.1)
 
-The object holds the CSR graph, the node coordinates + STRtree, the per-edge
-source line id (to rebuild route geometry), and the CRS. Peak memory is the graph,
-roughly `(2 doubles + 1 int) * nodes + (1 int + 1 double) * edges` -- megabytes
-for a national road network, resident for the life of the queries.
+`tbl_fasta(path)` / `tbl_fastq(path)` stream records as rows (`id`, `seq`, and
+for FASTQ `qual`), one row group per N records, so a 40 GB read set never
+materializes. Mirrors the `csv_scan` backend exactly.
 
-### Query verbs (streamed `x` against the resident graph)
+- **Files:** `src/fasta_scan.c` / `.h`, entry point in `src/r_bridge_io.c`,
+  `R/tbl.R` front door. Gzip input rides the vendored miniz path CSV already uses.
+- **Input-totals sanity check (mandatory):** assert and log record count on open;
+  a truncated final record fails loudly, not silently drops.
+- **Tests:** round-trip a known multi-record FASTA/FASTQ vs `Biostrings::readDNAStringSet`
+  / `ShortRead`; gzipped and plain; a deliberately truncated file errors.
 
-Two query doors, split only where the **return genuinely differs in kind** (a
-route is a line, a cost is a number, a service area is a polygon) -- the same test
-that kept `spatial_overlay` one verb but `spatial_filter` separate from
-`spatial_join`.
+### Phase A3 -- k-mer spectrum node (0.10.2)
+
+k-mer counting is set-wise (one row per distinct k-mer per group), so it is a
+node, not a scalar expr -- the `group_agg` shape.
 
 ```r
-# Point-to-point and origin-destination shortest paths.
-spatial_route(x, network,
-              to       = NULL,        # destination: a column of node ids, an sf layer, or coords
-              geometry = TRUE,        # TRUE -> route lines; FALSE -> just the cost table (OD matrix)
-              cost_col = "cost",
-              ...)
-
-# Reachability within a cost budget: service areas and isochrones.
-spatial_service_area(x, network,
-                     cost   = NULL,   # scalar budget, or c(5, 10, 15) for nested isochrone bands
-                     output = c("polygon", "lines", "nodes"),
-                     band_col = "band",
-                     ...)
+tbl_fasta("genome.fa") |> kmer(seq, k = 6, by = id)   # -> id, kmer, count
 ```
 
-- **`spatial_route()`** snaps each streamed origin (and its paired destination)
-  to a node, runs the solver, and emits one row per (origin, destination) carrying
-  the total cost; with `geometry = TRUE` the row's geometry is the route line,
-  rebuilt by walking the predecessor pointers and concatenating the source edges'
-  coordinates. `geometry = FALSE` returns only the cost column, so the same verb
-  is the **OD cost matrix** when `to` is a destination set per origin (one row per
-  cell) -- route and matrix differ by one argument, not by a sibling function,
-  exactly the two-layer-overlay model.
-- **`spatial_service_area()`** runs one budget-bounded traversal per streamed
-  origin and emits, per origin, the reached subnetwork: `output = "nodes"` the
-  reachable nodes, `"lines"` the reachable edges, `"polygon"` their hull or buffer
-  (the isochrone). A vector `cost` returns nested bands, one row per (origin,
-  band), tagged in `band_col` -- travel-time isochrones fall straight out.
+- Canonical-k-mer option (collapse a k-mer with its reverse-complement).
+- **Files:** `src/kmer.c` node (open-addressing hash over the 2-bit packed k-mer,
+  the `n_distinct` hash-set pattern), `R/seq_verbs.R`, bridge in
+  `src/r_bridge_nodes.c`.
+- **Tests:** counts match a hand-rolled R k-mer tabulation on a fixture; canonical
+  option verified; streaming invariance (multi-batch == single-batch).
 
-Both ride `.spatial_stream` like `spatial_knn`: resident graph, streamed `x`, run
-files, a `ConcatNode` finalizer. The streaming contract holds -- peak query memory
-is one solver's label array (`O(nodes)`) per worker thread, not the origin count.
+### Phase A4 -- BED interval scan (0.10.3)
 
-### The solver (`src/network.c`, native C, `.Call`)
+BED is a tab file of `[chrom, start, end, ...]`; scanning it as rows makes the
+already-shipped `interval_join()` a genome-interval overlap engine for free (BED
+x BED, BED x annotation), keyed on `chrom`.
 
-Per the no-dependency-shortcuts rule, the graph and the solver are native C, not
-an `igraph` / `sfnetworks` dependency (a binary heap + Dijkstra over CSR is well
-under 200 lines). The geometry side -- noding, snapping, route-line assembly --
-goes through the libgeos C API already linked, not sf. sf stays a Suggests, used
-in tests as ground truth and for vector I/O only; no `igraph` dependency is added,
-keeping the self-contained-tarball property.
+- **Files:** thin `src/bed_scan.c` (or a `tbl_bed()` wrapper over `csv_scan` with
+  the BED dialect + 0-based half-open convention made explicit), `R/tbl.R`.
+- **Tests:** overlap result matches `GenomicRanges::findOverlaps` on a fixture;
+  half-open / 0-based boundary cases explicit (off-by-one is the classic BED bug).
 
-- **Dijkstra**, label-setting with a binary heap, one run per origin;
-  early-terminate when every requested destination is settled (`spatial_route`)
-  or the cost budget is exceeded (`spatial_service_area`).
-- **Bidirectional Dijkstra** for a single (origin, destination) pair -- meet in
-  the middle, roughly halving the settled set on a point-to-point route.
-- **OpenMP across origins.** A batch of origins is embarrassingly parallel (the
-  graph is read-only), one `#pragma omp parallel for` over the batch with a
-  per-thread label/heap arena, the pattern `grepl`/`levenshtein` already use.
-- **Contraction hierarchies** are the standard speedup for many queries on a
-  large static graph: a one-time preprocessing pass (added to `spatial_network`
-  as `prepare = TRUE`) that makes each query orders of magnitude faster. Default
-  plain Dijkstra; CH is the noted future optimization, not the first cut.
+### Phase A5 -- VCF scan + pairwise alignment (0.11.0)
 
-Unreachable destinations return `Inf` cost and empty geometry rather than
-dropping the row, so an OD matrix stays rectangular; connected-component counts
-are reported at build time so a disconnected graph is visible, not silently wrong
-(the input-totals sanity-check rule).
+The heavier tail, split out so A1-A4 ship first.
 
-### Cost-model framing
+- `tbl_vcf(path)`: variant records as rows (`chrom`, `pos`, `ref`, `alt`,
+  `qual`, INFO/FORMAT as columns); bgzip via miniz.
+- `seq_align(a, b, ...)`: Smith-Waterman / Needleman-Wunsch local/global
+  alignment score + optional CIGAR, same OpenMP-per-row shape as `levenshtein`
+  (a banded DP kernel, well under the 200-line native bar).
+- **Tests:** VCF fields vs `VariantAnnotation`; alignment score vs `Biostrings::pairwiseAlignment`.
 
-This adds one entry to the three-tier vocabulary the docs already use:
+**Out of scope for this initiative:** a full aligner index (BWA/minimap2-class),
+assembly, and probabilistic variant calling -- those are their own tools, not a
+columnar per-row kernel.
 
-- **Resident index, streamed probes.** The graph is built once (a sort/partition
-  pass: node, dedup, index) and held resident; queries stream against it. The
-  same shape as `spatial_knn` / `spatial_join`'s resident `y` and `spatial_locate`
-  -- the resident object is a graph rather than an sf layer. Bounded by
-  `max(graph, one query's frontier per thread)`, never by the query count.
+---
 
-### Build order (each phase ships independently, main branch)
+## Initiative B -- Climate cubes: NetCDF / Zarr scan
 
-1. **`spatial_network()` + CSR build + node STRtree** -- R front door over a C
-   builder; recovery test that the graph's node/edge counts and a hand-checked
-   adjacency match a fixture.
-2. **`spatial_route()` (`geometry = FALSE`)** -- Dijkstra in `src/network.c`,
-   cost only. The smallest correct slice; recovery test vs `igraph::distances`.
-3. **`spatial_route()` geometry reconstruction** -- predecessor walk + edge
-   concatenation; route equals the `sfnetworks` path on a fixture.
-4. **`spatial_service_area()`** -- budget-bounded traversal, the three `output`
-   modes, nested-band isochrones.
-5. **Directed graphs + one-way codes**, snap-to-edge origins, bidirectional
-   Dijkstra for single pairs, OpenMP across a batch.
-6. **Contraction hierarchies** (`prepare = TRUE`) once a real network shows
-   plain Dijkstra is the bottleneck.
-7. A `vignettes/network.Rmd` showcase (a real road layer: route, OD matrix,
-   isochrones) and a `_pkgdown.yml` reference section.
+**Goal.** Turn an N-dimensional climate cube (lon, lat, time, level) into a lazy
+`tbl` whose rows are `(coord columns..., value)`, with a bbox / time-range
+predicate pruning chunks the way `==` already prunes via the hash index. The
+`tiff_scan` backend (pixels -> rows with x, y, band) already proves the model;
+this generalizes it to more dimensions.
 
-### Testing standard
+**Why it needs a design pass first.** Every other vectra backend is native C with
+no external link (self-contained tarball -> one CRAN artifact). NetCDF-4 is HDF5
+underneath, a heavy C library; adding it as a hard dependency breaks the
+self-contained property and complicates CRAN. This tension is a real decision,
+not an implementation detail, so Phase B0 resolves it before any engine code.
 
-Recovery against an established router as ground truth (Suggests-only, tests
-only), never a shape smoke test:
+### Phase B0 -- design pass (no code): the dependency decision
 
-- shortest-path cost matches `igraph::distances` cell-for-cell on a fixture graph;
-- a reconstructed route equals the `sfnetworks` / `dodgr` path geometry;
-- service-area node sets match an independent BFS/Dijkstra to the budget;
-- streaming invariance: a multi-batch origin stream gives the identical result to
-  one batch (a streamed path must equal the resident path; divergence is a bug).
+Write `dev_notes/netcdf_zarr_design.md` deciding, with the "No Dependency
+Shortcuts" and self-contained-tarball principles as the frame:
 
-### Out of scope (a further tier or a different package)
+- **Option 1 -- native readers for the self-contained subset.** NetCDF-3 classic
+  is a simple self-describing format readable natively (a few hundred lines).
+  **Zarr** is even friendlier: chunks are independent compressed blobs
+  (zstd / blosc / gzip) plus JSON metadata (`.zarray` / `.zattrs`); vectra
+  already vendors tdc (zstd-family entropy coders) and miniz (gzip/deflate), so a
+  pure-C Zarr v2/v3 reader for the common codecs is plausible with no new link.
+  This keeps the tarball self-contained.
+- **Option 2 -- optional HDF5/netcdf-c linkage** for NetCDF-4, gated by a
+  `configure` probe (build the backend only when the system library is present,
+  like an optional feature), so the default install stays dependency-free and
+  power users with HDF5 get NetCDF-4.
+- **Recommendation to validate in B0:** native Zarr + native NetCDF-3 as the
+  first-class path (Phases B1-B3), NetCDF-4/HDF5 as optional-linkage follow-on
+  (deferred). Confirm the codec coverage (which blosc/zstd variants real CMIP6 /
+  ERA5 Zarr stores use) before committing.
+- Deliverable: the decision doc + a one-file spike reading a single chunk of a
+  real store, committed to `dev_notes/`. No package code yet.
 
-- **Turn restrictions and turn costs** -- need an expanded (edge-based) graph;
-  note as a follow-on once the node-based engine lands.
-- **Time-dependent / multimodal routing** (timetables, transfers) -- a different
-  graph model and out of the static-geometry tier.
-- **Map-matching GPS traces to the network** -- depends on external reference data
-  and a probabilistic model; already listed under the out-of-scope geocoding/
-  conflation group.
+### Phase B1 -- `nc_scan` / `zarr_scan`: one variable to rows
+
+`tbl_zarr(path, var=)` / `tbl_netcdf(path, var=)` streams one variable, emitting
+dimension-coordinate columns plus the value column, **one Zarr/NetCDF chunk per
+`.vtr` row group** so decode and pruning align with storage.
+
+- **Files:** `src/zarr_scan.c` (+ native NetCDF-3 in `src/nc_scan.c`), entry
+  points in `src/r_bridge_io.c`, front doors in `R/tbl.R`.
+- **Input-totals sanity check (mandatory):** assert loaded shape equals the
+  header's declared dims; log `loaded <n> chunks (var=..., dims=...)` every open.
+- **Tests:** values + coordinates match `ncdf4` / `stars` / `terra` on a fixture
+  cube; chunked read == whole-array read.
+
+### Phase B2 -- chunk pruning via zone maps
+
+A bbox / time-range / level predicate prunes chunks before decode, reusing the
+`scan.c` zone-map + null-count machinery. Each chunk carries its coordinate
+min/max as stats; a `filter(time >= t0, lat > 40)` skips chunks that cannot
+contribute -- the same pruning that makes `.vtr` scans fast.
+
+- **Tests:** a predicate over a multi-chunk cube reads only the covering chunks
+  (assert via a decode counter) and returns the identical rows to the unpruned
+  scan.
+
+### Phase B3 -- multi-variable and CF conventions
+
+- Multiple variables sharing a grid -> multiple value columns in one scan.
+- CF metadata: `units`, `calendar` (non-Gregorian climate calendars), `scale_factor` /
+  `add_offset` unpacking, `_FillValue` -> `NA`. Time axis reclassed to the
+  engine's date annotation so `floor_time` / `resample` compose directly.
+- **Tests:** unpacked values and decoded times match `CFtime` / `terra` on a
+  fixture with scale/offset and a 360-day calendar.
+
+### Phase B4 -- write path (deferred)
+
+Materialize a query back to Zarr / NetCDF-3 (chunk-aligned), so vectra is a cube
+transform tool, not only a reader. Deferred behind read + the raster tier.
+
+**Optional follow-on (own phase, gated by B0):** NetCDF-4 / HDF5 via configure-probed
+optional linkage.
+
+---
+
+## Initiative C -- GIS completeness polish
+
+Small closes of the known spatial edges. None is a new tier; each is a
+day-to-few-days phase.
+
+### Phase C1 -- vector reprojection ergonomics (0.9.x)
+
+Reprojection currently only reads as `spatial_map(~ sf::st_transform(.x, crs))`.
+Keep the engine free of a PROJ link for vectors, but:
+
+- Document the streamed-reproject recipe prominently in `?spatial_map` and the
+  spatial vignette (it is the single most-asked transform).
+- Evaluate a thin `spatial_transform(x, crs)` convenience that wraps the streamed
+  `sf::st_transform` and threads the CRS metadata -- **only if** it earns its
+  keep against "few front doors"; if not, ship the documented recipe instead.
+- Turn the current CRS-mismatch *error* into an actionable message naming the
+  exact `spatial_transform` / `spatial_map` call to run.
+
+### Phase C2 -- CRS breadth: WKT / PROJ, not EPSG-only (0.9.x)
+
+Raster headers store an integer EPSG; a WKT/PROJ-only CRS collapses to `0`, so
+`warp()` silently declines to reproject a custom projection lacking an EPSG code
+-- a **silent** wrong-scope, the exact failure the sanity-check rule targets.
+
+- Carry the full CRS string (WKT2 / PROJ) in the `.vec` header and GeoTIFF
+  metadata, EPSG as a fast-path cache.
+- When a reprojection is requested but the CRS cannot be resolved to something
+  PROJ accepts, **fail loudly** rather than pass geometry through unprojected.
+- **Tests:** `warp()` across two custom (non-EPSG) CRS matches `terra::project`;
+  an unresolvable CRS errors instead of silently not-reprojecting.
+
+### Phase C3 -- tiled BigTIFF write (0.9.x)
+
+`write_tiff` reads tiled BigTIFF but does not write it (`write.R:139`). Close the
+asymmetry so a > 4 GB raster round-trips.
+
+- **Tests:** a tiled BigTIFF write reads back byte-identical pixels via
+  `tbl_tiff` and via `terra::rast`.
+
+### Phase C4 -- coverage gap-fill (0.9.x)
+
+`spatial_eliminate(fill_gaps = TRUE)`: the empty slivers between polygons that
+should tile are recovered from the boundary arcs (`spatial_topology` /
+`spatial_polygonize` of the unioned boundary minus the input) and merged into a
+neighbour by the existing `spatial_eliminate` union-find -- an argument on the
+existing verb, not a sibling (the two-layer-overlay model). "Delete holes" stays
+a documented `spatial_map(~ ...)` recipe, no verb.
+
+- **Tests:** a coverage with known gaps tiles exactly after fill; total area
+  conserved to the coverage tolerance.
+
+---
+
+## Initiative D -- Time-series & embedding follow-ons
+
+Round out shipped verbs; each is small.
+
+- **D1 -- reclass computed date columns.** The project node does not re-attach the
+  `Date`/`POSIXct` class to a floored/resampled bucket column, so it collects as
+  numeric epoch. Thread the date annotation through the project node so a
+  `resample` bucket comes back a date. **Test:** class + values survive a
+  `floor_time |> collect` round-trip.
+- **D2 -- time-series gap-filling.** `resample(..., fill = )` (or a `fill_gaps`
+  verb) inserts missing calendar buckets with `NA` / carry-forward / interpolate,
+  so a downsample over a sparse series has a regular grid. **Test:** filled grid
+  matches a hand-built regular index; each fill mode recovers a known series.
+- **D3 -- fused nearest-neighbour node.** `mutate(d = cosine(emb, q)) |> slice_min(d, n = k)`
+  already works via the `topn` node; add a fused NN node **only if** the
+  distance-column memory ever measurably matters (profile first -- no speculative
+  node). **Test:** identical top-k to the two-step form.
+
+---
+
+## Initiative E -- Network follow-ons
+
+Only once a real network shows the current native Dijkstra is the bottleneck.
+
+- **E1 -- snap-to-edge origins.** Off-network origins/destinations snap to the
+  nearest point on the nearest edge (virtual edge split for one query), not only
+  to the nearest node. **Test:** snapped route matches `sfnetworks` with
+  edge-blending.
+- **E2 -- bidirectional Dijkstra** for single (origin, destination) pairs --
+  meet-in-the-middle, roughly halving the settled set. **Test:** identical
+  cost + path to the unidirectional solver on a fixture.
+- **E3 -- contraction hierarchies** (`spatial_network(prepare = TRUE)`): one-time
+  preprocessing for orders-of-magnitude-faster repeat queries on a large static
+  graph. Default stays plain Dijkstra. **Test:** CH query cost matches plain
+  Dijkstra cell-for-cell; build-time component counts reported.
+
+**Deferred to a further tier:** turn restrictions / turn costs (need an
+edge-expanded graph), time-dependent / multimodal routing (different graph
+model), map-matching GPS traces (external reference data + probabilistic model).
+
+---
 
 ## Out of scope (a different package)
 
-These sit on top of geometry but are not geometry operations, and fit a
-statistics or solver package better than a columnar geometry engine:
+These sit on top of geometry / data but are not per-row streamable kernels; they
+fit a statistics or solver package better than a columnar engine.
 
-- **Spatial interpolation and surfaces** -- IDW, kriging, kernel-density
-  heatmaps. A solver over the whole point set, partly raster output; the raster
-  tier covers the output format, not the estimator.
-- **Spatial statistics and point-pattern** -- Moran's I, Getis-Ord hot spots,
-  Ripley's K. Global estimators over a layer, not streamable element by element.
-- **Geocoding, conflation, map-matching** -- need external services or external
-  reference data.
+- **Spatial interpolation and surfaces** -- IDW, kriging, kernel-density. A solver
+  over the whole point set; the raster tier covers the output format, not the
+  estimator.
+- **Spatial statistics / point-pattern** -- Moran's I, Getis-Ord, Ripley's K.
+  Global estimators over a layer, not element-by-element streamable.
+- **Geocoding, conflation, map-matching** -- need external services or reference
+  data.
+- **Text corpora / full-text** (tokenization, TF-IDF, postings lists) -- fits the
+  string machinery, but less differentiated from existing tools than the tiers
+  above.
+- **Audio / signal frames** (spectrograms, MFCCs) -- windowed across rows rather
+  than per-row, so they fight the pull-based model; doable as a windowed node,
+  not as cheap as the `st_*` analogy suggests.
 
-## Coverage cleanup beyond eliminate
+---
 
-Two cleanup operations remain, both expressible from the verbs already shipped,
-so neither is its own tier:
+## Engineering standards (cross-cutting, apply to every phase)
 
-- **Fill gaps in a coverage** -- the empty slivers between polygons that should
-  tile. The gap polygons come from the boundary arcs (`spatial_topology` /
-  `spatial_polygonize` of the unioned boundary minus the input), and each gap
-  then merges into a neighbour by exactly the `spatial_eliminate` machinery; a
-  future `spatial_eliminate(fill_gaps = TRUE)` argument would fold it into the
-  same verb rather than a sibling.
-- **Delete holes** -- drop the interior rings of individual polygons. This is a
-  per-feature transform and runs through `spatial_map(~ ...)` rebuilding each
-  polygon from its exterior ring, so it needs no dedicated verb.
-
-## Notes
-
-- Every verb keeps the streaming contract: peak memory tracks the result or the
-  per-group working set, not the input length.
-- Prefer arguments on existing verbs over new sibling functions (the two-layer
-  overlay is the model: one `spatial_overlay`, optional `y =` and `how =`).
-- CRS is threaded from the input node and never hardcoded, as in the current
-  spatial verbs.
-
-# Beyond spatial - other domains vectra could support
-
-vectra's spatial support works because geometry fits a specific shape the engine
-is good at: an **opaque self-describing blob per cell** (hex-WKB) that gets
-**decoded and computed on per-row in C**, dispatched through `expr` (the `st_*`
-family), parallelized with OpenMP, and streamed so the working set never has to
-fit in RAM. Anything matching that shape is a natural extension. Candidates are
-sorted by how cleanly they map onto the engine and how much they would matter to
-climate-ecology / bioacoustics work.
-
-## Tier 1 - best architectural fit + own domain
-
-### N-dimensional climate cubes (NetCDF / Zarr / HDF5)
-
-Where larger-than-RAM bites hardest in climate ecology. The `tiff_scan` pattern
-(pixels -> rows with x, y, band) already proves the model; NetCDF/Zarr generalize
-it to (lon, lat, time, level) -> rows with value columns.
-
-- Slots in as a new `nc_scan` / `zarr_scan` backend next to `csv_scan` /
-  `tiff_scan`, plus a `tbl_netcdf()` entry point.
-- Hard part: chunk-aligned streaming so one Zarr/NetCDF chunk maps to one row
-  group. This maps onto the existing row-group scan with zone-map pruning -- a
-  bbox/time-range predicate prunes chunks the same way `==` prunes via the hash
-  index.
-- Payoff: turns "I can't open this CMIP6 file" into a lazy query.
-
-### Genomic intervals + sequence data
-
-Two sub-fits:
-
-- **Interval overlap joins** (done). `interval_join()` overlaps each `x` row's
-  `[start, end]` against every `y` row's range, with an optional equality `by`
-  key (a chromosome) and `inner`/`left` modes. Both sides materialize resident,
-  then a per-block sweep-line over the endpoints emits each overlapping pair
-  once (output-sensitive, not all-pairs). The blocking-partition and
-  materialization machinery is shared with the fuzzy join
-  (`src/join_partition.c`); the matcher is `src/interval_join.c`.
-- **Sequence ops** (`seq_*`: reverse-complement, k-mer, GC content, translate,
-  edit-distance to a reference). These map onto `expr` exactly like `st_*` does --
-  a self-describing string column (the sequence), decoded and computed per-row,
-  OpenMP over rows. `levenshtein` / `dl_dist` are already parallelized; alignment
-  is the same kernel shape. VCF/BED/FASTA scan backends feed it.
-
-## Tier 2 - clean fit, broad appeal
-
-### Vector / embedding columns + similarity search (done)
-
-`as_embedding()` packs numeric vectors into a hex float32 blob stored in an
-ordinary string column (the hex-WKB geometry precedent, kept ASCII so it
-round-trips any codec). `cosine()`, `l2()`, and `dot()` decode the blob inside
-the engine, one row per thread (`src/expr_vec.c`), against either a constant
-query vector or a second embedding column. Nearest-neighbour search is
-`mutate(d = cosine(emb, q)) |> slice_min(d, n = k)`, reusing the existing
-`topn` node with no engine change. Restoring the dictionary-defer fast path for
-duplicated wide-string columns (the known tdc regression) would also speed bulk
-embedding scans.
-
-### Time-series resampling + rolling ops (done)
-
-Dates already ride as `VEC_DOUBLE` + a `Date`/`POSIXct` annotation, so the work
-was expression and verb level: `floor_time(t, unit)` truncates an epoch column
-to a calendar grid (`src/expr_datetime.c`), `resample(t, every, ...)` composes
-`floor_time` + `group_by` + `summarise` for calendar-grid downsampling, and
-`roll_sum`/`roll_mean`/`roll_min`/`roll_max`/`roll_n` are time-based trailing
-windows on the existing window node (per-group sort then a two-pointer sweep,
-monotonic deque for min/max; `src/window.c`). A floored/bucket column collects
-as numeric epoch (the project node does not re-attach the date class to a
-computed column); reclassing on the way out is the remaining nicety. Gap-filling
-is not yet built.
-
-## Tier 3 - possible, weaker fit
-
-### Text corpora / full-text
-
-The string + regex + fuzzy machinery is already rich; tokenization, n-grams,
-TF-IDF, and a postings-list index would make vectra a larger-than-RAM corpus
-engine. Fits, but less differentiated from existing tools than the tiers above.
-
-### Audio / signal frames
-
-Bioacoustics-relevant (spectrograms, MFCCs from larger-than-RAM audio), but
-signal ops are windowed across rows rather than per-row, so they fight the
-pull-based model more than geometry does. Doable as a windowed node, not as cheap
-as the `st_*` analogy suggests.
-
-## Suggested next steps
-
-- **NetCDF/Zarr scan** -- most acute larger-than-RAM problem in the actual
-  workflow, the `tiff_scan` backend already shows the path, and chunk-pruning
-  reuses the existing zone-map machinery. The one heavy item left here: it needs
-  an external library (netcdf-c / HDF5 or a Zarr reader), which cuts against the
-  self-contained-tarball property, so it wants its own design pass.
-- **Sequence ops** (`seq_*`: reverse-complement, k-mer, GC content, translate)
-  -- the `expr_vec` / `expr_string` per-row decode shape now has two precedents
-  to follow.
-- Smaller follow-ons to what shipped: re-attach the date class to a resampled
-  bucket column, gap-filling for time series, and a fused NN node if the
-  distance-column memory ever matters.
+- **Streaming contract.** Every verb keeps peak memory tracking the result or the
+  per-group working set, never the input length. A streamed result must equal the
+  resident result; divergence is a bug, not a rounding difference.
+- **Recovery tests, not smoke tests.** New statistical / decode kernels are
+  validated against an established ground truth (Biostrings, GenomicRanges,
+  terra, sfnetworks, igraph -- Suggests, tests only), cell-for-cell on a fixture
+  across seeds -- never a shape/NaN check called a test.
+- **Input-totals sanity check.** Every new scan backend asserts loaded totals
+  against the header/manifest on open and logs `loaded <n> units (...)`; a flag
+  selecting a subset must change what is loaded, not only the label. Fail loudly
+  on mismatch.
+- **No dependency shortcuts.** Native C under ~200 lines beats a new link; the
+  self-contained tarball is a hard property (Initiative B's whole design pass
+  exists to protect it). Geometry goes through the linked libgeos C API, not sf;
+  sf / terra / igraph stay Suggests (ground truth + vector I/O only).
+- **OpenMP discipline.** Never `#include <omp.h>` in `src/*.c`; include
+  `"vec_omp.h"`. Two CRAN clang flavors have broken on a direct include.
+- **Few front doors.** Prefer an argument on an existing verb over a new sibling
+  (`spatial_overlay(y=, how=)` is the model). Split only when the return genuinely
+  differs in kind.
+- **Ship independently on main.** Each phase is releasable on its own tag with its
+  tests green; no long-lived feature branches.
