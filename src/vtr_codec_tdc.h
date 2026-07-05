@@ -137,9 +137,15 @@ void vtr_codec_tdc_release_request(
  *                   the winning spec needs reference req fields (persistent).
  *   quantize_active Non-zero when qspec fused into the baseline model.
  *   spatial_active  Non-zero when sspec fused into the baseline model.
- *   scratch         Caller-owned growable buffer reused for every trial
- *                   encode. realloc_fn must be set. Its contents are
- *                   scratch; the caller frees it after the encode.
+ *   scratch         Caller-owned growable buffer; realloc_fn must be set. Used
+ *                   directly by the serial sweep (reused across columns). When
+ *                   the candidate sweep runs in parallel each thread encodes
+ *                   into its own private buffer instead, taking only realloc_fn
+ *                   / user from this one; the caller frees it after the encode.
+ *
+ * The sweep parallelizes over candidates when the block is large enough and the
+ * call is not already inside a parallel region; the chosen spec is independent
+ * of thread count (ties break to the lowest candidate index).
  *
  * Returns TDC_OK. Trial encodes that fail for a given candidate are skipped;
  * the baseline is retained if no candidate beats it.

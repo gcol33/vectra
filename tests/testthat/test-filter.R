@@ -320,3 +320,36 @@ test_that("filter -> window function with selection vector", {
   expect_equal(result$x, c(20, 30, 40, 50, 60))
   expect_equal(result$rn, c(1, 2, 1, 2, 3))
 })
+
+test_that("all-null row groups are pruned for comparison predicates", {
+  # Column `v` is entirely NA in the middle row group; a comparison against a
+  # literal is NA for every such row, which filter drops. The scan prunes that
+  # group via null_count (min/max are absent for an all-NA numeric column), and
+  # the result equals the non-NA matches with no spurious or missing rows.
+  m <- 4000L
+  blk <- function(all_na) data.frame(
+    k = 1:m,
+    v = if (all_na) NA_real_ else stats::rnorm(m)
+  )
+  set.seed(3)
+  big <- rbind(blk(FALSE), blk(TRUE), blk(FALSE))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(big, f, batch_size = m)  # one row group per block
+
+  res_gt <- tbl(f) |> filter(v > 0) |> collect()
+  ref_gt <- big[!is.na(big$v) & big$v > 0, ]
+  expect_equal(nrow(res_gt), nrow(ref_gt))
+
+  # `!=` also prunes an all-null group (NA != 5 is NA -> dropped): only the two
+  # non-NA blocks contribute, so exactly 2*m rows survive.
+  res_ne <- tbl(f) |> filter(v != 5) |> collect()
+  expect_equal(nrow(res_ne), 2L * m)
+
+  # A column that is all-NA in every group yields zero rows for any comparison.
+  allna <- data.frame(k = 1:(3L * m), v = NA_real_, keep = stats::rnorm(3L * m))
+  fa <- tempfile(fileext = ".vtr")
+  on.exit(unlink(fa), add = TRUE)
+  write_vtr(allna, fa, batch_size = m)
+  expect_equal(nrow(tbl(fa) |> filter(v > 0) |> collect()), 0L)
+})

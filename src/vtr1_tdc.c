@@ -506,9 +506,14 @@ static void vtr1_tdc_file_destroy(Vtr1TdcFile *f) {
 static void vtr1_tdc_decode_stat(const tdc_column_stats *src, VecType t,
                                  Vtr1ColStat *dst) {
     memset(dst, 0, sizeof(*dst));
-    if (!src || !src->has_stats) return;
-    dst->has_stats = 1;
+    if (!src) return;
+    /* null_count is valid independent of min/max: tdc records it for every
+     * column entry, even one whose values were all NA (has_stats == 0, so no
+     * min/max). Carry it through first so scan-side all-null pruning can use
+     * it; has_stats below stays a statement about min/max only. */
     dst->null_count = src->null_count;
+    if (!src->has_stats) return;
+    dst->has_stats = 1;
     if (vec_type_is_int(t)) {
         dst->i64.min = (int64_t)get_le_u64(src->min);
         dst->i64.max = (int64_t)get_le_u64(src->max);

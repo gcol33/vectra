@@ -77,6 +77,34 @@ test_that("small files are no larger than fast files on structured data", {
   expect_lte(file.size(f_ratio), file.size(f_fast))
 })
 
+test_that("compress='small' round-trips and stays <= fast on the parallel path", {
+  # A row group above VEC_OMP_THRESHOLD (32768) drives the parallel candidate
+  # sweep in vtr_codec_tdc_optimize_small; the chosen spec must match the serial
+  # sweep, so the result round-trips and is never larger than fast.
+  set.seed(11)
+  n <- 60000L
+  df <- data.frame(
+    id   = 1:n,
+    x    = round(rnorm(n), 3),
+    flag = sample(c(TRUE, FALSE), n, replace = TRUE),
+    spar = ifelse(runif(n) < 0.9, 0L, sample(1:5, n, replace = TRUE)),
+    w    = sample(sprintf("cat-%02d", 1:20), n, replace = TRUE),
+    stringsAsFactors = FALSE
+  )
+  f_fast  <- tempfile(fileext = ".vtr")
+  f_small <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f_fast, f_small)))
+  write_vtr(df, f_fast,  compress = "fast")
+  write_vtr(df, f_small, compress = "small")
+  expect_lte(file.size(f_small), file.size(f_fast))
+  result <- tbl(f_small) |> collect()
+  expect_equal(result$id, as.double(df$id))
+  expect_equal(result$x, df$x)
+  expect_equal(result$flag, df$flag)
+  expect_equal(result$spar, as.double(df$spar))
+  expect_equal(result$w, df$w)
+})
+
 test_that("compress='small' with multiple row groups", {
   df <- data.frame(x = rnorm(1000), y = 1:1000)
   f <- tempfile(fileext = ".vtr")

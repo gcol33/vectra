@@ -15,6 +15,7 @@
 
 #include "vtr_codec_tdc.h"
 #include "array.h"                /* vec_validity_bytes, vec_array_is_valid */
+#include "vec_omp.h"              /* omp_in_parallel, VEC_OMP_THRESHOLD */
 
 #include "tdc/format.h"           /* tdc_block_record, TDC_BLOCK_HEADER_SIZE */
 
@@ -396,22 +397,76 @@ tdc_status vtr_codec_tdc_optimize_small(
     int n = vtr_small_build_candidates(col, quantize_active, spatial_active,
                                        req, cands, VTR_SMALL_MAX_CANDIDATES);
 
-    size_t         best_size = 0;
-    int            have_best = 0;
-    tdc_codec_spec best      = req->spec;  /* fall back to FAST baseline */
+    /* Keep the candidate with the smallest record; ties break to the lowest
+     * candidate index so the chosen spec — and thus the bytes on disk — never
+     * depend on how the sweep is scheduled across threads. */
+    size_t best_size = 0;
+    int    best_idx  = -1;
 
-    for (int i = 0; i < n; ++i) {
-        scratch->size = 0;
-        tdc_status st = tdc_encode_block(&req->block, &cands[i], scratch);
-        if (st != TDC_OK) continue;  /* candidate not applicable to this data */
-        if (!have_best || scratch->size < best_size) {
-            best_size = scratch->size;
-            best      = cands[i];
-            have_best = 1;
+    /* The candidate specs, req->block, and req->lane are read-only during an
+     * encode (tdc_encode_block writes only to its output buffer), so the sweep
+     * parallelizes over candidates: each thread trial-encodes a disjoint slice
+     * into its own scratch buffer and the smallest is reduced under a critical
+     * section. The serial path keeps the passed-in scratch (preserving its
+     * across-column growth); a caller already inside a parallel region, a small
+     * block, or a build without OpenMP runs serially — no nesting. */
+#ifdef _OPENMP
+    const int worth_parallel =
+        n > 2 && !omp_in_parallel() &&
+        tdc_shape_n_elems(&req->block.shape) >= (int64_t)VEC_OMP_THRESHOLD;
+#else
+    const int worth_parallel = 0;
+#endif
+
+    if (worth_parallel) {
+#ifdef _OPENMP
+        #pragma omp parallel
+        {
+            tdc_buffer local = {0};
+            local.realloc_fn = scratch->realloc_fn;
+            local.user       = scratch->user;
+            size_t t_size = 0;
+            int    t_idx  = -1;
+
+            #pragma omp for schedule(dynamic) nowait
+            for (int i = 0; i < n; ++i) {
+                local.size = 0;
+                if (tdc_encode_block(&req->block, &cands[i], &local) != TDC_OK)
+                    continue;  /* candidate not applicable to this data */
+                if (t_idx < 0 || local.size < t_size ||
+                    (local.size == t_size && i < t_idx)) {
+                    t_size = local.size;
+                    t_idx  = i;
+                }
+            }
+
+            #pragma omp critical
+            {
+                if (t_idx >= 0 &&
+                    (best_idx < 0 || t_size < best_size ||
+                     (t_size == best_size && t_idx < best_idx))) {
+                    best_size = t_size;
+                    best_idx  = t_idx;
+                }
+            }
+
+            if (local.data) local.realloc_fn(local.user, local.data, 0);
+        }
+#endif
+    } else {
+        for (int i = 0; i < n; ++i) {
+            scratch->size = 0;
+            if (tdc_encode_block(&req->block, &cands[i], scratch) != TDC_OK)
+                continue;  /* candidate not applicable to this data */
+            if (best_idx < 0 || scratch->size < best_size) {
+                best_size = scratch->size;
+                best_idx  = i;
+            }
         }
     }
 
-    req->spec = best;
+    if (best_idx >= 0) req->spec = cands[best_idx];
+    /* else no candidate succeeded — keep the FAST baseline already in req->spec */
     return TDC_OK;
 }
 

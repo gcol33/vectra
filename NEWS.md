@@ -1,3 +1,25 @@
+# vectra 0.9.12
+
+## `compress = "small"` parallelizes the candidate sweep
+
+* The try-all-pick-smallest encoder now trial-encodes a column's candidate
+  specs across threads: each thread encodes a disjoint slice of candidates into
+  its own scratch buffer and the smallest record is reduced. Large row groups
+  (the ones where the sweep dominates encode time) compress markedly faster on
+  multi-core machines. The chosen spec is independent of thread count — ties
+  break to the lowest candidate index — so `"small"` files are byte-identical
+  regardless of how many cores encode them, and never larger than `"fast"`. The
+  sweep stays serial for small blocks and inside an existing parallel region.
+
+## All-null row groups are pruned during scan
+
+* A filter comparison against a column whose values are all `NA` in a row group
+  (`x > 5`, `x == "a"`, `x != 5`, ...) is `NA` for every row, which the filter
+  drops. The scan now recognizes this from the row group's null count and skips
+  the whole group without reading it, even for numeric columns that carry no
+  min/max (an all-`NA` column has none). Results are unchanged; the pruning only
+  avoids reading groups that could not have produced a row.
+
 # vectra 0.9.11
 
 ## `compress = "small"` now does adaptive per-column encoding

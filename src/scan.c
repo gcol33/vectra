@@ -52,21 +52,22 @@ static int str_in_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
 
 /* Check if a simple comparison predicate can be pruned using row group stats.
  * Returns 0 if the predicate is definitely false for all rows in this row group,
- * 1 if it might be true (or we can't determine). */
+ * 1 if it might be true (or we can't determine). rg_n_rows is the row count of
+ * this group, used for all-null pruning against null_count. */
 static int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
-                                  const VecSchema *schema) {
+                                  const VecSchema *schema, int64_t rg_n_rows) {
     if (!pred || !stats) return 1;
 
     /* Handle AND: both sides must possibly match */
     if (pred->kind == EXPR_BOOL && pred->op == '&') {
-        return predicate_might_match(pred->left, stats, schema) &&
-               predicate_might_match(pred->right, stats, schema);
+        return predicate_might_match(pred->left, stats, schema, rg_n_rows) &&
+               predicate_might_match(pred->right, stats, schema, rg_n_rows);
     }
 
     /* Handle OR: at least one side must possibly match */
     if (pred->kind == EXPR_BOOL && pred->op == '|') {
-        return predicate_might_match(pred->left, stats, schema) ||
-               predicate_might_match(pred->right, stats, schema);
+        return predicate_might_match(pred->left, stats, schema, rg_n_rows) ||
+               predicate_might_match(pred->right, stats, schema, rg_n_rows);
     }
 
     /* Handle %in% with string set */
@@ -105,6 +106,14 @@ static int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
     if (col_idx < 0) return 1;
 
     const Vtr1ColStat *st = &stats[col_idx];
+
+    /* All-null column: this comparison against a literal is NA for every row,
+     * which filter drops, so no row in this group can pass. Sound for every
+     * comparison operator. null_count is valid even when min/max are not
+     * (has_stats == 0, e.g. a numeric column whose values were all NA). */
+    if (rg_n_rows > 0 && st->null_count >= (uint64_t)rg_n_rows)
+        return 0;
+
     if (!st->has_stats) return 1;
 
     VecType ct = schema->col_types[col_idx];
@@ -730,7 +739,8 @@ static VecBatch *scan_next_batch(VecNode *self) {
             const Vtr1ColStat *stats =
                 vtr1_tdc_rowgroup_col_stats(sn->file, sn->next_rg);
             if (stats && !predicate_might_match(sn->predicate, stats,
-                                                 vtr1_tdc_schema(sn->file))) {
+                                                 vtr1_tdc_schema(sn->file),
+                                                 rg_n_rows)) {
                 sn->next_rg++;
                 sn->rg_row_base += rg_n_rows;
                 continue;
