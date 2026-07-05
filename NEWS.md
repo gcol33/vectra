@@ -1,3 +1,39 @@
+# vectra 0.10.3
+
+## Bug fixes
+
+* The parallel `.vtr` reader no longer risks an intermittent crash when a read
+  fails mid-collect. Row groups are decoded on OpenMP worker threads; on an
+  I/O or decode failure (a truncated or removed file, a short read, a corrupt
+  block) the reader used to raise the error directly from a worker thread,
+  where the R error mechanism's longjmp corrupts the master thread's stack.
+  The reader now allocates every batch on the master thread and only fills them
+  from disk in parallel, capturing the first failure and re-raising it once the
+  parallel region joins, so a failed read is a clean, catchable R error.
+
+## BED streaming scan backend
+
+* `tbl_bed()` streams a BED (Browser Extensible Data) file of genomic features
+  as a lazy table, one feature per row, with the standard BED columns in order
+  (`chrom`, `start`, `end`, `name`, `score`, `strand`, `thickStart`,
+  `thickEnd`, `itemRgb`, `blockCount`, `blockSizes`, `blockStarts`; extra
+  fields past the twelfth as `V13`, `V14`, ...). The column count is fixed by
+  the first feature line and every later line must match. Fields are
+  whitespace-delimited (tab or space); blank, `#`, `track`, and `browser` lines
+  are skipped; gzip (`.bed.gz`) input is read transparently, and the scan
+  reports its feature count on completion (`quiet = TRUE` suppresses it).
+* Coordinates are read faithfully: `start` is 0-based and `end` half-open, both
+  returned exactly as stored. Paired with the existing `interval_join()`, this
+  makes vectra a streaming genome-interval overlap engine. For base-overlap
+  semantics matching bedtools and `GenomicRanges::findOverlaps()`, use
+  `interval_join(..., closed = FALSE)`, which requires a strictly positive
+  overlap and so does not pair abutting features. Recovery-tested against
+  `findOverlaps` and on explicit half-open boundary (off-by-one) cases.
+* A malformed feature line is a loud error, not a silent drop: an inconsistent
+  field count, a non-integer `start`/`end`, or fewer than three fields stops
+  the scan. Optional integer fields (`score`, `thickStart`, `thickEnd`,
+  `blockCount`) accept `.` or `NA` as missing.
+
 # vectra 0.10.2
 
 ## `kmer()` k-mer spectrum node

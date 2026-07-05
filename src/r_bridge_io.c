@@ -4,6 +4,7 @@
 #include "csv_write.h"
 #include "csv_scan.h"
 #include "fasta_scan.h"
+#include "bed_scan.h"
 #include "sql_scan.h"
 #include "sql_write.h"
 #include "tiff_format.h"
@@ -135,6 +136,14 @@ SEXP C_fasta_scan_node(SEXP path_sexp, SEXP batch_size_sexp,
     int quiet = Rf_asLogical(quiet_sexp) == TRUE;
     FastaScanNode *sn = fasta_scan_node_create(fpath, batch_size,
                                                is_fastq, quiet);
+    return wrap_node((VecNode *)sn);
+}
+
+SEXP C_bed_scan_node(SEXP path_sexp, SEXP batch_size_sexp, SEXP quiet_sexp) {
+    const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
+    int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
+    int quiet = Rf_asLogical(quiet_sexp) == TRUE;
+    BedScanNode *sn = bed_scan_node_create(fpath, batch_size, quiet);
     return wrap_node((VecNode *)sn);
 }
 

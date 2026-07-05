@@ -25,6 +25,45 @@ test_that("a tight loop with a downstream verb does not leak handles", {
   expect_equal(nrow(last), 6L)
 })
 
+# Regression: an I/O failure during a parallel collect must raise a normal,
+# catchable R error, not crash. The parallel reader decodes row groups on
+# OpenMP worker threads; it used to call the R error machinery (Rf_error, a
+# longjmp) directly from a worker when fopen/fseek/fread/decode failed. A
+# longjmp into a setjmp owned by the master thread's stack is undefined and
+# corrupted the stack -- an intermittent SIGSEGV that surfaced under the
+# resource pressure (locked files, tight memory) of build/test churn. The
+# reader now allocates every batch on the master thread and only fills them
+# from disk in parallel, capturing the first failure and re-raising it on the
+# master after the region joins. These force the two worker-side I/O failures
+# and require a clean error plus a still-usable engine afterward.
+
+test_that("a parallel read with a truncated file errors cleanly, not a crash", {
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  n <- 2e5
+  write_vtr(data.frame(a = as.double(seq_len(n)),
+                       b = rep(letters, length.out = n),
+                       stringsAsFactors = FALSE), f, batch_size = 10000)
+  h <- tbl(f)                       # footer/index read into memory
+  con <- file(f, "r+b"); truncate(con, 4096L); close(con)
+  expect_error(collect(h), "short read|invalid block size")
+
+  # engine survives the caught error: a fresh valid read still works
+  g <- tempfile(fileext = ".vtr"); on.exit(unlink(g), add = TRUE)
+  write_vtr(data.frame(x = 1:9), g)
+  expect_equal(nrow(tbl(g) |> collect()), 9L)
+})
+
+test_that("a parallel read of a removed file errors cleanly, not a crash", {
+  f <- tempfile(fileext = ".vtr")
+  n <- 2e5
+  write_vtr(data.frame(a = as.double(seq_len(n)),
+                       b = rep(letters, length.out = n),
+                       stringsAsFactors = FALSE), f, batch_size = 10000)
+  h <- tbl(f)
+  unlink(f)                         # gone before the per-read reopen
+  expect_error(collect(h), "cannot open|cannot reopen")
+})
+
 test_that("df_to_node temp files are cleaned up and survive until collect", {
   skip_if_not_installed("openxlsx2")
   f <- tempfile(fileext = ".xlsx"); on.exit(unlink(f))
