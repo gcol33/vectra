@@ -47,7 +47,8 @@ typedef enum {
     EXPR_PASTE,            /* paste(a, b, ..., sep) or paste0(a, b, ...) */
     EXPR_STR_EXTRACT,      /* str_extract(x, pattern) -> first regex match */
     EXPR_GEOM,             /* libgeos op on a hex-WKB geometry column */
-    EXPR_VEC_DIST          /* cosine/l2/dot over a hex float32 embedding column */
+    EXPR_VEC_DIST,         /* cosine/l2/dot over a hex float32 embedding column */
+    EXPR_SEQ               /* seq_* op on a biological sequence string column */
 } VecExprKind;
 
 typedef struct VecExpr VecExpr;
@@ -134,6 +135,14 @@ struct VecExpr {
        `operand`; a second embedding column rides on `left`, or a constant
        query vector on `lit_str` (both hex float32). */
     char vec_fn;
+
+    /* EXPR_SEQ: which seq_* op (see expr_seq.c). The sequence column is
+       `operand`. seq_translate reads the codon-table id from `lit_i64`.
+       seq_subseq reads start on `left` and width on `right`. seq_dist reads a
+       second sequence column on `left` or a constant on `lit_str`, and its
+       method ('l' Levenshtein, 'd' Damerau-Levenshtein, 'h' Hamming) from
+       `op`. */
+    char seq_fn;
 };
 
 /* Allocate a new expression node */
@@ -165,8 +174,15 @@ VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch);
    expr->vec_fn) over a hex float32 embedding column. See expr_vec.c. */
 VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch);
 
+/* Sub-dispatcher for biological-sequence ops (seq_*, selected by
+   expr->seq_fn) over an ASCII sequence string column. See expr_seq.c. */
+VecArray *vec_expr_eval_seq(const VecExpr *expr, const VecBatch *batch);
+
 /* Result column type for a geometry op given its geom_fn discriminator. */
 VecType vec_expr_geom_result_type(char geom_fn);
+
+/* Result column type for a seq_* op given its seq_fn discriminator. */
+VecType vec_expr_seq_result_type(char seq_fn);
 
 /* Walk an expression tree and mark all referenced column names.
    needed[i] is set to 1 if column col_names[i] is referenced. */

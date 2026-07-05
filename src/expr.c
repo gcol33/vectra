@@ -257,6 +257,9 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     /* Embedding distance operations — dispatched to expr_vec.c */
     case EXPR_VEC_DIST:
         return vec_expr_eval_vec(expr, batch);
+    /* Biological-sequence operations — dispatched to expr_seq.c */
+    case EXPR_SEQ:
+        return vec_expr_eval_seq(expr, batch);
     /* case_when and coalesce — evaluated here directly */
     case EXPR_CASE_WHEN: {
         int64_t n = batch->n_rows;

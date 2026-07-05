@@ -1,3 +1,17 @@
+# vectra 0.10.0
+
+## `seq_*` biological-sequence expressions
+
+* A family of `seq_*` functions now works directly inside `mutate()`,
+  `filter()`, and `summarise()` over a sequence held in an ordinary string
+  column, computed per row in C and parallelized across rows: `seq_length`,
+  `seq_gc`, `seq_revcomp`, `seq_complement`, `seq_reverse`, `seq_transcribe`
+  (DNA<->RNA), `seq_translate` (standard genetic code), `seq_subseq`, and
+  `seq_dist` (Levenshtein / Damerau-Levenshtein / Hamming edit distance to a
+  reference column or constant). A missing or unparseable cell yields `NA`, the
+  same contract as the `st_*` geometry and embedding-distance families.
+  Complement handles the IUPAC ambiguity codes. See `?seq_expressions`.
+
 # vectra 0.9.12
 
 ## `compress = "small"` parallelizes the candidate sweep

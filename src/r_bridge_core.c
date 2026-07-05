@@ -831,6 +831,46 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->result_type = VEC_DOUBLE;
         return e;
     }
+    if (strcmp(kind, "seq") == 0) {
+        const char *fn = list_get_string(lst, "fn");
+        if (!fn) vectra_error("seq expression missing 'fn'");
+        VecExpr *e = vec_expr_alloc(EXPR_SEQ);
+        e->seq_fn = fn[0];
+        e->operand = parse_expr(list_get(lst, "operand"), schema);
+
+        /* seq_translate: codon-table id (default 1 = standard). */
+        SEXP tbl = list_get(lst, "table");
+        if (tbl != R_NilValue) {
+            if (TYPEOF(tbl) == REALSXP) e->lit_i64 = (int64_t)REAL(tbl)[0];
+            else if (TYPEOF(tbl) == INTSXP) e->lit_i64 = (int64_t)INTEGER(tbl)[0];
+        }
+
+        /* seq_subseq: start on left, width on right. */
+        SEXP start = list_get(lst, "start");
+        if (start != R_NilValue) e->left = parse_expr(start, schema);
+        SEXP width = list_get(lst, "width");
+        if (width != R_NilValue) e->right = parse_expr(width, schema);
+
+        /* seq_dist: second sequence (constant -> lit_str, else column on left)
+           and method code on op ('l'/'d'/'h'). */
+        SEXP ref = list_get(lst, "ref");
+        if (ref != R_NilValue) {
+            SEXP r_kind = list_get(ref, "kind");
+            if (r_kind != R_NilValue && TYPEOF(r_kind) == STRSXP &&
+                strcmp(CHAR(STRING_ELT(r_kind, 0)), "lit_string") == 0) {
+                const char *s = CHAR(STRING_ELT(list_get(ref, "value"), 0));
+                e->lit_str = (char *)malloc(strlen(s) + 1);
+                strcpy(e->lit_str, s);
+            } else {
+                e->left = parse_expr(ref, schema);
+            }
+        }
+        const char *method = list_get_string(lst, "method");
+        if (method) e->op = method[0];
+
+        e->result_type = vec_expr_seq_result_type(e->seq_fn);
+        return e;
+    }
 
     vectra_error("unknown expression kind: %s", kind);
     return NULL;

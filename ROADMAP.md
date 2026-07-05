@@ -76,10 +76,12 @@ are per-row and *do* fit `mutate`, but they need a native C kernel (not R string
 juggling) to stream at engine speed, and k-mer / alignment are set-wise or
 windowed and need their own node.
 
-### Phase A1 -- `seq_*` scalar expression family (0.10.0)
+### Phase A1 -- `seq_*` scalar expression family (0.10.0) -- SHIPPED
 
 The smallest correct slice: operate on a sequence held in an ordinary string
-column, no new backend required.
+column, no new backend required. Shipped in 0.10.0 (`src/expr_seq.c`,
+`.serialize_seq` in `R/expr.R`, `?seq_expressions`), recovery-tested cell-for-cell
+against Biostrings and stringdist in `tests/testthat/test-seq-expr.R`.
 
 ```r
 tbl_csv("reads.csv") |>

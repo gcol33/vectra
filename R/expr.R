@@ -397,6 +397,91 @@
        query = .serialize_vec_query(expr[[3]], env, cols))
 }
 
+# Biological-sequence ops over an ASCII sequence string column (see
+# src/expr_seq.c). Each name maps to a single-character op code the C side
+# dispatches on.
+#   measures     seq -> int64 / double        seq_length, seq_gc
+#   transforms   seq -> seq                    seq_revcomp, seq_complement,
+#                                              seq_reverse, seq_transcribe
+#   translate    seq (+ table) -> protein      seq_translate
+#   subseq       seq, start, width -> seq      seq_subseq
+#   distance     seq, ref (+ method) -> int64  seq_dist
+.SEQ_UNARY <- c(
+  seq_length = "L", seq_gc = "G",
+  seq_revcomp = "r", seq_complement = "c", seq_reverse = "v",
+  seq_transcribe = "t")
+
+# seq_dist method name -> single-char code.
+.SEQ_DIST_METHOD <- c(
+  levenshtein = "l", lv = "l", edit = "l",
+  dl = "d", damerau = "d", osa = "d",
+  hamming = "h")
+
+# Resolve the second sequence of seq_dist: a sequence column reference, or a
+# constant character scalar (compared against every row).
+.serialize_seq_ref <- function(a, env, cols) {
+  if (is.name(a) && !is.null(cols) && as.character(a) %in% cols)
+    return(serialize_expr(a, env, cols))
+  val <- tryCatch(eval(a, env), error = function(e) NULL)
+  if (is.character(val) && length(val) == 1)
+    return(list(kind = "lit_string", value = val))
+  stop("the reference argument to seq_dist() must be a sequence column or a ",
+       "single character string")
+}
+
+.serialize_seq <- function(fn, expr, env, cols) {
+  if (fn %in% names(.SEQ_UNARY)) {
+    return(list(kind = "seq", fn = unname(.SEQ_UNARY[fn]),
+                operand = serialize_expr(expr[[2]], env, cols)))
+  }
+
+  if (fn == "seq_translate") {
+    args <- as.list(expr)[-1]
+    nms <- names(args)
+    table <- 1L
+    if (length(args) >= 2) {
+      ta <- if (!is.null(nms) && "table" %in% nms) args[["table"]] else args[[2]]
+      table <- as.integer(eval(ta, env))
+    }
+    if (!identical(table, 1L))
+      stop("seq_translate() currently supports only the standard genetic ",
+           "code (table = 1)")
+    return(list(kind = "seq", fn = "p",
+                operand = serialize_expr(args[[1]], env, cols),
+                table = table))
+  }
+
+  if (fn == "seq_subseq") {
+    args <- as.list(expr)[-1]
+    nms <- names(args)
+    seq_a  <- if (!is.null(nms) && "x" %in% nms) args[["x"]] else args[[1]]
+    start_a <- if (!is.null(nms) && "start" %in% nms) args[["start"]] else args[[2]]
+    width_a <- if (!is.null(nms) && "width" %in% nms) args[["width"]] else args[[3]]
+    return(list(kind = "seq", fn = "s",
+                operand = serialize_expr(seq_a, env, cols),
+                start = serialize_expr(start_a, env, cols),
+                width = serialize_expr(width_a, env, cols)))
+  }
+
+  # seq_dist(x, ref, method = "levenshtein")
+  args <- as.list(expr)[-1]
+  nms <- names(args)
+  method <- "levenshtein"
+  if (!is.null(nms) && "method" %in% nms) {
+    method <- as.character(eval(args[["method"]], env))
+    args <- args[setdiff(seq_along(args), match("method", nms))]
+  } else if (length(args) >= 3) {
+    method <- as.character(eval(args[[3]], env))
+    args <- args[1:2]
+  }
+  code <- .SEQ_DIST_METHOD[[tolower(method)]]
+  if (is.null(code)) stop(sprintf("unknown seq_dist method '%s'", method))
+  list(kind = "seq", fn = "d",
+       operand = serialize_expr(args[[1]], env, cols),
+       ref = .serialize_seq_ref(args[[2]], env, cols),
+       method = code)
+}
+
 # floor_time(t, unit): truncate a Date/POSIXct column to a calendar grid.
 # unit is a string like "hour", "15 min", "day", "3 months".
 .FLOOR_UNITS <- c(
@@ -464,6 +549,8 @@ local({
   register(c(names(.GEOM_UNARY), names(.GEOM_PARAM),
              names(.GEOM_BINARY)),                       .serialize_geom)
   register(c("cosine", "l2", "dot"),                     .serialize_vecdist)
+  register(c(names(.SEQ_UNARY), "seq_translate",
+             "seq_subseq", "seq_dist"),                   .serialize_seq)
   register(c("floor_time"),                              .serialize_floortime)
 })
 
