@@ -99,6 +99,17 @@ VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
                                     const int *col_mask,
                                     void **direct_bufs);
 
+/* As vtr1_read_rowgroup_tdc_ex, but when defer_str_dict != 0 each VEC_STRING
+ * column whose block is TDC_MODEL_DICT_1D is decoded into deferred-dictionary
+ * form (VecArray.str_dict: unique values + per-row indices) instead of the
+ * flat per-row buffer, so a consumer that interns unique values touches each
+ * once. Numeric direct-write is unaffected. Only the collect string-fill path
+ * understands str_dict; do NOT enable this for batches fed to other nodes. */
+VecBatch *vtr1_read_rowgroup_tdc_defer(Vtr1TdcFile *file, uint32_t rg_idx,
+                                       const int *col_mask,
+                                       void **direct_bufs,
+                                       int defer_str_dict);
+
 /* Per-rowgroup column statistics, indexed by schema column. Returns
  * NULL when stats were not encoded for the row group (e.g. zero-row
  * group) or rg_idx is out of range. The returned array has n_cols
@@ -136,6 +147,19 @@ VecBatch **vtr1_read_parallel_tdc_into(Vtr1TdcFile *file, const int *col_mask,
                                        void **col_bases,
                                        const size_t *col_elem_sizes,
                                        int n_out_cols,
+                                       uint32_t *out_count);
+
+/* As vtr1_read_parallel_tdc_into, with the deferred-dictionary string decode
+ * from vtr1_read_rowgroup_tdc_defer enabled when defer_str_dict != 0. The dict
+ * decode runs on the worker threads (pure C, no R API); the caller interns on
+ * the main thread. Same "collect string-fill only" restriction applies. */
+VecBatch **vtr1_read_parallel_tdc_defer_into(Vtr1TdcFile *file,
+                                       const int *col_mask,
+                                       const char *path,
+                                       void **col_bases,
+                                       const size_t *col_elem_sizes,
+                                       int n_out_cols,
+                                       int defer_str_dict,
                                        uint32_t *out_count);
 
 void vtr1_close_tdc(Vtr1TdcFile *file);

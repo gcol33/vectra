@@ -27,12 +27,86 @@
  * pointer is stable for the lifetime of this collect. */
 typedef struct { uint32_t hash; int len; SEXP sexp; } StrCacheSlot;
 
-/* Fill a slice of an R STRSXP from a VecArray's flat string buffer. With
- * str_cache != NULL, duplicate values skip R's CHARSXP hash via a content-hash
- * cache; with str_cache == NULL, every row pays a plain Rf_mkCharLenCE. */
+/* Intern one (sptr, slen) value into a CHARSXP. With str_cache != NULL a
+ * duplicate value skips R's global CHARSXP hash via a content-hash cache; the
+ * cached SEXP stays alive because the caller SET_STRING_ELTs it into a
+ * PROTECTed output STRSXP before the next allocation. slen == 0 returns R's
+ * interned blank string without touching sptr (which may be NULL for an
+ * all-empty batch). */
+static inline SEXP intern_str_cached(const char *sptr, int slen,
+                                     StrCacheSlot *str_cache) {
+    if (slen == 0) return R_BlankString;
+    if (!str_cache) return Rf_mkCharLenCE(sptr, slen, CE_UTF8);
+
+    uint32_t h = 2166136261u;
+    for (int k = 0; k < slen; k++) {
+        h ^= (uint8_t)sptr[k];
+        h *= 16777619u;
+    }
+    h |= 1u;
+    uint32_t slot = h & STR_CACHE_MASK;
+    for (int p = 0; p < 4; p++) {
+        uint32_t si = (slot + p) & STR_CACHE_MASK;
+        if (!str_cache[si].hash) {
+            SEXP cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
+            str_cache[si].hash = h;
+            str_cache[si].len = slen;
+            str_cache[si].sexp = cs;
+            return cs;
+        }
+        if (str_cache[si].hash == h && str_cache[si].len == slen &&
+            memcmp(CHAR(str_cache[si].sexp), sptr, (size_t)slen) == 0) {
+            return str_cache[si].sexp;
+        }
+    }
+    return Rf_mkCharLenCE(sptr, slen, CE_UTF8);
+}
+
+/* Deferred-dictionary fill: intern each unique value once (lazily, on first
+ * use) and fill by index, skipping the per-row CHARSXP work that dominates a
+ * wide-duplicated string collect. A dict entry's CHARSXP, once assigned into
+ * the PROTECTed col, stays reachable, so dict_cs can hold raw SEXPs across
+ * rows. NA rows honor validity and never index the dictionary. */
+static void fill_string_col_from_dict(SEXP col, int64_t offset,
+                                      const VecArray *arr, int64_t n,
+                                      StrCacheSlot *str_cache) {
+    const VecStrDict *d = arr->str_dict;
+    uint32_t dc = d->dict_count;
+    SEXP *dict_cs = (SEXP *)malloc((size_t)(dc > 0 ? dc : 1) * sizeof(SEXP));
+    if (!dict_cs) vectra_error("alloc failed for dict CHARSXP table");
+    for (uint32_t e = 0; e < dc; e++) dict_cs[e] = R_NilValue;
+
+    for (int64_t j = 0; j < n; j++) {
+        int64_t ri = offset + j;
+        if (!vec_array_is_valid(arr, j)) {
+            SET_STRING_ELT(col, (R_xlen_t)ri, NA_STRING);
+            continue;
+        }
+        uint32_t e = d->indices[j];   /* validated < dict_count on decode */
+        SEXP cs = dict_cs[e];
+        if (cs == R_NilValue) {
+            uint32_t s = d->dict_offsets[e];
+            int slen = (int)(d->dict_offsets[e + 1] - s);
+            const char *sptr = slen ? (const char *)(d->dict_data + s) : NULL;
+            cs = intern_str_cached(sptr, slen, str_cache);
+            dict_cs[e] = cs;
+        }
+        SET_STRING_ELT(col, (R_xlen_t)ri, cs);
+    }
+    free(dict_cs);
+}
+
+/* Fill a slice of an R STRSXP from a VecArray. A deferred-dictionary array
+ * (arr->str_dict != NULL, produced by the collect direct-read path) fills by
+ * index; otherwise the flat per-row buffer is walked. With str_cache != NULL,
+ * duplicate values skip R's CHARSXP hash via a content-hash cache. */
 static void fill_string_col_from_batch(SEXP col, int64_t offset,
                                        const VecArray *arr, int64_t n,
                                        StrCacheSlot *str_cache) {
+    if (arr->str_dict) {
+        fill_string_col_from_dict(col, offset, arr, n, str_cache);
+        return;
+    }
     for (int64_t j = 0; j < n; j++) {
         int64_t ri = offset + j;
         if (!vec_array_is_valid(arr, j)) {
@@ -42,49 +116,9 @@ static void fill_string_col_from_batch(SEXP col, int64_t offset,
         int64_t start = arr->buf.str.offsets[j];
         int64_t end = arr->buf.str.offsets[j + 1];
         int slen = (int)(end - start);
-
-        /* Empty strings: shortcut to R's interned empty CHARSXP, skipping
-         * the cache and Rf_mkCharLenCE entirely. arr->buf.str.data may be
-         * NULL when every row in the batch is empty/NA, and feeding NULL
-         * into memcmp / Rf_mkCharLenCE trips UBSAN's nonnull check even
-         * though the length is zero. */
-        if (slen == 0) {
-            SET_STRING_ELT(col, (R_xlen_t)ri, R_BlankString);
-            continue;
-        }
-
-        const char *sptr = arr->buf.str.data + start;
-
-        SEXP cs = R_NilValue;
-        if (str_cache) {
-            uint32_t h = 2166136261u;
-            for (int k = 0; k < slen; k++) {
-                h ^= (uint8_t)sptr[k];
-                h *= 16777619u;
-            }
-            h |= 1u;
-            uint32_t slot = h & STR_CACHE_MASK;
-            for (int p = 0; p < 4; p++) {
-                uint32_t si = (slot + p) & STR_CACHE_MASK;
-                if (!str_cache[si].hash) {
-                    cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-                    str_cache[si].hash = h;
-                    str_cache[si].len = slen;
-                    str_cache[si].sexp = cs;
-                    break;
-                }
-                if (str_cache[si].hash == h && str_cache[si].len == slen &&
-                    memcmp(CHAR(str_cache[si].sexp), sptr, (size_t)slen) == 0) {
-                    cs = str_cache[si].sexp;
-                    break;
-                }
-            }
-            if (cs == R_NilValue)
-                cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-        } else {
-            cs = Rf_mkCharLenCE(sptr, slen, CE_UTF8);
-        }
-        SET_STRING_ELT(col, (R_xlen_t)ri, cs);
+        const char *sptr = slen ? (arr->buf.str.data + start) : NULL;
+        SET_STRING_ELT(col, (R_xlen_t)ri,
+                       intern_str_cached(sptr, slen, str_cache));
     }
 }
 
@@ -579,10 +613,10 @@ SEXP vec_collect(VecNode *root) {
                  * via fill_string_col_from_batch. */
             }
 
-            VecBatch **batches = vtr1_read_parallel_tdc_into(file, col_mask, path,
-                                                             col_bases,
-                                                             col_elem_sizes,
-                                                             n_cols, &n_batches);
+            VecBatch **batches = vtr1_read_parallel_tdc_defer_into(
+                                     file, col_mask, path,
+                                     col_bases, col_elem_sizes,
+                                     n_cols, /*defer_str_dict=*/1, &n_batches);
             used_parallel = 1;
 
             for (uint32_t bi = 0; bi < n_batches; bi++) {
@@ -672,8 +706,9 @@ SEXP vec_collect(VecNode *root) {
                                 else
                                     direct_bufs[i] = REAL(cols[i]) + offset;
                             }
-                            batch = vtr1_read_rowgroup_tdc_ex(
-                                file, rg, col_mask, direct_bufs);
+                            batch = vtr1_read_rowgroup_tdc_defer(
+                                file, rg, col_mask, direct_bufs,
+                                /*defer_str_dict=*/1);
                             /* Same direct-write contract as the parallel
                                path: for numeric cols, data_borrowed == 1
                                means the decoder wrote into the R vector and

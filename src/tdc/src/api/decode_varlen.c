@@ -128,7 +128,7 @@ tdc_status tdc_decode_block_varlen(const uint8_t *src, size_t src_size,
 
     tdc_status st = driver_decode_block_impl(src, src_size, dst, alloc,
                                              "decvl",
-                                             varlen_alloc_hook, &ctx);
+                                             varlen_alloc_hook, &ctx, 1);
 
     if (st != TDC_OK) {
         /* Free anything the hook allocated. The pipeline never touches

@@ -52,6 +52,36 @@ static inline int vec_type_is_fixed(VecType t) {
 }
 
 /*
+ * VecStrDict: deferred dictionary form for a VEC_STRING column.
+ *
+ * A string column stored on disk as a TDC_MODEL_DICT_1D block can be decoded
+ * to (unique values + per-row indices) instead of a flat per-row buffer. The
+ * collect direct-read path opts into this so it interns each unique value once
+ * and fills the R character vector by index, skipping the per-row CHARSXP work
+ * that dominates a wide-duplicated string collect.
+ *
+ * When VecArray.str_dict != NULL:
+ *   - the array is VEC_STRING;
+ *   - buf.str stays the placeholder installed by vec_array_alloc (unused);
+ *   - validity carries NA rows as usual (the dict decode does not);
+ *   - dict_offsets/dict_data hold the unique values, indices[] the per-row
+ *     dictionary index (every index is < dict_count, validated on decode).
+ *
+ * Ownership: str_dict and its three buffers are owned by the array and freed
+ * by vec_array_free. This representation is produced only by the collect
+ * direct-read decode and consumed only by the collect string fill; it never
+ * reaches a filter/join/project/window node, so no other consumer needs to
+ * understand it.
+ */
+typedef struct {
+    uint32_t  dict_count;     /* number of unique dictionary entries */
+    uint32_t *dict_offsets;   /* dict_count + 1 byte offsets into dict_data */
+    uint8_t  *dict_data;      /* concatenated unique values */
+    size_t    dict_data_size; /* == dict_offsets[dict_count] */
+    uint32_t *indices;        /* length entries; dictionary index per row */
+} VecStrDict;
+
+/*
  * VecArray: columnar array for a single column of data.
  *
  * Two distinct flags govern the data buffer:
@@ -117,6 +147,9 @@ typedef struct {
             int64_t  data_len;
         } str;
     } buf;
+    /* Optional deferred-dictionary form for VEC_STRING (NULL otherwise).
+       Owned by this array; see VecStrDict. When set, buf.str is unused. */
+    VecStrDict *str_dict;
 } VecArray;
 
 /* Read an integer value from a VecArray, widened to int64. */

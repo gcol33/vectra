@@ -9,6 +9,11 @@ VecArray vec_array_alloc(VecType type, int64_t length);
 /* Free array buffers */
 void vec_array_free(VecArray *arr);
 
+/* Free a deferred-dictionary side-channel and its buffers, then the struct.
+   No-op on NULL. Buffers are freed with libc free (they are produced via the
+   libc-backed tdc allocator). */
+void vec_str_dict_free(VecStrDict *d);
+
 /* Validity bitmap helpers */
 static inline int vec_array_is_valid(const VecArray *arr, int64_t i) {
     if (!arr->validity) return 1;

@@ -144,7 +144,12 @@ tdc_status vtr_codec_tdc_prepare_request(
     const int quantize_active = (qspec && qspec->enabled && col->type == VEC_DOUBLE);
 
     if (comp_level == VTR_COMPRESS_NONE) {
-        /* RAW + passthrough entropy. spec already initialized to that. */
+        /* Passthrough entropy (spec already RAW + no entropy). RAW is a
+         * fixed-width model, so a string column must still route through the
+         * only variable-width model, DICT_1D, just without an entropy coder. */
+        if (col->type == VEC_STRING) {
+            req->spec.model = TDC_MODEL_DICT_1D;
+        }
     } else if (spatial_active) {
         req->block.layout       = TDC_LAYOUT_RASTER_2D;
         req->block.shape.rank   = 2;
@@ -242,6 +247,174 @@ void vtr_codec_tdc_release_request(
     req->str_offsets_owned = NULL;
 }
 
+/* ---------- SMALL: try-all-pick-smallest ---------------------------------- *
+ *
+ * Enumerate candidate specs for the column, trial-encode each, keep the
+ * spec that yields the smallest block record. Every candidate is a complete,
+ * self-describing tdc spec; the reader decodes generically off the record
+ * header, so no candidate needs decode-side support. The FAST spec is always
+ * a candidate, so the winner is never larger than FAST.
+ */
+
+/* Entropy coders swept for every base template. All accept NULL params
+ * (level 0 / AUTO). LANE is handled separately because it needs n_lanes. */
+static const tdc_entropy_id VTR_SMALL_ENTROPY[] = {
+    TDC_ENTROPY_LZ,        /* FAST baseline */
+    TDC_ENTROPY_LZ_OPT,    /* optimal parser, same on-disk format */
+    TDC_ENTROPY_LZ_SPLIT,  /* optimal parser + split Huffman */
+    TDC_ENTROPY_FSE,       /* tabled-ANS */
+    TDC_ENTROPY_HUFFMAN4,  /* 4-stream canonical Huffman */
+};
+#define VTR_SMALL_N_ENTROPY \
+    ((int)(sizeof(VTR_SMALL_ENTROPY) / sizeof(VTR_SMALL_ENTROPY[0])))
+
+/* A (model, transform-chain) base template. lane_elem_w > 0 marks a chain
+ * whose residual is byte-shuffled into fixed lanes of that width, so a LANE
+ * entropy candidate with n_lanes = lane_elem_w is valid (2..TDC_MAX_LANES).
+ * Only RAW and DELTA keep the source element width after their model runs;
+ * DICT_NUMERIC re-symbolizes to u32 indices, so its lane width would differ
+ * and it is not marked LANE-eligible. */
+typedef struct {
+    tdc_model_id model;
+    tdc_xform_id xform[TDC_MAX_TRANSFORMS];
+    int          lane_elem_w;
+} VtrSmallTemplate;
+
+#define VTR_SMALL_MAX_CANDIDATES 40
+
+/* Populate `out` (capacity cap) with candidate specs. Param pointers on the
+ * emitted specs reference `req` fields (persistent for the encode) or NULL. */
+static int vtr_small_build_candidates(const VecArray      *col,
+                                      int                  quantize_active,
+                                      int                  spatial_active,
+                                      VtrTdcEncodeRequest *req,
+                                      tdc_codec_spec      *out,
+                                      int                  cap) {
+    VtrSmallTemplate tpl[8];
+    int nt = 0;
+    /* Non-zero only when model/xform are fixed by a fused pipeline and the
+     * candidates must carry the baseline's param pointers. */
+    int carry_baseline_params = 0;
+
+    if (quantize_active || spatial_active) {
+        /* Model + transform chain are dictated by the fused quantize/spatial
+         * pipeline. Keep them; sweep only the entropy coder. */
+        VtrSmallTemplate t = {0};
+        t.model = req->spec.model;
+        for (int i = 0; i < TDC_MAX_TRANSFORMS; ++i) t.xform[i] = req->spec.xform[i];
+        t.lane_elem_w = 0;  /* residual width after quantize/predict is not the
+                             * source width; skip LANE to stay provably correct */
+        tpl[nt++] = t;
+        carry_baseline_params = 1;
+    } else if (col->type == VEC_STRING) {
+        VtrSmallTemplate t = { TDC_MODEL_DICT_1D, {0}, 0 };
+        tpl[nt++] = t;
+    } else if (col->type == VEC_BOOL) {
+        VtrSmallTemplate t = { TDC_MODEL_RAW, {0}, 0 };  /* 1-byte: bshuf is a no-op */
+        tpl[nt++] = t;
+    } else {
+        /* Fixed-width numeric. */
+        const int w        = (int)vec_type_elem_size(col->type);
+        const int is_float = (col->type == VEC_DOUBLE);
+        const int lane_w   = (w >= 2 && w <= TDC_MAX_LANES) ? w : 0;
+
+        /* RAW + byte-shuffle (the FAST baseline for non-monotonic numerics). */
+        { VtrSmallTemplate t = { TDC_MODEL_RAW,
+                                 { TDC_XFORM_BYTE_SHUFFLE, 0 }, lane_w };
+          tpl[nt++] = t; }
+
+        if (is_float) {
+            /* Float-only bit-pattern predictors: emit byte-friendly residuals
+             * straight to the entropy coder (no xform), per tdc's canonical
+             * DELTA2/FPC chain. */
+            { VtrSmallTemplate t = { TDC_MODEL_DELTA2_1D, {0}, 0 }; tpl[nt++] = t; }
+            { VtrSmallTemplate t = { TDC_MODEL_FPC_1D,    {0}, 0 }; tpl[nt++] = t; }
+        } else {
+            /* Integer delta (ZIGZAG folds sign, byte-shuffle exposes lanes). */
+            VtrSmallTemplate t = { TDC_MODEL_DELTA_1D,
+                                   { TDC_XFORM_ZIGZAG, TDC_XFORM_BYTE_SHUFFLE, 0 },
+                                   lane_w };
+            tpl[nt++] = t;
+        }
+
+        /* Value dictionary + byte-shuffled u32 indices — wins on low-cardinality
+         * numerics. DICT_NUMERIC/SPARSE_ZERO cover i16/i32/i64/f64 (not i8). */
+        if (w >= 2) {
+            { VtrSmallTemplate t = { TDC_MODEL_DICT_NUMERIC_1D,
+                                     { TDC_XFORM_BYTE_SHUFFLE, 0 }, 0 };
+              tpl[nt++] = t; }
+            { VtrSmallTemplate t = { TDC_MODEL_SPARSE_ZERO_1D, {0}, 0 };
+              tpl[nt++] = t; }
+        }
+    }
+
+    int n = 0;
+    for (int i = 0; i < nt && n < cap; ++i) {
+        for (int e = 0; e < VTR_SMALL_N_ENTROPY && n < cap; ++e) {
+            tdc_codec_spec s = {0};
+            s.model = tpl[i].model;
+            for (int x = 0; x < TDC_MAX_TRANSFORMS; ++x) s.xform[x] = tpl[i].xform[x];
+            if (carry_baseline_params) {
+                s.model_params = req->spec.model_params;
+                for (int x = 0; x < TDC_MAX_TRANSFORMS; ++x)
+                    s.xform_params[x] = req->spec.xform_params[x];
+            }
+            s.entropy[0] = VTR_SMALL_ENTROPY[e];
+            out[n++] = s;
+        }
+        /* One LANE candidate per byte-shuffle-terminated template. */
+        if (tpl[i].lane_elem_w >= 2 && tpl[i].lane_elem_w <= TDC_MAX_LANES
+            && n < cap) {
+            req->lane.n_lanes = (uint8_t)tpl[i].lane_elem_w;  /* per-lane AUTO */
+            for (int k = 0; k < TDC_MAX_LANES; ++k)
+                req->lane.lane_entropy[k] = TDC_ENTROPY_NONE;
+            tdc_codec_spec s = {0};
+            s.model = tpl[i].model;
+            for (int x = 0; x < TDC_MAX_TRANSFORMS; ++x) s.xform[x] = tpl[i].xform[x];
+            if (carry_baseline_params) {
+                s.model_params = req->spec.model_params;
+                for (int x = 0; x < TDC_MAX_TRANSFORMS; ++x)
+                    s.xform_params[x] = req->spec.xform_params[x];
+            }
+            s.entropy[0]        = TDC_ENTROPY_LANE;
+            s.entropy_params[0] = &req->lane;
+            out[n++] = s;
+        }
+    }
+    return n;
+}
+
+tdc_status vtr_codec_tdc_optimize_small(
+    VtrTdcEncodeRequest *req,
+    const VecArray      *col,
+    int                  quantize_active,
+    int                  spatial_active,
+    tdc_buffer          *scratch) {
+    if (!req || !col || !scratch || !scratch->realloc_fn) return TDC_E_INVAL;
+
+    tdc_codec_spec cands[VTR_SMALL_MAX_CANDIDATES];
+    int n = vtr_small_build_candidates(col, quantize_active, spatial_active,
+                                       req, cands, VTR_SMALL_MAX_CANDIDATES);
+
+    size_t         best_size = 0;
+    int            have_best = 0;
+    tdc_codec_spec best      = req->spec;  /* fall back to FAST baseline */
+
+    for (int i = 0; i < n; ++i) {
+        scratch->size = 0;
+        tdc_status st = tdc_encode_block(&req->block, &cands[i], scratch);
+        if (st != TDC_OK) continue;  /* candidate not applicable to this data */
+        if (!have_best || scratch->size < best_size) {
+            best_size = scratch->size;
+            best      = cands[i];
+            have_best = 1;
+        }
+    }
+
+    req->spec = best;
+    return TDC_OK;
+}
+
 /* ---------- encode bridge -------------------------------------------------- */
 
 tdc_status vtr_encode_column_tdc(const VecArray         *col,
@@ -260,6 +433,16 @@ tdc_status vtr_encode_column_tdc(const VecArray         *col,
     if (st != TDC_OK) {
         vtr_codec_tdc_release_request(&req, block_out->realloc_fn, block_out->user);
         return st;
+    }
+
+    if (comp_level == VTR_COMPRESS_SMALL) {
+        const int quantize_active = (qspec && qspec->enabled && col->type == VEC_DOUBLE);
+        const int spatial_active  = (sspec && sspec->enabled);
+        tdc_buffer trial = {0};
+        trial.realloc_fn = block_out->realloc_fn;
+        trial.user       = block_out->user;
+        vtr_codec_tdc_optimize_small(&req, col, quantize_active, spatial_active, &trial);
+        if (trial.data) trial.realloc_fn(trial.user, trial.data, 0);
     }
 
     st = tdc_encode_block(&req.block, &req.spec, block_out);
@@ -412,6 +595,62 @@ static tdc_status vtr_decode_string_column_tdc(VecArray       *col_out,
                                             col_out->validity);
 }
 
+/*
+ * Deferred-dictionary string decode. Runs tdc_decode_block_dict (which stops
+ * at the residual and hands back dictionary + u32 indices) and stashes the
+ * result on col_out->str_dict, then extracts the validity bitmap from the same
+ * record. buf.str's placeholder is left untouched. Non-DICT_1D blocks return
+ * TDC_E_UNSUPPORTED so the caller can fall back to the flat decode.
+ */
+tdc_status vtr_decode_column_tdc_dict(VecArray       *col_out,
+                                      const uint8_t  *src,
+                                      size_t          src_size) {
+    if (!col_out || !src)              return TDC_E_INVAL;
+    if (col_out->type != VEC_STRING)   return TDC_E_DTYPE;
+    if (col_out->str_dict)             return TDC_E_INVAL;
+    if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
+
+    tdc_block_record hdr;
+    memcpy(&hdr, src, TDC_BLOCK_HEADER_SIZE);
+
+    int64_t n_rows = col_out->length;
+    int64_t header_n_elems = 1;
+    for (uint8_t i = 0; i < hdr.rank; ++i) header_n_elems *= hdr.dim[i];
+    if (header_n_elems != n_rows)              return TDC_E_SHAPE;
+    if ((tdc_dtype)hdr.dtype != TDC_DT_STRING) return TDC_E_DTYPE;
+
+    tdc_buffer alloc = {0};
+    alloc.realloc_fn = vtr_tdc_realloc;
+
+    tdc_dict_block db = {0};
+    tdc_status st = tdc_decode_block_dict(src, src_size, &db, &alloc);
+    if (st != TDC_OK) return st;  /* TDC_E_UNSUPPORTED -> caller flattens */
+
+    if (db.n != n_rows) {
+        vtr_tdc_realloc(NULL, db.indices, 0);
+        vtr_tdc_realloc(NULL, db.dict_offsets, 0);
+        vtr_tdc_realloc(NULL, db.dict_data, 0);
+        return TDC_E_SHAPE;
+    }
+
+    VecStrDict *d = (VecStrDict *)malloc(sizeof(VecStrDict));
+    if (!d) {
+        vtr_tdc_realloc(NULL, db.indices, 0);
+        vtr_tdc_realloc(NULL, db.dict_offsets, 0);
+        vtr_tdc_realloc(NULL, db.dict_data, 0);
+        return TDC_E_NOMEM;
+    }
+    d->dict_count     = db.dict_count;
+    d->dict_offsets   = db.dict_offsets;
+    d->dict_data      = db.dict_data;
+    d->dict_data_size = db.dict_data_size;
+    d->indices        = db.indices;
+    col_out->str_dict = d;
+
+    return vtr_extract_validity_from_record(&hdr, src, src_size, n_rows,
+                                            col_out->validity);
+}
+
 tdc_status vtr_decode_column_tdc(VecArray       *col_out,
                                  const uint8_t  *src,
                                  size_t          src_size) {
@@ -555,6 +794,99 @@ SEXP C_tdc_decode_column(SEXP raw_sexp, SEXP n_sexp, SEXP r_type_sexp) {
         int *dst = LOGICAL(out);
         for (R_xlen_t i = 0; i < n; ++i) dst[i] = bln_tmp[i] ? TRUE : FALSE;
     }
+
+    UNPROTECT(1);
+    return out;
+}
+
+/*
+ * C_tdc_dict_roundtrip : encode an R character vector as a DICT_1D block,
+ * decode it back through tdc_decode_block_dict (dictionary + indices, no
+ * flattening), and rebuild the character vector by interning each unique
+ * dictionary value ONCE and indexing. Exercises the dict-defer decode path
+ * and mirrors the fill-by-index logic a dict-aware collect would use.
+ * NA elements are preserved via the validity bitmap. Test-only entry point.
+ */
+SEXP C_tdc_dict_roundtrip(SEXP x_sexp) {
+    if (TYPEOF(x_sexp) != STRSXP)
+        Rf_error("C_tdc_dict_roundtrip: x must be a character vector");
+
+    int64_t n = (int64_t)Rf_xlength(x_sexp);
+
+    /* Build a VecArray string view over the R character vector. */
+    VecArray col = {0};
+    col.type   = VEC_STRING;
+    col.length = n;
+    col.owns_data = 1;
+
+    int64_t vbytes = vec_validity_bytes(n);
+    col.validity = (uint8_t *)((vbytes > 0) ? calloc((size_t)vbytes, 1) : NULL);
+    int64_t *offsets = (int64_t *)malloc(sizeof(int64_t) * (size_t)(n + 1));
+    if ((vbytes > 0 && !col.validity) || !offsets)
+        Rf_error("C_tdc_dict_roundtrip: alloc failed");
+
+    int64_t total = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        SEXP e = STRING_ELT(x_sexp, i);
+        offsets[i] = total;
+        if (e != NA_STRING) total += (int64_t)LENGTH(e);
+    }
+    offsets[n] = total;
+
+    char *data = (char *)((total > 0) ? malloc((size_t)total) : NULL);
+    if (total > 0 && !data) Rf_error("C_tdc_dict_roundtrip: alloc failed");
+    for (int64_t i = 0; i < n; ++i) {
+        SEXP e = STRING_ELT(x_sexp, i);
+        if (e == NA_STRING) continue;
+        col.validity[i >> 3] |= (uint8_t)(1u << (i & 7));
+        int len = LENGTH(e);
+        if (len > 0) memcpy(data + offsets[i], CHAR(e), (size_t)len);
+    }
+    col.buf.str.offsets  = offsets;
+    col.buf.str.data     = data;
+    col.buf.str.data_len = total;
+
+    /* Encode to a self-describing block (strings resolve to DICT_1D). */
+    tdc_buffer enc = {0};
+    enc.realloc_fn = vtr_tdc_realloc;
+    tdc_status st = vtr_encode_column_tdc(&col, n, VTR_COMPRESS_FAST,
+                                          NULL, NULL, &enc);
+    free(offsets); free(data); free(col.validity);
+    if (st != TDC_OK) {
+        if (enc.data) vtr_tdc_realloc(NULL, enc.data, 0);
+        Rf_error("C_tdc_dict_roundtrip: encode failed (status=%d)", (int)st);
+    }
+
+    /* Decode into dictionary + indices form. */
+    tdc_dict_block dict = {0};
+    tdc_buffer alloc = {0};
+    alloc.realloc_fn = vtr_tdc_realloc;
+    st = tdc_decode_block_dict(enc.data, enc.size, &dict, &alloc);
+    vtr_tdc_realloc(NULL, enc.data, 0);
+    if (st != TDC_OK)
+        Rf_error("C_tdc_dict_roundtrip: tdc_decode_block_dict failed (status=%d)", (int)st);
+
+    /* Intern each dictionary entry once, then fill by index. Validity is not
+     * carried by DICT (NA rows still hold a valid index into the dictionary,
+     * where the encoder stored an empty string); we re-derive NA from the
+     * original vector's mask below only for the round-trip check, so here we
+     * just materialize whatever the dictionary holds. */
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)dict.n));
+    SEXP *dict_cs = (SEXP *)R_alloc((size_t)(dict.dict_count > 0 ? dict.dict_count : 1),
+                                    sizeof(SEXP));
+    for (uint32_t d = 0; d < dict.dict_count; ++d) {
+        uint32_t s = dict.dict_offsets[d];
+        uint32_t e = dict.dict_offsets[d + 1];
+        dict_cs[d] = Rf_mkCharLenCE((const char *)dict.dict_data + s,
+                                    (int)(e - s), CE_UTF8);
+    }
+    for (int64_t i = 0; i < dict.n; ++i) {
+        SET_STRING_ELT(out, (R_xlen_t)i, dict_cs[dict.indices[i]]);
+    }
+
+    if (dict.indices)      vtr_tdc_realloc(NULL, dict.indices, 0);
+    if (dict.dict_offsets) vtr_tdc_realloc(NULL, dict.dict_offsets, 0);
+    if (dict.dict_data)    vtr_tdc_realloc(NULL, dict.dict_data, 0);
 
     UNPROTECT(1);
     return out;

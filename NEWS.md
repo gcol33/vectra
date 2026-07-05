@@ -1,3 +1,35 @@
+# vectra 0.9.11
+
+## `compress = "small"` now does adaptive per-column encoding
+
+* `write_vtr(..., compress = "small")` previously behaved identically to
+  `"fast"`. It now performs try-all-pick-smallest: each column is trial-encoded
+  under a set of candidate tdc specs — alternative models (delta, second-order
+  and FCM/DFCM float predictors, numeric and string dictionaries, sparse-zero)
+  crossed with stronger entropy coders (optimal-parse LZ, split-stream LZ, FSE,
+  4-stream Huffman, per-lane) — and the smallest block record is kept. The
+  `"fast"` encoding is always a candidate, so `"small"` files are never larger
+  than `"fast"` (about 16-40% smaller on mixed data). Encode is slower in
+  proportion to the number of candidates; decode and the on-disk format are
+  unchanged.
+* `compress = "none"` now works on string columns (previously errored).
+
+## Faster `collect()` on dictionary-encoded string columns
+
+* `collect()` on a string column now interns each unique value once and fills
+  the result by index, instead of hashing every row. The direct-read path
+  decodes the on-disk dictionary block into (unique values + per-row indices)
+  via the new `tdc_decode_block_dict` primitive and carries it through a
+  `VecArray` dictionary side-channel to the fill. On 5M rows of wide, heavily-
+  duplicated strings the collect drops from ~0.34s to ~0.03s. Results are
+  unchanged; NA, empty, and UTF-8 values round-trip identically.
+
+## Fixes
+
+* Fixed two correctness bugs in the tdc codec that surfaced through the new
+  `"small"` encoder: sparse-zero blocks and single-element all-zero columns
+  could fail to decode. Both are covered by new regression tests.
+
 # vectra 0.9.10
 
 ## One memory knob for the whole engine

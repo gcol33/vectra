@@ -50,10 +50,22 @@ VecArray vec_array_alloc(VecType type, int64_t length) {
     return arr;
 }
 
+void vec_str_dict_free(VecStrDict *d) {
+    if (!d) return;
+    free(d->dict_offsets);
+    free(d->dict_data);
+    free(d->indices);
+    free(d);
+}
+
 void vec_array_free(VecArray *arr) {
     if (!arr) return;
     free(arr->validity);
     arr->validity = NULL;
+    if (arr->str_dict) {
+        vec_str_dict_free(arr->str_dict);
+        arr->str_dict = NULL;
+    }
     switch (arr->type) {
     case VEC_INT64:  if (arr->owns_data) free(arr->buf.i64); arr->buf.i64 = NULL; break;
     case VEC_INT32:  if (arr->owns_data) free(arr->buf.i32); arr->buf.i32 = NULL; break;

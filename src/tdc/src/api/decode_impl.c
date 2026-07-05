@@ -51,7 +51,8 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
                                     const tdc_buffer     *scratch_parent,
                                     const char           *timer_tag,
                                     driver_pre_model_hook hook,
-                                    void                 *hook_user) {
+                                    void                 *hook_user,
+                                    int                   run_model) {
     if (!src || !dst || !scratch_parent) return TDC_E_INVAL;
     if (!scratch_parent->realloc_fn)     return TDC_E_INVAL;
     if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
@@ -143,11 +144,21 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
     size_t    residual_elem_size = tdc_dtype_size(residual_dtype);
     if (residual_elem_size == 0) return TDC_E_UNSUPPORTED;
 
+    /* Residual length in ELEMENTS. Equals n_elems for every model except
+     * SPARSE_ZERO_1D, whose residual carries one u32 position per non-zero
+     * input (n_nonzero, read from side-meta). The byte-size walk below and
+     * the uncompressed_size cross-check must both use this, not n_elems. */
+    int64_t residual_len = driver_model_residual_len(
+        (tdc_model_id)hdr.model_id, n_elems,
+        (hdr.side_meta_size > 0) ? side_meta_p : NULL,
+        (size_t)hdr.side_meta_size);
+    if (residual_len < 0) return TDC_E_CORRUPT;
+
     int       chain_len = 0;
     tdc_dtype xform_in[TDC_MAX_TRANSFORMS];
     size_t    xform_in_bytes[TDC_MAX_TRANSFORMS];
     tdc_dtype walk = residual_dtype;
-    size_t    walk_bytes = (size_t)n_elems * residual_elem_size;
+    size_t    walk_bytes = (size_t)residual_len * residual_elem_size;
     for (int i = 0; i < TDC_MAX_TRANSFORMS; ++i) {
         tdc_xform_id xid = (tdc_xform_id)hdr.xform_ids[i];
         if (xid == TDC_XFORM_NONE) break;
@@ -159,7 +170,7 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
         size_t next_elem_size = tdc_dtype_size(next);
         if (next_elem_size == 0) return TDC_E_UNSUPPORTED;
         walk       = next;
-        walk_bytes = (size_t)n_elems * next_elem_size;
+        walk_bytes = (size_t)residual_len * next_elem_size;
         chain_len  = i + 1;
     }
 
@@ -167,11 +178,11 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
      * TDC_BLOCK_FLAG_ZERO_RESIDUAL, the xform + entropy chains were
      * skipped entirely and payload_size and xform_params_size are both
      * zero. uncompressed_size still carries the logical residual byte
-     * count, reinterpreted as n_elems * residual_elem_size directly. */
+     * count, reinterpreted as residual_len * residual_elem_size directly. */
     const int zero_residual = (hdr.flags & TDC_BLOCK_FLAG_ZERO_RESIDUAL) != 0;
     if (zero_residual) {
         if (hdr.payload_size != 0u || hdr.xform_params_size != 0u) return TDC_E_CORRUPT;
-        size_t residual_bytes = (size_t)n_elems * residual_elem_size;
+        size_t residual_bytes = (size_t)residual_len * residual_elem_size;
         if ((uint64_t)residual_bytes != hdr.uncompressed_size) return TDC_E_CORRUPT;
     } else {
         if ((uint64_t)walk_bytes != hdr.uncompressed_size) return TDC_E_CORRUPT;
@@ -314,6 +325,12 @@ run_model:
             st = TDC_E_INVAL; goto cleanup;
         }
     }
+
+    /* run_model == 0 lets a hook that has already extracted everything it
+     * needs from the residual + side meta (e.g. the dict-defer entry point,
+     * which keeps the raw dictionary + indices rather than the flattened
+     * column) skip the model's reconstruction step entirely. */
+    if (!run_model) { st = TDC_OK; goto cleanup; }
 
     st = model_vt->decode(dst, NULL, residual_dtype,
                           bufs[cur].data, bufs[cur].size,

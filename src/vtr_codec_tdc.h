@@ -25,8 +25,11 @@
  *   comp_level  VTR_COMPRESS_NONE / _FAST / _SMALL.
  *               NONE  -> RAW + no entropy (passthrough).
  *               FAST  -> default model heuristic + BSHUF + LZ.
- *               SMALL -> currently identical to FAST; try-all-pick-smallest
- *                       over multiple tdc specs is not yet ported.
+ *               SMALL -> try-all-pick-smallest: encode the column under a set
+ *                       of candidate tdc specs (the FAST spec plus alternative
+ *                       models and stronger entropy coders) and keep whichever
+ *                       yields the smallest block record. Never larger than
+ *                       FAST because the FAST spec is always a candidate.
  *   qspec       Optional lossy quantization (VEC_DOUBLE only). NULL or
  *               qspec->enabled == 0 disables quantization.
  *   sspec       Optional 2D spatial predictor. NULL or sspec->enabled == 0
@@ -93,6 +96,8 @@ typedef struct {
     tdc_pred2d_params            pp;
     tdc_plane2d_params           plp;
     tdc_quantize_pred2d_params   qpp;  /* used when spatial + quantize fuse */
+    tdc_lane_entropy_params      lane; /* backs a SMALL-mode LANE candidate;
+                                        * n_lanes set per column element width */
     uint32_t                    *str_offsets_owned;  /* NULL unless VEC_STRING */
 } VtrTdcEncodeRequest;
 
@@ -110,6 +115,41 @@ void vtr_codec_tdc_release_request(
     VtrTdcEncodeRequest *req,
     void               *(*realloc_fn)(void *user, void *ptr, size_t n),
     void                *alloc_user);
+
+/*
+ * SMALL-mode spec optimizer (try-all-pick-smallest).
+ *
+ * Given a request already built by vtr_codec_tdc_prepare_request at
+ * VTR_COMPRESS_SMALL (so req->spec holds the FAST heuristic baseline),
+ * trial-encode req->block under a set of candidate specs and overwrite
+ * req->spec with whichever produces the smallest block record. The FAST
+ * baseline is always among the candidates, so the result is never larger
+ * than FAST.
+ *
+ * Candidates vary the model (RAW / DELTA / DELTA2 / FPC / DICT_NUMERIC /
+ * SPARSE_ZERO for numerics, DICT for strings) and the entropy coder
+ * (LZ / LZ_OPT / LZ_SPLIT / FSE / HUFFMAN4, plus per-lane LANE where a
+ * byte-shuffle exposes fixed-width lanes). When quantization or spatial
+ * prediction is active the model is dictated by the fused pipeline, so only
+ * the entropy coder is swept.
+ *
+ *   req             In/out. req->spec is refined in place; any param pointers
+ *                   the winning spec needs reference req fields (persistent).
+ *   quantize_active Non-zero when qspec fused into the baseline model.
+ *   spatial_active  Non-zero when sspec fused into the baseline model.
+ *   scratch         Caller-owned growable buffer reused for every trial
+ *                   encode. realloc_fn must be set. Its contents are
+ *                   scratch; the caller frees it after the encode.
+ *
+ * Returns TDC_OK. Trial encodes that fail for a given candidate are skipped;
+ * the baseline is retained if no candidate beats it.
+ */
+tdc_status vtr_codec_tdc_optimize_small(
+    VtrTdcEncodeRequest *req,
+    const VecArray      *col,
+    int                  quantize_active,
+    int                  spatial_active,
+    tdc_buffer          *scratch);
 
 /*
  * Decode bridge.
@@ -140,6 +180,33 @@ void vtr_codec_tdc_release_request(
 tdc_status vtr_decode_column_tdc(VecArray       *col_out,
                                  const uint8_t  *src,
                                  size_t          src_size);
+
+/*
+ * Deferred-dictionary string decode.
+ *
+ * For a VEC_STRING column whose on-disk block is TDC_MODEL_DICT_1D, decode it
+ * into (unique values + per-row indices) rather than the flat per-row buffer,
+ * so the consumer can intern each unique value once. On TDC_OK, col_out gains a
+ * populated col_out->str_dict (owned by the array, freed by vec_array_free) and
+ * col_out->validity is filled from the record; buf.str stays the placeholder
+ * that vec_array_alloc installed.
+ *
+ *   col_out   Caller-allocated VEC_STRING array (vec_array_alloc(VEC_STRING,n)),
+ *             with col_out->str_dict == NULL on entry. length is validated
+ *             against the record.
+ *   src       Start of the tdc_block_record. src_size bytes available.
+ *
+ * Returns:
+ *   TDC_OK            success; col_out->str_dict populated.
+ *   TDC_E_UNSUPPORTED the block is not TDC_MODEL_DICT_1D — the caller should
+ *                     fall back to vtr_decode_column_tdc (flat decode).
+ *   TDC_E_DTYPE       col_out is not VEC_STRING.
+ *   TDC_E_INVAL       col_out->str_dict was non-NULL on entry.
+ *   other TDC_E_*     shape mismatch / corruption / decode failure.
+ */
+tdc_status vtr_decode_column_tdc_dict(VecArray       *col_out,
+                                      const uint8_t  *src,
+                                      size_t          src_size);
 
 /*
  * Lower-level decode-into that bypasses VecArray construction. Used by

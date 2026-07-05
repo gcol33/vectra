@@ -29,5 +29,5 @@ tdc_status tdc_decode_block(const uint8_t *src, size_t src_size,
                             tdc_block     *dst) {
     tdc_buffer scratch = driver_make_libc_scratch_parent();
     return driver_decode_block_impl(src, src_size, dst, &scratch, "dec  ",
-                                    NULL, NULL);
+                                    NULL, NULL, 1);
 }

@@ -68,6 +68,12 @@ extern "C" {
  * allocator the caller has access to. Pass NULL for fixed-width entry
  * points that already pre-sized dst->data. Returning non-OK from the
  * hook aborts the decode and forwards the status back to the caller.
+ *
+ * run_model: pass 1 for the normal path (the model reconstructs the
+ * output from residual + side meta). Pass 0 to stop after the hook has
+ * run — used by callers that only want the raw residual + side meta the
+ * hook already captured (e.g. the dict-defer entry point, which keeps the
+ * dictionary + indices rather than the flattened column).
  */
 typedef tdc_status (*driver_pre_model_hook)(tdc_block      *dst,
                                             const uint8_t  *residual_data,
@@ -84,7 +90,8 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
                                     const tdc_buffer     *scratch_parent,
                                     const char           *timer_tag,
                                     driver_pre_model_hook hook,
-                                    void                 *hook_user);
+                                    void                 *hook_user,
+                                    int                   run_model);
 
 /* ----- Libc-backed realloc shim ------------------------------------------- */
 /*
@@ -297,6 +304,39 @@ static inline tdc_dtype driver_model_residual_dtype(tdc_model_id   mid,
             return qp2_residual_dtype_from_side_meta(side_meta, side_meta_size);
         default:                        return in_dtype;
     }
+}
+
+/* ----- Static model residual length mapping ------------------------------- */
+/*
+ * Returns the number of residual ELEMENTS model `mid` produces from an input
+ * of `n_elems` elements. Almost every v0 model emits exactly one residual
+ * element per input element (dictionary models included: their residual is
+ * one u32 index per input element). SPARSE_ZERO_1D is the sole exception:
+ * its residual is one u32 position per NON-ZERO input element, and the count
+ * (n_nonzero) is recorded in the side-meta header as a u32 at byte offset 1
+ * (after the 1-byte value dtype).
+ *
+ * The forward chain byte-size walk in the decoder must be seeded from this
+ * count, not from n_elems, or a model whose residual is shorter than the
+ * block trips the walk_bytes == uncompressed_size cross-check and is
+ * misreported as corrupt.
+ *
+ * Returns -1 (caller maps to TDC_E_CORRUPT) when the side-meta a length is
+ * read from is missing or advertises a count larger than n_elems.
+ */
+static inline int64_t driver_model_residual_len(tdc_model_id   mid,
+                                                int64_t        n_elems,
+                                                const uint8_t *side_meta,
+                                                size_t         side_meta_size) {
+    if (mid == TDC_MODEL_SPARSE_ZERO_1D) {
+        /* side-meta header: u8 value_dtype, u32 n_nonzero, then values. */
+        if (side_meta == NULL || side_meta_size < 5u) return -1;
+        uint32_t n_nonzero = 0u;
+        memcpy(&n_nonzero, side_meta + 1, 4u);
+        if ((uint64_t)n_nonzero > (uint64_t)n_elems) return -1;
+        return (int64_t)n_nonzero;
+    }
+    return n_elems;
 }
 
 /* ----- Static transform dtype walk ---------------------------------------- */

@@ -358,9 +358,14 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
     }
 
     int n_cols = batch->n_cols;
+    /* SMALL mode trial-encodes each column under several specs; one scratch
+     * buffer is grown once and reused across all columns, freed after the loop. */
+    tdc_buffer trial = {0};
+    trial.realloc_fn = vtr1_tdc_realloc;
     for (int c = 0; c < n_cols; c++) {
         const VecArray *col = &batch->columns[c];
         if (col->type != w->schema.col_types[c]) {
+            if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
             vectra_error("rowgroup col %d type=%d mismatches schema type=%d",
                          c, (int)col->type, (int)w->schema.col_types[c]);
         }
@@ -371,6 +376,7 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         if (ss) {
             uint64_t nxny = (uint64_t)ss->nx * (uint64_t)ss->ny;
             if (nxny != (uint64_t)batch->n_rows) {
+                if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
                 vectra_error("spatial: nx*ny (%u*%u=%llu) != n_rows (%lld)",
                              ss->nx, ss->ny,
                              (unsigned long long)nxny,
@@ -384,16 +390,26 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
             vtr1_tdc_realloc, NULL);
         if (st != TDC_OK) {
             vtr_codec_tdc_release_request(&req, vtr1_tdc_realloc, NULL);
+            if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
             vectra_error("prepare_request failed for col %d: status=%d", c, (int)st);
+        }
+
+        if (comp_level == VTR_COMPRESS_SMALL) {
+            const int quantize_active = (qs && qs->enabled && col->type == VEC_DOUBLE);
+            const int spatial_active  = (ss && ss->enabled);
+            vtr_codec_tdc_optimize_small(&req, col, quantize_active,
+                                         spatial_active, &trial);
         }
 
         st = tdc_stream_encoder_write_block(w->enc, &req.block, &req.spec);
         vtr_codec_tdc_release_request(&req, vtr1_tdc_realloc, NULL);
         if (st != TDC_OK) {
+            if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
             vectra_error("tdc_stream_encoder_write_block failed for col %d: status=%d",
                          c, (int)st);
         }
     }
+    if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
 
     /* Compute per-column stats and attach them before closing the rowgroup.
      * Skip the call entirely for empty row groups so the reader sees NULL
@@ -754,7 +770,7 @@ static VecArray vtr1_tdc_make_borrowing_array(VecType t, int64_t n_rows,
 static VecBatch *read_rg_tdc_with_fp(Vtr1TdcFile *file, uint32_t rg_idx,
                                      const int *col_mask, FILE *fp,
                                      uint8_t **scratch, size_t *scratch_cap,
-                                     void **direct_bufs) {
+                                     void **direct_bufs, int defer_str_dict) {
     const VecSchema *schema = &file->schema;
     int n_cols = schema->n_cols;
     int64_t n_rows = file->rowgroups[rg_idx].n_rows;
@@ -840,6 +856,14 @@ static VecBatch *read_rg_tdc_with_fp(Vtr1TdcFile *file, uint32_t rg_idx,
             arr = vtr1_tdc_make_borrowing_array(t, n_rows, direct);
             st = vtr_decode_column_tdc_into(t, n_rows, direct, arr.validity,
                                             *scratch, (size_t)sz);
+        } else if (defer_str_dict && t == VEC_STRING) {
+            /* Deferred-dict decode: hand back (unique values + indices) so the
+             * consumer interns each unique value once. Falls back to the flat
+             * decode for the (currently unreachable) non-DICT_1D string block. */
+            arr = vec_array_alloc(t, n_rows);
+            st = vtr_decode_column_tdc_dict(&arr, *scratch, (size_t)sz);
+            if (st == TDC_E_UNSUPPORTED)
+                st = vtr_decode_column_tdc(&arr, *scratch, (size_t)sz);
         } else {
             arr = vec_array_alloc(t, n_rows);
             st = vtr_decode_column_tdc(&arr, *scratch, (size_t)sz);
@@ -874,6 +898,13 @@ VecBatch *vtr1_read_rowgroup_tdc(Vtr1TdcFile *file, uint32_t rg_idx,
 VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
                                     const int *col_mask,
                                     void **direct_bufs) {
+    return vtr1_read_rowgroup_tdc_defer(file, rg_idx, col_mask, direct_bufs, 0);
+}
+
+VecBatch *vtr1_read_rowgroup_tdc_defer(Vtr1TdcFile *file, uint32_t rg_idx,
+                                       const int *col_mask,
+                                       void **direct_bufs,
+                                       int defer_str_dict) {
     if (!file) vectra_error("vtr1_read_rowgroup_tdc_ex: NULL file");
     if (rg_idx >= file->n_rowgroups) {
         vectra_error("row group index out of range: %u >= %u",
@@ -883,7 +914,8 @@ VecBatch *vtr1_read_rowgroup_tdc_ex(Vtr1TdcFile *file, uint32_t rg_idx,
     uint8_t *scratch = NULL;
     size_t   scratch_cap = 0;
     VecBatch *batch = read_rg_tdc_with_fp(file, rg_idx, col_mask, file->fp,
-                                          &scratch, &scratch_cap, direct_bufs);
+                                          &scratch, &scratch_cap, direct_bufs,
+                                          defer_str_dict);
     free(scratch);
     return batch;
 }
@@ -894,17 +926,30 @@ VecBatch **vtr1_read_parallel_tdc(Vtr1TdcFile *file, const int *col_mask,
                                        NULL, NULL, 0, out_count);
 }
 
+VecBatch **vtr1_read_parallel_tdc_into(Vtr1TdcFile *file, const int *col_mask,
+                                       const char *path,
+                                       void **col_bases,
+                                       const size_t *col_elem_sizes,
+                                       int n_out_cols,
+                                       uint32_t *out_count) {
+    return vtr1_read_parallel_tdc_defer_into(file, col_mask, path, col_bases,
+                                             col_elem_sizes, n_out_cols,
+                                             0, out_count);
+}
+
 /* Parallel reader. Mirrors vtr1_read_parallel_into in vtr1.c: each thread
  * opens its own FILE*, walks rowgroups via OpenMP for-schedule(dynamic),
  * and writes into per-column base buffers offset by the rowgroup's
  * cumulative row offset. col_bases entries must remain valid for the
  * duration of the call; callers must NOT touch the R API on any thread
  * inside this function. */
-VecBatch **vtr1_read_parallel_tdc_into(Vtr1TdcFile *file, const int *col_mask,
+VecBatch **vtr1_read_parallel_tdc_defer_into(Vtr1TdcFile *file,
+                                       const int *col_mask,
                                        const char *path,
                                        void **col_bases,
                                        const size_t *col_elem_sizes,
                                        int n_out_cols,
+                                       int defer_str_dict,
                                        uint32_t *out_count) {
     uint32_t n_rg = file->n_rowgroups;
     *out_count = n_rg;
@@ -957,7 +1002,8 @@ VecBatch **vtr1_read_parallel_tdc_into(Vtr1TdcFile *file, const int *col_mask,
                 bufs = thread_bufs;
             }
             batches[r] = read_rg_tdc_with_fp(file, (uint32_t)r, col_mask,
-                                             fp, &scratch, &scratch_cap, bufs);
+                                             fp, &scratch, &scratch_cap, bufs,
+                                             defer_str_dict);
         }
 
         free(thread_bufs);

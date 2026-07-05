@@ -139,17 +139,25 @@ tdc_status tdc_encode_block(const tdc_block      *src,
      * the xform + entropy chains entirely, and stores a 0-byte payload.
      * Decode reconstructs the zero residual before calling model.decode.
      *
-     * The logical uncompressed size is still n_elems * residual_elem_size
-     * so the decoder's shape-vs-size cross-check keeps working. We stash
-     * it here because this is the only point where we have both n_elems
-     * and the model's residual dtype in scope without recomputing them. */
+     * The logical uncompressed size is residual_len * residual_elem_size.
+     * residual_len is n_elems for every model except SPARSE_ZERO_1D, whose
+     * residual is one u32 position per non-zero input: an empty residual
+     * there means n_nonzero == 0, so the logical size is 0, not n_elems*4.
+     * Using n_elems here would make the decoder's residual-length walk
+     * (which reads n_nonzero from side meta) disagree and reject the block.
+     * We stash it here because this is the only point where n_elems, the
+     * model's residual dtype, and its side meta are all in scope. */
     int64_t n_elems_top = shape_n_elems(&src->shape);
     const int zero_residual = (n_elems_top > 0) && (bufs[cur].size == 0);
     size_t   zero_residual_bytes = 0;
     if (zero_residual) {
         size_t relem = tdc_dtype_size(cur_dtype);
         if (relem == 0) { st = TDC_E_UNSUPPORTED; goto cleanup; }
-        zero_residual_bytes = (size_t)n_elems_top * relem;
+        int64_t rlen = driver_model_residual_len((tdc_model_id)spec->model,
+                                                 n_elems_top,
+                                                 side_meta.data, side_meta.size);
+        if (rlen < 0) { st = TDC_E_CORRUPT; goto cleanup; }
+        zero_residual_bytes = (size_t)rlen * relem;
     }
 
     /* ----- Stage 2: transform chain ------------------------------------ */

@@ -513,6 +513,61 @@ tdc_status tdc_decode_peek(const uint8_t *src, size_t src_size,
 tdc_status tdc_decode_block_varlen(const uint8_t *src, size_t src_size,
                                    tdc_block     *dst, tdc_buffer *alloc);
 
+/*
+ * A TDC_MODEL_DICT_1D block decoded into its dictionary + per-row indices,
+ * WITHOUT materializing the flattened value column.
+ *
+ * tdc_decode_block_varlen reconstructs the full n-element string column,
+ * repeating each dictionary entry once per occurrence. A consumer that
+ * interns unique values (e.g. an R character vector, an Arrow dictionary
+ * array, a categorical) does not want that: it wants to touch each unique
+ * value once and then index. This entry point runs the same entropy +
+ * transform pipeline but stops at the residual, handing back the raw
+ * dictionary bytes and the u32 index stream so the caller can defer
+ * materialization to unique values only.
+ *
+ * All three arrays are freshly allocated via alloc->realloc_fn and owned
+ * by the caller (free each via alloc->realloc_fn(alloc->user, ptr, 0)).
+ */
+typedef struct {
+    int64_t   n;              /* row count = number of indices */
+    uint32_t *indices;        /* n entries: dictionary index per row */
+    uint32_t  dict_count;     /* number of unique dictionary entries */
+    uint32_t *dict_offsets;   /* dict_count + 1 byte offsets into dict_data */
+    uint8_t  *dict_data;      /* concatenated unique values (dict_offsets[dict_count] bytes) */
+    size_t    dict_data_size; /* == dict_offsets[dict_count] */
+} tdc_dict_block;
+
+/*
+ * Decode a TDC_MODEL_DICT_1D block into (dictionary, indices) form.
+ *
+ * On entry:
+ *   src, src_size:     the block record bytes;
+ *   out:               non-NULL; every field is overwritten. The three
+ *                      pointer fields MUST be NULL on entry (to avoid
+ *                      leaking caller memory) — checked, TDC_E_INVAL if not;
+ *   alloc->realloc_fn: must be set; alloc->user is forwarded. Used both
+ *                      for internal ping-pong scratch and for the final
+ *                      out->indices / out->dict_offsets / out->dict_data
+ *                      allocations.
+ *
+ * On TDC_OK all of out's fields are populated (dict_data / indices may be
+ * NULL only when their byte counts are zero). Every index is validated to
+ * be < dict_count, so the caller may index the dictionary without bounds
+ * checks.
+ *
+ * Returns:
+ *   TDC_OK                on success;
+ *   TDC_E_INVAL           NULL args, missing realloc_fn, or a non-NULL
+ *                         out pointer field on entry;
+ *   TDC_E_UNSUPPORTED     the record's model is not TDC_MODEL_DICT_1D;
+ *   TDC_E_CORRUPT/_VERSION malformed record or side meta;
+ *   TDC_E_NOMEM           allocation failed;
+ *   other TDC_E_*         on entropy/transform decode failure.
+ */
+tdc_status tdc_decode_block_dict(const uint8_t *src, size_t src_size,
+                                 tdc_dict_block *out, tdc_buffer *alloc);
+
 #ifdef __cplusplus
 }
 #endif

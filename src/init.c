@@ -19,6 +19,7 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col, SEXP keys,
 /* tdc encode/decode bridge round-trip test entries (vtr_codec_tdc.c). */
 SEXP C_tdc_encode_column(SEXP x_sexp, SEXP comp_level_sexp);
 SEXP C_tdc_decode_column(SEXP raw_sexp, SEXP n_sexp, SEXP r_type_sexp);
+SEXP C_tdc_dict_roundtrip(SEXP x_sexp);
 
 /* tdc-backed row-group container entries (vtr1_tdc.c). */
 SEXP C_write_vtr_tdc(SEXP path_sexp, SEXP df_sexp,
@@ -155,6 +156,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_has_index",         (DL_FUNC) &C_has_index,         2},
     {"C_tdc_encode_column",   (DL_FUNC) &C_tdc_encode_column,   2},
     {"C_tdc_decode_column",   (DL_FUNC) &C_tdc_decode_column,   3},
+    {"C_tdc_dict_roundtrip",  (DL_FUNC) &C_tdc_dict_roundtrip,  1},
     {"C_write_vtr_tdc",            (DL_FUNC) &C_write_vtr_tdc,            5},
     {"C_read_vtr_tdc",             (DL_FUNC) &C_read_vtr_tdc,             1},
     {"C_read_vtr_tdc_annotations", (DL_FUNC) &C_read_vtr_tdc_annotations, 1},

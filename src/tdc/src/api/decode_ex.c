@@ -32,5 +32,5 @@ tdc_status tdc_decode_block_ex(const uint8_t *src, size_t src_size,
     if (!scratch)                return TDC_E_INVAL;
     if (!scratch->realloc_fn)    return TDC_E_INVAL;
     return driver_decode_block_impl(src, src_size, dst, scratch, "decex",
-                                    NULL, NULL);
+                                    NULL, NULL, 1);
 }
