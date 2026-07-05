@@ -53,11 +53,13 @@ in the file header; the actual values stay on disk until `collect()`.
 ## The .vtr format
 
 `.vtr` is vectra's native binary columnar format. It stores data in row groups,
-where each row group contains all columns for a slice of rows. The current
-version (v4) applies a two-stage encoding stack per column per row group:
-first a logical encoding (dictionary for low-cardinality strings, delta for
-monotonic integers, or plain pass-through), then byte-level compression via
-Zstandard when it actually shrinks the data.
+where each row group contains all columns for a slice of rows. Each column of
+each row group is compressed independently through vectra's native `tdc` codec,
+a three-phase pipeline: a logical model (dictionary for strings, delta for
+monotonic integers, or plain pass-through), an optional transform chain
+(zigzag, byte-shuffle to cluster like-significance bytes), then a byte-level
+entropy coder (native LZ77 by default). No external compression library is
+linked; the codec is self-contained.
 
 This layout gives the scan node several optimization paths that other formats
 cannot support. Zone-map statistics (min/max per column per row group) let the
@@ -124,7 +126,7 @@ reduce peak memory at the cost of more read calls.
 
 `write_csv()` streams from any node. It writes a standard comma-separated file
 with a header row. There is no gzip output option; if we need compressed output,
-we convert to `.vtr` instead, which applies Zstandard automatically.
+we convert to `.vtr` instead, which compresses automatically.
 
 ```{r csv-write}
 f <- tempfile(fileext = ".vtr")
@@ -440,7 +442,7 @@ data.
 | Column pruning | yes | no | no | no | no |
 | Zone-map skip | yes | no | no | no | no |
 | Hash index support | yes | no | no | no | no |
-| Compression | zstd | gzip (read) | -- | -- | deflate |
+| Compression | tdc (dict/delta + LZ) | gzip (read) | -- | -- | deflate |
 | Size on disk | small | large | medium | medium | variable |
 | Random access | by row group | no | by rowid | no | by raster row |
 | External tool support | vectra only | universal | wide | wide | GIS tools |
