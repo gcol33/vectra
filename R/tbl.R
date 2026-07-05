@@ -50,6 +50,91 @@ tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE) {
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 
+#' Create a lazy table reference from a FASTA file
+#'
+#' Streams a FASTA file of biological sequences as rows: one row per record
+#' with columns `id`, `desc`, and `seq`. `id` is the first whitespace-delimited
+#' token of the header line, `desc` is the remainder (an empty string when the
+#' header carries no description), and `seq` is the sequence with line breaks
+#' removed. Records stream one batch at a time, so a read set larger than RAM
+#' never fully materializes. Gzip-compressed files (`.fasta.gz`, `.fa.gz`) are
+#' read transparently. No data is read until [collect()] is called.
+#'
+#' The `seq_*` expression family (`seq_revcomp()`, `seq_gc()`, `seq_translate()`,
+#' `seq_dist()`, ...) operates on the `seq` column directly inside
+#' [mutate()]/[filter()]. See [seq_expressions].
+#'
+#' A record cut short is a loud error, not a silent drop: a header that is not
+#' the first non-blank token, or a byte where a `>` is expected, stops the scan.
+#' When the scan reaches the end of the file it reports the number of records
+#' read (suppress with `quiet = TRUE`).
+#'
+#' @param path Path to a `.fasta`/`.fa` file, optionally gzip-compressed.
+#' @param batch_size Number of records per batch (default 65536).
+#' @param quiet If `FALSE` (default), report the record count when the scan
+#'   completes.
+#'
+#' @return A `vectra_node` object representing a lazy scan of the FASTA file.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".fasta")
+#' writeLines(c(">seq1 first", "ACGTACGT", ">seq2 second", "GGGGCCCC"), f)
+#' node <- tbl_fasta(f, quiet = TRUE)
+#' node |> mutate(gc = seq_gc(seq)) |> collect()
+#' unlink(f)
+#'
+#' @seealso [tbl_fastq()], [seq_expressions]
+#' @export
+tbl_fasta <- function(path, batch_size = .DEFAULT_BATCH_SIZE, quiet = FALSE) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  xptr <- .Call(C_fasta_scan_node, path, as.double(batch_size),
+                FALSE, isTRUE(quiet))
+  structure(list(.node = xptr, .path = path), class = "vectra_node")
+}
+
+#' Create a lazy table reference from a FASTQ file
+#'
+#' Streams a FASTQ file as rows: one row per record with columns `id`, `desc`,
+#' `seq`, and `qual` (the raw quality string, same length as `seq`). `id` and
+#' `desc` are split from the header as in [tbl_fasta()]. Records stream one
+#' batch at a time, so a read set larger than RAM never fully materializes.
+#' Gzip-compressed files (`.fastq.gz`, `.fq.gz`) are read transparently. No data
+#' is read until [collect()] is called.
+#'
+#' Records are parsed in the standard four-line form (header, sequence, `+`
+#' separator, quality). A record cut short --- a missing sequence, separator, or
+#' quality line, or a quality string whose length does not match the sequence
+#' --- is a loud error, not a silent drop. When the scan reaches the end of the
+#' file it reports the number of records read (suppress with `quiet = TRUE`).
+#'
+#' @param path Path to a `.fastq`/`.fq` file, optionally gzip-compressed.
+#' @param batch_size Number of records per batch (default 65536).
+#' @param quiet If `FALSE` (default), report the record count when the scan
+#'   completes.
+#'
+#' @return A `vectra_node` object representing a lazy scan of the FASTQ file.
+#'
+#' @examples
+#' f <- tempfile(fileext = ".fastq")
+#' writeLines(c("@r1 read one", "ACGT", "+", "IIII",
+#'              "@r2 read two", "GGCC", "+", "!!!!"), f)
+#' node <- tbl_fastq(f, quiet = TRUE)
+#' node |> mutate(len = seq_length(seq)) |> collect()
+#' unlink(f)
+#'
+#' @seealso [tbl_fasta()], [seq_expressions]
+#' @export
+tbl_fastq <- function(path, batch_size = .DEFAULT_BATCH_SIZE, quiet = FALSE) {
+  if (!is.character(path) || length(path) != 1)
+    stop("path must be a single character string")
+  path <- normalizePath(path, mustWork = TRUE)
+  xptr <- .Call(C_fasta_scan_node, path, as.double(batch_size),
+                TRUE, isTRUE(quiet))
+  structure(list(.node = xptr, .path = path), class = "vectra_node")
+}
+
 #' Create a lazy table reference from a SQLite database
 #'
 #' Opens a SQLite database and lazily scans a table. Column types are inferred

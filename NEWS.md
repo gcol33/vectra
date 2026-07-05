@@ -1,3 +1,23 @@
+# vectra 0.10.1
+
+## FASTA / FASTQ streaming scan backends
+
+* `tbl_fasta()` and `tbl_fastq()` stream a biological-sequence file as a lazy
+  table, one record per row: `id`, `desc`, `seq` for FASTA and an additional
+  `qual` for FASTQ. `id` is the first whitespace-delimited token of the header
+  and `desc` is the remainder (an empty string when absent). Records stream one
+  batch at a time, so a read set larger than RAM never fully materializes, and
+  the `seq_*` expression family works directly on the `seq` column. Gzip input
+  (`.fasta.gz`, `.fq.gz`, ...) is read transparently through the same vendored
+  miniz path CSV uses. A record cut short --- a header where a `>`/`@` is
+  expected, a FASTQ record missing a line, or a quality string whose length
+  does not match its sequence --- is a loud error rather than a silent drop,
+  and the scan reports how many records it read on completion (`quiet = TRUE`
+  suppresses it). Recovery-tested against `Biostrings` and `ShortRead`.
+
+* The byte reader that backs the streaming text scans (plain and gzip) is now a
+  shared `byte_reader` used by both the CSV and FASTA/FASTQ backends.
+
 # vectra 0.10.0
 
 ## `seq_*` biological-sequence expressions

@@ -1,5 +1,5 @@
 #include "csv_scan.h"
-#include "csv_reader.h"
+#include "byte_reader.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -90,7 +90,7 @@ static void fv_free(FieldVec *v) {
 /* Read one logical CSV line (handles quoted fields with embedded newlines).
    Preserves raw content including quotes so csv_split_fields can parse them.
    Returns 0 on success, -1 on EOF before any data. */
-static int csv_read_line(CsvReader *rd, GBuf *line) {
+static int csv_read_line(ByteReader *rd, GBuf *line) {
     gbuf_clear(line);
     int c = rd->getc_fn(rd);
     if (c == -1) return -1;
@@ -227,7 +227,7 @@ static int try_parse_bool(const char *s) {
 
 /* Infer types by reading up to infer_n rows from current position.
    Seeks back to original position when done. */
-static VecType *csv_infer_types(CsvReader *rd, int n_cols, int64_t infer_n) {
+static VecType *csv_infer_types(ByteReader *rd, int n_cols, int64_t infer_n) {
     int64_t start_pos = rd->tell_fn(rd);
 
     /* Start everything as unknown (use -1 as sentinel) */
@@ -497,7 +497,7 @@ static void csv_scan_free(VecNode *self) {
 #define CSV_INFER_ROWS 1000
 
 CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
-    CsvReader *rd = csv_reader_open(path);
+    ByteReader *rd = byte_reader_open(path);
     if (!rd) vectra_error("cannot open CSV file: %s", path);
 
     /* Read header line */

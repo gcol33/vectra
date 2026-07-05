@@ -11,7 +11,7 @@
 #
 # tdc's optional deflate backend (TDC_HAVE_ZLIB) stays undefined; tdc
 # does not link miniz, the dependency relationship is purely vectra
-# source files (tiff_format.c, csv_reader.c) -> miniz.
+# source files (tiff_format.c, byte_reader.c) -> miniz.
 
 PKG_CFLAGS = $(SHLIB_OPENMP_CFLAGS) -I./tdc/include
 PKG_LIBS = $(SHLIB_OPENMP_CFLAGS)

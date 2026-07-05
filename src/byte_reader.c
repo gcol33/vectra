@@ -1,4 +1,4 @@
-#include "csv_reader.h"
+#include "byte_reader.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
@@ -11,33 +11,33 @@
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    CsvReader base;
-    FILE     *fp;
+    ByteReader base;
+    FILE      *fp;
 } FileReader;
 
-static int file_getc(CsvReader *r) {
+static int file_getc(ByteReader *r) {
     return fgetc(((FileReader *)r)->fp);
 }
 
-static int file_ungetc(CsvReader *r, int c) {
+static int file_ungetc(ByteReader *r, int c) {
     return ungetc(c, ((FileReader *)r)->fp);
 }
 
-static int64_t file_tell(CsvReader *r) {
+static int64_t file_tell(ByteReader *r) {
     return (int64_t)ftell(((FileReader *)r)->fp);
 }
 
-static int file_seek(CsvReader *r, int64_t offset) {
+static int file_seek(ByteReader *r, int64_t offset) {
     return fseek(((FileReader *)r)->fp, (long)offset, SEEK_SET);
 }
 
-static void file_close(CsvReader *r) {
+static void file_close(ByteReader *r) {
     FileReader *fr = (FileReader *)r;
     if (fr->fp) fclose(fr->fp);
     free(fr);
 }
 
-static CsvReader *file_reader_open(const char *path) {
+static ByteReader *file_reader_open(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
 
@@ -59,10 +59,10 @@ static CsvReader *file_reader_open(const char *path) {
 /*
  * The gzip path used to wrap zlib's gzFile so getc/ungetc/tell/seek
  * could stream straight off the compressed file. miniz has no gzFile
- * equivalent, but the only seek pattern in csv_scan.c is "tell once
- * after the header, read forward for type inference, seek back to that
- * mark", so we don't need streaming inflate at all. We decompress the
- * whole .gz into memory at open time and expose the result as a cursor.
+ * equivalent, but the only seek pattern in the text scanners is "tell
+ * once, read forward, seek back to that mark", so we don't need
+ * streaming inflate at all. We decompress the whole .gz into memory at
+ * open time and expose the result as a cursor.
  *
  * Memory cost: decompressed source bytes during the scan. The scan
  * itself materialises the data into typed VecArray columns, which is
@@ -71,20 +71,20 @@ static CsvReader *file_reader_open(const char *path) {
  */
 
 typedef struct {
-    CsvReader base;
-    uint8_t  *buf;   /* malloc'd via miniz, freed in mem_close via mz_free */
-    size_t    len;
-    size_t    pos;
+    ByteReader base;
+    uint8_t   *buf;  /* malloc'd via miniz, freed in mem_close via mz_free */
+    size_t     len;
+    size_t     pos;
 } MemReader;
 
-static int mem_getc(CsvReader *r) {
+static int mem_getc(ByteReader *r) {
     MemReader *m = (MemReader *)r;
     if (m->pos >= m->len) return EOF;
     return (int)m->buf[m->pos++];
 }
 
-static int mem_ungetc(CsvReader *r, int c) {
-    /* csv_scan only ever pushes back the byte it just read, so we can
+static int mem_ungetc(ByteReader *r, int c) {
+    /* The scanners only ever push back the byte they just read, so we can
        implement this as a pure cursor decrement. The 'c' argument is
        ignored on purpose: the original byte still lives at buf[pos-1]. */
     MemReader *m = (MemReader *)r;
@@ -93,18 +93,18 @@ static int mem_ungetc(CsvReader *r, int c) {
     return c;
 }
 
-static int64_t mem_tell(CsvReader *r) {
+static int64_t mem_tell(ByteReader *r) {
     return (int64_t)((MemReader *)r)->pos;
 }
 
-static int mem_seek(CsvReader *r, int64_t offset) {
+static int mem_seek(ByteReader *r, int64_t offset) {
     MemReader *m = (MemReader *)r;
     if (offset < 0 || (size_t)offset > m->len) return -1;
     m->pos = (size_t)offset;
     return 0;
 }
 
-static void mem_close(CsvReader *r) {
+static void mem_close(ByteReader *r) {
     MemReader *m = (MemReader *)r;
     if (m->buf) mz_free(m->buf);
     free(m);
@@ -171,7 +171,7 @@ static int gzip_parse_header(const uint8_t *data, size_t len,
     return 0;
 }
 
-static CsvReader *gz_reader_open(const char *path) {
+static ByteReader *gz_reader_open(const char *path) {
     uint8_t *file_buf = NULL;
     size_t   file_len = 0;
     if (read_whole_file(path, &file_buf, &file_len) != 0) return NULL;
@@ -209,7 +209,7 @@ static CsvReader *gz_reader_open(const char *path) {
 /*  Public constructor: detect .gz extension                           */
 /* ------------------------------------------------------------------ */
 
-CsvReader *csv_reader_open(const char *path) {
+ByteReader *byte_reader_open(const char *path) {
     size_t len = strlen(path);
     if (len >= 3 && strcmp(path + len - 3, ".gz") == 0)
         return gz_reader_open(path);

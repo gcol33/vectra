@@ -30,6 +30,7 @@ SEXP C_csv_scan_node(SEXP path, SEXP batch_size);
 SEXP C_sql_scan_node(SEXP path, SEXP table, SEXP batch_size);
 SEXP C_write_sqlite(SEXP node_xptr, SEXP path, SEXP table_name);
 SEXP C_tiff_scan_node(SEXP path, SEXP batch_size);
+SEXP C_fasta_scan_node(SEXP path, SEXP batch_size, SEXP is_fastq, SEXP quiet);
 SEXP C_tiff_scan_meta(SEXP node_xptr);
 SEXP C_tiff_extract_points(SEXP path, SEXP x, SEXP y);
 SEXP C_write_tiff(SEXP node_xptr, SEXP path, SEXP compress);

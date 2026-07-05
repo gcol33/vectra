@@ -2,11 +2,11 @@
 #define VECTRA_CSV_SCAN_H
 
 #include "types.h"
-#include "csv_reader.h"
+#include "byte_reader.h"
 
 typedef struct {
     VecNode     base;
-    CsvReader  *reader;
+    ByteReader *reader;
     int64_t     data_start;    /* byte offset after header line */
     int         n_file_cols;   /* total columns in the CSV */
     VecType    *col_types;     /* inferred type per column */

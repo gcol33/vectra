@@ -105,18 +105,24 @@ tbl_csv("reads.csv") |>
   `translate`, `letterFrequency` for GC, `stringdist` for `seq_dist`. Random
   sequences across seeds; ambiguity-code cases explicit.
 
-### Phase A2 -- FASTA / FASTQ scan backend (0.10.1)
+### Phase A2 -- FASTA / FASTQ scan backend (0.10.1) -- SHIPPED
 
-`tbl_fasta(path)` / `tbl_fastq(path)` stream records as rows (`id`, `seq`, and
-for FASTQ `qual`), one row group per N records, so a 40 GB read set never
-materializes. Mirrors the `csv_scan` backend exactly.
+`tbl_fasta(path)` / `tbl_fastq(path)` stream records as rows (`id`, `desc`,
+`seq`, and for FASTQ `qual`), one row group per N records, so a 40 GB read set
+never materializes. Mirrors the `csv_scan` backend; both share the renamed
+`byte_reader` (plain + gzip). Shipped in 0.10.1.
 
-- **Files:** `src/fasta_scan.c` / `.h`, entry point in `src/r_bridge_io.c`,
-  `R/tbl.R` front door. Gzip input rides the vendored miniz path CSV already uses.
-- **Input-totals sanity check (mandatory):** assert and log record count on open;
-  a truncated final record fails loudly, not silently drops.
-- **Tests:** round-trip a known multi-record FASTA/FASTQ vs `Biostrings::readDNAStringSet`
-  / `ShortRead`; gzipped and plain; a deliberately truncated file errors.
+- **Files:** `src/fasta_scan.c` / `.h`, shared `src/byte_reader.c` / `.h` (the
+  former `csv_reader`), entry point in `src/r_bridge_io.c`, `R/tbl.R` front
+  doors. Gzip input rides the vendored miniz path CSV already uses.
+- **Input-totals sanity check:** a truncated / malformed record (missing FASTQ
+  line, seq/qual length mismatch, missing `>`/`@`) fails loudly rather than
+  silently dropping; the scan reports its record count on completion (streaming,
+  so the total is known at end-of-file, not open; `quiet = TRUE` suppresses it).
+- **Tests:** `tests/testthat/test-fasta-scan.R` round-trips known multi-record
+  FASTA/FASTQ against `Biostrings::readDNAStringSet` and `ShortRead`; gzipped
+  and plain; streaming invariance across batch sizes; deliberately truncated /
+  malformed files error.
 
 ### Phase A3 -- k-mer spectrum node (0.10.2)
 
