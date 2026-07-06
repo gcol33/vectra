@@ -33,15 +33,21 @@ static JoinHT jht_create(int64_t n_build_rows) {
     JoinHT jht;
     int64_t n_slots = 64;
     while (n_slots < n_build_rows * 2) n_slots *= 2;
+    /* n_build must be the true build-row count (0 for an empty build side, e.g.
+       a full-join partition whose keys appear only on the probe side). The chain
+       array needs at least one slot to avoid malloc(0); n_build stays accurate
+       so join_finalize/merge_join do not walk a phantom row into an empty
+       column. */
+    int64_t next_len = n_build_rows > 0 ? n_build_rows : 1;
     jht.n_slots = n_slots;
     jht.head = (int64_t *)malloc((size_t)n_slots * sizeof(int64_t));
     jht.slot_hash = (uint64_t *)malloc((size_t)n_slots * sizeof(uint64_t));
-    jht.build_next = (int64_t *)malloc((size_t)n_build_rows * sizeof(int64_t));
+    jht.build_next = (int64_t *)malloc((size_t)next_len * sizeof(int64_t));
     jht.n_build = n_build_rows;
     if (!jht.head || !jht.slot_hash || !jht.build_next)
         vectra_error("alloc failed for join hash table");
     memset(jht.head, -1, (size_t)n_slots * sizeof(int64_t));
-    memset(jht.build_next, -1, (size_t)n_build_rows * sizeof(int64_t));
+    memset(jht.build_next, -1, (size_t)next_len * sizeof(int64_t));
     return jht;
 }
 
@@ -166,6 +172,170 @@ static int64_t jht_chain_next(const JoinHT *jht, int64_t build_row,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Shared row emitters (one source of truth for probe + BNL paths)    */
+/* ------------------------------------------------------------------ */
+
+/* Emit left row `lr` (from lcols) x build row `br` (from r_cols). */
+static inline void join_emit_matched(JoinNode *jn, VecArrayBuilder *out,
+                                     const VecArray *lcols, int l_ncols,
+                                     int64_t lr, int64_t br) {
+    for (int c = 0; c < l_ncols; c++)
+        vec_builder_append_one(&out[c], &lcols[c], lr);
+    for (int j = 0; j < jn->r_non_key_count; j++)
+        vec_builder_append_one(&out[l_ncols + j],
+            &jn->r_cols[jn->r_non_key_idx[j]], br);
+}
+
+/* Emit left row `lr` with NA in every right non-key column (unmatched left). */
+static inline void join_emit_left_only(JoinNode *jn, VecArrayBuilder *out,
+                                       const VecArray *lcols, int l_ncols,
+                                       int64_t lr) {
+    for (int c = 0; c < l_ncols; c++)
+        vec_builder_append_one(&out[c], &lcols[c], lr);
+    for (int j = 0; j < jn->r_non_key_count; j++)
+        vec_builder_append_na(&out[l_ncols + j]);
+}
+
+/* Emit unmatched build row `br` (full join): key columns come from the build
+   side where a left column is a join key, NA elsewhere; right non-key columns
+   from the build side. `l_col_rkey` maps each left column to its build-key
+   column index, or -1. `rcols` is the build-column array to read from. */
+static inline void join_emit_right_only(JoinNode *jn, VecArrayBuilder *out,
+                                        const VecArray *rcols, int l_ncols,
+                                        const int *l_col_rkey, int64_t br) {
+    for (int c = 0; c < l_ncols; c++) {
+        if (l_col_rkey[c] >= 0)
+            vec_builder_append_one(&out[c], &rcols[l_col_rkey[c]], br);
+        else
+            vec_builder_append_na(&out[c]);
+    }
+    for (int j = 0; j < jn->r_non_key_count; j++)
+        vec_builder_append_one(&out[l_ncols + j],
+            &rcols[jn->r_non_key_idx[j]], br);
+}
+
+/* Map each left output column to the build-key column supplying its value in a
+   full-join unmatched-build row (-1 = fill NA). Caller frees. */
+static int *join_build_l_col_rkey(JoinNode *jn, int l_ncols) {
+    int *m = (int *)malloc((size_t)l_ncols * sizeof(int));
+    for (int c = 0; c < l_ncols; c++) {
+        m[c] = -1;
+        for (int k = 0; k < jn->n_keys; k++)
+            if (jn->lkey_idx[k] == c) { m[c] = jn->rkey_idx[k]; break; }
+    }
+    return m;
+}
+
+/* Coerce probe key columns to the build key types (jht_probe compares same
+   type). Fills coerced[k] (owned, NULL when no coercion) and returns the column
+   array to hash/compare against: pbatch->columns when nothing needed coercion,
+   else a fresh hash_cols (returned via *hash_cols_out) that the caller frees
+   with join_free_probe_keys. Shared by the resident probe and the BNL probe. */
+static VecArray *join_coerce_probe_keys(JoinNode *jn, VecBatch *pbatch,
+                                        VecArray **coerced,
+                                        VecArray **hash_cols_out) {
+    int l_ncols = jn->left->output_schema.n_cols;
+    int need = 0;
+    for (int k = 0; k < jn->n_keys && k < 16; k++) {
+        VecType pt = pbatch->columns[jn->lkey_idx[k]].type;
+        VecType bt = jn->r_cols[jn->rkey_idx[k]].type;
+        if (pt != bt) {
+            coerced[k] = vec_coerce(&pbatch->columns[jn->lkey_idx[k]], bt);
+            need = 1;
+        } else {
+            coerced[k] = NULL;
+        }
+    }
+    VecArray *hash_cols = NULL;
+    if (need) {
+        hash_cols = (VecArray *)malloc((size_t)l_ncols * sizeof(VecArray));
+        memcpy(hash_cols, pbatch->columns, (size_t)l_ncols * sizeof(VecArray));
+        for (int k = 0; k < jn->n_keys && k < 16; k++)
+            if (coerced[k]) hash_cols[jn->lkey_idx[k]] = *coerced[k];
+    }
+    *hash_cols_out = hash_cols;
+    return need ? hash_cols : pbatch->columns;
+}
+
+static void join_free_probe_keys(JoinNode *jn, VecArray **coerced,
+                                  VecArray *hash_cols) {
+    for (int k = 0; k < jn->n_keys && k < 16; k++)
+        if (coerced[k]) { vec_array_free(coerced[k]); free(coerced[k]); }
+    free(hash_cols); /* NULL-safe */
+}
+
+/* Finish output builders into a VecBatch (NULL when empty), naming columns from
+   the join's output schema. Shared by the probe, merge, finalize, BNL paths. */
+static VecBatch *join_finish_out(JoinNode *jn, VecArrayBuilder *out,
+                                 int out_ncols) {
+    int64_t n = out[0].length;
+    if (n == 0) {
+        for (int c = 0; c < out_ncols; c++) vec_builder_free(&out[c]);
+        free(out);
+        return NULL;
+    }
+    VecBatch *result = vec_batch_alloc(out_ncols, n);
+    for (int c = 0; c < out_ncols; c++) {
+        result->columns[c] = vec_builder_finish(&out[c]);
+        const char *nm = jn->base.output_schema.col_names[c];
+        size_t nm_len = strlen(nm);
+        result->col_names[c] = (char *)malloc(nm_len + 1);
+        memcpy(result->col_names[c], nm, nm_len + 1);
+    }
+    free(out);
+    return result;
+}
+
+/* Allocate out_ncols output builders, each reserved for `reserve` rows. */
+static VecArrayBuilder *join_alloc_out(JoinNode *jn, int out_ncols,
+                                       int64_t reserve) {
+    VecArrayBuilder *out = (VecArrayBuilder *)calloc(
+        (size_t)out_ncols, sizeof(VecArrayBuilder));
+    for (int c = 0; c < out_ncols; c++) {
+        out[c] = vec_builder_init(jn->base.output_schema.col_types[c]);
+        if (reserve > 0) vec_builder_reserve(&out[c], reserve);
+    }
+    return out;
+}
+
+/* Coerce build-side key columns in jn->r_cols to the common (probe) key type,
+   so probe and build compare at the same type. join_coerce_probe_keys then
+   coerces the probe keys to the same type. Shared by the resident build and the
+   per-block BNL build; keeping them identical avoids a type-mismatch where one
+   path narrows the probe value and the other narrows the build value. */
+static void join_coerce_build_keys(JoinNode *jn) {
+    const VecSchema *lschema = &jn->left->output_schema;
+    for (int k = 0; k < jn->n_keys; k++) {
+        VecType lt = lschema->col_types[jn->lkey_idx[k]];
+        VecType rt = jn->r_cols[jn->rkey_idx[k]].type;
+        if (lt == rt) continue;
+        VecType common = vec_common_type(lt, rt);
+        if (jn->r_cols[jn->rkey_idx[k]].type != common) {
+            VecArray *coerced = vec_coerce(&jn->r_cols[jn->rkey_idx[k]], common);
+            vec_array_free(&jn->r_cols[jn->rkey_idx[k]]);
+            jn->r_cols[jn->rkey_idx[k]] = *coerced;
+            free(coerced);
+        }
+    }
+}
+
+/* Build jn->jht over the current jn->r_cols (r_nrows rows). Parallel hashing,
+   serial insert. Shared by the resident build and the per-block BNL build. */
+static void jht_build_from_rcols(JoinNode *jn, int64_t r_nrows) {
+    jn->jht = jht_create(r_nrows);   /* n_build == r_nrows, 0 for an empty build */
+    uint64_t *build_hashes = (uint64_t *)malloc(
+        (size_t)(r_nrows > 0 ? r_nrows : 1) * sizeof(uint64_t));
+    if (!build_hashes) vectra_error("alloc failed for build hash array");
+    #pragma omp parallel for if(r_nrows > VEC_OMP_THRESHOLD) schedule(static)
+    for (int64_t r = 0; r < r_nrows; r++)
+        build_hashes[r] = hash_join_key(jn->r_cols, jn->rkey_idx,
+                                         jn->n_keys, r);
+    for (int64_t r = 0; r < r_nrows; r++)
+        jht_insert(&jn->jht, build_hashes[r], r);
+    free(build_hashes);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Build phase: materialize right side into hash table                */
 /* ------------------------------------------------------------------ */
 
@@ -174,6 +344,25 @@ static int64_t jht_chain_next(const JoinHT *jht, int64_t build_row,
 /* ------------------------------------------------------------------ */
 
 #define JOIN_SPILL_PARTS 64
+
+/* Deepest re-partitioning level before a still-oversized partition (a single
+   hot key) drops to the block-nested-loop fallback. 64^3 effective ways is far
+   more than any multi-key skew needs, so BNL fires only for a true hot key. */
+#define JOIN_MAX_SPILL_DEPTH 3
+
+/* Depth salt for the partition hash. A constant XOR before `% K` is only a
+   fixed bucket permutation (keys that collide stay collided), so mix the salt
+   in multiplicatively (murmur3 fmix): a different depth reshuffles which keys
+   share a partition, so a multi-key oversized partition actually splits when
+   its sub-join re-partitions. salt 0 (the top level) is the identity. */
+static inline uint64_t join_salt_mix(uint64_t h, uint64_t salt) {
+    if (salt == 0) return h;
+    h ^= salt * 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
+    h ^= h >> 33;
+    return h;
+}
 
 /* Rough in-memory byte size of a batch's logical rows: string payload plus a
    flat 8 bytes/value. Only a trigger heuristic, so exactness is not needed. */
@@ -200,12 +389,16 @@ static char *make_spill_path(const char *temp_dir, char side, int p) {
     return path;
 }
 
-/* Route one batch's rows into K partition writers by the hash of the key
-   columns coerced to `common` types, so equal keys on both sides land in the
-   same partition (the sub-join re-coerces from the original stored rows). */
+/* Route a batch into K partition writers by the hash of the key columns coerced
+   to `common` types, so equal keys on both sides land in the same partition (the
+   sub-join re-coerces from the original stored rows). `writers` may hold NULL
+   slots: a slot is opened from paths[p] on first use, so a partition that never
+   receives a row creates no file (a hot key leaves 63 of 64 empty each level).
+   paths may be NULL only when every writer is pre-opened (K=1 BNL). */
 static void spill_write_batch(VecBatch *batch, const VecSchema *schema,
                               const int *key_col, const VecType *common,
-                              int n_keys, Vtr1TdcWriter **writers, int K) {
+                              int n_keys, Vtr1TdcWriter **writers,
+                              char **paths, int K, uint64_t salt) {
     int n_cols = schema->n_cols;
     int64_t n = vec_batch_logical_rows(batch);
     if (n == 0) return;
@@ -225,7 +418,9 @@ static void spill_write_batch(VecBatch *batch, const VecSchema *schema,
     int *pid = (int *)malloc((size_t)n * sizeof(int));
     for (int64_t li = 0; li < n; li++) {
         int64_t pr = vec_batch_physical_row(batch, li);
-        pid[li] = (int)(hash_join_key(ckeys, key_id, n_keys, pr) % (uint64_t)K);
+        uint64_t h = join_salt_mix(hash_join_key(ckeys, key_id, n_keys, pr),
+                                   salt);
+        pid[li] = (int)(h % (uint64_t)K);
     }
 
     for (int p = 0; p < K; p++) {
@@ -251,6 +446,8 @@ static void spill_write_batch(VecBatch *batch, const VecSchema *schema,
             strcpy(ob->col_names[c], schema->col_names[c]);
         }
         free(bld);
+        if (writers[p] == NULL)
+            writers[p] = vtr1_open_tdc_writer(paths[p], schema);
         vtr1_write_rowgroup_tdc(writers[p], ob, VTR_COMPRESS_FAST, NULL, NULL);
         vec_batch_free(ob);
     }
@@ -264,6 +461,9 @@ static void spill_write_batch(VecBatch *batch, const VecSchema *schema,
    side. Consumes r_builders (finishes them). */
 static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders) {
     int K = JOIN_SPILL_PARTS;
+    /* Reshuffle the partition assignment per recursion level so a partition a
+       sub-join re-spills does not route every key back to one child. */
+    uint64_t salt = (uint64_t)jn->spill_depth;
     const VecSchema *rs = &jn->right->output_schema;
     const VecSchema *ls = &jn->left->output_schema;
     int r_ncols = rs->n_cols;
@@ -281,13 +481,11 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders) {
     jn->n_parts = K;
     jn->right_parts = (char **)calloc((size_t)K, sizeof(char *));
     jn->left_parts  = (char **)calloc((size_t)K, sizeof(char *));
-    Vtr1TdcWriter **rw = (Vtr1TdcWriter **)malloc((size_t)K * sizeof(Vtr1TdcWriter *));
-    Vtr1TdcWriter **lw = (Vtr1TdcWriter **)malloc((size_t)K * sizeof(Vtr1TdcWriter *));
+    Vtr1TdcWriter **rw = (Vtr1TdcWriter **)calloc((size_t)K, sizeof(Vtr1TdcWriter *));
+    Vtr1TdcWriter **lw = (Vtr1TdcWriter **)calloc((size_t)K, sizeof(Vtr1TdcWriter *));
     for (int p = 0; p < K; p++) {
         jn->right_parts[p] = make_spill_path(jn->temp_dir, 'r', p);
         jn->left_parts[p]  = make_spill_path(jn->temp_dir, 'l', p);
-        rw[p] = vtr1_open_tdc_writer(jn->right_parts[p], rs);
-        lw[p] = vtr1_open_tdc_writer(jn->left_parts[p], ls);
     }
 
     /* Route the already-materialized build partial. */
@@ -299,7 +497,8 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders) {
             pb->col_names[c] = (char *)malloc(strlen(rs->col_names[c]) + 1);
             strcpy(pb->col_names[c], rs->col_names[c]);
         }
-        spill_write_batch(pb, rs, rkey, common, jn->n_keys, rw, K);
+        spill_write_batch(pb, rs, rkey, common, jn->n_keys, rw,
+                          jn->right_parts, K, salt);
         vec_batch_free(pb);
     } else {
         for (int c = 0; c < r_ncols; c++) {
@@ -311,15 +510,29 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders) {
     /* Route the rest of the build stream, then the whole probe stream. */
     VecBatch *b;
     while ((b = jn->right->next_batch(jn->right)) != NULL) {
-        spill_write_batch(b, rs, rkey, common, jn->n_keys, rw, K);
+        spill_write_batch(b, rs, rkey, common, jn->n_keys, rw,
+                          jn->right_parts, K, salt);
         vec_batch_free(b);
     }
     while ((b = jn->left->next_batch(jn->left)) != NULL) {
-        spill_write_batch(b, ls, lkey, common, jn->n_keys, lw, K);
+        spill_write_batch(b, ls, lkey, common, jn->n_keys, lw,
+                          jn->left_parts, K, salt);
         vec_batch_free(b);
     }
 
+    /* Close opened writers. A partition empty on BOTH sides is dropped (no files
+       created); one empty on a single side still needs a valid empty run-file so
+       the sub-join's scan can open it (unmatched rows there still matter for
+       left/right/full). */
     for (int p = 0; p < K; p++) {
+        int ro = (rw[p] != NULL), lo = (lw[p] != NULL);
+        if (!ro && !lo) {
+            free(jn->right_parts[p]); jn->right_parts[p] = NULL;
+            free(jn->left_parts[p]);  jn->left_parts[p]  = NULL;
+            continue;
+        }
+        if (!ro) rw[p] = vtr1_open_tdc_writer(jn->right_parts[p], rs);
+        if (!lo) lw[p] = vtr1_open_tdc_writer(jn->left_parts[p], ls);
         vtr1_close_tdc_writer(rw[p]);
         vtr1_close_tdc_writer(lw[p]);
     }
@@ -330,8 +543,10 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders) {
     jn->sub_join = NULL;
 }
 
-/* Build an in-memory sub-join over one partition's spilled left/right files.
-   mem_budget 0 => the sub-join never re-spills (single-level partitioning). */
+/* Sub-join over one partition's spilled left/right files. It carries the same
+   memory budget and a deeper spill level, so a partition still over budget
+   re-partitions itself (salted by depth) or, at JOIN_MAX_SPILL_DEPTH, drops to
+   the block-nested-loop fallback -- keeping every partition bounded. */
 static VecNode *make_partition_join(JoinNode *jn, int p) {
     ScanNode *lsc = scan_node_create(jn->left_parts[p], NULL, 0);
     ScanNode *rsc = scan_node_create(jn->right_parts[p], NULL, 0);
@@ -339,8 +554,304 @@ static VecNode *make_partition_join(JoinNode *jn, int p) {
     memcpy(keys, jn->keys, (size_t)jn->n_keys * sizeof(JoinKey));
     JoinNode *sj = join_node_create((VecNode *)lsc, (VecNode *)rsc, jn->kind,
                                     jn->n_keys, keys, jn->suffix_x, jn->suffix_y,
-                                    0, NULL);
+                                    jn->mem_budget, jn->temp_dir);
+    sj->spill_depth = jn->spill_depth + 1;
     return (VecNode *)sj;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Block-nested-loop terminal fallback (single hot key)               */
+/* ------------------------------------------------------------------ */
+
+/* A partition that survives JOIN_MAX_SPILL_DEPTH re-partitions is dominated by
+   one key value that hashing cannot split. Rather than materialize it resident,
+   consolidate each side to a single run-file and block-nested-loop: read the
+   build file in <= mem_budget blocks; for each block, re-scan the whole probe
+   file and emit matches. Peak = one build block + one probe batch + 1-bit/row
+   matched bitsets, independent of key skew. Non-inner kinds defer unmatched /
+   matched emission to a final scan driven by the bitsets. */
+
+static char *bnl_make_path(const char *temp_dir, char side) {
+    static int bnl_counter = 0;
+    int id = bnl_counter++;
+    int len = snprintf(NULL, 0, "%s/vectra_bnl_%d_%c.vtr", temp_dir, id, side);
+    char *path = (char *)malloc((size_t)(len + 1));
+    snprintf(path, (size_t)(len + 1), "%s/vectra_bnl_%d_%c.vtr",
+             temp_dir, id, side);
+    return path;
+}
+
+/* Stream `partial` (may be NULL) then all of `child` into one run-file,
+   compacting selection vectors via the tested spill_write_batch (K=1). Returns
+   the logical row count written. */
+static int64_t bnl_consolidate(JoinNode *jn, VecNode *child,
+                               const VecSchema *schema, const int *key_col,
+                               VecBatch *partial, const char *path) {
+    Vtr1TdcWriter *w = vtr1_open_tdc_writer(path, schema);
+    Vtr1TdcWriter *ws[1] = { w };
+    VecType common[16];
+    for (int k = 0; k < jn->n_keys; k++)
+        common[k] = schema->col_types[key_col[k]];  /* K=1: identity, no coerce */
+    int64_t rows = 0;
+    if (partial) {
+        rows += vec_batch_logical_rows(partial);
+        spill_write_batch(partial, schema, key_col, common, jn->n_keys, ws,
+                          NULL, 1, 0);
+    }
+    VecBatch *b;
+    while ((b = child->next_batch(child)) != NULL) {
+        rows += vec_batch_logical_rows(b);
+        spill_write_batch(b, schema, key_col, common, jn->n_keys, ws, NULL, 1, 0);
+        vec_batch_free(b);
+    }
+    vtr1_close_tdc_writer(w);
+    return rows;
+}
+
+/* Consumes r_builders. Consolidates both sides and arms BNL mode. */
+static void join_spill_bnl(JoinNode *jn, VecArrayBuilder *r_builders) {
+    const VecSchema *rs = &jn->right->output_schema;
+    const VecSchema *ls = &jn->left->output_schema;
+    int r_ncols = rs->n_cols;
+
+    /* Materialized build partial -> a batch (no selection vector). */
+    VecBatch *pb = vec_batch_alloc(r_ncols, r_builders[0].length);
+    for (int c = 0; c < r_ncols; c++) {
+        pb->columns[c] = vec_builder_finish(&r_builders[c]);
+        pb->col_names[c] = (char *)malloc(strlen(rs->col_names[c]) + 1);
+        strcpy(pb->col_names[c], rs->col_names[c]);
+    }
+
+    jn->bnl_rpath = bnl_make_path(jn->temp_dir, 'r');
+    jn->bnl_lpath = bnl_make_path(jn->temp_dir, 'l');
+    jn->bnl_rrows = bnl_consolidate(jn, jn->right, rs, jn->rkey_idx,
+                                    pb, jn->bnl_rpath);
+    vec_batch_free(pb);
+    jn->bnl_lrows = bnl_consolidate(jn, jn->left, ls, jn->lkey_idx,
+                                    NULL, jn->bnl_lpath);
+
+    if (jn->kind != JOIN_INNER) {
+        int64_t nb = (jn->bnl_lrows + 7) / 8;
+        jn->bnl_pmatched = (uint8_t *)calloc(nb > 0 ? (size_t)nb : 1, 1);
+    }
+    if (jn->kind == JOIN_FULL) {
+        int64_t nb = (jn->bnl_rrows + 7) / 8;
+        jn->bnl_bmatched = (uint8_t *)calloc(nb > 0 ? (size_t)nb : 1, 1);
+    }
+    jn->bnl = 1;
+    jn->bnl_stage = 0;
+    jn->bnl_block_base = 0;
+    jn->bnl_pbase = 0;
+    jn->bnl_rscan = NULL;
+    jn->bnl_pscan = NULL;
+}
+
+/* Free the current build block (r_cols + its hash table). */
+static void bnl_free_block(JoinNode *jn) {
+    if (jn->r_cols) {
+        for (int c = 0; c < jn->r_ncols; c++)
+            vec_array_free(&jn->r_cols[c]);
+        free(jn->r_cols);
+        jn->r_cols = NULL;
+    }
+    if (jn->jht.head) jht_free(&jn->jht);
+}
+
+/* Load up to mem_budget bytes of the next build block into jn->r_cols and build
+   its hash table. Returns rows loaded, 0 when the build file is exhausted. */
+static int64_t bnl_load_block(JoinNode *jn) {
+    const VecSchema *rs = &jn->right->output_schema;
+    int r_ncols = rs->n_cols;
+    VecArrayBuilder *rb = (VecArrayBuilder *)calloc(
+        (size_t)r_ncols, sizeof(VecArrayBuilder));
+    for (int c = 0; c < r_ncols; c++) rb[c] = vec_builder_init(rs->col_types[c]);
+
+    int64_t acc = 0;
+    VecBatch *b;
+    while (acc <= jn->mem_budget &&
+           (b = jn->bnl_rscan->next_batch(jn->bnl_rscan)) != NULL) {
+        if (!b->sel) {
+            for (int c = 0; c < r_ncols; c++)
+                vec_builder_append_array(&rb[c], &b->columns[c]);
+        } else {
+            int64_t nl = vec_batch_logical_rows(b);
+            for (int c = 0; c < r_ncols; c++) vec_builder_reserve(&rb[c], nl);
+            for (int64_t li = 0; li < nl; li++) {
+                int64_t pi = vec_batch_physical_row(b, li);
+                for (int c = 0; c < r_ncols; c++)
+                    vec_builder_append_one(&rb[c], &b->columns[c], pi);
+            }
+        }
+        acc += join_batch_bytes(b, r_ncols);
+        vec_batch_free(b);
+    }
+
+    int64_t nrows = rb[0].length;
+    jn->r_cols = (VecArray *)malloc((size_t)r_ncols * sizeof(VecArray));
+    for (int c = 0; c < r_ncols; c++) jn->r_cols[c] = vec_builder_finish(&rb[c]);
+    free(rb);
+    if (nrows == 0) { free(jn->r_cols); jn->r_cols = NULL; return 0; }
+
+    join_coerce_build_keys(jn);
+    jht_build_from_rcols(jn, nrows);  /* jht.n_build = block row count */
+    return nrows;
+}
+
+/* Probe one probe batch against the current build block. Emits matched pairs
+   for inner/left/full; records probe-matched (non-inner) and build-matched
+   (full) into the global bitsets. Advances jn->bnl_pbase. NULL when empty. */
+static VecBatch *bnl_probe_batch(JoinNode *jn, VecBatch *pbatch) {
+    int l_ncols = jn->left->output_schema.n_cols;
+    int out_ncols = jn->base.output_schema.n_cols;
+    int64_t p_logical = vec_batch_logical_rows(pbatch);
+
+    VecArray *coerced[16] = {0};
+    VecArray *hash_cols = NULL;
+    VecArray *probe_cols = join_coerce_probe_keys(jn, pbatch, coerced, &hash_cols);
+
+    VecArrayBuilder *out = join_alloc_out(jn, out_ncols, p_logical);
+
+    for (int64_t li = 0; li < p_logical; li++) {
+        int64_t pr = vec_batch_physical_row(pbatch, li);
+        int64_t gord = jn->bnl_pbase + li;
+        uint64_t h = hash_join_key(probe_cols, jn->lkey_idx, jn->n_keys, pr);
+        int64_t br = jht_probe(&jn->jht, h, probe_cols, jn->lkey_idx,
+                               jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+        if (br < 0) continue;  /* no match in this block */
+
+        if (jn->kind != JOIN_INNER)
+            jn->bnl_pmatched[gord >> 3] |= (uint8_t)(1 << (gord & 7));
+
+        if (jn->kind == JOIN_INNER || jn->kind == JOIN_LEFT ||
+            jn->kind == JOIN_FULL) {
+            while (br >= 0) {
+                if (jn->kind == JOIN_FULL) {
+                    int64_t gbr = jn->bnl_block_base + br;
+                    jn->bnl_bmatched[gbr >> 3] |= (uint8_t)(1 << (gbr & 7));
+                }
+                join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
+                br = jht_chain_next(&jn->jht, br, probe_cols, jn->lkey_idx,
+                                    jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+            }
+        }
+        /* semi/anti: only the pmatched bit; output happens in finalize */
+    }
+
+    jn->bnl_pbase += p_logical;
+    join_free_probe_keys(jn, coerced, hash_cols);
+    return join_finish_out(jn, out, out_ncols);
+}
+
+/* Finalize probe-side output from a full probe re-scan: left/full emit unmatched
+   rows, semi emits matched rows, anti emits unmatched rows -- all driven by the
+   global probe-matched bitset. Loops internally so NULL means the scan is done
+   (not merely an empty batch). Advances jn->bnl_pbase as the ordinal cursor. */
+static VecBatch *bnl_finalize_probe(JoinNode *jn) {
+    int l_ncols = jn->left->output_schema.n_cols;
+    int out_ncols = jn->base.output_schema.n_cols;
+    for (;;) {
+        VecBatch *pb = jn->bnl_pscan->next_batch(jn->bnl_pscan);
+        if (!pb) return NULL;
+        int64_t nl = vec_batch_logical_rows(pb);
+        VecArrayBuilder *out = join_alloc_out(jn, out_ncols, 0);
+        for (int64_t li = 0; li < nl; li++) {
+            int64_t gord = jn->bnl_pbase + li;
+            int matched = (jn->bnl_pmatched[gord >> 3] >> (gord & 7)) & 1;
+            int emit = (jn->kind == JOIN_SEMI) ? matched : !matched;
+            if (emit)
+                join_emit_left_only(jn, out, pb->columns, l_ncols,
+                                    vec_batch_physical_row(pb, li));
+        }
+        jn->bnl_pbase += nl;
+        vec_batch_free(pb);
+        VecBatch *r = join_finish_out(jn, out, out_ncols);
+        if (r) return r;
+    }
+}
+
+/* Finalize build-side output (full join): emit each unmatched build row as a
+   right-only row from a full build re-scan. Loops internally; NULL = done. */
+static VecBatch *bnl_finalize_build(JoinNode *jn) {
+    int l_ncols = jn->left->output_schema.n_cols;
+    int out_ncols = jn->base.output_schema.n_cols;
+    int *l_col_rkey = join_build_l_col_rkey(jn, l_ncols);
+    for (;;) {
+        VecBatch *rb = jn->bnl_rscan->next_batch(jn->bnl_rscan);
+        if (!rb) { free(l_col_rkey); return NULL; }
+        int64_t nl = vec_batch_logical_rows(rb);
+        VecArrayBuilder *out = join_alloc_out(jn, out_ncols, 0);
+        for (int64_t li = 0; li < nl; li++) {
+            int64_t gord = jn->bnl_pbase + li;  /* reused as build ordinal */
+            int matched = (jn->bnl_bmatched[gord >> 3] >> (gord & 7)) & 1;
+            if (!matched)
+                join_emit_right_only(jn, out, rb->columns, l_ncols, l_col_rkey,
+                                     vec_batch_physical_row(rb, li));
+        }
+        jn->bnl_pbase += nl;
+        vec_batch_free(rb);
+        VecBatch *r = join_finish_out(jn, out, out_ncols);
+        if (r) { free(l_col_rkey); return r; }
+    }
+}
+
+/* BNL driver: block the build, re-scan the probe per block, then finalize the
+   deferred probe-side and (full) build-side rows. */
+static VecBatch *join_bnl_next_batch(JoinNode *jn) {
+    for (;;) {
+        if (jn->bnl_stage == 0) {                 /* load next build block */
+            if (!jn->bnl_rscan)
+                jn->bnl_rscan = (VecNode *)scan_node_create(jn->bnl_rpath, NULL, 0);
+            int64_t nrows = bnl_load_block(jn);
+            if (nrows == 0) {                     /* build exhausted */
+                jn->bnl_rscan->free_node(jn->bnl_rscan); jn->bnl_rscan = NULL;
+                jn->bnl_stage = 2; jn->bnl_fin_side = 0; jn->bnl_pbase = 0;
+                continue;
+            }
+            jn->bnl_pscan = (VecNode *)scan_node_create(jn->bnl_lpath, NULL, 0);
+            jn->bnl_pbase = 0;
+            jn->bnl_stage = 1;
+            continue;
+        }
+        if (jn->bnl_stage == 1) {                 /* probe current block */
+            VecBatch *pb = jn->bnl_pscan->next_batch(jn->bnl_pscan);
+            if (!pb) {                            /* block's probe pass done */
+                jn->bnl_pscan->free_node(jn->bnl_pscan); jn->bnl_pscan = NULL;
+                jn->bnl_block_base += jn->jht.n_build;
+                bnl_free_block(jn);
+                jn->bnl_stage = 0;
+                continue;
+            }
+            VecBatch *out = bnl_probe_batch(jn, pb);
+            vec_batch_free(pb);
+            if (out) return out;
+            continue;
+        }
+        /* stage 2: finalize */
+        if (jn->bnl_fin_side == 0) {              /* deferred probe-side rows */
+            if (jn->kind == JOIN_INNER) {
+                jn->bnl_fin_side = 1; jn->bnl_pbase = 0; continue;
+            }
+            if (!jn->bnl_pscan) {
+                jn->bnl_pscan = (VecNode *)scan_node_create(jn->bnl_lpath, NULL, 0);
+                jn->bnl_pbase = 0;
+            }
+            VecBatch *out = bnl_finalize_probe(jn);
+            if (out) return out;
+            jn->bnl_pscan->free_node(jn->bnl_pscan); jn->bnl_pscan = NULL;
+            jn->bnl_fin_side = 1; jn->bnl_pbase = 0;
+            continue;
+        }
+        /* fin_side 1: unmatched build rows (full only) */
+        if (jn->kind != JOIN_FULL) return NULL;
+        if (!jn->bnl_rscan) {
+            jn->bnl_rscan = (VecNode *)scan_node_create(jn->bnl_rpath, NULL, 0);
+            jn->bnl_pbase = 0;
+        }
+        VecBatch *out = bnl_finalize_build(jn);
+        if (out) return out;
+        jn->bnl_rscan->free_node(jn->bnl_rscan); jn->bnl_rscan = NULL;
+        return NULL;
+    }
 }
 
 static void join_build(JoinNode *jn) {
@@ -371,11 +882,17 @@ static void join_build(JoinNode *jn) {
         }
         acc_bytes += join_batch_bytes(batch, jn->r_ncols);
         vec_batch_free(batch);
-        /* Build side outgrew the budget: spill both sides to partitions and
-           join one partition at a time. Merge join and full-join finalize
-           are handled by the per-partition sub-joins. */
+        /* Build side outgrew the budget. Below the depth cap, hash-partition
+           both sides and join one partition at a time (sub-joins re-spill as
+           needed). At the cap the partition is un-splittable by hashing (a
+           single hot key), so fall back to a block-nested-loop that blocks the
+           build under budget and re-scans the probe per block. Either way peak
+           stays bounded. */
         if (jn->mem_budget > 0 && acc_bytes > jn->mem_budget) {
-            join_spill(jn, r_builders);
+            if (jn->spill_depth < JOIN_MAX_SPILL_DEPTH)
+                join_spill(jn, r_builders);
+            else
+                join_spill_bnl(jn, r_builders);
             free(r_builders);
             return;
         }
@@ -388,21 +905,7 @@ static void join_build(JoinNode *jn) {
     free(r_builders);
 
     /* Coerce build-side key columns to match probe-side types */
-    const VecSchema *lschema = &jn->left->output_schema;
-    for (int k = 0; k < jn->n_keys; k++) {
-        VecType lt = lschema->col_types[jn->lkey_idx[k]];
-        VecType rt = jn->r_cols[jn->rkey_idx[k]].type;
-        if (lt != rt) {
-            VecType common = vec_common_type(lt, rt);
-            if (jn->r_cols[jn->rkey_idx[k]].type != common) {
-                VecArray *coerced = vec_coerce(
-                    &jn->r_cols[jn->rkey_idx[k]], common);
-                vec_array_free(&jn->r_cols[jn->rkey_idx[k]]);
-                jn->r_cols[jn->rkey_idx[k]] = *coerced;
-                free(coerced);
-            }
-        }
-    }
+    join_coerce_build_keys(jn);
 
     /* Check if both sides are sorted on join keys — use merge join if so */
     if (child_sorted_on_keys(jn->left, jn->lkey_idx, jn->n_keys) &&
@@ -418,23 +921,7 @@ static void join_build(JoinNode *jn) {
         /* Build hash table: pre-compute hashes in parallel, insert sequentially.
            Hashing is the expensive part (60-80% of build cost); insertion into
            the open-addressing table with chaining is cheap but has write conflicts. */
-        jn->jht = jht_create(r_nrows > 0 ? r_nrows : 1);
-        {
-            uint64_t *build_hashes = (uint64_t *)malloc(
-                (size_t)(r_nrows > 0 ? r_nrows : 1) * sizeof(uint64_t));
-            if (!build_hashes) vectra_error("alloc failed for build hash array");
-
-            #pragma omp parallel for if(r_nrows > VEC_OMP_THRESHOLD) schedule(static)
-            for (int64_t r = 0; r < r_nrows; r++) {
-                build_hashes[r] = hash_join_key(jn->r_cols, jn->rkey_idx,
-                                                 jn->n_keys, r);
-            }
-
-            for (int64_t r = 0; r < r_nrows; r++)
-                jht_insert(&jn->jht, build_hashes[r], r);
-
-            free(build_hashes);
-        }
+        jht_build_from_rcols(jn, r_nrows);
     }
 
     /* full_join: allocate build_matched bitset */
@@ -494,37 +981,12 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
     /* Build coerced probe key columns for hashing/comparison.
        The batch itself stays untouched (originals used for output). */
     VecArray *coerced_probe_keys[16] = {0};
-    /* Temporary columns array for hashing: same as pbatch->columns but
-       with coerced key columns swapped in */
-    int need_coerce = 0;
-    for (int k = 0; k < jn->n_keys && k < 16; k++) {
-        VecType pt = pbatch->columns[jn->lkey_idx[k]].type;
-        VecType bt = jn->r_cols[jn->rkey_idx[k]].type;
-        if (pt != bt) {
-            coerced_probe_keys[k] = vec_coerce(
-                &pbatch->columns[jn->lkey_idx[k]], bt);
-            need_coerce = 1;
-        }
-    }
-    /* Build a separate columns array for hash/compare only */
     VecArray *hash_cols = NULL;
-    if (need_coerce) {
-        hash_cols = (VecArray *)malloc((size_t)l_ncols * sizeof(VecArray));
-        memcpy(hash_cols, pbatch->columns, (size_t)l_ncols * sizeof(VecArray));
-        for (int k = 0; k < jn->n_keys && k < 16; k++) {
-            if (coerced_probe_keys[k])
-                hash_cols[jn->lkey_idx[k]] = *coerced_probe_keys[k];
-        }
-    }
-    VecArray *probe_cols = need_coerce ? hash_cols : pbatch->columns;
+    VecArray *probe_cols = join_coerce_probe_keys(jn, pbatch,
+                                                  coerced_probe_keys, &hash_cols);
 
     /* Initialize output builders with reserve for expected output */
-    VecArrayBuilder *out = (VecArrayBuilder *)calloc(
-        (size_t)out_ncols, sizeof(VecArrayBuilder));
-    for (int c = 0; c < out_ncols; c++) {
-        out[c] = vec_builder_init(jn->base.output_schema.col_types[c]);
-        vec_builder_reserve(&out[c], p_logical);
-    }
+    VecArrayBuilder *out = join_alloc_out(jn, out_ncols, p_logical);
 
     /* For left_join/full_join: track which logical probe rows got a match */
     uint8_t *probe_matched = NULL;
@@ -602,26 +1064,18 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
 
         switch (jn->kind) {
         case JOIN_SEMI:
-            if (br >= 0) {
-                for (int c = 0; c < l_ncols; c++)
-                    vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
-            }
+            if (br >= 0)
+                join_emit_left_only(jn, out, pbatch->columns, l_ncols, pr);
             break;
 
         case JOIN_ANTI:
-            if (br < 0) {
-                for (int c = 0; c < l_ncols; c++)
-                    vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
-            }
+            if (br < 0)
+                join_emit_left_only(jn, out, pbatch->columns, l_ncols, pr);
             break;
 
         case JOIN_INNER:
             while (br >= 0) {
-                for (int c = 0; c < l_ncols; c++)
-                    vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
-                for (int j = 0; j < jn->r_non_key_count; j++)
-                    vec_builder_append_one(&out[l_ncols + j],
-                        &jn->r_cols[jn->r_non_key_idx[j]], br);
+                join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                 br = jht_chain_next(&jn->jht, br,
                     probe_cols, jn->lkey_idx,
                     jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
@@ -632,14 +1086,9 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
             if (br >= 0) {
                 probe_matched[li / 8] |= (uint8_t)(1 << (li % 8));
                 while (br >= 0) {
-                    for (int c = 0; c < l_ncols; c++)
-                        vec_builder_append_one(&out[c],
-                            &pbatch->columns[c], pr);
-                    for (int j = 0; j < jn->r_non_key_count; j++)
-                        vec_builder_append_one(&out[l_ncols + j],
-                            &jn->r_cols[jn->r_non_key_idx[j]], br);
+                    join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                     br = jht_chain_next(&jn->jht, br,
-                        pbatch->columns, jn->lkey_idx,
+                        probe_cols, jn->lkey_idx,
                         jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
                 }
             }
@@ -651,14 +1100,9 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
                 while (br >= 0) {
                     jn->build_matched[br / 8] |=
                         (uint8_t)(1 << (br % 8));
-                    for (int c = 0; c < l_ncols; c++)
-                        vec_builder_append_one(&out[c],
-                            &pbatch->columns[c], pr);
-                    for (int j = 0; j < jn->r_non_key_count; j++)
-                        vec_builder_append_one(&out[l_ncols + j],
-                            &jn->r_cols[jn->r_non_key_idx[j]], br);
+                    join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                     br = jht_chain_next(&jn->jht, br,
-                        pbatch->columns, jn->lkey_idx,
+                        probe_cols, jn->lkey_idx,
                         jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
                 }
             }
@@ -673,44 +1117,15 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         for (int64_t li = 0; li < p_logical; li++) {
             if (probe_matched[li / 8] & (1 << (li % 8))) continue;
             int64_t pr = vec_batch_physical_row(pbatch, li);
-            for (int c = 0; c < l_ncols; c++)
-                vec_builder_append_one(&out[c], &pbatch->columns[c], pr);
-            /* Bulk NA fill for all right non-key columns */
-            for (int j = 0; j < jn->r_non_key_count; j++)
-                vec_builder_append_na(&out[l_ncols + j]);
+            join_emit_left_only(jn, out, pbatch->columns, l_ncols, pr);
         }
         free(probe_matched);
     }
 
-    /* Free coerced probe key arrays */
-    for (int k = 0; k < jn->n_keys && k < 16; k++) {
-        if (coerced_probe_keys[k]) {
-            vec_array_free(coerced_probe_keys[k]);
-            free(coerced_probe_keys[k]);
-        }
-    }
-    free(hash_cols); /* NULL-safe */
+    join_free_probe_keys(jn, coerced_probe_keys, hash_cols);
 
-    /* Build result batch */
-    int64_t out_nrows = out[0].length;
-    if (out_nrows == 0) {
-        /* Empty batch (e.g. anti_join with all matches): free and try next */
-        for (int c = 0; c < out_ncols; c++)
-            vec_builder_free(&out[c]);
-        free(out);
-        return NULL; /* signal caller to try next batch */
-    }
-
-    VecBatch *result = vec_batch_alloc(out_ncols, out_nrows);
-    for (int c = 0; c < out_ncols; c++) {
-        result->columns[c] = vec_builder_finish(&out[c]);
-        const char *nm = jn->base.output_schema.col_names[c];
-        size_t nm_len = strlen(nm);
-        result->col_names[c] = (char *)malloc(nm_len + 1);
-        memcpy(result->col_names[c], nm, nm_len + 1);
-    }
-    free(out);
-    return result;
+    /* Build result batch (NULL when empty, e.g. anti_join with all matches). */
+    return join_finish_out(jn, out, out_ncols);
 }
 
 /* ------------------------------------------------------------------ */
@@ -842,18 +1257,23 @@ static int64_t merge_find_group_end(JoinNode *jn, int64_t r_start) {
     return r_end;
 }
 
+/* An NA key never matches (SQL semantics, matching the hash-join path). Because
+   NA sorts last, the only way two keys compare equal with an NA present is when
+   both are NA -- so testing the left key is enough at a cmp==0 point. */
+static int merge_left_key_na(JoinNode *jn, int64_t pr) {
+    for (int k = 0; k < jn->n_keys; k++)
+        if (!vec_array_is_valid(&jn->merge_l_batch->columns[jn->lkey_idx[k]], pr))
+            return 1;
+    return 0;
+}
+
 static VecBatch *merge_join_batch(JoinNode *jn) {
     const VecSchema *lschema = &jn->left->output_schema;
     int l_ncols = lschema->n_cols;
     int out_ncols = jn->base.output_schema.n_cols;
     int64_t r_nrows = jn->jht.n_build;  /* reuse n_build for row count */
 
-    VecArrayBuilder *out = (VecArrayBuilder *)calloc(
-        (size_t)out_ncols, sizeof(VecArrayBuilder));
-    for (int c = 0; c < out_ncols; c++) {
-        out[c] = vec_builder_init(jn->base.output_schema.col_types[c]);
-        vec_builder_reserve(&out[c], MERGE_JOIN_BATCH_SIZE);
-    }
+    VecArrayBuilder *out = join_alloc_out(jn, out_ncols, MERGE_JOIN_BATCH_SIZE);
 
     int64_t emitted = 0;
 
@@ -868,8 +1288,11 @@ static VecBatch *merge_join_batch(JoinNode *jn) {
             }
         }
 
-        /* If we're in the middle of a M:N group cross product, continue it */
-        if (jn->merge_r_sub > 0 && jn->merge_r_sub < jn->merge_r_group_end
+        /* If we're in the middle of a M:N group cross product, continue it.
+           merge_r_sub == -1 means inactive; a real cursor is in
+           [merge_r_group, merge_r_group_end), and merge_r_group can be 0 (the
+           first build group), so the inactive test is `< 0`, not `== 0`. */
+        if (jn->merge_r_sub >= 0 && jn->merge_r_sub < jn->merge_r_group_end
             && !jn->merge_l_done) {
             int64_t pr = merge_left_phys(jn);
             while (jn->merge_r_sub < jn->merge_r_group_end &&
@@ -888,8 +1311,9 @@ static VecBatch *merge_join_batch(JoinNode *jn) {
                 emitted++;
             }
             if (jn->merge_r_sub >= jn->merge_r_group_end) {
-                /* Done with this left row's group; advance left */
-                jn->merge_r_sub = 0;
+                /* Done with this left row's group; advance left. -1 = inactive
+                   (0 is a valid group cursor, so it cannot mean "done"). */
+                jn->merge_r_sub = -1;
                 if (merge_advance_left(jn)) break;
                 /* Check if next left row also matches this group */
                 if (!jn->merge_l_done) {
@@ -970,35 +1394,34 @@ static VecBatch *merge_join_batch(JoinNode *jn) {
             }
             merge_advance_left(jn);
         } else if (cmp > 0) {
-            /* Left > right: advance right */
+            /* Left > right: this build row has no matching left row. Emit it now
+               (full) and mark it matched so the finalize pass -- which also
+               scans build_matched for unmatched build rows -- does not emit it a
+               second time. */
             if (jn->kind == JOIN_FULL) {
-                /* Emit unmatched right row with NA left columns */
-                int *l_col_rkey = (int *)malloc((size_t)l_ncols * sizeof(int));
-                for (int c = 0; c < l_ncols; c++) {
-                    l_col_rkey[c] = -1;
-                    for (int k = 0; k < jn->n_keys; k++) {
-                        if (jn->lkey_idx[k] == c) {
-                            l_col_rkey[c] = jn->rkey_idx[k];
-                            break;
-                        }
-                    }
-                }
-                for (int c = 0; c < l_ncols; c++) {
-                    if (l_col_rkey[c] >= 0)
-                        vec_builder_append_one(&out[c],
-                            &jn->r_cols[l_col_rkey[c]],
-                            jn->merge_r_cursor);
-                    else
-                        vec_builder_append_na(&out[c]);
-                }
-                for (int j = 0; j < jn->r_non_key_count; j++)
-                    vec_builder_append_one(&out[l_ncols + j],
-                        &jn->r_cols[jn->r_non_key_idx[j]],
-                        jn->merge_r_cursor);
+                int *l_col_rkey = join_build_l_col_rkey(jn, l_ncols);
+                join_emit_right_only(jn, out, jn->r_cols, l_ncols,
+                                     l_col_rkey, jn->merge_r_cursor);
                 free(l_col_rkey);
+                jn->build_matched[jn->merge_r_cursor / 8] |=
+                    (uint8_t)(1 << (jn->merge_r_cursor % 8));
                 emitted++;
             }
             jn->merge_r_cursor++;
+        } else if (merge_left_key_na(jn, pr)) {
+            /* cmp == 0 with an NA key means both keys are NA, which must not
+               match (as in the hash path). Treat this left row as unmatched and
+               advance it; the NA build rows are left for the finalize pass (full)
+               or dropped (inner/left/semi/anti). */
+            if (jn->kind == JOIN_LEFT || jn->kind == JOIN_FULL)
+                join_emit_left_only(jn, out, jn->merge_l_batch->columns,
+                                    l_ncols, pr);
+            else if (jn->kind == JOIN_ANTI)
+                for (int c = 0; c < l_ncols; c++)
+                    vec_builder_append_one(&out[c],
+                        &jn->merge_l_batch->columns[c], pr);
+            if (jn->kind != JOIN_INNER && jn->kind != JOIN_SEMI) emitted++;
+            merge_advance_left(jn);
         } else {
             /* Keys equal: handle match */
             int64_t grp_start = jn->merge_r_cursor;
@@ -1031,25 +1454,7 @@ static VecBatch *merge_join_batch(JoinNode *jn) {
         }
     }
 
-    /* Build result batch */
-    int64_t out_nrows = out[0].length;
-    if (out_nrows == 0) {
-        for (int c = 0; c < out_ncols; c++)
-            vec_builder_free(&out[c]);
-        free(out);
-        return NULL;
-    }
-
-    VecBatch *result = vec_batch_alloc(out_ncols, out_nrows);
-    for (int c = 0; c < out_ncols; c++) {
-        result->columns[c] = vec_builder_finish(&out[c]);
-        const char *nm = jn->base.output_schema.col_names[c];
-        size_t nm_len = strlen(nm);
-        result->col_names[c] = (char *)malloc(nm_len + 1);
-        memcpy(result->col_names[c], nm, nm_len + 1);
-    }
-    free(out);
-    return result;
+    return join_finish_out(jn, out, out_ncols);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1065,63 +1470,23 @@ static VecBatch *join_finalize(JoinNode *jn) {
     int out_ncols = jn->base.output_schema.n_cols;
     int64_t r_nrows = jn->jht.n_build;
 
-    VecArrayBuilder *out = (VecArrayBuilder *)calloc(
-        (size_t)out_ncols, sizeof(VecArrayBuilder));
-    for (int c = 0; c < out_ncols; c++)
-        out[c] = vec_builder_init(jn->base.output_schema.col_types[c]);
+    VecArrayBuilder *out = join_alloc_out(jn, out_ncols, 0);
 
     /* Precompute: for each left output column, which right key column
        provides its value (or -1 if NA). Avoids inner-loop key search. */
-    int *l_col_rkey = (int *)malloc((size_t)l_ncols * sizeof(int));
-    for (int c = 0; c < l_ncols; c++) {
-        l_col_rkey[c] = -1;
-        for (int k = 0; k < jn->n_keys; k++) {
-            if (jn->lkey_idx[k] == c) {
-                l_col_rkey[c] = jn->rkey_idx[k];
-                break;
-            }
-        }
-    }
+    int *l_col_rkey = join_build_l_col_rkey(jn, l_ncols);
 
     int64_t emitted = 0;
     int64_t br = jn->finalize_cursor;
     for (; br < r_nrows && emitted < FINALIZE_BATCH_SIZE; br++) {
         if (jn->build_matched[br / 8] & (1 << (br % 8))) continue;
-        /* Key cols from build side, non-key left cols as NA */
-        for (int c = 0; c < l_ncols; c++) {
-            if (l_col_rkey[c] >= 0)
-                vec_builder_append_one(&out[c],
-                    &jn->r_cols[l_col_rkey[c]], br);
-            else
-                vec_builder_append_na(&out[c]);
-        }
-        /* Right non-key cols from build */
-        for (int j = 0; j < jn->r_non_key_count; j++)
-            vec_builder_append_one(&out[l_ncols + j],
-                &jn->r_cols[jn->r_non_key_idx[j]], br);
+        join_emit_right_only(jn, out, jn->r_cols, l_ncols, l_col_rkey, br);
         emitted++;
     }
     jn->finalize_cursor = br;
     free(l_col_rkey);
 
-    int64_t out_nrows = out[0].length;
-    if (out_nrows == 0) {
-        for (int c = 0; c < out_ncols; c++)
-            vec_builder_free(&out[c]);
-        free(out);
-        return NULL;
-    }
-
-    VecBatch *result = vec_batch_alloc(out_ncols, out_nrows);
-    for (int c = 0; c < out_ncols; c++) {
-        result->columns[c] = vec_builder_finish(&out[c]);
-        const char *nm = jn->base.output_schema.col_names[c];
-        size_t nm_len = strlen(nm);
-        result->col_names[c] = (char *)malloc(nm_len + 1);
-        memcpy(result->col_names[c], nm, nm_len + 1);
-    }
-    free(out);
-    return result;
+    return join_finish_out(jn, out, out_ncols);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1145,15 +1510,22 @@ static VecBatch *join_next_batch(VecNode *self) {
 
     if (jn->state == JSTATE_BUILD) {
         join_build(jn);
-        jn->state = jn->spill ? JSTATE_DONE
+        jn->state = (jn->spill || jn->bnl) ? JSTATE_DONE
                   : jn->use_merge ? JSTATE_MERGE : JSTATE_PROBE;
     }
+
+    /* Block-nested-loop terminal fallback (single hot key). */
+    if (jn->bnl) return join_bnl_next_batch(jn);
 
     /* Grace-hash spill driver: pull one partition's sub-join to exhaustion,
        free it, delete its run-files, advance to the next partition. */
     if (jn->spill) {
         for (;;) {
             if (jn->sub_join == NULL) {
+                /* Skip partitions that were empty on both sides (no files). */
+                while (jn->cur_part < jn->n_parts &&
+                       jn->right_parts[jn->cur_part] == NULL)
+                    jn->cur_part++;
                 if (jn->cur_part >= jn->n_parts) return NULL;
                 jn->sub_join = make_partition_join(jn, jn->cur_part);
             }
@@ -1214,7 +1586,6 @@ static void join_free(VecNode *self) {
     free(jn->lkey_idx);
     free(jn->rkey_idx);
     free(jn->r_non_key_idx);
-    free(jn->l_non_key_idx);
     free(jn->build_matched);
     if (jn->r_cols) {
         for (int c = 0; c < jn->r_ncols; c++)
@@ -1235,6 +1606,13 @@ static void join_free(VecNode *self) {
             if (jn->left_parts[p]) { remove(jn->left_parts[p]); free(jn->left_parts[p]); }
         free(jn->left_parts);
     }
+    /* Block-nested-loop teardown: active scans, then the consolidated files. */
+    if (jn->bnl_rscan) jn->bnl_rscan->free_node(jn->bnl_rscan);
+    if (jn->bnl_pscan) jn->bnl_pscan->free_node(jn->bnl_pscan);
+    if (jn->bnl_rpath) { remove(jn->bnl_rpath); free(jn->bnl_rpath); }
+    if (jn->bnl_lpath) { remove(jn->bnl_lpath); free(jn->bnl_lpath); }
+    free(jn->bnl_pmatched);
+    free(jn->bnl_bmatched);
     free(jn->temp_dir);
     vec_schema_free(&jn->base.output_schema);
     free(jn);
@@ -1267,6 +1645,7 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     jn->suffix_y = (char *)malloc(sy_len + 1);
     memcpy(jn->suffix_y, suffix_y, sy_len + 1);
     jn->state = JSTATE_BUILD;
+    jn->merge_r_sub = -1;   /* -1 = not in an M:N cross product (0 is valid) */
 
     const VecSchema *ls = &left->output_schema;
     const VecSchema *rs = &right->output_schema;
@@ -1312,18 +1691,6 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
                 jn->r_non_key_idx[jn->r_non_key_count++] = c;
         free(r_is_key);
     }
-    if (kind == JOIN_FULL) {
-        int *l_is_key = (int *)calloc((size_t)ls->n_cols, sizeof(int));
-        for (int k = 0; k < n_keys; k++)
-            l_is_key[keys[k].left_col] = 1;
-        jn->l_non_key_idx = (int *)malloc((size_t)ls->n_cols * sizeof(int));
-        jn->l_non_key_count = 0;
-        for (int c = 0; c < ls->n_cols; c++)
-            if (!l_is_key[c])
-                jn->l_non_key_idx[jn->l_non_key_count++] = c;
-        free(l_is_key);
-    }
-
     /* Build output schema (unchanged from before) */
     int out_n;
     if (kind == JOIN_SEMI || kind == JOIN_ANTI) {

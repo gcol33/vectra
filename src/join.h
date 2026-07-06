@@ -55,9 +55,15 @@ typedef struct {
 
     /* Grace-hash spill: when the materialized build side exceeds mem_budget
        bytes, both sides are hash-partitioned to run-files and joined one
-       partition at a time. mem_budget <= 0 disables spilling (unbounded). */
+       partition at a time. mem_budget <= 0 disables spilling (unbounded).
+       A partition still over budget is re-partitioned by its sub-join with a
+       depth-salted hash (so colliding keys redistribute across levels); a
+       partition a single hot key makes un-splittable falls back to a
+       block-nested-loop at JOIN_MAX_SPILL_DEPTH. Peak stays bounded regardless
+       of key skew. */
     int64_t   mem_budget;
     char     *temp_dir;       /* directory for partition spill files */
+    int       spill_depth;    /* grace-hash recursion depth (0 at the top) */
 
     int        spill;         /* 1 = partitioned spill mode active */
     int        n_parts;       /* partition count (K) */
@@ -65,6 +71,24 @@ typedef struct {
     char     **right_parts;   /* K right-side partition .vtr paths */
     int        cur_part;      /* partition currently being joined */
     VecNode   *sub_join;      /* active sub-join over cur_part (owns its scans) */
+
+    /* Block-nested-loop terminal fallback (single-hot-key partition). The build
+       side is streamed in <= mem_budget blocks; the probe side is re-scanned
+       once per block. Peak = one build block + one probe batch, plus 1-bit/row
+       matched bitsets. */
+    int        bnl;           /* 1 = block-nested-loop mode active */
+    char      *bnl_rpath;     /* whole build (right) partition, one .vtr file */
+    char      *bnl_lpath;     /* whole probe (left) partition, one .vtr file */
+    int64_t    bnl_rrows;     /* total build rows */
+    int64_t    bnl_lrows;     /* total probe rows */
+    VecNode   *bnl_rscan;     /* sequential scan over the build file (blocks) */
+    VecNode   *bnl_pscan;     /* current scan over the probe file (per block) */
+    int64_t    bnl_block_base;/* global build-row ordinal at start of block */
+    int64_t    bnl_pbase;     /* global probe-row ordinal at current pscan pos */
+    int        bnl_stage;     /* 0 = load block, 1 = probe block, 2 = finalize */
+    int        bnl_fin_side;  /* finalize sub-stage: 0 = probe scan, 1 = build */
+    uint8_t   *bnl_pmatched;  /* bitset over probe rows (non-inner kinds) */
+    uint8_t   *bnl_bmatched;  /* bitset over build rows (full only) */
 
     /* State machine */
     JoinState state;
@@ -82,8 +106,6 @@ typedef struct {
 
     /* full_join only */
     uint8_t   *build_matched;  /* bitset: which build rows were matched */
-    int       *l_non_key_idx;  /* indices of non-key left columns */
-    int        l_non_key_count;
     int64_t    finalize_cursor; /* current build row in finalize phase */
 
     /* Merge join state (used when use_merge == 1) */
