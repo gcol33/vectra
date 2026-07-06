@@ -240,7 +240,7 @@ static tdc_status dict1d_encode(const tdc_block *in,
             }
             if (ht[slot].hash == h &&
                 ht[slot].len  == slen &&
-                memcmp(ht[slot].str, s, (size_t)slen) == 0) {
+                (slen == 0 || memcmp(ht[slot].str, s, (size_t)slen) == 0)) {
                 /* Cache hit — reuse the existing dictionary index. */
                 indices[i] = ht[slot].idx;
                 break;

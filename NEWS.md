@@ -1,3 +1,16 @@
+# vectra 0.10.7
+
+## Fixes
+
+* Encoding a string column of duplicate empty strings no longer triggers
+  undefined behavior. The DICT_1D dictionary encoder compared a hash-table
+  cache candidate with `memcmp(str, s, len)`; when every string is empty the
+  heap data pointer is `NULL` and `len` is 0, so `memcmp(NULL, NULL, 0)` tripped
+  the UBSan nonnull check on CRAN's ASAN/UBSAN runner. The comparison is now
+  short-circuited on `len == 0`, where the already-checked length equality
+  makes the strings equal. Output is unchanged. Fixed in vendored tdc
+  (`gcol33/tdc`).
+
 # vectra 0.10.6
 
 ## Bounded-memory top-N and fuzzy join
