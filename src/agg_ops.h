@@ -2,6 +2,7 @@
 #define VECTRA_AGG_OPS_H
 
 #include "types.h"
+#include "agg_spill.h"
 #include <stdint.h>
 
 typedef enum {
@@ -26,6 +27,8 @@ typedef struct {
     AggKind   kind;
     VecType   input_type;
     int       na_rm;       /* 1 = skip NAs */
+    int64_t   mem_budget;  /* per-group spill threshold for holistic aggs */
+    const char *temp_dir;  /* run-file dir for holistic spill; NULL = in-RAM */
     /* Per-group accumulators (length = n_groups, grown dynamically) */
     int64_t   n_groups;
     int64_t   capacity;
@@ -45,18 +48,18 @@ typedef struct {
     double   *last_dbl;    /* last non-NA value for last() */
     int64_t  *last_i64;
     int      *has_first;   /* 1 if first value captured */
-    /* n_distinct: per-group open-addressing hash sets of 64-bit hashes */
-    uint64_t **nd_slots;   /* nd_slots[g] = hash table for group g */
-    int64_t  *nd_size;     /* power-of-2 table size per group */
-    int64_t  *nd_count;    /* distinct count per group */
-    /* median: per-group dynamic double arrays */
-    double   **med_vals;   /* med_vals[g] = value array for group g */
-    int64_t  *med_count;   /* values stored per group */
-    int64_t  *med_cap;     /* capacity per group */
+    /* median / n_distinct: one spill-safe scalar store per group. median feeds
+       bit-cast doubles and selects the middle; n_distinct feeds 64-bit value
+       hashes and counts distinct hashes. Both spill to run files past
+       mem_budget, so a single large group is bounded (see agg_spill.h). */
+    AggSpill *store;       /* store[g], one per group (set up in _ensure) */
 } AggAccum;
 
-/* Initialize accumulator */
-AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm);
+/* Initialize accumulator. mem_budget + temp_dir configure the spill-safe store
+   used by holistic aggregates (median, n_distinct); temp_dir NULL keeps them
+   in RAM. Both are ignored by the scalar aggregates. */
+AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm,
+                        int64_t mem_budget, const char *temp_dir);
 
 /* Ensure capacity for n_groups */
 void agg_accum_ensure(AggAccum *acc, int64_t n_groups);

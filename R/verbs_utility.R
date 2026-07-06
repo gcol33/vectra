@@ -204,7 +204,7 @@ distinct.vectra_node <- function(.data, ..., .keep_all = FALSE) {
 
   # Use group_agg with zero aggregations to get unique key combos
   agg_specs <- list()
-  new_xptr <- .Call(C_group_agg_node, .data$.node, key_names, agg_specs)
+  new_xptr <- .group_agg_node(.data$.node, key_names, agg_specs)
   structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
 }
 

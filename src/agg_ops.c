@@ -33,7 +33,8 @@ static inline int64_t agg_get_i64(const VecArray *col, int64_t row) {
  *   max:  all-NA group -> -Inf    (R: max(c(NA,NA), na.rm=TRUE) == -Inf)
  */
 
-AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm) {
+AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm,
+                        int64_t mem_budget, const char *temp_dir) {
     AggAccum acc;
     memset(&acc, 0, sizeof(acc));
     acc.kind = kind;
@@ -42,6 +43,8 @@ AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm) {
     acc.input_type = (input_type == VEC_INT8 || input_type == VEC_INT16 ||
                       input_type == VEC_INT32) ? VEC_INT64 : input_type;
     acc.na_rm = na_rm;
+    acc.mem_budget = mem_budget;
+    acc.temp_dir = temp_dir;
     return acc;
 }
 
@@ -151,29 +154,15 @@ void agg_accum_ensure(AggAccum *acc, int64_t n_groups) {
         grow_has_na(acc, old_cap, new_cap);
         break;
     case AGG_N_DISTINCT:
-        acc->nd_slots = (uint64_t **)realloc(acc->nd_slots, (size_t)new_cap * sizeof(uint64_t *));
-        acc->nd_size = (int64_t *)realloc(acc->nd_size, (size_t)new_cap * sizeof(int64_t));
-        acc->nd_count = (int64_t *)realloc(acc->nd_count, (size_t)new_cap * sizeof(int64_t));
-        if (!acc->nd_slots || !acc->nd_size || !acc->nd_count) vectra_error("agg alloc failed");
-        for (int64_t i = old_cap; i < new_cap; i++) {
-            acc->nd_slots[i] = NULL;
-            acc->nd_size[i] = 0;
-            acc->nd_count[i] = 0;
-        }
+    case AGG_MEDIAN: {
+        acc->store = (AggSpill *)realloc(acc->store, (size_t)new_cap * sizeof(AggSpill));
+        if (!acc->store) vectra_error("agg alloc failed");
+        AggSpillType et = acc->kind == AGG_MEDIAN ? AGG_SPILL_F64 : AGG_SPILL_U64;
+        for (int64_t i = old_cap; i < new_cap; i++)
+            agg_spill_init(&acc->store[i], et, acc->mem_budget, acc->temp_dir);
         grow_has_na(acc, old_cap, new_cap);
         break;
-    case AGG_MEDIAN:
-        acc->med_vals = (double **)realloc(acc->med_vals, (size_t)new_cap * sizeof(double *));
-        acc->med_count = (int64_t *)realloc(acc->med_count, (size_t)new_cap * sizeof(int64_t));
-        acc->med_cap = (int64_t *)realloc(acc->med_cap, (size_t)new_cap * sizeof(int64_t));
-        if (!acc->med_vals || !acc->med_count || !acc->med_cap) vectra_error("agg alloc failed");
-        for (int64_t i = old_cap; i < new_cap; i++) {
-            acc->med_vals[i] = NULL;
-            acc->med_count[i] = 0;
-            acc->med_cap[i] = 0;
-        }
-        grow_has_na(acc, old_cap, new_cap);
-        break;
+    }
     }
     acc->capacity = new_cap;
     acc->n_groups = n_groups;
@@ -202,72 +191,6 @@ static uint64_t nd_hash_val_str(const char *s, int64_t len) {
         h *= 0x100000001B3ULL;
     }
     return h == 0 ? 1 : h;
-}
-
-/* Insert hash into group's set. Returns 1 if new, 0 if already present. */
-static int nd_insert(AggAccum *acc, int64_t g, uint64_t h) {
-    /* Lazy init: start with 16 slots */
-    if (acc->nd_slots[g] == NULL) {
-        acc->nd_size[g] = 16;
-        acc->nd_slots[g] = (uint64_t *)calloc(16, sizeof(uint64_t));
-        if (!acc->nd_slots[g]) vectra_error("n_distinct alloc failed");
-    }
-    /* Grow at 70% load */
-    if (acc->nd_count[g] * 10 >= acc->nd_size[g] * 7) {
-        int64_t new_sz = acc->nd_size[g] * 2;
-        uint64_t *new_slots = (uint64_t *)calloc((size_t)new_sz, sizeof(uint64_t));
-        if (!new_slots) vectra_error("n_distinct alloc failed");
-        /* Rehash */
-        for (int64_t i = 0; i < acc->nd_size[g]; i++) {
-            if (acc->nd_slots[g][i] != 0) {
-                uint64_t slot = acc->nd_slots[g][i] & ((uint64_t)new_sz - 1);
-                while (new_slots[slot] != 0) slot = (slot + 1) & ((uint64_t)new_sz - 1);
-                new_slots[slot] = acc->nd_slots[g][i];
-            }
-        }
-        free(acc->nd_slots[g]);
-        acc->nd_slots[g] = new_slots;
-        acc->nd_size[g] = new_sz;
-    }
-    uint64_t mask = (uint64_t)(acc->nd_size[g] - 1);
-    uint64_t slot = h & mask;
-    while (acc->nd_slots[g][slot] != 0) {
-        if (acc->nd_slots[g][slot] == h) return 0; /* already present */
-        slot = (slot + 1) & mask;
-    }
-    acc->nd_slots[g][slot] = h;
-    acc->nd_count[g]++;
-    return 1;
-}
-
-/* --- median value array helper --- */
-
-static void med_append(AggAccum *acc, int64_t g, double val) {
-    if (acc->med_count[g] >= acc->med_cap[g]) {
-        int64_t new_cap = acc->med_cap[g] == 0 ? 16 : acc->med_cap[g] * 2;
-        acc->med_vals[g] = (double *)realloc(acc->med_vals[g], (size_t)new_cap * sizeof(double));
-        if (!acc->med_vals[g]) vectra_error("median alloc failed");
-        acc->med_cap[g] = new_cap;
-    }
-    acc->med_vals[g][acc->med_count[g]++] = val;
-}
-
-static int dbl_cmp(const void *a, const void *b) {
-    double da = *(const double *)a, db = *(const double *)b;
-    return (da > db) - (da < db);
-}
-
-/* Insertion sort for small arrays — faster than qsort overhead for n < 64 */
-static void dbl_insertion_sort(double *arr, int64_t n) {
-    for (int64_t i = 1; i < n; i++) {
-        double key = arr[i];
-        int64_t j = i - 1;
-        while (j >= 0 && arr[j] > key) {
-            arr[j + 1] = arr[j];
-            j--;
-        }
-        arr[j + 1] = key;
-    }
 }
 
 void agg_accum_feed(AggAccum *acc, int64_t group_id,
@@ -425,7 +348,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
             } else if (acc->input_type == VEC_BOOL)
                 h = nd_hash_val_i64((int64_t)col->buf.bln[row]);
             else break;
-            nd_insert(acc, group_id, h);
+            agg_spill_push_u64(&acc->store[group_id], h);
         }
         break;
     case AGG_MEDIAN:
@@ -439,7 +362,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
             else if (acc->input_type == VEC_INT64) val = (double)agg_get_i64(col, row);
             else if (acc->input_type == VEC_BOOL) val = (double)col->buf.bln[row];
             else break;
-            med_append(acc, group_id, val);
+            agg_spill_push_f64(&acc->store[group_id], val);
         }
         break;
     }
@@ -610,27 +533,19 @@ VecArray agg_accum_finish(AggAccum *acc) {
         VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
         vec_array_set_all_valid(&arr);
         for (int64_t i = 0; i < n; i++)
-            arr.buf.dbl[i] = (double)(acc->nd_count ? acc->nd_count[i] : 0);
+            arr.buf.dbl[i] = acc->store
+                ? (double)agg_spill_n_distinct(&acc->store[i]) : 0.0;
         return arr;
     }
     case AGG_MEDIAN: {
         VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
         for (int64_t i = 0; i < n; i++) {
-            if (acc->has_na && acc->has_na[i]) {
-                vec_array_set_null(&arr, i);
-            } else if (acc->med_count[i] == 0) {
+            if ((acc->has_na && acc->has_na[i]) ||
+                !acc->store || acc->store[i].n_total == 0) {
                 vec_array_set_null(&arr, i);
             } else {
                 vec_array_set_valid(&arr, i);
-                if (acc->med_count[i] < 64)
-                    dbl_insertion_sort(acc->med_vals[i], acc->med_count[i]);
-                else
-                    qsort(acc->med_vals[i], (size_t)acc->med_count[i], sizeof(double), dbl_cmp);
-                int64_t m = acc->med_count[i];
-                if (m % 2 == 1)
-                    arr.buf.dbl[i] = acc->med_vals[i][m / 2];
-                else
-                    arr.buf.dbl[i] = (acc->med_vals[i][m / 2 - 1] + acc->med_vals[i][m / 2]) / 2.0;
+                arr.buf.dbl[i] = agg_spill_median(&acc->store[i]);
             }
         }
         return arr;
@@ -659,19 +574,10 @@ void agg_accum_free(AggAccum *acc) {
     free(acc->last_dbl);
     free(acc->last_i64);
     free(acc->has_first);
-    /* n_distinct hash sets */
-    if (acc->nd_slots) {
-        for (int64_t i = 0; i < acc->capacity; i++) free(acc->nd_slots[i]);
-        free(acc->nd_slots);
+    /* median / n_distinct spill stores (frees buffers and unlinks run files) */
+    if (acc->store) {
+        for (int64_t i = 0; i < acc->capacity; i++) agg_spill_free(&acc->store[i]);
+        free(acc->store);
     }
-    free(acc->nd_size);
-    free(acc->nd_count);
-    /* median value arrays */
-    if (acc->med_vals) {
-        for (int64_t i = 0; i < acc->capacity; i++) free(acc->med_vals[i]);
-        free(acc->med_vals);
-    }
-    free(acc->med_count);
-    free(acc->med_cap);
     memset(acc, 0, sizeof(*acc));
 }

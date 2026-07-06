@@ -13,6 +13,20 @@
 #include <string.h>
 #include <assert.h>
 
+/* Per-group spill budget for one holistic accumulator (median / n_distinct).
+   The node's mem_budget is split across the holistic aggregations so their
+   concurrent in-RAM buffers for a single group sum to <= mem_budget before any
+   spills. Scalar aggregations ignore the value (they hold O(1) state). */
+static int64_t agg_holistic_budget(const GroupAggNode *ga) {
+    int n_holistic = 0;
+    for (int a = 0; a < ga->n_aggs; a++)
+        if (ga->agg_specs[a].kind == AGG_MEDIAN ||
+            ga->agg_specs[a].kind == AGG_N_DISTINCT)
+            n_holistic++;
+    if (n_holistic < 1) n_holistic = 1;
+    return ga->mem_budget / n_holistic;
+}
+
 /* ================================================================== */
 /*  Hash-based aggregation (original path)                            */
 /* ================================================================== */
@@ -45,11 +59,13 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
         }
     }
 
+    int64_t store_mem = agg_holistic_budget(ga);
     AggAccum *accums = (AggAccum *)malloc((size_t)ga->n_aggs * sizeof(AggAccum));
     for (int a = 0; a < ga->n_aggs; a++) {
         accums[a] = agg_accum_init(ga->agg_specs[a].kind,
                                     agg_types[a],
-                                    ga->agg_specs[a].na_rm);
+                                    ga->agg_specs[a].na_rm,
+                                    store_mem, ga->temp_dir);
     }
 
     VecHashTable ht = vec_ht_create(64);
@@ -312,7 +328,8 @@ static void flush_group(const KeySnap *snap,
                         VecArrayBuilder *key_builders, int n_keys,
                         VecArrayBuilder *agg_builders, int n_aggs,
                         AggAccum *accums, const VecType *agg_types,
-                        const AggSpec *agg_specs) {
+                        const AggSpec *agg_specs,
+                        int64_t mem_budget, const char *temp_dir) {
     /* Append key values */
     for (int k = 0; k < n_keys; k++) {
         VecArrayBuilder *b = &key_builders[k];
@@ -362,9 +379,13 @@ static void flush_group(const KeySnap *snap,
         VecArray arr = agg_accum_finish(&accums[a]);
         vec_builder_append_one(&agg_builders[a], &arr, 0);
         vec_array_free(&arr);
-        /* Reinitialize for next group */
+        /* Free this group's accumulator (buffers, spill run files) before
+           reusing the slot for the next group -- otherwise every group but the
+           last leaks its state, which for median/n_distinct is the whole
+           group. Then reinitialize for the next group. */
+        agg_accum_free(&accums[a]);
         accums[a] = agg_accum_init(agg_specs[a].kind, agg_types[a],
-                                    agg_specs[a].na_rm);
+                                    agg_specs[a].na_rm, mem_budget, temp_dir);
         agg_accum_ensure(&accums[a], 1);
     }
 }
@@ -411,11 +432,13 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
         agg_builders[a] = vec_builder_init(VEC_DOUBLE); /* all aggs -> double */
 
     /* Accumulators for current group (always group_id = 0) */
+    int64_t store_mem = agg_holistic_budget(ga);
     AggAccum *accums = (AggAccum *)malloc((size_t)ga->n_aggs * sizeof(AggAccum));
     for (int a = 0; a < ga->n_aggs; a++) {
         accums[a] = agg_accum_init(ga->agg_specs[a].kind,
                                     agg_types[a],
-                                    ga->agg_specs[a].na_rm);
+                                    ga->agg_specs[a].na_rm,
+                                    store_mem, ga->temp_dir);
         agg_accum_ensure(&accums[a], 1);
     }
 
@@ -432,7 +455,8 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
                 if (snap.initialized) {
                     flush_group(&snap, key_builders, ga->n_keys,
                                 agg_builders, ga->n_aggs,
-                                accums, agg_types, ga->agg_specs);
+                                accums, agg_types, ga->agg_specs,
+                                store_mem, ga->temp_dir);
                 }
                 snap_update(&snap, batch, row, key_indices);
             }
@@ -455,7 +479,8 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
     if (snap.initialized) {
         flush_group(&snap, key_builders, ga->n_keys,
                     agg_builders, ga->n_aggs,
-                    accums, agg_types, ga->agg_specs);
+                    accums, agg_types, ga->agg_specs,
+                    store_mem, ga->temp_dir);
     }
 
     /* Build result batch */
@@ -517,6 +542,7 @@ static void group_agg_free(VecNode *self) {
         free(ga->agg_specs[a].input_col);
     }
     free(ga->agg_specs);
+    free(ga->temp_dir);
     vec_schema_free(&ga->base.output_schema);
     free(ga);
 }
@@ -524,9 +550,19 @@ static void group_agg_free(VecNode *self) {
 GroupAggNode *group_agg_node_create(VecNode *child,
                                     int n_keys, char **key_names,
                                     int n_aggs, AggSpec *agg_specs,
-                                    const char *temp_dir) {
+                                    const char *temp_dir, int64_t mem_budget) {
     GroupAggNode *ga = (GroupAggNode *)calloc(1, sizeof(GroupAggNode));
     if (!ga) vectra_error("alloc failed for GroupAggNode");
+
+    ga->mem_budget = mem_budget;
+    if (temp_dir) {
+        ga->temp_dir = (char *)malloc(strlen(temp_dir) + 1);
+        strcpy(ga->temp_dir, temp_dir);
+    }
+
+    /* One budget for the whole node: the external sort's spill threshold and
+       the per-group holistic (median / n_distinct) spill both derive from it. */
+    int64_t sort_mem = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
 
     /* If temp_dir provided, wrap child in a SortNode for spill-safe agg */
     if (temp_dir && n_keys > 0) {
@@ -540,7 +576,7 @@ GroupAggNode *group_agg_node_create(VecNode *child,
             sort_keys[k].descending = 0;
         }
         SortNode *sn = sort_node_create(child, n_keys, sort_keys, temp_dir,
-                                        VECTRA_SORT_MEM_DEFAULT);
+                                        sort_mem);
         child = (VecNode *)sn;
         ga->use_sorted = 1;
     }

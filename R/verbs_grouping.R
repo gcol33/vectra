@@ -1,6 +1,13 @@
 # Grouping and aggregation verbs: group_by, summarise, ungroup, count, tally
 # Includes internal helper: parse_agg_expr
 
+# Build the group-by + aggregate node. The memory budget is the single
+# vectra_mem() knob: it is both the external sort's spill threshold and the
+# per-group spill threshold for holistic aggregates (median, n_distinct).
+.group_agg_node <- function(node, key_names, agg_specs, mem = vectra_mem()) {
+  .Call(C_group_agg_node, node, key_names, agg_specs, as.numeric(mem))
+}
+
 #' Group a vectra query by columns
 #'
 #' @param .data A `vectra_node` object.
@@ -158,7 +165,7 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
   # Remove .r_fallback flags before passing to C
   agg_specs <- lapply(agg_specs, function(s) { s$.r_fallback <- NULL; s })
 
-  new_xptr <- .Call(C_group_agg_node, node$.node, key_names, agg_specs)
+  new_xptr <- .group_agg_node(node$.node, key_names, agg_specs)
 
   # Determine residual grouping
   if (is.null(.groups)) .groups <- "drop_last"
@@ -251,7 +258,7 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
     agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = FALSE))
   }
 
-  new_xptr <- .Call(C_group_agg_node, node$.node, grp_names, agg_specs)
+  new_xptr <- .group_agg_node(node$.node, grp_names, agg_specs)
   if (sort) {
     sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
     return(structure(list(.node = sort_xptr, .path = node$.path), class = "vectra_node"))
@@ -282,7 +289,7 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
     agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = FALSE))
   }
 
-  new_xptr <- .Call(C_group_agg_node, x$.node, key_names, agg_specs)
+  new_xptr <- .group_agg_node(x$.node, key_names, agg_specs)
   if (sort) {
     sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
     return(structure(list(.node = sort_xptr, .path = x$.path), class = "vectra_node"))

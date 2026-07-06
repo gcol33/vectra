@@ -107,7 +107,8 @@ static AggKind parse_agg_kind(const char *s) {
     return AGG_COUNT; /* unreachable */
 }
 
-SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names_sexp, SEXP agg_specs_sexp) {
+SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names_sexp, SEXP agg_specs_sexp,
+                      SEXP mem_sexp) {
     VecNode *child = unwrap_node(node_xptr);
     R_ClearExternalPtr(node_xptr);
 
@@ -140,8 +141,10 @@ SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names_sexp, SEXP agg_specs_sexp) 
         specs[a].na_rm = (na_rm_sexp != R_NilValue) ? Rf_asLogical(na_rm_sexp) : 0;
     }
 
+    int64_t mem_budget = (int64_t)Rf_asReal(mem_sexp);
     GroupAggNode *ga = group_agg_node_create(child, n_keys, key_names,
-                                              n_aggs, specs, get_r_tempdir());
+                                              n_aggs, specs, get_r_tempdir(),
+                                              mem_budget);
     return wrap_node((VecNode *)ga);
 }
 
