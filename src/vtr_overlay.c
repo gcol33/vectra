@@ -640,7 +640,7 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
             const double *rect = NULL;
             if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
             process_tile(ctx, writer, base, base_area, uniq, jmemb[j], jsize[j],
-                         rect, &worker[0], inarea, &g_face, prec);
+                         rect, &worker[0], inarea, &g_face, prec, pip);
         }
         GEOSWKBWriter_destroy_r(ctx, writer);
         GEOS_finish_r(ctx);

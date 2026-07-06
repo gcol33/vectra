@@ -2,6 +2,10 @@
 
 ## Fixes
 
+* The overlay engine again builds without OpenMP (e.g. the default macOS CRAN
+  toolchain). The serial fallback in `C_overlay_run` called `process_tile()`
+  with one argument short of its signature, so the no-OpenMP branch failed to
+  compile; it now passes the point-in-polygon flag like the parallel branch.
 * Encoding a string column of duplicate empty strings no longer triggers
   undefined behavior. The DICT_1D dictionary encoder compared a hash-table
   cache candidate with `memcmp(str, s, len)`; when every string is empty the
