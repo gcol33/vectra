@@ -146,7 +146,7 @@ static void stats_store_string_prefix(uint8_t dst[TDC_STATS_VALUE_SIZE],
 {
     memset(dst, 0, TDC_STATS_VALUE_SIZE);
     uint32_t copy = len < TDC_STATS_STRING_PREFIX ? len : TDC_STATS_STRING_PREFIX;
-    memcpy(dst, str, copy);
+    if (copy > 0) memcpy(dst, str, copy);
 }
 
 /* Compare two byte strings lexicographically. Returns <0, 0, >0. */

@@ -14,6 +14,12 @@
   short-circuited on `len == 0`, where the already-checked length equality
   makes the strings equal. Output is unchanged. Fixed in vendored tdc
   (`gcol33/tdc`).
+* An audit swept the rest of this undefined-behavior class (a `NULL` pointer
+  with length 0 passed to `memcmp`/`memcpy`) across the engine and vendored
+  tdc. Two more sites are fixed: a blocked `fuzzy_join()` whose probe block
+  column is all empty strings compared block keys with `memcmp(build, NULL, 0)`,
+  and tdc's string min/max stats copied a zero-length prefix from a `NULL`
+  all-empty-string heap. Both are now length-guarded; results are unchanged.
 
 # vectra 0.10.6
 

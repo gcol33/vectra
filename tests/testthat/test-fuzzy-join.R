@@ -123,6 +123,26 @@ test_that("fuzzy join drops NA keys and NA block values", {
   expect_fuzzy_equal(gotb, ref_fuzzy(pdf, bdf, 0.4, pblock = "pgen", bblock = "bgen"))
 })
 
+test_that("fuzzy join with empty-string block keys stays correct", {
+  # An all-empty-string block column decodes to a NULL data heap, so the block
+  # key comparison must not pass NULL to memcmp with length 0. Every row shares
+  # the empty block key, so all pairs are in one block (same as unblocked).
+  pdf <- data.frame(pid = 1:5,
+                    pname = c("apple", "grape", "mango", "peach", "lemon"),
+                    pgen  = rep("", 5), stringsAsFactors = FALSE)
+  bdf <- data.frame(bid = 1:4,
+                    bname = c("apple", "grapes", "mango", "melon"),
+                    bgen  = rep("", 4), stringsAsFactors = FALSE)
+  fp <- tempfile(fileext = ".vtr"); on.exit(unlink(fp), add = TRUE)
+  fb <- tempfile(fileext = ".vtr"); on.exit(unlink(fb), add = TRUE)
+  write_vtr(pdf, fp, batch_size = 2)
+  write_vtr(bdf, fb, batch_size = 2)
+  got <- fuzzy_join(tbl(fp), tbl(fb), by = c("pname" = "bname"),
+                    block_by = c("pgen" = "bgen"),
+                    method = "levenshtein", max_dist = 0.4, n_threads = 2) |> collect()
+  expect_fuzzy_equal(got, ref_fuzzy(pdf, bdf, 0.4, pblock = "pgen", bblock = "bgen"))
+})
+
 test_that("fuzzy join with no matches returns an empty, well-formed result", {
   fr <- make_frames()
   fp <- tempfile(fileext = ".vtr"); on.exit(unlink(fp), add = TRUE)

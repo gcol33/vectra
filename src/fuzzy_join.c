@@ -114,7 +114,7 @@ static int bi_key_eq(const struct BlockIndex *bi, int64_t grp,
     int64_t r = bi->group_rep[grp];
     int64_t gl = str_len(bi->keycol, r);
     if (gl != n) return 0;
-    return memcmp(str_ptr(bi->keycol, r), s, (size_t)n) == 0;
+    return n == 0 || memcmp(str_ptr(bi->keycol, r), s, (size_t)n) == 0;
 }
 
 static void bi_bucket_push(BiBucket *b, int64_t row) {
