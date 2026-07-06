@@ -1,3 +1,24 @@
+# vectra 0.10.6
+
+## Bounded-memory top-N and fuzzy join
+
+* `slice_min()`/`slice_max(..., with_ties = FALSE)` no longer materialize their
+  input. The streaming top-N node keeps at most `k` rows in a size-`k` max-heap
+  (fixed-width values overwritten in place, strings held as per-slot owned copies
+  freed on eviction); a non-winning row costs one comparison and no copy, so peak
+  memory is `min(k, n)` rows rather than the whole child. NA in the order column
+  now always sorts last, independent of direction, matching dplyr and the
+  `with_ties = TRUE` path -- an earlier version treated NA as the maximum under
+  `slice_max()`.
+* `fuzzy_join()` now streams the probe side instead of materializing both inputs
+  and the whole cross-product of matches. The build side is materialized once and,
+  with a blocking column, indexed by exact block key; the probe side streams one
+  batch at a time, and each batch's matches are computed, ordered, and emitted in
+  chunks before the next batch is pulled. Peak memory is the build side plus one
+  probe batch plus that batch's matches, and the `(probe, distance)` output order
+  is preserved without a global sort. These were the last two operators that
+  buffered their whole input, so every verb is now bounded-memory.
+
 # vectra 0.10.5
 
 ## Spill-safe window functions

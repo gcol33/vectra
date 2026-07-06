@@ -2,251 +2,337 @@
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
-#include "builder.h"
-#include "coerce.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
 
 /*
- * Top-N via binary heap.
+ * Top-N via a bounded keep-store + binary heap.
  *
- * For ascending sort (smallest N): use a MAX-heap of size N.
- * New row enters if it's smaller than heap max. After all rows consumed,
- * extract-sort the heap for final ordered output.
+ * For ascending sort (smallest N): a MAX-heap of size k over the kept rows,
+ * so the root is the LARGEST of the kept set. An incoming row is admitted
+ * only if it compares smaller than the root, in which case it overwrites the
+ * root's slot and the heap re-sifts. Non-admitted rows are never copied.
  *
- * The heap stores row indices into a materialized column set.
- * We materialize lazily: append all rows into builders, but the heap
- * only tracks which N to keep. At the end, gather only those N rows
- * and sort them.
+ * Peak memory is O(min(k, n_rows)): the keep-store holds at most k rows
+ * (fixed-width values overwritten in place; strings held as per-slot owned
+ * copies) and the heap holds k slot indices. This is the streaming form the
+ * old materialize-all-rows implementation deferred; strings are handled by
+ * giving each kept slot its own small copy, freed on eviction.
  *
- * This is O(n log k) time and O(n) temporary storage for the full
- * materialization + O(k) for the heap. A streaming approach that avoids
- * materializing non-heap rows would be O(k) memory but requires
- * copying rows into the heap, which is complex for strings. The
- * materialize-then-select approach is simpler and still much faster
- * than full sort for small k.
+ * Time is O(n log k): each row costs one root comparison, plus a sift only
+ * when it is admitted.
  */
 
-/* Comparison context (same structure as sort.c) */
+/* Per-column storage for the kept rows. Fixed-width types use `data`
+   (cap * elem_size); VEC_STRING uses per-slot owned copies (sptr/slen). */
 typedef struct {
-    VecArray  *columns;
-    int        n_keys;
-    SortKey   *keys;
-} TopNCtx;
+    VecType   type;
+    uint8_t  *valid;   /* cap bytes, 1 = valid */
+    void     *data;    /* fixed-width: cap * elem_size; unused for strings */
+    char    **sptr;    /* strings: cap owned copies (NULL slot = empty) */
+    int64_t  *slen;    /* strings: cap lengths */
+} StoreCol;
 
-static int compare_rows_topn(const TopNCtx *ctx, int64_t a, int64_t b) {
-    for (int k = 0; k < ctx->n_keys; k++) {
-        int ci = ctx->keys[k].col_index;
-        int desc = ctx->keys[k].descending;
-        const VecArray *col = &ctx->columns[ci];
+typedef struct {
+    int       n_cols;
+    int64_t   cap;     /* current allocated slots (<= limit) */
+    int64_t   limit;   /* k: hard cap on slots */
+    StoreCol *cols;
+} RowStore;
 
-        int a_valid = vec_array_is_valid(col, a);
-        int b_valid = vec_array_is_valid(col, b);
+typedef struct {
+    RowStore *store;
+    int       n_keys;
+    SortKey  *keys;
+} StoreCtx;
 
-        if (!a_valid && !b_valid) continue;
-        if (!a_valid) return desc ? -1 : 1;
-        if (!b_valid) return desc ? 1 : -1;
+/* A single comparable value pulled from either a live batch column or a
+   store slot, so both comparison directions share one per-type path. */
+typedef struct {
+    int valid;
+    union {
+        int64_t i;                              /* int8/16/32/64, bool */
+        double  d;                              /* double */
+        struct { const char *p; int64_t n; } s; /* string */
+    } u;
+} TCell;
 
-        int cmp = 0;
-        switch (col->type) {
-        case VEC_DOUBLE: {
-            double va = col->buf.dbl[a], vb = col->buf.dbl[b];
-            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
-            break;
-        }
-        case VEC_INT64: {
-            int64_t va = col->buf.i64[a], vb = col->buf.i64[b];
-            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
-            break;
-        }
-        case VEC_INT32: {
-            int32_t va = col->buf.i32[a], vb = col->buf.i32[b];
-            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
-            break;
-        }
-        case VEC_INT16: {
-            int16_t va = col->buf.i16[a], vb = col->buf.i16[b];
-            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
-            break;
-        }
-        case VEC_INT8: {
-            int8_t va = col->buf.i8[a], vb = col->buf.i8[b];
-            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
-            break;
-        }
-        case VEC_BOOL: {
-            uint8_t va = col->buf.bln[a], vb = col->buf.bln[b];
-            cmp = (int)va - (int)vb;
-            break;
-        }
-        case VEC_STRING: {
-            int64_t sa = col->buf.str.offsets[a], ea = col->buf.str.offsets[a + 1];
-            int64_t sb = col->buf.str.offsets[b], eb = col->buf.str.offsets[b + 1];
-            int64_t la = ea - sa, lb = eb - sb;
-            int64_t minlen = la < lb ? la : lb;
-            cmp = memcmp(col->buf.str.data + sa, col->buf.str.data + sb,
-                         (size_t)minlen);
-            if (cmp == 0) cmp = (la < lb) ? -1 : (la > lb) ? 1 : 0;
-            break;
-        }
-        }
-
-        if (cmp != 0) return desc ? -cmp : cmp;
+static size_t elem_size(VecType t) {
+    switch (t) {
+    case VEC_INT64:  return sizeof(int64_t);
+    case VEC_INT32:  return sizeof(int32_t);
+    case VEC_INT16:  return sizeof(int16_t);
+    case VEC_INT8:   return sizeof(int8_t);
+    case VEC_DOUBLE: return sizeof(double);
+    case VEC_BOOL:   return sizeof(uint8_t);
+    case VEC_STRING: return 0;
     }
     return 0;
 }
 
-/* Binary heap operations.
-   For ascending sort: max-heap (parent >= children in sort order).
-   We want to keep the SMALLEST N, so the heap root is the LARGEST
-   of those N. A new row replaces the root if it's smaller. */
+static TCell cell_from_array(const VecArray *col, int64_t phys) {
+    TCell c;
+    c.valid = vec_array_is_valid(col, phys);
+    if (!c.valid) return c;
+    switch (col->type) {
+    case VEC_DOUBLE: c.u.d = col->buf.dbl[phys]; break;
+    case VEC_INT64:  c.u.i = col->buf.i64[phys]; break;
+    case VEC_INT32:  c.u.i = col->buf.i32[phys]; break;
+    case VEC_INT16:  c.u.i = col->buf.i16[phys]; break;
+    case VEC_INT8:   c.u.i = col->buf.i8[phys];  break;
+    case VEC_BOOL:   c.u.i = col->buf.bln[phys]; break;
+    case VEC_STRING: {
+        int64_t s = col->buf.str.offsets[phys];
+        c.u.s.p = col->buf.str.data + s;
+        c.u.s.n = col->buf.str.offsets[phys + 1] - s;
+        break;
+    }
+    }
+    return c;
+}
 
-static void heap_sift_down(int64_t *heap, int64_t size,
-                            int64_t pos, const TopNCtx *ctx) {
+static TCell cell_from_store(const StoreCol *sc, int64_t slot) {
+    TCell c;
+    c.valid = sc->valid[slot];
+    if (!c.valid) return c;
+    switch (sc->type) {
+    case VEC_DOUBLE: c.u.d = ((double  *)sc->data)[slot]; break;
+    case VEC_INT64:  c.u.i = ((int64_t *)sc->data)[slot]; break;
+    case VEC_INT32:  c.u.i = ((int32_t *)sc->data)[slot]; break;
+    case VEC_INT16:  c.u.i = ((int16_t *)sc->data)[slot]; break;
+    case VEC_INT8:   c.u.i = ((int8_t  *)sc->data)[slot]; break;
+    case VEC_BOOL:   c.u.i = ((uint8_t *)sc->data)[slot]; break;
+    case VEC_STRING: c.u.s.p = sc->sptr[slot]; c.u.s.n = sc->slen[slot]; break;
+    }
+    return c;
+}
+
+/* Compare two valid cells of the same type. Returns <0 / 0 / >0. */
+static int cmp_valid(VecType type, TCell a, TCell b) {
+    switch (type) {
+    case VEC_DOUBLE:
+        return (a.u.d < b.u.d) ? -1 : (a.u.d > b.u.d) ? 1 : 0;
+    case VEC_STRING: {
+        int64_t minlen = a.u.s.n < b.u.s.n ? a.u.s.n : b.u.s.n;
+        int cmp = memcmp(a.u.s.p, b.u.s.p, (size_t)minlen);
+        if (cmp == 0)
+            cmp = (a.u.s.n < b.u.s.n) ? -1 : (a.u.s.n > b.u.s.n) ? 1 : 0;
+        return cmp;
+    }
+    default: /* all integer widths + bool live in u.i */
+        return (a.u.i < b.u.i) ? -1 : (a.u.i > b.u.i) ? 1 : 0;
+    }
+}
+
+/* One-key comparison in final (top-N) order. NA (invalid) always sorts last,
+   independent of `desc`, matching dplyr slice_min/slice_max and the with_ties
+   R path (order(..., na.last = TRUE)). Returns 0 for a tie on this key so the
+   caller falls through to the next key. */
+static int key_cmp(VecType type, TCell a, TCell b, int desc) {
+    if (!a.valid && !b.valid) return 0;
+    if (!a.valid) return 1;   /* a last */
+    if (!b.valid) return -1;  /* b last */
+    int cmp = cmp_valid(type, a, b);
+    return cmp ? (desc ? -cmp : cmp) : 0;
+}
+
+/* Compare two store slots across all sort keys. */
+static int cmp_slot_slot(const StoreCtx *ctx, int64_t a, int64_t b) {
+    for (int k = 0; k < ctx->n_keys; k++) {
+        int ci = ctx->keys[k].col_index;
+        StoreCol *sc = &ctx->store->cols[ci];
+        int cmp = key_cmp(sc->type, cell_from_store(sc, a),
+                          cell_from_store(sc, b), ctx->keys[k].descending);
+        if (cmp != 0) return cmp;
+    }
+    return 0;
+}
+
+/* Compare an incoming batch row against a store slot across all sort keys. */
+static int cmp_incoming_slot(const StoreCtx *ctx, const VecBatch *batch,
+                             int64_t phys, int64_t slot) {
+    for (int k = 0; k < ctx->n_keys; k++) {
+        int ci = ctx->keys[k].col_index;
+        StoreCol *sc = &ctx->store->cols[ci];
+        int cmp = key_cmp(sc->type, cell_from_array(&batch->columns[ci], phys),
+                          cell_from_store(sc, slot), ctx->keys[k].descending);
+        if (cmp != 0) return cmp;
+    }
+    return 0;
+}
+
+/* Grow every column's slot capacity to at least `need` (doubling, capped at
+   limit). Only ever called during the fill phase, so need <= limit. */
+static void store_ensure(RowStore *st, int64_t need) {
+    if (need <= st->cap) return;
+    int64_t ncap = st->cap ? st->cap : 16;
+    while (ncap < need) ncap *= 2;
+    if (ncap > st->limit) ncap = st->limit;
+
+    for (int c = 0; c < st->n_cols; c++) {
+        StoreCol *sc = &st->cols[c];
+        sc->valid = (uint8_t *)realloc(sc->valid, (size_t)ncap);
+        memset(sc->valid + st->cap, 0, (size_t)(ncap - st->cap));
+        if (sc->type == VEC_STRING) {
+            sc->sptr = (char **)realloc(sc->sptr, (size_t)ncap * sizeof(char *));
+            sc->slen = (int64_t *)realloc(sc->slen, (size_t)ncap * sizeof(int64_t));
+            memset(sc->sptr + st->cap, 0, (size_t)(ncap - st->cap) * sizeof(char *));
+            memset(sc->slen + st->cap, 0, (size_t)(ncap - st->cap) * sizeof(int64_t));
+        } else {
+            size_t es = elem_size(sc->type);
+            sc->data = realloc(sc->data, (size_t)ncap * es);
+        }
+    }
+    st->cap = ncap;
+}
+
+/* Copy row `phys` of `batch` into slot `slot` (overwriting whatever was
+   there, freeing an evicted string first). */
+static void store_put(RowStore *st, int64_t slot,
+                      const VecBatch *batch, int64_t phys) {
+    for (int c = 0; c < st->n_cols; c++) {
+        StoreCol *sc = &st->cols[c];
+        const VecArray *col = &batch->columns[c];
+        if (sc->type == VEC_STRING) {
+            free(sc->sptr[slot]);
+            sc->sptr[slot] = NULL;
+            sc->slen[slot] = 0;
+        }
+        if (!vec_array_is_valid(col, phys)) { sc->valid[slot] = 0; continue; }
+        sc->valid[slot] = 1;
+        switch (sc->type) {
+        case VEC_DOUBLE: ((double  *)sc->data)[slot] = col->buf.dbl[phys]; break;
+        case VEC_INT64:  ((int64_t *)sc->data)[slot] = col->buf.i64[phys]; break;
+        case VEC_INT32:  ((int32_t *)sc->data)[slot] = col->buf.i32[phys]; break;
+        case VEC_INT16:  ((int16_t *)sc->data)[slot] = col->buf.i16[phys]; break;
+        case VEC_INT8:   ((int8_t  *)sc->data)[slot] = col->buf.i8[phys];  break;
+        case VEC_BOOL:   ((uint8_t *)sc->data)[slot] = col->buf.bln[phys]; break;
+        case VEC_STRING: {
+            int64_t s = col->buf.str.offsets[phys];
+            int64_t n = col->buf.str.offsets[phys + 1] - s;
+            char *p = (char *)malloc((size_t)(n > 0 ? n : 1));
+            if (n > 0) memcpy(p, col->buf.str.data + s, (size_t)n);
+            sc->sptr[slot] = p;
+            sc->slen[slot] = n;
+            break;
+        }
+        }
+    }
+}
+
+/* Binary max-heap over slot indices (heap[i] is a slot into the store). */
+static void heap_sift_down(int64_t *heap, int64_t size, int64_t pos,
+                           const StoreCtx *ctx) {
     while (1) {
         int64_t largest = pos;
         int64_t left = 2 * pos + 1;
         int64_t right = 2 * pos + 2;
-
-        if (left < size &&
-            compare_rows_topn(ctx, heap[left], heap[largest]) > 0)
+        if (left < size && cmp_slot_slot(ctx, heap[left], heap[largest]) > 0)
             largest = left;
-        if (right < size &&
-            compare_rows_topn(ctx, heap[right], heap[largest]) > 0)
+        if (right < size && cmp_slot_slot(ctx, heap[right], heap[largest]) > 0)
             largest = right;
-
         if (largest == pos) break;
-        int64_t tmp = heap[pos];
-        heap[pos] = heap[largest];
-        heap[largest] = tmp;
+        int64_t tmp = heap[pos]; heap[pos] = heap[largest]; heap[largest] = tmp;
         pos = largest;
     }
 }
 
-static void heap_sift_up(int64_t *heap, int64_t pos, const TopNCtx *ctx) {
+static void heap_sift_up(int64_t *heap, int64_t pos, const StoreCtx *ctx) {
     while (pos > 0) {
         int64_t parent = (pos - 1) / 2;
-        if (compare_rows_topn(ctx, heap[pos], heap[parent]) <= 0)
-            break;
-        int64_t tmp = heap[pos];
-        heap[pos] = heap[parent];
-        heap[parent] = tmp;
+        if (cmp_slot_slot(ctx, heap[pos], heap[parent]) <= 0) break;
+        int64_t tmp = heap[pos]; heap[pos] = heap[parent]; heap[parent] = tmp;
         pos = parent;
     }
 }
 
-/* Merge sort for final ordering of the k selected rows */
-static void topn_merge_sort(int64_t *indices, int64_t *tmp, int64_t n,
-                             const TopNCtx *ctx) {
+/* Final ordering of the selected slots (ascending in sort order). */
+static void topn_merge_sort(int64_t *idx, int64_t *tmp, int64_t n,
+                            const StoreCtx *ctx) {
     if (n <= 1) return;
     int64_t mid = n / 2;
-    topn_merge_sort(indices, tmp, mid, ctx);
-    topn_merge_sort(indices + mid, tmp, n - mid, ctx);
-
+    topn_merge_sort(idx, tmp, mid, ctx);
+    topn_merge_sort(idx + mid, tmp, n - mid, ctx);
     int64_t i = 0, j = mid, k = 0;
     while (i < mid && j < n) {
-        if (compare_rows_topn(ctx, indices[i], indices[j]) <= 0)
-            tmp[k++] = indices[i++];
-        else
-            tmp[k++] = indices[j++];
+        if (cmp_slot_slot(ctx, idx[i], idx[j]) <= 0) tmp[k++] = idx[i++];
+        else                                          tmp[k++] = idx[j++];
     }
-    while (i < mid) tmp[k++] = indices[i++];
-    while (j < n) tmp[k++] = indices[j++];
-    memcpy(indices, tmp, (size_t)n * sizeof(int64_t));
+    while (i < mid) tmp[k++] = idx[i++];
+    while (j < n)   tmp[k++] = idx[j++];
+    memcpy(idx, tmp, (size_t)n * sizeof(int64_t));
 }
 
-/* Gather: reorder arrays by indices */
-static VecArray topn_gather(const VecArray *src, const int64_t *indices,
-                             int64_t n) {
-    VecArray dst = vec_array_alloc(src->type, n);
-
-    switch (src->type) {
-    case VEC_INT64:
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
-                vec_array_set_valid(&dst, i);
-                dst.buf.i64[i] = src->buf.i64[si];
-            }
-        }
-        break;
-    case VEC_INT32:
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
-                vec_array_set_valid(&dst, i);
-                dst.buf.i32[i] = src->buf.i32[si];
-            }
-        }
-        break;
-    case VEC_INT16:
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
-                vec_array_set_valid(&dst, i);
-                dst.buf.i16[i] = src->buf.i16[si];
-            }
-        }
-        break;
-    case VEC_INT8:
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
-                vec_array_set_valid(&dst, i);
-                dst.buf.i8[i] = src->buf.i8[si];
-            }
-        }
-        break;
-    case VEC_DOUBLE:
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
-                vec_array_set_valid(&dst, i);
-                dst.buf.dbl[i] = src->buf.dbl[si];
-            }
-        }
-        break;
-    case VEC_BOOL:
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
-                vec_array_set_valid(&dst, i);
-                dst.buf.bln[i] = src->buf.bln[si];
-            }
-        }
-        break;
-    case VEC_STRING: {
+/* Build an output VecArray of length n by gathering store slots in `order`. */
+static VecArray store_to_array(const StoreCol *sc, const int64_t *order,
+                               int64_t n) {
+    VecArray dst = vec_array_alloc(sc->type, n);
+    if (sc->type == VEC_STRING) {
         int64_t total = 0;
-        for (int64_t i = 0; i < n; i++) {
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si))
-                total += src->buf.str.offsets[si + 1] -
-                         src->buf.str.offsets[si];
-        }
+        for (int64_t i = 0; i < n; i++)
+            if (sc->valid[order[i]]) total += sc->slen[order[i]];
         free(dst.buf.str.data);
         dst.buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
         dst.buf.str.data_len = total;
-
         int64_t off = 0;
         for (int64_t i = 0; i < n; i++) {
             dst.buf.str.offsets[i] = off;
-            int64_t si = indices[i];
-            if (vec_array_is_valid(src, si)) {
+            int64_t s = order[i];
+            if (sc->valid[s]) {
                 vec_array_set_valid(&dst, i);
-                int64_t s = src->buf.str.offsets[si];
-                int64_t slen = src->buf.str.offsets[si + 1] - s;
-                if (slen > 0)
-                    memcpy(dst.buf.str.data + off,
-                           src->buf.str.data + s, (size_t)slen);
-                off += slen;
+                if (sc->slen[s] > 0)
+                    memcpy(dst.buf.str.data + off, sc->sptr[s],
+                           (size_t)sc->slen[s]);
+                off += sc->slen[s];
             }
         }
         dst.buf.str.offsets[n] = off;
-        break;
+        return dst;
     }
+    for (int64_t i = 0; i < n; i++) {
+        int64_t s = order[i];
+        if (!sc->valid[s]) continue;
+        vec_array_set_valid(&dst, i);
+        switch (sc->type) {
+        case VEC_DOUBLE: dst.buf.dbl[i] = ((double  *)sc->data)[s]; break;
+        case VEC_INT64:  dst.buf.i64[i] = ((int64_t *)sc->data)[s]; break;
+        case VEC_INT32:  dst.buf.i32[i] = ((int32_t *)sc->data)[s]; break;
+        case VEC_INT16:  dst.buf.i16[i] = ((int16_t *)sc->data)[s]; break;
+        case VEC_INT8:   dst.buf.i8[i]  = ((int8_t  *)sc->data)[s]; break;
+        case VEC_BOOL:   dst.buf.bln[i] = ((uint8_t *)sc->data)[s]; break;
+        case VEC_STRING: break; /* handled above */
+        }
     }
     return dst;
+}
+
+static void store_free(RowStore *st) {
+    if (!st->cols) return;
+    for (int c = 0; c < st->n_cols; c++) {
+        StoreCol *sc = &st->cols[c];
+        free(sc->valid);
+        free(sc->data);
+        if (sc->sptr) {
+            for (int64_t s = 0; s < st->cap; s++) free(sc->sptr[s]);
+            free(sc->sptr);
+        }
+        free(sc->slen);
+    }
+    free(st->cols);
+    st->cols = NULL;
+}
+
+static VecBatch *emit_schema_only(TopNNode *tn, int n_cols) {
+    VecBatch *result = vec_batch_alloc(n_cols, 0);
+    for (int c = 0; c < n_cols; c++) {
+        result->columns[c] =
+            vec_array_alloc(tn->child->output_schema.col_types[c], 0);
+        const char *nm = tn->child->output_schema.col_names[c];
+        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
+        strcpy(result->col_names[c], nm);
+    }
+    return result;
 }
 
 static VecBatch *topn_next_batch(VecNode *self) {
@@ -256,97 +342,70 @@ static VecBatch *topn_next_batch(VecNode *self) {
 
     int n_cols = tn->child->output_schema.n_cols;
     int64_t k = tn->limit;
+    if (k <= 0) {
+        /* Drain child so upstream frees, then emit an empty result. */
+        VecBatch *b;
+        while ((b = tn->child->next_batch(tn->child)) != NULL) vec_batch_free(b);
+        return emit_schema_only(tn, n_cols);
+    }
 
-    /* Phase 1: materialize all child rows into arrays */
-    VecArrayBuilder *builders = (VecArrayBuilder *)calloc(
-        (size_t)n_cols, sizeof(VecArrayBuilder));
+    RowStore store;
+    store.n_cols = n_cols;
+    store.cap = 0;
+    store.limit = k;
+    store.cols = (StoreCol *)calloc((size_t)n_cols, sizeof(StoreCol));
     for (int c = 0; c < n_cols; c++)
-        builders[c] = vec_builder_init(tn->child->output_schema.col_types[c]);
+        store.cols[c].type = tn->child->output_schema.col_types[c];
+
+    StoreCtx ctx;
+    ctx.store = &store;
+    ctx.n_keys = tn->n_keys;
+    ctx.keys = tn->keys;
+
+    int64_t *heap = (int64_t *)malloc((size_t)k * sizeof(int64_t));
+    int64_t heap_size = 0;
 
     VecBatch *batch;
     while ((batch = tn->child->next_batch(tn->child)) != NULL) {
-        if (!batch->sel) {
-            for (int c = 0; c < n_cols; c++)
-                vec_builder_append_array(&builders[c], &batch->columns[c]);
-        } else {
-            int64_t n_logical = vec_batch_logical_rows(batch);
-            for (int c = 0; c < n_cols; c++)
-                vec_builder_reserve(&builders[c], n_logical);
-            for (int64_t li = 0; li < n_logical; li++) {
-                int64_t pi = vec_batch_physical_row(batch, li);
-                for (int c = 0; c < n_cols; c++)
-                    vec_builder_append_one(&builders[c],
-                                           &batch->columns[c], pi);
+        int64_t nlog = vec_batch_logical_rows(batch);
+        for (int64_t li = 0; li < nlog; li++) {
+            int64_t phys = vec_batch_physical_row(batch, li);
+            if (heap_size < k) {
+                /* Fill phase: admit unconditionally into a fresh slot. */
+                store_ensure(&store, heap_size + 1);
+                store_put(&store, heap_size, batch, phys);
+                heap[heap_size] = heap_size;
+                heap_sift_up(heap, heap_size, &ctx);
+                heap_size++;
+            } else if (cmp_incoming_slot(&ctx, batch, phys, heap[0]) < 0) {
+                /* Admit: overwrite the root slot, then re-sift. */
+                store_put(&store, heap[0], batch, phys);
+                heap_sift_down(heap, heap_size, 0, &ctx);
             }
         }
         vec_batch_free(batch);
     }
 
-    VecArray *columns = (VecArray *)malloc((size_t)n_cols * sizeof(VecArray));
-    int64_t n_rows = builders[0].length;
-    for (int c = 0; c < n_cols; c++)
-        columns[c] = vec_builder_finish(&builders[c]);
-    free(builders);
-
-    if (n_rows == 0 || k <= 0) {
-        int64_t out_n = 0;
-        VecBatch *result = vec_batch_alloc(n_cols, out_n);
-        for (int c = 0; c < n_cols; c++) {
-            result->columns[c] = columns[c];
-            const char *nm = tn->child->output_schema.col_names[c];
-            result->col_names[c] = (char *)malloc(strlen(nm) + 1);
-            strcpy(result->col_names[c], nm);
-        }
-        free(columns);
-        return result;
+    if (heap_size == 0) {
+        free(heap);
+        store_free(&store);
+        return emit_schema_only(tn, n_cols);
     }
 
-    /* Clamp k to actual row count */
-    if (k > n_rows) k = n_rows;
-
-    TopNCtx ctx;
-    ctx.columns = columns;
-    ctx.n_keys = tn->n_keys;
-    ctx.keys = tn->keys;
-
-    /* Phase 2: build max-heap of size k */
-    int64_t *heap = (int64_t *)malloc((size_t)k * sizeof(int64_t));
-    int64_t heap_size = 0;
-
-    /* Fill heap with first k rows */
-    for (int64_t r = 0; r < k && r < n_rows; r++) {
-        heap[heap_size] = r;
-        heap_size++;
-        heap_sift_up(heap, heap_size - 1, &ctx);
-    }
-
-    /* Process remaining rows: if row < heap max, replace */
-    for (int64_t r = k; r < n_rows; r++) {
-        if (compare_rows_topn(&ctx, r, heap[0]) < 0) {
-            heap[0] = r;
-            heap_sift_down(heap, heap_size, 0, &ctx);
-        }
-    }
-
-    /* Phase 3: sort the k heap entries for final output order */
-    int64_t *tmp = (int64_t *)malloc((size_t)k * sizeof(int64_t));
-    topn_merge_sort(heap, tmp, k, &ctx);
+    int64_t *tmp = (int64_t *)malloc((size_t)heap_size * sizeof(int64_t));
+    topn_merge_sort(heap, tmp, heap_size, &ctx);
     free(tmp);
 
-    /* Phase 4: gather columns by sorted indices */
-    VecBatch *result = vec_batch_alloc(n_cols, k);
+    VecBatch *result = vec_batch_alloc(n_cols, heap_size);
     for (int c = 0; c < n_cols; c++) {
-        result->columns[c] = topn_gather(&columns[c], heap, k);
+        result->columns[c] = store_to_array(&store.cols[c], heap, heap_size);
         const char *nm = tn->child->output_schema.col_names[c];
         result->col_names[c] = (char *)malloc(strlen(nm) + 1);
         strcpy(result->col_names[c], nm);
     }
 
     free(heap);
-    for (int c = 0; c < n_cols; c++)
-        vec_array_free(&columns[c]);
-    free(columns);
-
+    store_free(&store);
     return result;
 }
 

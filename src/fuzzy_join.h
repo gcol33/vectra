@@ -27,10 +27,14 @@ typedef struct {
 
 /* State machine */
 typedef enum {
-    FSTATE_MATERIALIZE,
-    FSTATE_EMIT,
+    FSTATE_BUILD,   /* materialize + block-index the build side (once) */
+    FSTATE_STREAM,  /* pull probe batches, emit their matches in chunks */
     FSTATE_DONE
 } FuzzyState;
+
+/* Build-side block index: block key -> list of build rows. Private to the
+   implementation; NULL when no blocking column is used. */
+struct BlockIndex;
 
 typedef struct {
     VecNode    base;
@@ -50,28 +54,26 @@ typedef struct {
     double      max_dist;
     int         n_threads;
 
-    /* Materialized probe side */
+    /* Probe side is streamed, not materialized; only its column count is kept. */
     int         p_ncols;
-    VecArray   *p_cols;
-    int64_t     p_nrows;
 
-    /* Materialized build side */
+    /* Materialized build side (resident: every probe row compares against it) */
     int         b_ncols;
     VecArray   *b_cols;
     int64_t     b_nrows;
 
-    /* Partitions (one per unique block key value) */
-    JoinPartition *probe_parts;
-    JoinPartition *build_parts;
-    int64_t        n_parts;
+    /* Build-side block index (NULL when no blocking) */
+    struct BlockIndex *bidx;
 
-    /* Match results (merged from all threads) */
-    FuzzyMatch *matches;
-    int64_t     n_matches;
+    /* Streaming state: the probe batch being emitted and its matches. The
+       match buffer is bounded to one probe batch, never the whole cross set. */
+    VecBatch   *cur_batch;       /* current probe batch (owned until drained) */
+    FuzzyMatch *cur_matches;     /* matches for cur_batch (probe_idx = local row) */
+    int64_t     cur_n;           /* number of matches in cur_matches */
+    int64_t     emit_pos;        /* cursor into cur_matches */
 
     /* Output state */
     FuzzyState  state;
-    int64_t     emit_pos;        /* cursor into matches array */
 
     /* Output schema column mapping */
     int         out_ncols;       /* total output columns */

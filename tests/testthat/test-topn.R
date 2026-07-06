@@ -179,3 +179,56 @@ test_that("topn large dataset correctness", {
   expected <- head(df[order(df$x), ], k)
   expect_equal(result$x, expected$x)
 })
+
+# --- Streaming C top-N path (with_ties = FALSE), the O(k)-memory node ---
+
+test_that("streaming topn is O(k)-correct across many row groups", {
+  set.seed(7)
+  n <- 40000
+  df <- data.frame(id = seq_len(n), x = sample(n) + 0.5,
+                   tag = paste0("r", sample(n)), stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f, batch_size = 1024)  # ~40 row groups -> exercises streaming
+
+  for (k in c(1, 7, 1024, 1025, 40001)) {
+    gmin <- tbl(f) |> slice_min(order_by = x, n = k, with_ties = FALSE) |> collect()
+    want <- df[order(df$x), ][seq_len(min(k, n)), ]
+    expect_equal(gmin$x, want$x)
+    # row integrity: companion columns follow the ordering column
+    key <- match(gmin$id, df$id)
+    expect_identical(gmin$tag, df$tag[key])
+
+    gmax <- tbl(f) |> slice_max(order_by = x, n = k, with_ties = FALSE) |> collect()
+    wantx <- df$x[order(df$x, decreasing = TRUE)][seq_len(min(k, n))]
+    expect_equal(gmax$x, wantx)
+  }
+})
+
+test_that("streaming topn orders by a string column", {
+  df <- data.frame(id = 1:5, s = c("delta", "alpha", "echo", "bravo", "charlie"),
+                   stringsAsFactors = FALSE)
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(df, f, batch_size = 2)
+  got <- tbl(f) |> slice_min(order_by = s, n = 3, with_ties = FALSE) |> collect()
+  expect_equal(got$s, c("alpha", "bravo", "charlie"))
+})
+
+test_that("streaming topn drops NA in the order column (min and max)", {
+  # slice_min/slice_max must sort NA last regardless of direction, matching
+  # dplyr and the with_ties = TRUE path (order(..., na.last = TRUE)).
+  df <- data.frame(id = 1:6, x = c(3, NA, 1, NA, 5, 2))
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(df, f, batch_size = 2)
+
+  gmin <- tbl(f) |> slice_min(order_by = x, n = 3, with_ties = FALSE) |> collect()
+  expect_equal(gmin$x, c(1, 2, 3))          # smallest non-NA, no NA pulled in
+
+  gmax <- tbl(f) |> slice_max(order_by = x, n = 3, with_ties = FALSE) |> collect()
+  expect_equal(gmax$x, c(5, 3, 2))          # largest non-NA, NA never treated as max
+
+  # n exceeding the non-NA count includes the NA rows only at the end
+  gall <- tbl(f) |> slice_max(order_by = x, n = 6, with_ties = FALSE) |> collect()
+  expect_equal(gall$x[1:4], c(5, 3, 2, 1))
+  expect_true(all(is.na(gall$x[5:6])))
+})
