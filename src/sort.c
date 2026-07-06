@@ -814,14 +814,18 @@ static void consume_input(SortNode *sn) {
     for (int c = 0; c < n_cols; c++)
         builders[c] = vec_builder_init(schema->col_types[c]);
 
+    int64_t total_rows = 0;
+
     /* Pull all child batches */
     VecBatch *batch;
     while ((batch = sn->child->next_batch(sn->child)) != NULL) {
         if (!batch->sel) {
+            total_rows += batch->n_rows;
             for (int c = 0; c < n_cols; c++)
                 vec_builder_append_array(&builders[c], &batch->columns[c]);
         } else {
             int64_t n_logical = vec_batch_logical_rows(batch);
+            total_rows += n_logical;
             for (int c = 0; c < n_cols; c++)
                 vec_builder_reserve(&builders[c], n_logical);
             for (int64_t li = 0; li < n_logical; li++) {
@@ -845,6 +849,8 @@ static void consume_input(SortNode *sn) {
                 builders[c] = vec_builder_init(schema->col_types[c]);
         }
     }
+
+    sn->total_rows = total_rows;
 
     int64_t remaining = builders[0].length;
 
@@ -927,6 +933,10 @@ static void sort_free(VecNode *self) {
     free(sn);
 }
 
+int64_t sort_node_total_rows(const SortNode *sn) {
+    return sn->total_rows;
+}
+
 SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
                            const char *temp_dir, int64_t mem_budget) {
     SortNode *sn = (SortNode *)calloc(1, sizeof(SortNode));
@@ -937,6 +947,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->keys       = keys;
     sn->phase      = SORT_INIT;
     sn->mem_budget = mem_budget;
+    sn->total_rows = -1;
 
     if (temp_dir) {
         sn->temp_dir = (char *)malloc(strlen(temp_dir) + 1);

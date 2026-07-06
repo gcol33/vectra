@@ -56,12 +56,19 @@ typedef struct {
     int64_t   hold_pos;    /* logical cursor into hold_batch */
     int64_t   hold_n;      /* logical rows in hold_batch */
 
-    /* Cumulative streaming path (ungrouped windows whose every spec is a
-       forward-cumulative aggregate: cumsum/cummean/cummin/cummax or an
-       unordered row_number). Each output batch is computed from one child
-       batch plus O(1) running state, so peak memory is one batch. */
-    int       cum_mode;
-    void     *cum_state;   /* WinCumState[n_wins]; internal to window.c */
+    /* Ordered single-partition streaming path (ungrouped windows). Every spec
+       shares one stream ordering: either the child's natural arrival order, or
+       a global sort inserted below this node (by a value column for the rank
+       family, by a time column for rolling). Each output batch is computed
+       from one child batch plus bounded per-spec running state, so peak memory
+       is one batch (plus the pre-sort's own spill-safe buffering). This
+       subsumes the cumulative aggregates, the rank family, ntile, lag, and the
+       rolling aggregates. */
+    int       ostream;
+    void     *run_state;   /* WinRunState[n_wins]; internal to window.c */
+    int64_t   total_n;     /* partition row count for ntile/percent_rank/
+                              cume_dist; -1 until known */
+    void     *count_src;   /* SortNode* to read total_n from, or NULL */
 } WindowNode;
 
 /* Returns the top of a small node pipeline. For grouped windows with a
