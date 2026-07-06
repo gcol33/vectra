@@ -1,3 +1,21 @@
+# vectra 0.10.5
+
+## Spill-safe window functions
+
+* Ordered ungrouped windows that need the whole table sorted (`rank()`,
+  `dense_rank()`, `percent_rank()`, `cume_dist()`, `row_number(col)`,
+  `roll_*()`, `lag()`, `lead()`, `ntile()`) now stream, closing the last window
+  case that materialized the whole table. A single spill-safe global sort is
+  inserted below the window, then one forward pass computes each spec from
+  bounded running state, so peak memory is one batch plus the sort's own spill
+  buffer rather than the whole table. Two ordering tricks keep the awkward cases
+  single-pass: `cume_dist()` sorts descending so `count(<= v)` is known when each
+  value group opens, and `lead()` is computed as `lag()` on the row-id-reversed
+  stream. When one `mutate()` mixes specs that need conflicting sort orders (for
+  example `rank(x)` and `rank(desc(x))` together), the node falls back to the
+  in-memory path; splitting them into separate `mutate()` calls keeps each
+  streaming.
+
 # vectra 0.10.4
 
 ## Spill-safe window functions
@@ -14,20 +32,10 @@
 * Ungrouped cumulative windows (`mutate(cs = cumsum(x))` and the rest of the
   `cumsum`/`cummean`/`cummin`/`cummax`/`row_number()` family, with no
   `group_by()`) now stream one batch at a time with O(1) running state, so a
-  running aggregate over a larger-than-RAM table holds only one batch.
-
-* Ordered ungrouped windows that need the whole table sorted (`rank()`,
-  `dense_rank()`, `percent_rank()`, `cume_dist()`, `row_number(col)`,
-  `roll_*()`, `lag()`, `lead()`, `ntile()`) now stream as well. A single
-  spill-safe global sort is inserted below the window, then one forward pass
-  computes each spec from bounded running state, so peak memory is one batch
-  plus the sort's own spill buffer rather than the whole table. Two ordering
-  tricks keep the awkward cases single-pass: `cume_dist()` sorts descending so
-  `count(<= v)` is known when each value group opens, and `lead()` is computed
-  as `lag()` on the row-id-reversed stream. When one `mutate()` mixes specs that
-  need conflicting sort orders (for example `rank(x)` and `rank(desc(x))`
-  together), the node falls back to the in-memory path; splitting them into
-  separate `mutate()` calls keeps each streaming.
+  running aggregate over a larger-than-RAM table holds only one batch. Ordered
+  ungrouped windows that need the whole table sorted (`rank()`, `dense_rank()`,
+  `percent_rank()`, `cume_dist()`, `row_number(col)`, `roll_*()`, `lag()`,
+  `lead()`, `ntile()`) keep the in-memory path.
 
 # vectra 0.10.3
 
