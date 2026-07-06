@@ -1,3 +1,38 @@
+# vectra 0.10.8
+
+## Bounded-memory joins under key skew
+
+* Hash joins now keep a bounded memory peak regardless of how skewed the join
+  keys are. When the materialized build side exceeds the memory budget
+  (`vectra_mem()`), both sides grace-hash spill into 64 run-file partitions and
+  join one partition at a time. A partition that is itself still over budget is
+  re-partitioned by its sub-join with a depth-salted hash (a murmur3 finalizer,
+  not a bare XOR, so colliding keys actually redistribute across levels rather
+  than landing in the same bucket again). A partition that a single dominant key
+  value makes un-splittable -- hashing cannot separate identical keys at any
+  depth -- drops at the third level to a block-nested-loop: the build side is
+  read in budget-sized blocks and the probe side is re-scanned once per block.
+  Peak memory is one build block plus one probe batch plus a one-bit-per-row
+  matched bitset, so no join retains an unbounded resident partition. Applies to
+  all five kinds (inner, left, right, full, semi, anti). Partition files are
+  opened lazily on first row, so a hot key no longer creates 63 empty spill
+  files per level.
+
+## Fixes
+
+* An empty build partition no longer corrupts the heap on a `full_join()`. The
+  hash-table constructor floors its slot allocation to one row; the true build
+  count is now recorded separately, so the finalize pass over a build-empty
+  partition reads zero rows instead of a nonexistent row 0. Surfaced by the
+  one-sided partitions the recursive spill routinely produces.
+* The sorted-input merge-join path is now consistent with the hash path in three
+  cases it previously disagreed on: a match group beginning at build row 0 no
+  longer spins forever (the group cursor used a positive-only sentinel that
+  conflated position 0 with "inactive"); an unmatched build row under
+  `full_join()` is emitted exactly once rather than doubled by the finalize
+  pass; and an `NA` key never matches (both-`NA` at an equal-compare point is
+  treated as unmatched, as in the hash path).
+
 # vectra 0.10.7
 
 ## Fixes
