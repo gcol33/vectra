@@ -215,6 +215,53 @@ cat("> The out-of-core GLM example needs the **biglm** package, which is not",
 unlink(c(tif, vtr))
 ```
 
+## Transferability: is a projection environment novel?
+
+A model calibrated in one region and projected to another (a different area, or
+the same area under a future climate) is only trustworthy where the projection
+environment resembles the calibration environment. Mobility-oriented parity
+(MOP; Owens et al. 2013) measures that resemblance directly. For each projection
+site it reports the mean distance, in predictor space, to the nearest fraction
+of the calibration cloud: small where the site sits inside the training
+conditions, larger where it is environmentally novel and the model would be
+extrapolating.
+
+`feature_knn()` computes that distance while streaming the projection side, so a
+continental projection grid never has to be held in memory. The calibration
+cloud is the resident reference; each projection batch is scored against it. The
+predictors here are already standardized, so a plain Euclidean distance is
+meaningful; `metric = "mahalanobis"` whitens by the calibration covariance when
+the predictors are correlated.
+
+```{r feature-knn}
+calib <- occ[, c("bio1", "bio12")]          # the standardized training cloud
+
+# Two sites inside the training conditions and one well outside them.
+proj <- data.frame(
+  bio1  = c(0.0, 0.5, 4.0),
+  bio12 = c(0.0, -0.5, -4.0)
+)
+pv <- tempfile(fileext = ".vtr")
+write_vtr(proj, pv)
+
+tbl(pv) |>
+  feature_knn(calib, percentage = 5) |>
+  collect()
+unlink(pv)
+```
+
+The third site, far from any training condition, is scored with a much larger
+distance than the two that sit within the cloud.
+
+When the projection is itself a stack of environmental rasters, `mop()` folds
+the same distance over the projection grid and adds the strict-extrapolation
+layers of `mop::mop(type = "detailed")`. Per cell it reports how many predictors
+fall below their calibration minimum (`towards_low`) or above their maximum
+(`towards_high`), their sum (`mop_simple`), and a binary novelty flag
+(`mop_basic`), alongside the continuous `mop_distance` surface. The projection
+raster streams one tile-row strip at a time and the result is written aligned to
+its grid, so the whole surface is computed out-of-core.
+
 ## Choosing a path
 
 Extract with `tiff_extract_points()` in every case. After that:
@@ -225,4 +272,6 @@ Extract with `tiff_extract_points()` in every case. After that:
   statistics, an online mean), use `collect_chunked()`.
 * If the table itself exceeds memory and you need a full GLM, feed it to
   `biglm::bigglm()` through `chunk_feeder()`.
+* To judge whether a projection is within the calibrated conditions, score it
+  with `feature_knn()`, or `mop()` for a full raster novelty surface.
 ```

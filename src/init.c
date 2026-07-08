@@ -104,6 +104,10 @@ SEXP C_overlay_components(SEXP bbox_sexp);
 SEXP C_overlay_group(SEXP wkb_list);
 SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthreads_sexp, SEXP prec_sexp, SEXP pip_sexp);
 
+/* Feature-space kNN over a resident reference cloud (feature_knn.c). */
+SEXP C_feature_knn_build(SEXP ref_sexp, SEXP transform_sexp);
+SEXP C_feature_knn_query(SEXP idx_ptr, SEXP query_sexp, SEXP keff_sexp, SEXP nthreads_sexp);
+
 /* GEOS-native streaming spatial verbs (vtr_spatial.c). */
 SEXP C_geos_locator_build(SEXP wkb_list);
 SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp, SEXP negate_sexp, SEXP dist_sexp, SEXP nthreads_sexp);
@@ -202,6 +206,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_geos_union_hex",           (DL_FUNC) &C_geos_union_hex,           1},
     {"C_geos_locate_xy",           (DL_FUNC) &C_geos_locate_xy,           7},
     {"C_geos_points_to_hex",       (DL_FUNC) &C_geos_points_to_hex,       2},
+    {"C_feature_knn_build",        (DL_FUNC) &C_feature_knn_build,        2},
+    {"C_feature_knn_query",        (DL_FUNC) &C_feature_knn_query,        4},
     {"C_vecr_writer_open",         (DL_FUNC) &C_vecr_writer_open,         9},
     {"C_vecr_writer_write_strip",  (DL_FUNC) &C_vecr_writer_write_strip,  4},
     {"C_vecr_writer_finish",       (DL_FUNC) &C_vecr_writer_finish,       1},

@@ -1,3 +1,40 @@
+# vectra 0.11.0
+
+## Feature-space kNN and the MOP transferability surface
+
+* New `feature_knn()`: nearest-neighbour search in *predictor* space rather than
+  on coordinates. For each streamed query row it returns the mean distance to
+  the nearest `k` (or nearest `percentage`%) of a resident reference cloud, with
+  a Euclidean or Mahalanobis metric. The query side streams one batch at a time
+  so the projection side can exceed memory; the reference cloud is materialized
+  once, whitened for the chosen metric, and scanned in parallel (a bounded
+  max-heap keeps peak memory at O(k) per thread). This is the continuous half of
+  the mobility-oriented parity (MOP) diagnostic (Owens et al. 2013), the
+  environmental-novelty counterpart to the coordinate-based `spatial_knn()`.
+* New `mop()`: the MOP transferability surface between two multi-band
+  environmental rasters, aligned to the projection grid. It returns both halves
+  of `mop::mop(type = "detailed")` -- the continuous `mop_distance` surface via
+  `feature_knn()`, and the strict-extrapolation layers `towards_low`,
+  `towards_high`, `mop_simple`, and `mop_basic`. The calibration raster is read
+  once and indexed; the projection raster streams one tile-row strip at a time,
+  so the surface is computed out-of-core.
+* The Species Distribution Models vignette gains a transferability / novelty
+  section covering both.
+
+## Bounded memory across the remaining streaming paths
+
+* The streaming operations that still grew resident state with the input size
+  or with key skew are now bounded. Interval joins run as a serial sweep-merge
+  over externally sorted sides; k-mer counting streams through an external
+  sort-merge (`rec_spill`) instead of a hash table that grew with the input;
+  grouped top-1 (`slice_min`/`slice_max`, `n = 1`) keeps one champion per open
+  group via a `(key, row-id)` sort; fuzzy joins stream the probe side and spill
+  the build side when it overflows the budget; and ungrouped windows with mixed
+  orderings decompose into a chain of single-spec streaming nodes rather than
+  materializing the table. A shared `rec_spill` external merge and a shared
+  `key_snap` group-boundary detector back these paths, so there is one
+  implementation of each rather than several.
+
 # vectra 0.10.8
 
 ## Bounded-memory joins under key skew
