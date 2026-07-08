@@ -27,6 +27,7 @@ static inline unsigned char *slot_ptr(RecSpill *s, int64_t i) {
 }
 
 static void sort_buffer(RecSpill *s) {
+    if (s->len == 0) return;
     qsort(s->buf, (size_t)s->len, s->elem, s->cmp);
 }
 
