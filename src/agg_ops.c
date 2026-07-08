@@ -541,7 +541,7 @@ VecArray agg_accum_finish(AggAccum *acc) {
         VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
         for (int64_t i = 0; i < n; i++) {
             if ((acc->has_na && acc->has_na[i]) ||
-                !acc->store || acc->store[i].n_total == 0) {
+                !acc->store || agg_spill_total(&acc->store[i]) == 0) {
                 vec_array_set_null(&arr, i);
             } else {
                 vec_array_set_valid(&arr, i);

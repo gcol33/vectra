@@ -367,7 +367,8 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
 .grouped_slice_topn <- function(.data, order_col, n, with_ties, desc) {
   if (n == 1L && !with_ties) {
     keys <- .data$.groups
-    new_xptr <- .Call(C_group_topn_node, .data$.node, keys, order_col, desc)
+    new_xptr <- .Call(C_group_topn_node, .data$.node, keys, order_col, desc,
+                      as.numeric(vectra_mem()))
     return(structure(list(.node = new_xptr, .path = .data$.path,
                           .groups = .data$.groups), class = "vectra_node"))
   }

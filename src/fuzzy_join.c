@@ -6,12 +6,15 @@
 #include "error.h"
 #include "string_distance.h"
 #include "join_partition.h"   /* join_materialize_side (resident build side) */
+#include "vtr1_tdc.h"         /* build-side spill run file */
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
 
 #include "vec_omp.h"
+
+#define FUZZY_MEM_DEFAULT (1LL << 30)   /* 1 GiB when no budget is given */
 
 /*
  * Fuzzy join: streaming-probe, resident-build.
@@ -224,14 +227,17 @@ static int cmp_match_by_probe(const void *a, const void *b) {
     return 0;
 }
 
-/* Compute all matches for `batch` into fj->cur_matches / fj->cur_n, ordered by
-   (probe local row, distance). probe_idx in each match is the batch-local
-   logical row index (mapped to a physical row via the batch selection vector
-   at emit time). */
-static void fuzzy_match_batch(FuzzyJoinNode *fj, VecBatch *batch) {
+/* Compute all matches for `batch` against a build side (bcols / bnrows / bidx)
+   into fj->cur_matches / fj->cur_n, ordered by (probe local row, distance).
+   probe_idx in each match is the batch-local logical row index (mapped to a
+   physical row via the batch selection vector at emit time); build_idx indexes
+   bcols (the resident build side, or one spilled rowgroup chunk). */
+static void fuzzy_match_batch_vs(FuzzyJoinNode *fj, VecBatch *batch,
+                                 const VecArray *bcols, int64_t bnrows,
+                                 struct BlockIndex *bidx) {
     int64_t nlog = vec_batch_logical_rows(batch);
     const VecArray *p_key = &batch->columns[fj->probe_key_col];
-    const VecArray *b_key = &fj->b_cols[fj->build_key_col];
+    const VecArray *b_key = &bcols[fj->build_key_col];
     const VecArray *p_block =
         fj->probe_block_col >= 0 ? &batch->columns[fj->probe_block_col] : NULL;
 
@@ -250,8 +256,7 @@ static void fuzzy_match_batch(FuzzyJoinNode *fj, VecBatch *batch) {
 
     FuzzyMethod method = fj->method;
     double max_dist = fj->max_dist;
-    struct BlockIndex *bidx = fj->bidx;
-    int64_t b_nrows = fj->b_nrows;
+    int64_t b_nrows = bnrows;
 
 #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic, 64) num_threads(n_threads)
@@ -397,7 +402,7 @@ static VecBatch *emit_chunk(FuzzyJoinNode *fj) {
         for (int c = 0; c < p_ncols; c++)
             vec_builder_append_one(&builders[col++], &pbatch->columns[c], p_phys);
         for (int c = 0; c < b_ncols; c++)
-            vec_builder_append_one(&builders[col++], &fj->b_cols[c], bi);
+            vec_builder_append_one(&builders[col++], &fj->emit_bcols[c], bi);
         VecArrayBuilder *dist_b = &builders[col];
         if (dist_b->length >= dist_b->capacity) vec_builder_reserve(dist_b, 1);
         dist_b->buf.dbl[dist_b->length] = match->dist;
@@ -421,6 +426,129 @@ static VecBatch *emit_chunk(FuzzyJoinNode *fj) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Build phase: materialize the build side, spilling if it overflows  */
+/* ------------------------------------------------------------------ */
+
+static int64_t builders_bytes(const VecArrayBuilder *b, int n) {
+    int64_t t = 0;
+    for (int c = 0; c < n; c++) {
+        int e = vec_type_elem_size(b[c].type);
+        if (e > 0) t += b[c].length * e;
+        else       t += b[c].str_data_len + b[c].length * 8;  /* + offsets */
+    }
+    return t;
+}
+
+static char *fuzzy_spill_path(const char *temp_dir) {
+    static int counter = 0;
+    int id = counter++;
+    int len = snprintf(NULL, 0, "%s/vectra_fuzzy_%d.vtr", temp_dir, id);
+    char *p = (char *)malloc((size_t)(len + 1));
+    if (!p) vectra_error("fuzzy_join: alloc failed");
+    snprintf(p, (size_t)(len + 1), "%s/vectra_fuzzy_%d.vtr", temp_dir, id);
+    return p;
+}
+
+/* Finish the accumulated builders into one rowgroup, write it, re-init them. */
+static void fuzzy_flush_rowgroup(VecArrayBuilder *builders, int n,
+                                 const VecSchema *schema, Vtr1TdcWriter *w) {
+    int64_t nr = builders[0].length;
+    if (nr == 0) return;
+    VecBatch *b = vec_batch_alloc(n, nr);
+    for (int c = 0; c < n; c++) {
+        b->columns[c] = vec_builder_finish(&builders[c]);
+        free(b->col_names[c]);
+        b->col_names[c] = strdup(schema->col_names[c]);
+    }
+    vtr1_write_rowgroup_tdc(w, b, VTR_COMPRESS_FAST, NULL, NULL);
+    vec_batch_free(b);
+    for (int c = 0; c < n; c++) builders[c] = vec_builder_init(schema->col_types[c]);
+}
+
+static void fuzzy_build_phase(FuzzyJoinNode *fj) {
+    const VecSchema *bschema = &fj->build_node->output_schema;
+    int nc = bschema->n_cols;
+    fj->b_ncols = nc;
+    fj->p_ncols = fj->probe_node->output_schema.n_cols;
+
+    int64_t budget = fj->mem_budget > 0 ? fj->mem_budget : FUZZY_MEM_DEFAULT;
+
+    VecArrayBuilder *builders =
+        (VecArrayBuilder *)malloc((size_t)nc * sizeof(VecArrayBuilder));
+    for (int c = 0; c < nc; c++) builders[c] = vec_builder_init(bschema->col_types[c]);
+
+    Vtr1TdcWriter *w = NULL;
+    int spilled = 0;
+
+    VecBatch *bb;
+    while ((bb = fj->build_node->next_batch(fj->build_node)) != NULL) {
+        if (!bb->sel) {
+            for (int c = 0; c < nc; c++)
+                vec_builder_append_array(&builders[c], &bb->columns[c]);
+        } else {
+            int64_t nl = vec_batch_logical_rows(bb);
+            for (int64_t li = 0; li < nl; li++) {
+                int64_t pi = vec_batch_physical_row(bb, li);
+                for (int c = 0; c < nc; c++)
+                    vec_builder_append_one(&builders[c], &bb->columns[c], pi);
+            }
+        }
+        vec_batch_free(bb);
+
+        if (builders_bytes(builders, nc) >= budget) {
+            if (!spilled) {
+                spilled = 1;
+                fj->build_spill_path = fuzzy_spill_path(fj->temp_dir);
+                w = vtr1_open_tdc_writer(fj->build_spill_path, bschema);
+            }
+            fuzzy_flush_rowgroup(builders, nc, bschema, w);
+        }
+    }
+
+    if (spilled) {
+        fuzzy_flush_rowgroup(builders, nc, bschema, w);   /* residual (may be 0) */
+        for (int c = 0; c < nc; c++) vec_builder_free(&builders[c]);
+        free(builders);
+        vtr1_close_tdc_writer(w);
+        fj->spilled = 1;
+        fj->build_file = vtr1_open_tdc(fj->build_spill_path);
+        if (!fj->build_file)
+            vectra_error("fuzzy_join: cannot reopen build spill %s",
+                         fj->build_spill_path);
+        fj->build_n_rgs = vtr1_tdc_n_rowgroups((Vtr1TdcFile *)fj->build_file);
+    } else {
+        fj->b_nrows = builders[0].length;
+        fj->b_cols = (VecArray *)malloc((size_t)nc * sizeof(VecArray));
+        for (int c = 0; c < nc; c++) fj->b_cols[c] = vec_builder_finish(&builders[c]);
+        free(builders);
+        if (fj->build_block_col >= 0)
+            fj->bidx = block_index_build(&fj->b_cols[fj->build_block_col], fj->b_nrows);
+        fj->emit_bcols = fj->b_cols;
+    }
+}
+
+/* Load one build rowgroup as the resident chunk (+ its block index). */
+static void fuzzy_load_chunk(FuzzyJoinNode *fj, uint32_t rg) {
+    int nc = fj->b_ncols;
+    int *mask = (int *)malloc((size_t)nc * sizeof(int));
+    for (int c = 0; c < nc; c++) mask[c] = 1;
+    fj->chunk_batch = vtr1_read_rowgroup_tdc((Vtr1TdcFile *)fj->build_file, rg, mask);
+    free(mask);
+    fj->chunk_cols = fj->chunk_batch->columns;
+    fj->chunk_nrows = fj->chunk_batch->n_rows;
+    fj->chunk_bidx = (fj->build_block_col >= 0)
+        ? block_index_build(&fj->chunk_cols[fj->build_block_col], fj->chunk_nrows)
+        : NULL;
+}
+
+static void fuzzy_free_chunk(FuzzyJoinNode *fj) {
+    if (fj->chunk_bidx) { block_index_free(fj->chunk_bidx); fj->chunk_bidx = NULL; }
+    if (fj->chunk_batch) { vec_batch_free(fj->chunk_batch); fj->chunk_batch = NULL; }
+    fj->chunk_cols = NULL;
+    fj->chunk_nrows = 0;
+}
+
+/* ------------------------------------------------------------------ */
 /*  next_batch                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -428,36 +556,53 @@ static VecBatch *fuzzy_join_next_batch(VecNode *self) {
     FuzzyJoinNode *fj = (FuzzyJoinNode *)self;
 
     if (fj->state == FSTATE_BUILD) {
-        join_materialize_side(fj->build_node,
-                              fj->build_node->output_schema.n_cols,
-                              &fj->b_cols, &fj->b_nrows);
-        fj->b_ncols = fj->build_node->output_schema.n_cols;
-        fj->p_ncols = fj->probe_node->output_schema.n_cols;
-        if (fj->build_block_col >= 0)
-            fj->bidx = block_index_build(&fj->b_cols[fj->build_block_col],
-                                         fj->b_nrows);
+        fuzzy_build_phase(fj);
         fj->state = FSTATE_STREAM;
     }
-
     if (fj->state == FSTATE_DONE) return NULL;
 
+    if (!fj->spilled) {
+        /* Resident build: one match pass per probe batch. */
+        while (1) {
+            if (fj->cur_matches && fj->emit_pos < fj->cur_n)
+                return emit_chunk(fj);
+            if (fj->cur_batch) { vec_batch_free(fj->cur_batch); fj->cur_batch = NULL; }
+            free(fj->cur_matches);
+            fj->cur_matches = NULL; fj->cur_n = 0; fj->emit_pos = 0;
+
+            VecBatch *pb = fj->probe_node->next_batch(fj->probe_node);
+            if (!pb) { fj->state = FSTATE_DONE; return NULL; }
+            fj->cur_batch = pb;
+            fj->emit_bcols = fj->b_cols;
+            fuzzy_match_batch_vs(fj, pb, fj->b_cols, fj->b_nrows, fj->bidx);
+        }
+    }
+
+    /* Spilled build: match each probe batch against one rowgroup chunk at a
+       time. cur_matches index the current chunk (emit_bcols = chunk_cols), so a
+       chunk is freed only after its matches have been drained. */
     while (1) {
-        /* Drain the current batch's matches in EMIT_BATCH_SIZE chunks. */
         if (fj->cur_matches && fj->emit_pos < fj->cur_n)
             return emit_chunk(fj);
-
-        /* Current batch exhausted: release it and pull the next probe batch. */
-        if (fj->cur_batch) { vec_batch_free(fj->cur_batch); fj->cur_batch = NULL; }
         free(fj->cur_matches);
-        fj->cur_matches = NULL;
-        fj->cur_n = 0;
-        fj->emit_pos = 0;
+        fj->cur_matches = NULL; fj->cur_n = 0; fj->emit_pos = 0;
 
+        if (fj->cur_batch && fj->chunk_rg < fj->build_n_rgs) {
+            fuzzy_free_chunk(fj);
+            fuzzy_load_chunk(fj, fj->chunk_rg++);
+            fj->emit_bcols = fj->chunk_cols;
+            fuzzy_match_batch_vs(fj, fj->cur_batch, fj->chunk_cols,
+                                 fj->chunk_nrows, fj->chunk_bidx);
+            continue;
+        }
+
+        /* Current probe batch matched against every chunk; pull the next one. */
+        fuzzy_free_chunk(fj);
+        if (fj->cur_batch) { vec_batch_free(fj->cur_batch); fj->cur_batch = NULL; }
         VecBatch *pb = fj->probe_node->next_batch(fj->probe_node);
         if (!pb) { fj->state = FSTATE_DONE; return NULL; }
         fj->cur_batch = pb;
-        fuzzy_match_batch(fj, pb);
-        /* Loop: emit this batch's matches, or (if it produced none) advance. */
+        fj->chunk_rg = 0;
     }
 }
 
@@ -474,6 +619,10 @@ static void fuzzy_join_free(VecNode *self) {
         free(fj->b_cols);
     }
     block_index_free(fj->bidx);
+    fuzzy_free_chunk(fj);
+    if (fj->build_file) vtr1_close_tdc((Vtr1TdcFile *)fj->build_file);
+    if (fj->build_spill_path) { remove(fj->build_spill_path); free(fj->build_spill_path); }
+    free(fj->temp_dir);
     if (fj->cur_batch) vec_batch_free(fj->cur_batch);
     free(fj->cur_matches);
     free(fj->suffix_y);
@@ -491,7 +640,9 @@ FuzzyJoinNode *fuzzy_join_node_create(
     FuzzyMethod  method,
     double       max_dist,
     int          n_threads,
-    const char  *suffix_y)
+    const char  *suffix_y,
+    int64_t      mem_budget,
+    const char  *temp_dir)
 {
     FuzzyJoinNode *fj = (FuzzyJoinNode *)calloc(1, sizeof(FuzzyJoinNode));
     if (!fj) vectra_error("alloc failed for FuzzyJoinNode");
@@ -506,6 +657,8 @@ FuzzyJoinNode *fuzzy_join_node_create(
     fj->max_dist = max_dist;
     fj->n_threads = n_threads;
     fj->suffix_y = suffix_y ? strdup(suffix_y) : strdup(".y");
+    fj->mem_budget = mem_budget;
+    fj->temp_dir = temp_dir ? strdup(temp_dir) : NULL;
     fj->state = FSTATE_BUILD;
 
     fj->base.output_schema = build_output_schema(fj);

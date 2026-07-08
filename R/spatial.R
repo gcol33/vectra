@@ -2926,6 +2926,17 @@ warp <- function(x, template, method = c("near", "bilinear", "cubic"),
   TS <- max(1L, as.integer(src$tile_size))
   sink <- .raster_sink(W, H, 1L, gt_t, epsg_t, TS, path, dtype, NULL, comp_code)
 
+  # Cap the source window read for any one output block. A strong reprojection
+  # can scatter a single output strip's pixels across the whole source, so the
+  # window bounding those pixels' source coordinates would be (almost) the whole
+  # source raster -- the larger-than-RAM hole. When a block's window would
+  # exceed this many source cells, the block is split (largest output dimension
+  # first) until each sub-block's window fits, so peak is one bounded window
+  # regardless of the projection. Windows are doubles; default an eighth of the
+  # session budget.
+  win_budget <- as.numeric(getOption("vectra.warp_window_cells",
+                                      max(4e6, vectra_mem() / 8 / 8)))
+
   tiles_y <- (H + TS - 1L) %/% TS
   for (ty in seq_len(tiles_y) - 1L) {
     r0 <- ty * TS + 1L
@@ -2953,27 +2964,49 @@ warp <- function(x, template, method = c("near", "bilinear", "cubic"),
     sx[!is.finite(sx)] <- NA_real_
     sy[!is.finite(sy)] <- NA_real_
 
-    fin <- !is.na(sx) & !is.na(sy)
-    if (any(fin)) {
-      cmin <- max(0L, as.integer(floor(min(sx[fin]) - 0.5)) - margin - 1L)
-      cmax <- min(sW - 1L, as.integer(ceiling(max(sx[fin]) - 0.5)) + margin + 1L)
-      rmin <- max(0L, as.integer(floor(min(sy[fin]) - 0.5)) - margin - 1L)
-      rmax <- min(sH - 1L, as.integer(ceiling(max(sy[fin]) - 0.5)) + margin + 1L)
-    } else {
-      cmin <- 1L; cmax <- 0L; rmin <- 1L; rmax <- 0L
-    }
+    os <- matrix(NA_real_, out_h, W)
 
-    if (cmax >= cmin && rmax >= rmin) {
+    # Warp one output block [rows x cols] (1-based indices within the strip),
+    # reading only the source window its pixels fall in. Splits the block when
+    # that window would exceed win_budget cells.
+    warp_block <- function(rows, cols) {
+      bh <- length(rows); bw <- length(cols)
+      idx <- as.vector(outer(rows, (cols - 1L) * out_h, "+"))
+      sxb <- sx[idx]; syb <- sy[idx]
+      fin <- !is.na(sxb) & !is.na(syb)
+      if (!any(fin)) return(invisible())          # all off-source -> stays NA
+
+      cmin <- max(0L, as.integer(floor(min(sxb[fin]) - 0.5)) - margin - 1L)
+      cmax <- min(sW - 1L, as.integer(ceiling(max(sxb[fin]) - 0.5)) + margin + 1L)
+      rmin <- max(0L, as.integer(floor(min(syb[fin]) - 0.5)) - margin - 1L)
+      rmax <- min(sH - 1L, as.integer(ceiling(max(syb[fin]) - 0.5)) + margin + 1L)
+      if (cmax < cmin || rmax < rmin) return(invisible())
+
+      win_h <- rmax - rmin + 1L; win_w <- cmax - cmin + 1L
+      if (as.numeric(win_h) * win_w > win_budget && bh * bw > 1L) {
+        if (bw >= bh) {                            # split the larger dimension
+          mid <- bw %/% 2L
+          warp_block(rows, cols[seq_len(mid)])
+          warp_block(rows, cols[(mid + 1L):bw])
+        } else {
+          mid <- bh %/% 2L
+          warp_block(rows[seq_len(mid)], cols)
+          warp_block(rows[(mid + 1L):bh], cols)
+        }
+        return(invisible())
+      }
+
       win <- vec_read_window(src, band = band,
                              cols = c(cmin + 1L, cmax + 1L),
                              rows = c(rmin + 1L, rmax + 1L))
-      win_h <- rmax - rmin + 1L; win_w <- cmax - cmin + 1L
-      os <- .Call(C_warp_strip, win,
-                  c(as.integer(win_h), as.integer(win_w)),
-                  c(cmin, rmin), sx, sy, method_code, c(out_h, W))
-    } else {
-      os <- matrix(NA_real_, out_h, W)
+      osb <- .Call(C_warp_strip, win,
+                   c(as.integer(win_h), as.integer(win_w)),
+                   c(cmin, rmin), sxb, syb, method_code, c(bh, bw))
+      os[rows, cols] <<- osb
+      invisible()
     }
+
+    warp_block(seq_len(out_h), seq_len(W))
     sink$write(ty, r0, r1, os)
   }
 

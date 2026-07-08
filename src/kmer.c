@@ -9,76 +9,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Phases of the node. */
+enum { KP_CONSUME = 0, KP_EMIT = 1, KP_DONE = 2 };
+
+/* Rows emitted per next_batch() call in the emit phase. */
+#define KMER_EMIT 131072
+
 /* ------------------------------------------------------------------ */
-/*  (group_id, packed k-mer) -> count open-addressing hash table       */
+/*  Record sort order: (group id, packed k-mer) ascending             */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    int64_t  group_id;
-    uint64_t kmer;    /* 2-bit packed, canonical if requested */
-    int64_t  count;   /* 0 = empty slot */
-} KmerCell;
-
-typedef struct {
-    KmerCell *cells;
-    int64_t   n_slots;  /* power of 2 */
-    int64_t   n_used;
-} KmerTable;
-
-/* SplitMix64 finalizer over a mix of the group id and the packed k-mer. */
-static inline uint64_t kmer_hash(int64_t g, uint64_t kmer) {
-    uint64_t h = kmer + 0x9E3779B97F4A7C15ULL * (uint64_t)g;
-    h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL;
-    h ^= h >> 27; h *= 0x94D049BB133111EBULL;
-    h ^= h >> 31;
-    return h;
+static int cmp_kmer_rec(const void *a, const void *b) {
+    const KmerRec *x = (const KmerRec *)a;
+    const KmerRec *y = (const KmerRec *)b;
+    if (x->gid != y->gid) return x->gid < y->gid ? -1 : 1;
+    if (x->kmer != y->kmer) return x->kmer < y->kmer ? -1 : 1;
+    return 0;
 }
 
-static void kmer_table_init(KmerTable *t) {
-    t->n_slots = 1024;
-    t->n_used = 0;
-    t->cells = (KmerCell *)calloc((size_t)t->n_slots, sizeof(KmerCell));
-    if (!t->cells) vectra_error("alloc failed for k-mer table");
-}
-
-static void kmer_table_grow(KmerTable *t) {
-    int64_t new_slots = t->n_slots * 2;
-    KmerCell *nc = (KmerCell *)calloc((size_t)new_slots, sizeof(KmerCell));
-    if (!nc) vectra_error("alloc failed for k-mer table");
-    uint64_t mask = (uint64_t)new_slots - 1;
-    for (int64_t s = 0; s < t->n_slots; s++) {
-        if (t->cells[s].count == 0) continue;
-        uint64_t i = kmer_hash(t->cells[s].group_id, t->cells[s].kmer) & mask;
-        while (nc[i].count != 0) i = (i + 1) & mask;
-        nc[i] = t->cells[s];
-    }
-    free(t->cells);
-    t->cells = nc;
-    t->n_slots = new_slots;
-}
-
-static void kmer_table_add(KmerTable *t, int64_t g, uint64_t kmer) {
-    /* Grow past 70% load. */
-    if ((t->n_used + 1) * 10 >= t->n_slots * 7) kmer_table_grow(t);
-    uint64_t mask = (uint64_t)t->n_slots - 1;
-    uint64_t i = kmer_hash(g, kmer) & mask;
-    while (t->cells[i].count != 0) {
-        if (t->cells[i].group_id == g && t->cells[i].kmer == kmer) {
-            t->cells[i].count++;
-            return;
-        }
-        i = (i + 1) & mask;
-    }
-    t->cells[i].group_id = g;
-    t->cells[i].kmer = kmer;
-    t->cells[i].count = 1;
-    t->n_used++;
-}
-
-/* Slide a k-window over one sequence, packing each all-ACGT window and feeding
-   it to the table. A non-ACGT base resets the rolling window, so any window
-   spanning it is skipped. rc rolls the reverse complement in parallel. */
-static void count_kmers(KmerTable *t, int64_t g, const char *p, int64_t L,
+/* Slide a k-window over one sequence, packing each all-ACGT window and pushing
+   a (group, k-mer) record. A non-ACGT base resets the rolling window, so any
+   window spanning it is skipped. rc rolls the reverse complement in parallel. */
+static void count_kmers(RecSpill *spill, int64_t g, const char *p, int64_t L,
                         int k, int canonical) {
     if (L < k) return;
     uint64_t mask = (k >= 32) ? ~0ULL : ((1ULL << (2 * k)) - 1);
@@ -93,16 +45,17 @@ static void count_kmers(KmerTable *t, int64_t g, const char *p, int64_t L,
         if (++run >= k) {
             uint64_t key = fwd;
             if (canonical && rc < key) key = rc;
-            kmer_table_add(t, g, key);
+            KmerRec rec = { g, key };
+            rec_spill_push(spill, &rec);
         }
     }
 }
 
 /* ------------------------------------------------------------------ */
-/*  Node body                                                          */
+/*  Consume phase: stream the child, spilling one record per k-mer     */
 /* ------------------------------------------------------------------ */
 
-static VecBatch *kmer_run(KmerNode *kn) {
+static void kmer_consume(KmerNode *kn) {
     const VecSchema *cs = &kn->child->output_schema;
 
     int seq_idx = vec_schema_find_col(cs, kn->seq_col);
@@ -123,16 +76,15 @@ static VecBatch *kmer_run(KmerNode *kn) {
         key_types[k] = cs->col_types[key_idx[k]];
     }
 
-    KmerTable kt;
-    kmer_table_init(&kt);
+    rec_spill_init(&kn->spill, sizeof(KmerRec), cmp_kmer_rec,
+                   kn->mem_budget, kn->temp_dir);
 
     /* Group table (only when there are key columns). */
     VecHashTable ht;
-    KeyArena arena;
-    int have_keys = kn->n_keys > 0;
-    if (have_keys) {
+    kn->have_keys = kn->n_keys > 0;
+    if (kn->have_keys) {
         ht = vec_ht_create(64);
-        key_arena_init(&arena, kn->n_keys, key_types);
+        key_arena_init(&kn->arena, kn->n_keys, key_types);
     }
 
     VecBatch *batch;
@@ -141,7 +93,7 @@ static VecBatch *kmer_run(KmerNode *kn) {
         const VecArray *seq = &batch->columns[seq_idx];
 
         VecArray *batch_keys = NULL;
-        if (have_keys) {
+        if (kn->have_keys) {
             batch_keys = (VecArray *)malloc((size_t)kn->n_keys * sizeof(VecArray));
             for (int k = 0; k < kn->n_keys; k++)
                 batch_keys[k] = batch->columns[key_idx[k]];
@@ -151,7 +103,7 @@ static VecBatch *kmer_run(KmerNode *kn) {
             int64_t r = vec_batch_physical_row(batch, li);
 
             int64_t gid = 0;
-            if (have_keys) {
+            if (kn->have_keys) {
                 uint64_t h = 0;
                 for (int k = 0; k < kn->n_keys; k++) {
                     uint64_t kh = vec_hash_value(&batch_keys[k], r);
@@ -159,46 +111,92 @@ static VecBatch *kmer_run(KmerNode *kn) {
                 }
                 int was_new = 0;
                 gid = vec_ht_find_or_insert(&ht, h, batch_keys, kn->n_keys, r,
-                                            arena.arenas, arena.length, &was_new);
+                                            kn->arena.arenas, kn->arena.length,
+                                            &was_new);
                 if (was_new)
-                    key_arena_append_row(&arena, batch_keys, r);
+                    key_arena_append_row(&kn->arena, batch_keys, r);
             }
 
             if (!vec_array_is_valid(seq, r)) continue;  /* NA sequence */
             const char *p = seq->buf.str.data + seq->buf.str.offsets[r];
             int64_t L = seq->buf.str.offsets[r + 1] - seq->buf.str.offsets[r];
-            count_kmers(&kt, gid, p, L, kn->k, kn->canonical);
+            count_kmers(&kn->spill, gid, p, L, kn->k, kn->canonical);
         }
 
         free(batch_keys);
         vec_batch_free(batch);
     }
 
-    /* Materialize distinct (group, k-mer) cells into flat output columns. */
-    int64_t n_out = kt.n_used;
-    int32_t *sel = have_keys
-                   ? (int32_t *)malloc((size_t)(n_out > 0 ? n_out : 1) * sizeof(int32_t))
-                   : NULL;
-    uint64_t *packed = (uint64_t *)malloc((size_t)(n_out > 0 ? n_out : 1) * sizeof(uint64_t));
-    int64_t  *counts = (int64_t *)malloc((size_t)(n_out > 0 ? n_out : 1) * sizeof(int64_t));
-    if (!packed || !counts || (have_keys && !sel))
+    if (kn->have_keys) vec_ht_free(&ht);
+    free(key_idx);
+    free(key_types);
+
+    kn->merge = rec_spill_merge_begin(&kn->spill);
+    kn->have_cur = 0;
+    kn->cur_count = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Emit phase: stream distinct (group, k-mer) counts one batch at a   */
+/*  time. cur / cur_count carry the open run across batch boundaries.  */
+/* ------------------------------------------------------------------ */
+
+static VecBatch *kmer_emit(KmerNode *kn) {
+    int64_t cap = KMER_EMIT;
+    int32_t *sel = kn->have_keys
+                   ? (int32_t *)malloc((size_t)cap * sizeof(int32_t)) : NULL;
+    uint64_t *packed = (uint64_t *)malloc((size_t)cap * sizeof(uint64_t));
+    int64_t  *counts = (int64_t *)malloc((size_t)cap * sizeof(int64_t));
+    if (!packed || !counts || (kn->have_keys && !sel))
         vectra_error("alloc failed for k-mer output");
 
-    int64_t j = 0;
-    for (int64_t s = 0; s < kt.n_slots; s++) {
-        if (kt.cells[s].count == 0) continue;
-        if (have_keys) sel[j] = (int32_t)kt.cells[s].group_id;
-        packed[j] = kt.cells[s].kmer;
-        counts[j] = kt.cells[s].count;
-        j++;
+    int64_t produced = 0;
+    for (;;) {
+        if (produced >= cap) break;
+        KmerRec r;
+        if (!rec_spill_merge_next(kn->merge, &r)) {
+            if (kn->have_cur) {           /* flush the final open run */
+                if (kn->have_keys) sel[produced] = (int32_t)kn->cur.gid;
+                packed[produced] = kn->cur.kmer;
+                counts[produced] = kn->cur_count;
+                produced++;
+                kn->have_cur = 0;
+            }
+            /* Stream drained: close the merge and unlink run files now rather
+               than holding their handles open until the node is freed (GC). */
+            rec_spill_merge_end(kn->merge);
+            kn->merge = NULL;
+            rec_spill_free(&kn->spill);
+            break;
+        }
+        if (kn->have_cur && r.gid == kn->cur.gid && r.kmer == kn->cur.kmer) {
+            kn->cur_count++;
+        } else {
+            if (kn->have_cur) {
+                if (kn->have_keys) sel[produced] = (int32_t)kn->cur.gid;
+                packed[produced] = kn->cur.kmer;
+                counts[produced] = kn->cur_count;
+                produced++;
+            }
+            kn->cur = r;
+            kn->cur_count = 1;
+            kn->have_cur = 1;
+        }
     }
 
+    if (produced == 0) {
+        free(sel); free(packed); free(counts);
+        return NULL;
+    }
+
+    int64_t n_out = produced;
     int n_cols = kn->n_keys + 2;
     VecBatch *result = vec_batch_alloc(n_cols, n_out);
 
     /* Group key columns, gathered from the arena by group id. */
     for (int k = 0; k < kn->n_keys; k++) {
-        result->columns[k] = vec_array_gather(&arena.arenas[k], sel, (int32_t)n_out);
+        result->columns[k] = vec_array_gather(&kn->arena.arenas[k], sel,
+                                              (int32_t)n_out);
         size_t nm = strlen(kn->key_names[k]);
         result->col_names[k] = (char *)malloc(nm + 1);
         memcpy(result->col_names[k], kn->key_names[k], nm + 1);
@@ -245,25 +243,39 @@ static VecBatch *kmer_run(KmerNode *kn) {
     free(sel);
     free(packed);
     free(counts);
-    free(kt.cells);
-    if (have_keys) { vec_ht_free(&ht); key_arena_free(&arena); }
-    free(key_idx);
-    free(key_types);
-
     return result;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Node body                                                          */
+/* ------------------------------------------------------------------ */
+
 static VecBatch *kmer_next_batch(VecNode *self) {
     KmerNode *kn = (KmerNode *)self;
-    if (kn->done) return NULL;
-    kn->done = 1;
-    return kmer_run(kn);
+    if (kn->phase == KP_DONE) return NULL;
+    if (kn->phase == KP_CONSUME) {
+        kmer_consume(kn);
+        kn->phase = KP_EMIT;
+    }
+    if (kn->merge == NULL) {           /* already drained on a prior call */
+        kn->phase = KP_DONE;
+        return NULL;
+    }
+    VecBatch *b = kmer_emit(kn);
+    if (!b) kn->phase = KP_DONE;
+    return b;
 }
 
 static void kmer_free(VecNode *self) {
     KmerNode *kn = (KmerNode *)self;
     kn->child->free_node(kn->child);
+    if (kn->merge) rec_spill_merge_end(kn->merge);
+    if (kn->phase != KP_CONSUME) {
+        rec_spill_free(&kn->spill);
+        if (kn->have_keys) key_arena_free(&kn->arena);
+    }
     free(kn->seq_col);
+    free(kn->temp_dir);
     for (int k = 0; k < kn->n_keys; k++)
         free(kn->key_names[k]);
     free(kn->key_names);
@@ -273,7 +285,8 @@ static void kmer_free(VecNode *self) {
 
 KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
                            int k, int canonical,
-                           int n_keys, char **key_names) {
+                           int n_keys, char **key_names,
+                           int64_t mem_budget, const char *temp_dir) {
     if (k < 1 || k > 32)
         vectra_error("kmer: k must be between 1 and 32 (got %d)", k);
 
@@ -287,7 +300,9 @@ KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
     kn->canonical = canonical ? 1 : 0;
     kn->n_keys = n_keys;
     kn->key_names = key_names;
-    kn->done = 0;
+    kn->mem_budget = mem_budget;
+    kn->temp_dir = temp_dir ? strdup(temp_dir) : NULL;
+    kn->phase = KP_CONSUME;
 
     /* Output schema: key columns (types from child) + kmer (string) + count. */
     const VecSchema *cs = &child->output_schema;

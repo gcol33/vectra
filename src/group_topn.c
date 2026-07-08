@@ -1,42 +1,49 @@
 #include "group_topn.h"
 #include "array.h"
 #include "batch.h"
-#include "builder.h"
-#include "hash.h"
 #include "schema.h"
+#include "sort.h"
+#include "rowid.h"
+#include "key_snap.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
 
 /*
- * Streaming grouped top-1 (argmin / argmax).
+ * Streaming grouped top-1 (argmin / argmax), bounded memory.
  *
- * The window-based grouped slice path materializes every input column to
- * rank rows within each group, then drops all but one row per group. That
- * buffers the whole input — including a large geometry string column — which
- * defeats the larger-than-RAM design and exhausts memory on dense overlay
- * outputs.
+ * The window-based grouped slice path materializes every input column to rank
+ * rows within each group, then drops all but one row per group -- it buffers
+ * the whole input, including a large geometry string column. A hash-based
+ * champion store fixes the input side but still holds one champion per group
+ * resident, so at high group cardinality (near one group per row) it grows with
+ * the input.
  *
- * This operator instead keeps only the running champion row per group. Each
- * incoming batch row either opens a new group (champion = that row) or beats
- * the current champion on the order column (champion replaced). Peak memory
- * is O(#groups) — the size of the result — independent of the input length.
+ * This operator routes the child through the bounded external sort, keyed by
+ * the group columns plus an appended row-id. Groups then arrive contiguously
+ * and, within a group, in input order (the row-id is a stable tiebreak). A
+ * single running champion is kept for the open group; when a group closes its
+ * champion is committed to a bounded store, and once the store fills it is
+ * emitted as one batch. Peak memory is O(emit batch) -- one batch of winners
+ * plus one champion plus the sort's own bounded spill -- independent of both
+ * the input length and the number of groups.
  *
- * Group identity uses the shared open-addressing hash table. The distinct key
- * values seen so far live in append-only key builders; each lookup aliases
- * them with a non-owning view (no per-group rebuild, so grouping stays
- * O(#rows) rather than O(#rows * #groups)).
+ * NA order values sort last, so a known value always wins; a group stays NA
+ * only when every row in it is NA. Ties keep the first row in input order.
  */
 
-/* Champion storage for one output column, indexed by group id. */
+/* Number of winner rows emitted per next_batch() call. */
+#define GROUP_TOPN_EMIT 131072
+
+/* Champion storage for one output column, indexed by store slot. */
 typedef struct {
     VecType        type;
     int            elem;      /* fixed-width element size; 0 for strings */
-    uint8_t       *valid;     /* one byte per group: 1 = present, 0 = NA */
+    uint8_t       *valid;     /* one byte per slot: 1 = present, 0 = NA */
     unsigned char *fw;        /* fixed-width values, cap * elem bytes */
-    char         **strs;      /* per-group string data (NULL = NA) */
-    int64_t       *slen;      /* per-group string length */
-    int64_t        cap;       /* capacity in groups */
+    char         **strs;      /* per-slot string data (NULL = NA) */
+    int64_t       *slen;      /* per-slot string length */
+    int64_t        cap;       /* capacity in slots */
 } ChampCol;
 
 static void champ_grow(ChampCol *col, int64_t need) {
@@ -85,7 +92,7 @@ static void champ_set(ChampCol *col, int64_t g, const VecArray *src, int64_t r) 
     }
 }
 
-/* Is candidate row `r` of `cand` a strictly better champion for group `g`?
+/* Is candidate row `r` of `cand` a strictly better champion for slot `g`?
    NA candidates never win; a real value always beats an NA champion; ties keep
    the incumbent. `desc` selects max (1) over min (0). */
 static int champ_better(const ChampCol *oc, int64_t g,
@@ -138,8 +145,7 @@ static int champ_better(const ChampCol *oc, int64_t g,
     return desc ? (c > 0) : (c < 0);
 }
 
-/* Materialize champion rows [lo, hi) of column `col` into a fresh VecArray, so
-   the winners can be emitted in bounded batches rather than all at once. */
+/* Materialize champion slots [lo, hi) of column `col` into a fresh VecArray. */
 static VecArray champ_finish_range(const ChampCol *col, int64_t lo, int64_t hi) {
     int64_t m = hi - lo;
     if (col->elem > 0) {
@@ -204,120 +210,118 @@ static void champ_free(ChampCol *champ, int n_cols) {
     free(champ);
 }
 
-/* Number of winner rows emitted per next_batch() call. */
-#define GROUP_TOPN_EMIT 131072
-
-/* One streaming pass over the child: assemble the per-group champions and store
-   them on the node. Working storage (key arena, hash table) is released here;
-   only the champions survive, to be emitted in bounded batches. */
-static void group_topn_build(GroupTopNNode *gn) {
-    const VecSchema *cschema = &gn->child->output_schema;
-    int n_cols = cschema->n_cols;
-    int n_keys = gn->n_keys;
-
-    ChampCol *champ = (ChampCol *)calloc((size_t)n_cols, sizeof(ChampCol));
+/* Overwrite champion slot `g` with every output column of row `row`. */
+static void champ_set_all(ChampCol *champ, int64_t g, const VecBatch *b,
+                          int64_t row, int n_cols) {
     for (int c = 0; c < n_cols; c++) {
-        champ[c].type = cschema->col_types[c];
-        champ[c].elem = vec_type_elem_size(cschema->col_types[c]);
+        champ_grow(&champ[c], g + 1);
+        champ_set(&champ[c], g, &b->columns[c], row);
     }
+}
 
-    VecArrayBuilder *key_arena = (VecArrayBuilder *)calloc(
-        (size_t)(n_keys > 0 ? n_keys : 1), sizeof(VecArrayBuilder));
-    for (int k = 0; k < n_keys; k++)
-        key_arena[k] = vec_builder_init(cschema->col_types[gn->key_idx[k]]);
+/* ------------------------------------------------------------------ */
+/*  Node body                                                          */
+/* ------------------------------------------------------------------ */
 
-    VecArray *arena_view = (VecArray *)malloc(
-        (size_t)(n_keys > 0 ? n_keys : 1) * sizeof(VecArray));
-    VecArray *key_cols = (VecArray *)malloc(
-        (size_t)(n_keys > 0 ? n_keys : 1) * sizeof(VecArray));
-
-    VecHashTable ht = vec_ht_create(1024);
-    int64_t n_groups = 0;
-
-    VecBatch *batch;
-    while ((batch = gn->child->next_batch(gn->child)) != NULL) {
-        int64_t n_logical = vec_batch_logical_rows(batch);
-        for (int k = 0; k < n_keys; k++)
-            key_cols[k] = batch->columns[gn->key_idx[k]];
-
-        for (int64_t li = 0; li < n_logical; li++) {
-            int64_t pi = vec_batch_physical_row(batch, li);
-
-            uint64_t h = 0;
-            for (int k = 0; k < n_keys; k++) {
-                uint64_t kh = vec_hash_value(&key_cols[k], pi);
-                h = (k == 0) ? kh : vec_hash_combine(h, kh);
-            }
-            for (int k = 0; k < n_keys; k++)
-                arena_view[k] = vec_builder_view(&key_arena[k]);
-
-            int was_new = 0;
-            int64_t gid = vec_ht_find_or_insert(&ht, h, key_cols, n_keys, pi,
-                                                arena_view, n_groups, &was_new);
-
-            if (was_new) {
-                for (int k = 0; k < n_keys; k++)
-                    vec_builder_append_one(&key_arena[k],
-                                           &batch->columns[gn->key_idx[k]], pi);
-                for (int c = 0; c < n_cols; c++) {
-                    champ_grow(&champ[c], gid + 1);
-                    champ_set(&champ[c], gid, &batch->columns[c], pi);
-                }
-                n_groups = gid + 1;
-            } else if (champ_better(&champ[gn->order_idx], gid,
-                                    &batch->columns[gn->order_idx], pi,
-                                    gn->descending)) {
-                for (int c = 0; c < n_cols; c++)
-                    champ_set(&champ[c], gid, &batch->columns[c], pi);
-            }
-        }
-        vec_batch_free(batch);
+static void group_topn_init(GroupTopNNode *gn) {
+    const VecSchema *os = &gn->base.output_schema;  /* original child schema */
+    int nc = gn->n_cols;
+    ChampCol *champ = (ChampCol *)calloc((size_t)nc, sizeof(ChampCol));
+    if (!champ) vectra_error("group_topn: alloc failed (champ store)");
+    for (int c = 0; c < nc; c++) {
+        champ[c].type = os->col_types[c];
+        champ[c].elem = vec_type_elem_size(os->col_types[c]);
     }
-
-    for (int k = 0; k < n_keys; k++) vec_builder_free(&key_arena[k]);
-    free(key_arena);
-    free(arena_view);
-    free(key_cols);
-    vec_ht_free(&ht);
-
     gn->champ = champ;
-    gn->n_cols = n_cols;
-    gn->n_groups = n_groups;
-    gn->emit_pos = 0;
-    gn->built = 1;
+
+    VecType *ktypes = (VecType *)malloc(
+        (size_t)(gn->n_keys > 0 ? gn->n_keys : 1) * sizeof(VecType));
+    for (int k = 0; k < gn->n_keys; k++)
+        ktypes[k] = os->col_types[gn->key_idx[k]];
+    gn->snap = snap_create(gn->n_keys, ktypes);
+    free(ktypes);
+
+    gn->initialized = 1;
+}
+
+/* Build a result batch from champion slots [0, count). */
+static VecBatch *group_topn_build_result(GroupTopNNode *gn, int64_t count) {
+    ChampCol *champ = (ChampCol *)gn->champ;
+    const VecSchema *os = &gn->base.output_schema;
+    VecBatch *result = vec_batch_alloc(gn->n_cols, count);
+    for (int c = 0; c < gn->n_cols; c++) {
+        result->columns[c] = champ_finish_range(&champ[c], 0, count);
+        const char *nm = os->col_names[c];
+        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
+        strcpy(result->col_names[c], nm);
+    }
+    return result;
 }
 
 static VecBatch *group_topn_next_batch(VecNode *self) {
     GroupTopNNode *gn = (GroupTopNNode *)self;
-    if (!gn->built) group_topn_build(gn);
+    if (gn->done && gn->fill == 0 && !gn->has_group) return NULL;
+    if (!gn->initialized) group_topn_init(gn);
 
     ChampCol *champ = (ChampCol *)gn->champ;
-    if (gn->emit_pos >= gn->n_groups) {
-        champ_free(champ, gn->n_cols);
-        gn->champ = NULL;
-        return NULL;
+    const int nc = gn->n_cols;
+
+    for (;;) {
+        if (gn->cur_batch == NULL || gn->cur_row >= gn->cur_batch->n_rows) {
+            if (gn->cur_batch) { vec_batch_free(gn->cur_batch); gn->cur_batch = NULL; }
+            if (!gn->input_done) {
+                gn->cur_batch = gn->child->next_batch(gn->child);
+                gn->cur_row = 0;
+                if (gn->cur_batch == NULL) gn->input_done = 1;
+            }
+            if (gn->cur_batch == NULL) break;    /* input exhausted */
+        }
+
+        VecBatch *b = gn->cur_batch;
+        int64_t n = b->n_rows;
+        for (; gn->cur_row < n; gn->cur_row++) {
+            int64_t row = gn->cur_row;
+            if (!snap_matches(&gn->snap, b, row, gn->key_idx)) {
+                /* Group boundary: commit the open group, maybe emit a batch. */
+                if (gn->has_group) {
+                    gn->fill++;
+                    if (gn->fill >= GROUP_TOPN_EMIT) {
+                        VecBatch *out = group_topn_build_result(gn, gn->fill);
+                        gn->fill = 0;
+                        snap_update(&gn->snap, b, row, gn->key_idx);
+                        champ_set_all(champ, 0, b, row, nc);
+                        gn->has_group = 1;
+                        gn->cur_row++;    /* this row is now consumed */
+                        return out;
+                    }
+                }
+                snap_update(&gn->snap, b, row, gn->key_idx);
+                champ_set_all(champ, gn->fill, b, row, nc);
+                gn->has_group = 1;
+            } else if (champ_better(&champ[gn->order_idx], gn->fill,
+                                    &b->columns[gn->order_idx], row,
+                                    gn->descending)) {
+                champ_set_all(champ, gn->fill, b, row, nc);
+            }
+        }
+        /* batch fully scanned; loop pulls the next one */
     }
 
-    int n_cols = gn->n_cols;
-    int64_t lo = gn->emit_pos;
-    int64_t hi = lo + GROUP_TOPN_EMIT;
-    if (hi > gn->n_groups) hi = gn->n_groups;
+    /* Input exhausted: commit the last open group and emit the tail. */
+    if (gn->has_group) { gn->fill++; gn->has_group = 0; }
+    gn->done = 1;
+    if (gn->fill == 0) return NULL;
 
-    const VecSchema *cschema = &gn->child->output_schema;
-    VecBatch *result = vec_batch_alloc(n_cols, hi - lo);
-    for (int c = 0; c < n_cols; c++) {
-        result->columns[c] = champ_finish_range(&champ[c], lo, hi);
-        const char *nm = cschema->col_names[c];
-        result->col_names[c] = (char *)malloc(strlen(nm) + 1);
-        strcpy(result->col_names[c], nm);
-    }
-    gn->emit_pos = hi;
-    return result;
+    VecBatch *out = group_topn_build_result(gn, gn->fill);
+    gn->fill = 0;
+    return out;
 }
 
 static void group_topn_free(VecNode *self) {
     GroupTopNNode *gn = (GroupTopNNode *)self;
-    champ_free((ChampCol *)gn->champ, gn->n_cols);   /* freed already if drained */
+    if (gn->champ) champ_free((ChampCol *)gn->champ, gn->n_cols);
+    if (gn->initialized) snap_free(&gn->snap);
+    if (gn->cur_batch) vec_batch_free(gn->cur_batch);
     gn->child->free_node(gn->child);
     free(gn->key_idx);
     vec_schema_free(&gn->base.output_schema);
@@ -326,18 +330,37 @@ static void group_topn_free(VecNode *self) {
 
 GroupTopNNode *group_topn_node_create(VecNode *child, int n_keys,
                                       const int *key_idx, int order_idx,
-                                      int descending) {
+                                      int descending,
+                                      int64_t mem_budget, const char *temp_dir) {
     GroupTopNNode *gn = (GroupTopNNode *)calloc(1, sizeof(GroupTopNNode));
     if (!gn) vectra_error("alloc failed for GroupTopNNode");
-    gn->child = child;
     gn->n_keys = n_keys;
     gn->key_idx = (int *)malloc((size_t)(n_keys > 0 ? n_keys : 1) * sizeof(int));
     for (int k = 0; k < n_keys; k++) gn->key_idx[k] = key_idx[k];
     gn->order_idx = order_idx;
     gn->descending = descending;
-    /* built/champ/n_cols/n_groups/emit_pos zeroed by calloc */
 
+    /* Output schema is the original child schema; the row-id is internal. */
     gn->base.output_schema = vec_schema_copy(&child->output_schema);
+    gn->n_cols = gn->base.output_schema.n_cols;
+
+    /* Append a row-id, then sort by (keys, row-id): groups become contiguous
+       and rows within a group keep input order (stable tiebreak on ties). */
+    RowIdNode *rid = rowid_node_create(child, "__vectra_topn_rowid");
+    int rowid_idx = rid->base.output_schema.n_cols - 1;
+    int nsk = n_keys + 1;
+    SortKey *sk = (SortKey *)malloc((size_t)nsk * sizeof(SortKey));
+    for (int k = 0; k < n_keys; k++) {
+        sk[k].col_index = key_idx[k];
+        sk[k].descending = 0;
+    }
+    sk[n_keys].col_index = rowid_idx;
+    sk[n_keys].descending = 0;
+    int64_t sort_mem = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    /* sort_node_create takes ownership of sk (freed in sort_node_free). */
+    SortNode *sn = sort_node_create((VecNode *)rid, nsk, sk, temp_dir, sort_mem);
+    gn->child = (VecNode *)sn;
+
     gn->base.next_batch = group_topn_next_batch;
     gn->base.free_node = group_topn_free;
     gn->base.kind = "GroupTopNNode";

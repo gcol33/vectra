@@ -3,14 +3,36 @@
 #include "batch.h"
 #include "schema.h"
 #include "builder.h"
+#include "sort.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
 
-#include "vec_omp.h"
+/*
+ * Bounded interval overlap join (serial sweep-merge).
+ *
+ * Both sides are routed through the external sort, keyed by (block, start), so
+ * their rows arrive in one merged coordinate order without either side being
+ * held resident. A single forward sweep advances whichever side's next interval
+ * opens first; each side keeps an "active set" of intervals whose start has
+ * passed but whose end has not. When an interval opens it overlaps exactly the
+ * currently-active intervals of the opposite side (they started earlier and end
+ * no earlier than this start), so the overlaps are emitted immediately and the
+ * matches stream out rather than buffering the whole cross product. An active
+ * entry carries a one-row snapshot of its columns so the pair can be emitted
+ * after the source batch is gone; peak state is the two active sets (bounded by
+ * the overlap depth) plus one output batch plus the two sorts' own bounded
+ * spill -- independent of the input length and the number of matches.
+ *
+ * Blocking: the sort key leads with the block column, so a block's intervals
+ * are contiguous; the active sets are flushed at every block boundary, so a
+ * probe never overlaps a build from a different block. A NA block key (or a NA
+ * endpoint, or start > end, or a zero-length interval under strict overlap) is
+ * dropped, matching the resident implementation.
+ */
 
 /* ------------------------------------------------------------------ */
-/*  Numeric value access                                               */
+/*  Numeric endpoint access                                            */
 /* ------------------------------------------------------------------ */
 
 static inline double iv_value(const VecArray *a, int64_t row) {
@@ -18,296 +40,134 @@ static inline double iv_value(const VecArray *a, int64_t row) {
     return (double)vec_array_get_int(a, row);  /* int8/16/32/64 */
 }
 
-static inline int iv_endpoints_valid(const VecArray *s, const VecArray *e,
-                                     int64_t row) {
-    return vec_array_is_valid(s, row) && vec_array_is_valid(e, row);
-}
-
 /* ------------------------------------------------------------------ */
-/*  Growable match buffer (one per thread)                             */
+/*  A one-row snapshot of a side's columns (owns its arrays)           */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    IntervalMatch *buf;
-    int64_t        count;
-    int64_t        capacity;
-} IvMatchBuf;
+    VecArray *cols;   /* ncols one-row arrays */
+    int       ncols;
+} IvSnap;
 
-static void imbuf_init(IvMatchBuf *b, int64_t cap) {
-    b->buf = (IntervalMatch *)malloc((size_t)cap * sizeof(IntervalMatch));
-    b->count = 0;
-    b->capacity = cap;
-    if (!b->buf) vectra_error("alloc failed for IvMatchBuf");
+static IvSnap iv_snap_take(const VecArray *src, int ncols, int64_t row) {
+    IvSnap s;
+    s.ncols = ncols;
+    s.cols = (VecArray *)malloc((size_t)ncols * sizeof(VecArray));
+    int32_t r = (int32_t)row;
+    for (int c = 0; c < ncols; c++)
+        s.cols[c] = vec_array_gather(&src[c], &r, 1);
+    return s;
 }
 
-static void imbuf_push(IvMatchBuf *b, int64_t pi, int64_t bi) {
-    if (b->count >= b->capacity) {
-        b->capacity *= 2;
-        b->buf = (IntervalMatch *)realloc(b->buf,
-            (size_t)b->capacity * sizeof(IntervalMatch));
-        if (!b->buf) vectra_error("realloc failed for IvMatchBuf");
+static void iv_snap_free(IvSnap *s) {
+    if (!s->cols) return;
+    for (int c = 0; c < s->ncols; c++) vec_array_free(&s->cols[c]);
+    free(s->cols);
+    s->cols = NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Active set: open intervals of one side                             */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    double end;
+    int    matched;   /* has emitted at least one pair (left join) */
+    IvSnap snap;
+} IvActive;
+
+typedef struct {
+    IvActive *e;
+    int64_t   n, cap;
+} IvActiveSet;
+
+static void ivset_push(IvActiveSet *s, double end, IvSnap snap) {
+    if (s->n >= s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 16;
+        s->e = (IvActive *)realloc(s->e, (size_t)s->cap * sizeof(IvActive));
+        if (!s->e) vectra_error("interval_join: realloc failed (active set)");
     }
-    b->buf[b->count++] = (IntervalMatch){pi, bi};
-}
-
-static void imbuf_free(IvMatchBuf *b) {
-    free(b->buf);
-    b->buf = NULL;
-    b->count = 0;
-    b->capacity = 0;
+    s->e[s->n].end = end;
+    s->e[s->n].matched = 0;
+    s->e[s->n].snap = snap;
+    s->n++;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Sweep-line over one block partition                                */
+/*  Sorted-stream cursor over one child                                */
 /* ------------------------------------------------------------------ */
 
-/* An interval endpoint event. rank orders ties at equal coords so that
-   closed intervals count touching endpoints as overlap and strict ones do
-   not (see build below). */
 typedef struct {
-    double  coord;
-    int     rank;   /* sort key for equal coords */
-    int     side;   /* 0 = probe, 1 = build */
-    int64_t idx;    /* compact local index into that side's interval arrays */
-} IvEvent;
+    VecNode  *node;
+    VecBatch *batch;
+    int64_t   li;      /* logical row */
+    int64_t   nlog;
+    int       done;
+    int       start_col, end_col, block_col;
+    int       closed;
+    /* current valid interval (skips NA / inverted / zero-length-strict rows) */
+    int64_t   phys;    /* physical row of the current interval */
+    double    start, end;
+    const char *bkey; int64_t blen;  /* block key (NULL/0 when unblocked) */
+} IvCursor;
 
-static int cmp_event(const void *a, const void *b) {
-    const IvEvent *x = (const IvEvent *)a;
-    const IvEvent *y = (const IvEvent *)b;
-    if (x->coord < y->coord) return -1;
-    if (x->coord > y->coord) return  1;
-    if (x->rank  < y->rank)  return -1;
-    if (x->rank  > y->rank)  return  1;
-    return 0;
+/* Load the next child batch into the cursor, or mark done. */
+static int cursor_load(IvCursor *c) {
+    if (c->batch) { vec_batch_free(c->batch); c->batch = NULL; }
+    c->batch = c->node->next_batch(c->node);
+    if (!c->batch) { c->done = 1; return 0; }
+    c->li = 0;
+    c->nlog = vec_batch_logical_rows(c->batch);
+    return 1;
 }
 
-/* Collect the valid intervals of one side in a partition into compact arrays.
-   Drops rows with a NA endpoint or with start > end. Under strict overlap
-   (closed == 0) also drops zero-length intervals (start == end): they can
-   never strictly overlap, and their coincident open/close events would
-   otherwise reorder under the strict tie-break. Returns the count. */
-static int64_t collect_intervals(const JoinPartition *part,
-                                 const VecArray *start, const VecArray *end,
-                                 int closed,
-                                 double **out_lo, double **out_hi,
-                                 int64_t **out_glob) {
-    int64_t n = part->n_rows;
-    double  *lo = (double *)malloc((size_t)(n > 0 ? n : 1) * sizeof(double));
-    double  *hi = (double *)malloc((size_t)(n > 0 ? n : 1) * sizeof(double));
-    int64_t *gl = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t));
-    if (!lo || !hi || !gl) vectra_error("alloc failed in interval collect");
-
-    int64_t m = 0;
-    for (int64_t i = 0; i < n; i++) {
-        int64_t row = part->rows[i];
-        if (!iv_endpoints_valid(start, end, row)) continue;
-        double a = iv_value(start, row);
-        double b = iv_value(end, row);
-        if (a > b) continue;             /* degenerate interval: never matches */
-        if (!closed && a == b) continue; /* zero length: no strict overlap */
-        lo[m] = a; hi[m] = b; gl[m] = row; m++;
-    }
-    *out_lo = lo; *out_hi = hi; *out_glob = gl;
-    return m;
-}
-
-/* Doubly-linked active set over compact local indices. */
-typedef struct {
-    int64_t *next;
-    int64_t *prev;
-    int64_t  head;
-} ActiveSet;
-
-static void active_init(ActiveSet *s, int64_t n) {
-    s->next = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t));
-    s->prev = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t));
-    if (!s->next || !s->prev) vectra_error("alloc failed for active set");
-    s->head = -1;
-}
-
-static void active_free(ActiveSet *s) {
-    free(s->next); free(s->prev);
-    s->next = s->prev = NULL; s->head = -1;
-}
-
-static inline void active_insert(ActiveSet *s, int64_t i) {
-    s->next[i] = s->head;
-    s->prev[i] = -1;
-    if (s->head != -1) s->prev[s->head] = i;
-    s->head = i;
-}
-
-static inline void active_remove(ActiveSet *s, int64_t i) {
-    if (s->prev[i] != -1) s->next[s->prev[i]] = s->next[i];
-    else                  s->head = s->next[i];
-    if (s->next[i] != -1) s->prev[s->next[i]] = s->prev[i];
-}
-
-/* Run the sweep for one partition, pushing overlapping (probe,build) pairs
-   into buf. When probe_matched != NULL (left join), marks each matched probe
-   global row. */
-static void sweep_partition(IntervalJoinNode *ij, int64_t part,
-                            IvMatchBuf *buf, uint8_t *probe_matched) {
-    const JoinPartition *pp = &ij->probe_parts[part];
-    const JoinPartition *bp = &ij->build_parts[part];
-    if (pp->n_rows == 0 || bp->n_rows == 0) return;
-
-    const VecArray *ps = &ij->p_cols[ij->probe_start_col];
-    const VecArray *pe = &ij->p_cols[ij->probe_end_col];
-    const VecArray *bs = &ij->b_cols[ij->build_start_col];
-    const VecArray *be = &ij->b_cols[ij->build_end_col];
-
-    double *p_lo, *p_hi; int64_t *p_glob;
-    double *b_lo, *b_hi; int64_t *b_glob;
-    int64_t np = collect_intervals(pp, ps, pe, ij->closed, &p_lo, &p_hi, &p_glob);
-    int64_t nb = collect_intervals(bp, bs, be, ij->closed, &b_lo, &b_hi, &b_glob);
-
-    if (np == 0 || nb == 0) {
-        free(p_lo); free(p_hi); free(p_glob);
-        free(b_lo); free(b_hi); free(b_glob);
+/* Advance the cursor to its next VALID interval (or done). */
+static void cursor_advance(IvCursor *c) {
+    while (1) {
+        if (c->done) return;
+        if (!c->batch || c->li >= c->nlog) {
+            if (!cursor_load(c)) return;
+            continue;
+        }
+        int64_t phys = vec_batch_physical_row(c->batch, c->li);
+        c->li++;
+        const VecArray *s = &c->batch->columns[c->start_col];
+        const VecArray *e = &c->batch->columns[c->end_col];
+        if (!vec_array_is_valid(s, phys) || !vec_array_is_valid(e, phys)) continue;
+        double a = iv_value(s, phys), b = iv_value(e, phys);
+        if (a > b) continue;                 /* inverted */
+        if (!c->closed && a == b) continue;  /* zero length, strict */
+        if (c->block_col >= 0) {
+            const VecArray *bl = &c->batch->columns[c->block_col];
+            if (!vec_array_is_valid(bl, phys)) continue;  /* NA block */
+            c->bkey = bl->buf.str.data + bl->buf.str.offsets[phys];
+            c->blen = bl->buf.str.offsets[phys + 1] - bl->buf.str.offsets[phys];
+        } else {
+            c->bkey = NULL; c->blen = 0;
+        }
+        c->phys = phys; c->start = a; c->end = b;
         return;
     }
-
-    /* Tie-break ranks. open_rank < close_rank => closed (touching overlaps);
-       close_rank < open_rank => strict. */
-    int open_rank  = ij->closed ? 0 : 1;
-    int close_rank = ij->closed ? 1 : 0;
-
-    int64_t n_ev = 2 * (np + nb);
-    IvEvent *ev = (IvEvent *)malloc((size_t)n_ev * sizeof(IvEvent));
-    if (!ev) vectra_error("alloc failed for sweep events");
-
-    int64_t k = 0;
-    for (int64_t i = 0; i < np; i++) {
-        ev[k++] = (IvEvent){p_lo[i], open_rank,  0, i};
-        ev[k++] = (IvEvent){p_hi[i], close_rank, 0, i};
-    }
-    for (int64_t i = 0; i < nb; i++) {
-        ev[k++] = (IvEvent){b_lo[i], open_rank,  1, i};
-        ev[k++] = (IvEvent){b_hi[i], close_rank, 1, i};
-    }
-    qsort(ev, (size_t)n_ev, sizeof(IvEvent), cmp_event);
-
-    ActiveSet act_p, act_b;
-    active_init(&act_p, np);
-    active_init(&act_b, nb);
-
-    for (int64_t i = 0; i < n_ev; i++) {
-        IvEvent *e = &ev[i];
-        int is_open = (e->rank == open_rank);
-        if (is_open) {
-            if (e->side == 0) {
-                /* probe opens: overlaps every active build */
-                for (int64_t j = act_b.head; j != -1; j = act_b.next[j]) {
-                    imbuf_push(buf, p_glob[e->idx], b_glob[j]);
-                    if (probe_matched) probe_matched[p_glob[e->idx]] = 1;
-                }
-                active_insert(&act_p, e->idx);
-            } else {
-                /* build opens: overlaps every active probe */
-                for (int64_t j = act_p.head; j != -1; j = act_p.next[j]) {
-                    imbuf_push(buf, p_glob[j], b_glob[e->idx]);
-                    if (probe_matched) probe_matched[p_glob[j]] = 1;
-                }
-                active_insert(&act_b, e->idx);
-            }
-        } else {
-            if (e->side == 0) active_remove(&act_p, e->idx);
-            else              active_remove(&act_b, e->idx);
-        }
-    }
-
-    active_free(&act_p);
-    active_free(&act_b);
-    free(ev);
-    free(p_lo); free(p_hi); free(p_glob);
-    free(b_lo); free(b_hi); free(b_glob);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Match phase: sweep every partition in parallel                     */
-/* ------------------------------------------------------------------ */
-
-static void interval_match_phase(IntervalJoinNode *ij) {
-    int n_threads = ij->n_threads;
-    if (n_threads < 1) n_threads = 1;
-#ifdef _OPENMP
-    if (n_threads > omp_get_max_threads()) n_threads = omp_get_max_threads();
-#else
-    n_threads = 1;
-#endif
-
-    uint8_t *probe_matched = NULL;
-    if (ij->kind == IJOIN_LEFT)
-        probe_matched = (uint8_t *)calloc((size_t)(ij->p_nrows > 0 ?
-                                          ij->p_nrows : 1), sizeof(uint8_t));
-
-    IvMatchBuf *tbufs = (IvMatchBuf *)calloc((size_t)n_threads,
-                                             sizeof(IvMatchBuf));
-    if (!tbufs) vectra_error("alloc failed for thread match buffers");
-    for (int t = 0; t < n_threads; t++) imbuf_init(&tbufs[t], 4096);
-
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 1) num_threads(n_threads)
-#endif
-    for (int64_t p = 0; p < ij->n_parts; p++) {
-#ifdef _OPENMP
-        int tid = omp_get_thread_num();
-#else
-        int tid = 0;
-#endif
-        sweep_partition(ij, p, &tbufs[tid], probe_matched);
-    }
-
-    /* Merge thread buffers */
-    int64_t total = 0;
-    for (int t = 0; t < n_threads; t++) total += tbufs[t].count;
-
-    /* Left join: count probe rows that matched nothing (they get an NA row) */
-    int64_t n_unmatched = 0;
-    if (probe_matched) {
-        for (int64_t r = 0; r < ij->p_nrows; r++)
-            if (!probe_matched[r]) n_unmatched++;
-    }
-
-    int64_t cap = total + n_unmatched;
-    ij->matches = (IntervalMatch *)malloc(
-        (size_t)(cap > 0 ? cap : 1) * sizeof(IntervalMatch));
-    if (!ij->matches) vectra_error("alloc failed for merged matches");
-
-    int64_t pos = 0;
-    for (int t = 0; t < n_threads; t++) {
-        if (tbufs[t].count > 0) {
-            memcpy(ij->matches + pos, tbufs[t].buf,
-                   (size_t)tbufs[t].count * sizeof(IntervalMatch));
-            pos += tbufs[t].count;
-        }
-        imbuf_free(&tbufs[t]);
-    }
-    free(tbufs);
-
-    if (probe_matched) {
-        for (int64_t r = 0; r < ij->p_nrows; r++)
-            if (!probe_matched[r])
-                ij->matches[pos++] = (IntervalMatch){r, -1};
-        free(probe_matched);
-    }
-
-    ij->n_matches = pos;
+/* Compare two block keys (lexicographic). */
+static int block_cmp(const char *a, int64_t la, const char *b, int64_t lb) {
+    int64_t m = la < lb ? la : lb;
+    int r = (m > 0) ? memcmp(a, b, (size_t)m) : 0;
+    if (r != 0) return r < 0 ? -1 : 1;
+    return (la < lb) ? -1 : (la > lb) ? 1 : 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Sort matches by (probe_idx, build_idx) for deterministic output    */
-/* ------------------------------------------------------------------ */
-
-static int cmp_match(const void *a, const void *b) {
-    const IntervalMatch *ma = (const IntervalMatch *)a;
-    const IntervalMatch *mb = (const IntervalMatch *)b;
-    if (ma->probe_idx < mb->probe_idx) return -1;
-    if (ma->probe_idx > mb->probe_idx) return  1;
-    if (ma->build_idx < mb->build_idx) return -1;
-    if (ma->build_idx > mb->build_idx) return  1;
-    return 0;
+/* Order two cursors by (block, start). Returns <0 if a opens first, >0 if b
+   first, 0 if equal. A done cursor never opens first. */
+static int cursor_order(const IvCursor *a, const IvCursor *b) {
+    if (a->done) return 1;
+    if (b->done) return -1;
+    if (a->block_col >= 0) {
+        int bc = block_cmp(a->bkey, a->blen, b->bkey, b->blen);
+        if (bc != 0) return bc;
+    }
+    return (a->start < b->start) ? -1 : (a->start > b->start) ? 1 : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -355,94 +215,187 @@ static VecSchema build_output_schema(IntervalJoinNode *ij) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  next_batch                                                         */
+/*  Sweep state (persists across next_batch calls)                     */
 /* ------------------------------------------------------------------ */
+
+typedef struct {
+    IvCursor p, b;
+    IvActiveSet act_p, act_b;
+    int have_block; const char *cur_block; int64_t cur_blen; char *cur_block_own;
+    VecArrayBuilder *builders;   /* out_ncols */
+    int64_t produced;            /* rows appended to builders this batch */
+    int started;
+    int finished;
+} IvSweep;
 
 #define IV_EMIT_BATCH 8192
 
-static VecBatch *interval_join_next_batch(VecNode *self) {
-    IntervalJoinNode *ij = (IntervalJoinNode *)self;
-
-    if (ij->state == IJSTATE_MATERIALIZE) {
-        join_materialize_side(ij->probe_node,
-                              ij->probe_node->output_schema.n_cols,
-                              &ij->p_cols, &ij->p_nrows);
-        ij->p_ncols = ij->probe_node->output_schema.n_cols;
-
-        join_materialize_side(ij->build_node,
-                              ij->build_node->output_schema.n_cols,
-                              &ij->b_cols, &ij->b_nrows);
-        ij->b_ncols = ij->build_node->output_schema.n_cols;
-
-        JoinPartitionSet ps = join_partition_build(
-            ij->p_cols, ij->p_nrows, ij->probe_block_col,
-            ij->b_cols, ij->b_nrows, ij->build_block_col);
-        ij->probe_parts = ps.probe_parts;
-        ij->build_parts = ps.build_parts;
-        ij->n_parts = ps.n_parts;
-
-        interval_match_phase(ij);
-
-        if (ij->n_matches > 1)
-            qsort(ij->matches, (size_t)ij->n_matches,
-                  sizeof(IntervalMatch), cmp_match);
-
-        ij->emit_pos = 0;
-        ij->state = IJSTATE_EMIT;
+/* Append one probe row + one build row (or NA build) to the output builders. */
+static void emit_pair(IntervalJoinNode *ij, IvSweep *sw,
+                      const VecArray *pcols, int64_t prow,
+                      const VecArray *bcols, int64_t brow) {
+    int col = 0;
+    for (int c = 0; c < ij->p_ncols; c++)
+        vec_builder_append_one(&sw->builders[col++], &pcols[c], prow);
+    if (bcols) {
+        for (int c = 0; c < ij->b_ncols; c++)
+            vec_builder_append_one(&sw->builders[col++], &bcols[c], brow);
+    } else {
+        for (int c = 0; c < ij->b_ncols; c++)
+            vec_builder_append_na(&sw->builders[col++]);
     }
+    sw->produced++;
+}
 
-    if (ij->state == IJSTATE_DONE) return NULL;
-
-    int64_t remaining = ij->n_matches - ij->emit_pos;
-    if (remaining <= 0) {
-        ij->state = IJSTATE_DONE;
-        return NULL;
-    }
-
-    int64_t batch_size = remaining < IV_EMIT_BATCH ? remaining : IV_EMIT_BATCH;
-    int total_cols = ij->out_ncols;
-
-    VecArrayBuilder *builders = (VecArrayBuilder *)calloc(
-        (size_t)total_cols, sizeof(VecArrayBuilder));
-    if (!builders) vectra_error("alloc failed for output builders");
-
-    const VecSchema *out = &ij->base.output_schema;
-    for (int c = 0; c < total_cols; c++) {
-        builders[c] = vec_builder_init(out->col_types[c]);
-        vec_builder_reserve(&builders[c], batch_size);
-    }
-
-    int p_ncols = ij->p_ncols;
-    int b_ncols = ij->b_ncols;
-
-    for (int64_t m = 0; m < batch_size; m++) {
-        IntervalMatch *match = &ij->matches[ij->emit_pos + m];
-        int64_t pi = match->probe_idx;
-        int64_t bi = match->build_idx;
-        int col = 0;
-        for (int c = 0; c < p_ncols; c++)
-            vec_builder_append_one(&builders[col++], &ij->p_cols[c], pi);
-        if (bi >= 0) {
-            for (int c = 0; c < b_ncols; c++)
-                vec_builder_append_one(&builders[col++], &ij->b_cols[c], bi);
+/* Evict from `set` the intervals that can no longer overlap: end < pos for
+   closed overlap, end <= pos for strict. For the left join, an evicted probe
+   that never matched emits an NA-build row (set == active probes, is_probe). */
+static void evict(IntervalJoinNode *ij, IvSweep *sw, IvActiveSet *set,
+                  double pos, int is_probe) {
+    int64_t w = 0;
+    for (int64_t i = 0; i < set->n; i++) {
+        int expired = ij->closed ? (set->e[i].end < pos) : (set->e[i].end <= pos);
+        if (expired) {
+            if (is_probe && ij->kind == IJOIN_LEFT && !set->e[i].matched)
+                emit_pair(ij, sw, set->e[i].snap.cols, 0, NULL, 0);
+            iv_snap_free(&set->e[i].snap);
         } else {
-            for (int c = 0; c < b_ncols; c++)
-                vec_builder_append_na(&builders[col++]);
+            if (w != i) set->e[w] = set->e[i];
+            w++;
+        }
+    }
+    set->n = w;
+}
+
+/* Flush both active sets at a block boundary / at end: emit left-join
+   unmatched probes, free snapshots. */
+static void flush_block(IntervalJoinNode *ij, IvSweep *sw) {
+    for (int64_t i = 0; i < sw->act_p.n; i++) {
+        if (ij->kind == IJOIN_LEFT && !sw->act_p.e[i].matched)
+            emit_pair(ij, sw, sw->act_p.e[i].snap.cols, 0, NULL, 0);
+        iv_snap_free(&sw->act_p.e[i].snap);
+    }
+    sw->act_p.n = 0;
+    for (int64_t i = 0; i < sw->act_b.n; i++) iv_snap_free(&sw->act_b.e[i].snap);
+    sw->act_b.n = 0;
+}
+
+/* Process one opening interval (the earlier of the two cursors). */
+static void sweep_step(IntervalJoinNode *ij, IvSweep *sw) {
+    int ord = cursor_order(&sw->p, &sw->b);
+    IvCursor *opener = (ord <= 0) ? &sw->p : &sw->b;
+    int opener_is_probe = (opener == &sw->p);
+
+    /* Block boundary: when the opener starts a new block, flush active sets. */
+    if (opener->block_col >= 0) {
+        int newblock = !sw->have_block ||
+            block_cmp(sw->cur_block, sw->cur_blen, opener->bkey, opener->blen) != 0;
+        if (newblock) {
+            flush_block(ij, sw);
+            free(sw->cur_block_own);
+            sw->cur_block_own = (char *)malloc((size_t)(opener->blen > 0 ? opener->blen : 1));
+            if (opener->blen > 0) memcpy(sw->cur_block_own, opener->bkey, (size_t)opener->blen);
+            sw->cur_block = sw->cur_block_own;
+            sw->cur_blen = opener->blen;
+            sw->have_block = 1;
         }
     }
 
-    ij->emit_pos += batch_size;
+    double pos = opener->start;
+    /* Expire intervals that end before this opener starts. */
+    evict(ij, sw, &sw->act_p, pos, 1);
+    evict(ij, sw, &sw->act_b, pos, 0);
 
-    VecBatch *batch = vec_batch_alloc(total_cols, batch_size);
-    for (int c = 0; c < total_cols; c++)
-        batch->columns[c] = vec_builder_finish(&builders[c]);
-    for (int c = 0; c < total_cols; c++) {
+    const VecArray *ocols = opener->batch->columns;
+    int64_t orow = opener->phys;
+
+    if (opener_is_probe) {
+        for (int64_t i = 0; i < sw->act_b.n; i++) {
+            emit_pair(ij, sw, ocols, orow, sw->act_b.e[i].snap.cols, 0);
+            sw->act_b.e[i].matched = 1;
+        }
+        int any = (sw->act_b.n > 0);
+        IvSnap snap = iv_snap_take(ocols, ij->p_ncols, orow);
+        ivset_push(&sw->act_p, opener->end, snap);
+        if (any) sw->act_p.e[sw->act_p.n - 1].matched = 1;
+    } else {
+        for (int64_t i = 0; i < sw->act_p.n; i++) {
+            emit_pair(ij, sw, sw->act_p.e[i].snap.cols, 0, ocols, orow);
+            sw->act_p.e[i].matched = 1;
+        }
+        IvSnap snap = iv_snap_take(ocols, ij->b_ncols, orow);
+        ivset_push(&sw->act_b, opener->end, snap);
+    }
+
+    cursor_advance(opener);
+}
+
+/* ------------------------------------------------------------------ */
+/*  next_batch                                                         */
+/* ------------------------------------------------------------------ */
+
+static void builders_init(IntervalJoinNode *ij, IvSweep *sw) {
+    const VecSchema *out = &ij->base.output_schema;
+    sw->builders = (VecArrayBuilder *)calloc((size_t)ij->out_ncols,
+                                             sizeof(VecArrayBuilder));
+    for (int c = 0; c < ij->out_ncols; c++)
+        sw->builders[c] = vec_builder_init(out->col_types[c]);
+    sw->produced = 0;
+}
+
+static VecBatch *builders_finish(IntervalJoinNode *ij, IvSweep *sw) {
+    const VecSchema *out = &ij->base.output_schema;
+    int64_t nr = sw->produced;
+    VecBatch *batch = vec_batch_alloc(ij->out_ncols, nr);
+    for (int c = 0; c < ij->out_ncols; c++)
+        batch->columns[c] = vec_builder_finish(&sw->builders[c]);
+    for (int c = 0; c < ij->out_ncols; c++) {
         free(batch->col_names[c]);
         batch->col_names[c] = strdup(out->col_names[c]);
     }
-    batch->n_rows = batch_size;
-    free(builders);
+    batch->n_rows = nr;
+    free(sw->builders);
+    sw->builders = NULL;
     return batch;
+}
+
+static VecBatch *interval_join_next_batch(VecNode *self) {
+    IntervalJoinNode *ij = (IntervalJoinNode *)self;
+    IvSweep *sw = (IvSweep *)ij->sweep;
+
+    if (sw->finished) return NULL;
+
+    if (!sw->started) {
+        sw->started = 1;
+        sw->p.node = ij->probe_node; sw->p.start_col = ij->probe_start_col;
+        sw->p.end_col = ij->probe_end_col; sw->p.block_col = ij->probe_block_col;
+        sw->p.closed = ij->closed;
+        sw->b.node = ij->build_node; sw->b.start_col = ij->build_start_col;
+        sw->b.end_col = ij->build_end_col; sw->b.block_col = ij->build_block_col;
+        sw->b.closed = ij->closed;
+        cursor_advance(&sw->p);
+        cursor_advance(&sw->b);
+    }
+
+    builders_init(ij, sw);
+
+    while (!(sw->p.done && sw->b.done)) {
+        sweep_step(ij, sw);
+        if (sw->produced >= IV_EMIT_BATCH)
+            return builders_finish(ij, sw);
+    }
+
+    /* Both streams drained: flush remaining active intervals. */
+    flush_block(ij, sw);
+    sw->finished = 1;
+
+    if (sw->produced == 0) {
+        for (int c = 0; c < ij->out_ncols; c++) vec_builder_free(&sw->builders[c]);
+        free(sw->builders);
+        sw->builders = NULL;
+        return NULL;
+    }
+    return builders_finish(ij, sw);
 }
 
 /* ------------------------------------------------------------------ */
@@ -451,23 +404,23 @@ static VecBatch *interval_join_next_batch(VecNode *self) {
 
 static void interval_join_free(VecNode *self) {
     IntervalJoinNode *ij = (IntervalJoinNode *)self;
-
+    IvSweep *sw = (IvSweep *)ij->sweep;
+    if (sw) {
+        if (sw->p.batch) vec_batch_free(sw->p.batch);
+        if (sw->b.batch) vec_batch_free(sw->b.batch);
+        for (int64_t i = 0; i < sw->act_p.n; i++) iv_snap_free(&sw->act_p.e[i].snap);
+        for (int64_t i = 0; i < sw->act_b.n; i++) iv_snap_free(&sw->act_b.e[i].snap);
+        free(sw->act_p.e);
+        free(sw->act_b.e);
+        free(sw->cur_block_own);
+        if (sw->builders) {
+            for (int c = 0; c < ij->out_ncols; c++) vec_builder_free(&sw->builders[c]);
+            free(sw->builders);
+        }
+        free(sw);
+    }
     if (ij->probe_node) ij->probe_node->free_node(ij->probe_node);
     if (ij->build_node) ij->build_node->free_node(ij->build_node);
-
-    if (ij->p_cols) {
-        for (int c = 0; c < ij->p_ncols; c++) vec_array_free(&ij->p_cols[c]);
-        free(ij->p_cols);
-    }
-    if (ij->b_cols) {
-        for (int c = 0; c < ij->b_ncols; c++) vec_array_free(&ij->b_cols[c]);
-        free(ij->b_cols);
-    }
-
-    join_partition_free(ij->probe_parts, ij->n_parts);
-    join_partition_free(ij->build_parts, ij->n_parts);
-
-    free(ij->matches);
     free(ij->suffix_y);
     vec_schema_free(&ij->base.output_schema);
     free(ij);
@@ -477,19 +430,32 @@ static void interval_join_free(VecNode *self) {
 /*  Constructor                                                        */
 /* ------------------------------------------------------------------ */
 
+/* Wrap a child in a SortNode keyed by (block, start). Resolves the ordering
+   column indices in the child schema (unchanged by the sort). */
+static VecNode *sort_by_block_start(VecNode *child, int block_col, int start_col,
+                                    const char *temp_dir, int64_t mem_budget) {
+    int nk = (block_col >= 0) ? 2 : 1;
+    SortKey *sk = (SortKey *)malloc((size_t)nk * sizeof(SortKey));
+    int i = 0;
+    if (block_col >= 0) { sk[i].col_index = block_col; sk[i].descending = 0; i++; }
+    sk[i].col_index = start_col; sk[i].descending = 0;
+    int64_t m = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    /* sort_node_create takes ownership of sk. */
+    SortNode *sn = sort_node_create(child, nk, sk, temp_dir, m);
+    return (VecNode *)sn;
+}
+
 IntervalJoinNode *interval_join_node_create(
     VecNode *probe, VecNode *build,
     int probe_start_col, int probe_end_col,
     int build_start_col, int build_end_col,
     int probe_block_col, int build_block_col,
     IntervalJoinKind kind, int closed, int n_threads,
-    const char *suffix_y)
+    const char *suffix_y, int64_t mem_budget, const char *temp_dir)
 {
     IntervalJoinNode *ij = (IntervalJoinNode *)calloc(1, sizeof(IntervalJoinNode));
     if (!ij) vectra_error("alloc failed for IntervalJoinNode");
 
-    ij->probe_node = probe;
-    ij->build_node = build;
     ij->probe_start_col = probe_start_col;
     ij->probe_end_col   = probe_end_col;
     ij->build_start_col = build_start_col;
@@ -500,9 +466,25 @@ IntervalJoinNode *interval_join_node_create(
     ij->closed = closed;
     ij->n_threads = n_threads;
     ij->suffix_y = suffix_y ? strdup(suffix_y) : strdup(".y");
-    ij->state = IJSTATE_MATERIALIZE;
 
+    ij->p_ncols = probe->output_schema.n_cols;
+    ij->b_ncols = build->output_schema.n_cols;
+
+    /* Output schema is built from the child schemas; the sort keeps column
+       layout, only reordering rows, so point at the originals for the schema
+       first, then wrap each side in its (block, start) sort. */
+    ij->probe_node = probe;
+    ij->build_node = build;
     ij->base.output_schema = build_output_schema(ij);
+
+    ij->probe_node = sort_by_block_start(probe, probe_block_col, probe_start_col,
+                                         temp_dir, mem_budget);
+    ij->build_node = sort_by_block_start(build, build_block_col, build_start_col,
+                                         temp_dir, mem_budget);
+
+    ij->sweep = calloc(1, sizeof(IvSweep));
+    if (!ij->sweep) vectra_error("alloc failed for interval sweep");
+
     ij->base.next_batch = interval_join_next_batch;
     ij->base.kind = "IntervalJoinNode";
     ij->base.free_node = interval_join_free;

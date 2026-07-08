@@ -368,7 +368,8 @@ fuzzy_join.vectra_node <- function(x, y, by, method = "dl", max_dist = 0.2,
                     as.integer(method_int),
                     as.double(max_dist),
                     as.integer(n_threads),
-                    suffix)
+                    suffix,
+                    as.numeric(vectra_mem()))
   structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
 }
 
@@ -453,6 +454,7 @@ interval_join.vectra_node <- function(x, y, start, end, by = NULL,
                     block_probe, block_build,
                     type, as.logical(closed),
                     as.integer(n_threads),
-                    suffix)
+                    suffix,
+                    as.numeric(vectra_mem()))
   structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
 }

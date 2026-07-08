@@ -17,6 +17,13 @@
 /* Output batch size during merge */
 #define MERGE_BATCH_SIZE 65536
 
+/* Upper bound on the number of runs merged at once. The actual fan-in is
+   chosen per-sort from the measured row width (compute_merge_fanin); this
+   caps open files / heap size for narrow data. A run count above the
+   fan-in is reduced by multi-pass merging, which is what keeps merge
+   memory O(1) in the input size rather than growing with the run count. */
+#define SORT_MAX_FANIN 64
+
 /* Sort phases */
 #define SORT_INIT     0
 #define SORT_MEMORY   1
@@ -640,14 +647,13 @@ static void merge_state_free(MergeState *ms) {
     free(ms);
 }
 
-/* Produce the next batch from the k-way merge */
-static VecBatch *merge_next_batch(SortNode *sn) {
-    MergeState *ms = (MergeState *)sn->merge;
-
-    if (ms->heap_size == 0) {
-        sn->phase = SORT_DONE;
+/* Build one merged output batch (up to MERGE_BATCH_SIZE rows) from the
+   k-way heap, or NULL when the merge is drained. Shared by the streaming
+   output path (merge_next_batch) and the intermediate reduction passes
+   (merge_drain_to_writer). */
+static VecBatch *merge_build_one_batch(MergeState *ms) {
+    if (ms->heap_size == 0)
         return NULL;
-    }
 
     /* Builders with pre-reserved capacity */
     VecArrayBuilder *builders = (VecArrayBuilder *)calloc(
@@ -677,7 +683,6 @@ static VecBatch *merge_next_batch(SortNode *sn) {
         for (int c = 0; c < ms->n_cols; c++)
             vec_builder_free(&builders[c]);
         free(builders);
-        sn->phase = SORT_DONE;
         return NULL;
     }
 
@@ -691,6 +696,15 @@ static VecBatch *merge_next_batch(SortNode *sn) {
     result->n_rows = count;
     free(builders);
 
+    return result;
+}
+
+/* Produce the next batch from the k-way merge (streaming output path) */
+static VecBatch *merge_next_batch(SortNode *sn) {
+    MergeState *ms = (MergeState *)sn->merge;
+    VecBatch *result = merge_build_one_batch(ms);
+    if (!result)
+        sn->phase = SORT_DONE;
     return result;
 }
 
@@ -766,27 +780,27 @@ static void build_memory_result(SortNode *sn, VecArray *columns,
     sn->phase = SORT_MEMORY;
 }
 
-/* Initialize the k-way merge over spilled runs */
-static void init_merge(SortNode *sn) {
+/* Open a k-way merge over the given run files. Loads the first rowgroup of
+   each run into the heap; peak resident = k decoded rowgroups. */
+static MergeState *merge_state_open(SortNode *sn, char **paths, int k) {
     int n_cols = sn->base.output_schema.n_cols;
 
     MergeState *ms = (MergeState *)calloc(1, sizeof(MergeState));
-    ms->n_runs  = sn->n_runs;
+    ms->n_runs  = k;
     ms->n_keys  = sn->n_keys;
     ms->keys    = sn->keys;
     ms->n_cols  = n_cols;
     ms->schema  = vec_schema_copy(&sn->base.output_schema);
 
-    ms->runs = (MergeRun *)calloc((size_t)sn->n_runs, sizeof(MergeRun));
-    ms->heap = (int *)malloc((size_t)sn->n_runs * sizeof(int));
+    ms->runs = (MergeRun *)calloc((size_t)k, sizeof(MergeRun));
+    ms->heap = (int *)malloc((size_t)k * sizeof(int));
     ms->heap_size = 0;
 
-    for (int r = 0; r < sn->n_runs; r++) {
+    for (int r = 0; r < k; r++) {
         MergeRun *run = &ms->runs[r];
-        run->file    = vtr1_open_tdc(sn->run_paths[r]);
+        run->file    = vtr1_open_tdc(paths[r]);
         if (!run->file)
-            vectra_error("vtr1_open_tdc failed for spill run %s",
-                         sn->run_paths[r]);
+            vectra_error("vtr1_open_tdc failed for spill run %s", paths[r]);
         run->n_rgs   = vtr1_tdc_n_rowgroups(run->file);
         run->next_rg = 0;
         run->col_mask = (int *)malloc((size_t)n_cols * sizeof(int));
@@ -798,8 +812,96 @@ static void init_merge(SortNode *sn) {
         if (!run->exhausted)
             heap_insert(ms, r);
     }
+    return ms;
+}
 
-    sn->merge = ms;
+/* Drain a k-way merge fully into a new sorted run file. Used by the
+   intermediate reduction passes; peak = k decoded rowgroups + one output
+   batch, independent of total rows. */
+static void merge_drain_to_writer(MergeState *ms, const char *out_path) {
+    Vtr1TdcWriter *w = vtr1_open_tdc_writer(out_path, &ms->schema);
+    VecBatch *b;
+    while ((b = merge_build_one_batch(ms)) != NULL) {
+        vtr1_write_rowgroup_tdc(w, b, VTR_COMPRESS_FAST, NULL, NULL);
+        vec_batch_free(b);
+    }
+    vtr1_close_tdc_writer(w);
+}
+
+/* Choose the merge fan-in so that k decoded rowgroups fit in ~half the
+   spill budget: k = (budget/2) / (SPILL_RG_SIZE * bytes_per_row), where
+   bytes_per_row is the measured decoded width of the spilled data
+   (est_bytes / est_rows accumulated at spill time). Clamped to
+   [2, SORT_MAX_FANIN]. Wide rows (geometry / long strings) get a small
+   fan-in, narrow numeric rows a large one, so merge-phase resident memory
+   stays near the budget regardless of row width or total size. */
+static int compute_merge_fanin(int64_t est_bytes, int64_t est_rows,
+                               int64_t mem_budget) {
+    int64_t budget = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    int64_t row_bytes = (est_rows > 0) ? est_bytes / est_rows : 1;
+    if (row_bytes < 1) row_bytes = 1;
+    int64_t rg_bytes = (int64_t)SPILL_RG_SIZE * row_bytes;
+    int64_t fanin = (budget / 2) / (rg_bytes > 0 ? rg_bytes : 1);
+    if (fanin < 2) fanin = 2;
+    if (fanin > SORT_MAX_FANIN) fanin = SORT_MAX_FANIN;
+    return (int)fanin;
+}
+
+/* Reduce the spilled run count to <= fanin by repeated bounded-fan-in
+   merge passes. Each pass merges disjoint groups of <= fanin runs into one
+   new sorted run and deletes the consumed inputs; a lone tail run is
+   carried through untouched. After this the final merge opens <= fanin
+   runs at once, so peak resident is O(fanin) rather than O(n_runs). Cost is
+   ceil(log_fanin(n_runs)) extra read+write passes over the spilled data. */
+static void reduce_runs(SortNode *sn, int fanin) {
+    while (sn->n_runs > fanin) {
+        char **new_paths = NULL;
+        int    new_n = 0, new_cap = 0;
+
+        for (int start = 0; start < sn->n_runs; start += fanin) {
+            int k = sn->n_runs - start;
+            if (k > fanin) k = fanin;
+
+            if (new_n >= new_cap) {
+                new_cap = new_cap == 0 ? 8 : new_cap * 2;
+                new_paths = (char **)realloc(new_paths,
+                    (size_t)new_cap * sizeof(char *));
+            }
+
+            if (k == 1) {
+                /* Lone tail run: carry through, moving ownership. */
+                new_paths[new_n++] = sn->run_paths[start];
+                sn->run_paths[start] = NULL;
+                continue;
+            }
+
+            MergeState *ms = merge_state_open(sn, &sn->run_paths[start], k);
+            char *out = make_run_path(sn->temp_dir, new_n);
+            merge_drain_to_writer(ms, out);
+            merge_state_free(ms);   /* closes the k input files */
+
+            for (int r = start; r < start + k; r++) {
+                if (sn->run_paths[r]) {
+                    remove(sn->run_paths[r]);
+                    free(sn->run_paths[r]);
+                    sn->run_paths[r] = NULL;
+                }
+            }
+            new_paths[new_n++] = out;
+        }
+
+        free(sn->run_paths);
+        sn->run_paths = new_paths;
+        sn->n_runs    = new_n;
+        sn->runs_cap  = new_cap;
+    }
+}
+
+/* Initialize the k-way merge over spilled runs, first reducing the run
+   count to the bounded fan-in via multi-pass merging. */
+static void init_merge(SortNode *sn, int fanin) {
+    reduce_runs(sn, fanin);
+    sn->merge = merge_state_open(sn, sn->run_paths, sn->n_runs);
     sn->phase = SORT_MERGING;
 }
 
@@ -815,6 +917,11 @@ static void consume_input(SortNode *sn) {
         builders[c] = vec_builder_init(schema->col_types[c]);
 
     int64_t total_rows = 0;
+
+    /* Measured decoded width of the spilled data, used to size the merge
+       fan-in so the final merge stays within the memory budget. */
+    int64_t spill_est_bytes = 0;
+    int64_t spill_est_rows  = 0;
 
     /* Pull all child batches */
     VecBatch *batch;
@@ -838,15 +945,19 @@ static void consume_input(SortNode *sn) {
         vec_batch_free(batch);
 
         /* Spill if memory budget exceeded */
-        if (can_spill && builders[0].length > 0 &&
-            estimate_builder_memory(builders, n_cols) > sn->mem_budget) {
-            char *path = spill_sorted_run(builders, n_cols, schema,
-                                           sn->keys, sn->n_keys,
-                                           sn->temp_dir, sn->n_runs);
-            if (path) add_run_path(sn, path);
-            /* Reinitialize builders (consumed by spill) */
-            for (int c = 0; c < n_cols; c++)
-                builders[c] = vec_builder_init(schema->col_types[c]);
+        if (can_spill && builders[0].length > 0) {
+            int64_t est = estimate_builder_memory(builders, n_cols);
+            if (est > sn->mem_budget) {
+                spill_est_bytes += est;
+                spill_est_rows  += builders[0].length;
+                char *path = spill_sorted_run(builders, n_cols, schema,
+                                               sn->keys, sn->n_keys,
+                                               sn->temp_dir, sn->n_runs);
+                if (path) add_run_path(sn, path);
+                /* Reinitialize builders (consumed by spill) */
+                for (int c = 0; c < n_cols; c++)
+                    builders[c] = vec_builder_init(schema->col_types[c]);
+            }
         }
     }
 
@@ -867,6 +978,8 @@ static void consume_input(SortNode *sn) {
 
     /* Multiple runs: spill the final chunk too */
     if (remaining > 0) {
+        spill_est_bytes += estimate_builder_memory(builders, n_cols);
+        spill_est_rows  += remaining;
         char *path = spill_sorted_run(builders, n_cols, schema,
                                        sn->keys, sn->n_keys,
                                        sn->temp_dir, sn->n_runs);
@@ -878,8 +991,10 @@ static void consume_input(SortNode *sn) {
         vec_builder_free(&builders[c]);
     free(builders);
 
-    /* Set up the k-way merge */
-    init_merge(sn);
+    /* Set up the k-way merge with a fan-in bounded to the memory budget. */
+    int fanin = compute_merge_fanin(spill_est_bytes, spill_est_rows,
+                                    sn->mem_budget);
+    init_merge(sn, fanin);
 }
 
 /* ------------------------------------------------------------------ */

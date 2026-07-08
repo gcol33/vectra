@@ -18,11 +18,12 @@ SEXP C_filter_node(SEXP node_xptr, SEXP expr_list);
 SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists);
 SEXP C_group_agg_node(SEXP node_xptr, SEXP key_names, SEXP agg_specs, SEXP mem);
 SEXP C_kmer_node(SEXP node_xptr, SEXP seq_col, SEXP k, SEXP canonical,
-                 SEXP key_names);
+                 SEXP key_names, SEXP mem);
 SEXP C_sort_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP mem);
 SEXP C_limit_node(SEXP node_xptr, SEXP n);
 SEXP C_topn_node(SEXP node_xptr, SEXP col_names, SEXP desc, SEXP n);
-SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names, SEXP order_col, SEXP desc);
+SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names, SEXP order_col, SEXP desc,
+                       SEXP mem);
 SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
                  SEXP kind, SEXP left_keys, SEXP right_keys,
                  SEXP suffix_x, SEXP suffix_y, SEXP mem);
@@ -54,13 +55,13 @@ SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
                        SEXP by_probe, SEXP by_build,
                        SEXP block_probe, SEXP block_build,
                        SEXP method, SEXP max_dist,
-                       SEXP n_threads, SEXP suffix_y);
+                       SEXP n_threads, SEXP suffix_y, SEXP mem);
 SEXP C_interval_join_node(SEXP probe_xptr, SEXP build_xptr,
                           SEXP start_probe, SEXP end_probe,
                           SEXP start_build, SEXP end_build,
                           SEXP block_probe, SEXP block_build,
                           SEXP kind, SEXP closed,
-                          SEXP n_threads, SEXP suffix_y);
+                          SEXP n_threads, SEXP suffix_y, SEXP mem);
 
 /* Hash index */
 SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci);

@@ -1753,6 +1753,42 @@ VecNode *window_node_create(VecNode *child,
         }
     }
 
+    /* Ungrouped windows whose specs do not share one ordering (mixed ordering
+       classes, or the same class but different value/time columns or sort
+       directions) cannot stream in a single pass. Rather than fall back to
+       materializing the whole table, decompose into a chain of single-spec
+       window nodes: each single spec trivially shares one ordering, so each
+       link streams (peak = one batch), and chaining them in spec order appends
+       the window columns in exactly the original order the in-memory path
+       produced. Every WinKind is individually streamable, so this covers every
+       ungrouped fallback case. */
+    if (!grouped && temp_dir != NULL && n_keys == 0 && n_wins > 1 && !ostream) {
+        VecNode *cur = child;
+        for (int w = 0; w < n_wins; w++) {
+            WinSpec *one = (WinSpec *)malloc(sizeof(WinSpec));
+            if (!one) vectra_error("alloc failed for window spec");
+            *one = win_specs[w];
+            one->output_name = win_specs[w].output_name
+                ? strdup(win_specs[w].output_name) : NULL;
+            one->input_col = win_specs[w].input_col
+                ? strdup(win_specs[w].input_col) : NULL;
+            one->order_col = win_specs[w].order_col
+                ? strdup(win_specs[w].order_col) : NULL;
+            cur = window_node_create(cur, 0, NULL, 1, one, temp_dir);
+        }
+        /* The caller handed ownership of win_specs and key_names to this call;
+           the chain owns fresh copies, so release the originals here. */
+        for (int w = 0; w < n_wins; w++) {
+            free(win_specs[w].output_name);
+            free(win_specs[w].input_col);
+            free(win_specs[w].order_col);
+        }
+        free(win_specs);
+        for (int k = 0; k < n_keys; k++) free(key_names[k]);
+        free(key_names);
+        return cur;
+    }
+
     /* A sort (row-id + global sort + restore + drop) is wrapped around the node
        for the grouped path and for every ungrouped stream except natural-order
        cases that need no partition size. */

@@ -59,7 +59,8 @@ kmer.vectra_node <- function(x, seq, k = 4, by = NULL, canonical = FALSE) {
   if (!is.logical(canonical) || length(canonical) != 1 || is.na(canonical))
     stop("canonical must be TRUE or FALSE")
 
-  new_xptr <- .Call(C_kmer_node, x$.node, seq_name, k, canonical, by_names)
+  new_xptr <- .Call(C_kmer_node, x$.node, seq_name, k, canonical, by_names,
+                    as.numeric(vectra_mem()))
   structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
 }
 
