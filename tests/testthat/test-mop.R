@@ -138,14 +138,14 @@ test_that("mop distance surface agrees with the mop package", {
              progress_bar = FALSE),
     error = function(e) skip(paste("mop:: API differs:", conditionMessage(e)))
   )
-  ref_d <- as.vector(t(matrix(terra::values(ref$mop_distances),
-                              nrow(m1), ncol(m1), byrow = TRUE)))
+  # terra stores values row-major; convert mop()'s north-up matrix to match.
+  ref_d <- as.vector(terra::values(ref$mop_distances))
 
   fm <- wr_bands(list(m1, m2)); fg <- wr_bands(list(g1, g2))
   on.exit(unlink(c(fm, fg)))
-  got <- as.vector(mop(fg, fm, percentage = 10)$mop_distance)
+  got <- as.vector(t(mop(fg, fm, percentage = 10)$mop_distance))
 
   finite <- is.finite(ref_d) & is.finite(got)
   skip_if(sum(finite) < 100, "too few comparable cells")
-  expect_equal(got[finite], ref_d[finite], tolerance = 1e-4)
+  expect_equal(got[finite], ref_d[finite], tolerance = 1e-6)
 })
