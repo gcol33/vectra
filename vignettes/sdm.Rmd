@@ -253,14 +253,16 @@ unlink(pv)
 The third site, far from any training condition, is scored with a much larger
 distance than the two that sit within the cloud.
 
-When the projection is itself a stack of environmental rasters, `mop()` folds
-the same distance over the projection grid and adds the strict-extrapolation
-layers of `mop::mop(type = "detailed")`. Per cell it reports how many predictors
-fall below their calibration minimum (`towards_low`) or above their maximum
-(`towards_high`), their sum (`mop_simple`), and a binary novelty flag
-(`mop_basic`), alongside the continuous `mop_distance` surface. The projection
-raster streams one tile-row strip at a time and the result is written aligned to
-its grid, so the whole surface is computed out-of-core.
+When the projection is itself a stack of environmental rasters,
+`rast_feature_distance()` folds the same distance over the projection grid,
+reading the reference raster once and walking the projection one tile-row strip
+at a time, so the surface is written aligned to the grid and computed
+out-of-core. The strict-extrapolation half of a novelty diagnostic such as MOP,
+the count of predictors whose value falls outside the range each takes over the
+calibration cloud, is already native: it is a per-band `min`/`max` reduce over
+the calibration raster followed by a `rast_calc()` expression on the projection
+raster, so the distance surface and the extrapolation count compose without a
+dedicated verb.
 
 ## Choosing a path
 
@@ -273,5 +275,6 @@ Extract with `tiff_extract_points()` in every case. After that:
 * If the table itself exceeds memory and you need a full GLM, feed it to
   `biglm::bigglm()` through `chunk_feeder()`.
 * To judge whether a projection is within the calibrated conditions, score it
-  with `feature_knn()`, or `mop()` for a full raster novelty surface.
+  with `feature_knn()`, or `rast_feature_distance()` for a streaming raster
+  novelty surface.
 ```

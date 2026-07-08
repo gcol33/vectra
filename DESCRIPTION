@@ -39,7 +39,6 @@ Suggests:
     igraph,
     IRanges,
     knitr,
-    mop,
     openxlsx2,
     rmarkdown,
     S4Vectors,

@@ -1,6 +1,6 @@
 # vectra 0.11.0
 
-## Feature-space kNN and the MOP transferability surface
+## Feature-space nearest-neighbour tools
 
 * New `feature_knn()`: nearest-neighbour search in *predictor* space rather than
   on coordinates. For each streamed query row it returns the mean distance to
@@ -8,16 +8,15 @@
   a Euclidean or Mahalanobis metric. The query side streams one batch at a time
   so the projection side can exceed memory; the reference cloud is materialized
   once, whitened for the chosen metric, and scanned in parallel (a bounded
-  max-heap keeps peak memory at O(k) per thread). This is the continuous half of
-  the mobility-oriented parity (MOP) diagnostic (Owens et al. 2013), the
+  max-heap keeps peak memory at O(k) per thread). This is the
   environmental-novelty counterpart to the coordinate-based `spatial_knn()`.
-* New `mop()`: the MOP transferability surface between two multi-band
-  environmental rasters, aligned to the projection grid. It returns both halves
-  of `mop::mop(type = "detailed")` -- the continuous `mop_distance` surface via
-  `feature_knn()`, and the strict-extrapolation layers `towards_low`,
-  `towards_high`, `mop_simple`, and `mop_basic`. The calibration raster is read
-  once and indexed; the projection raster streams one tile-row strip at a time,
-  so the surface is computed out-of-core.
+* New `rast_feature_distance()`: the same distance computed out-of-core over a
+  projection raster. The reference raster is read once and indexed; the
+  projection raster streams one tile-row strip at a time and the distance
+  surface is written aligned to its grid. This is the streaming distance surface
+  behind an environmental-novelty / transferability diagnostic such as MOP
+  (Owens et al. 2013); the strict non-analogous-conditions layers compose from a
+  per-band range reduce plus `rast_calc()`.
 * The Species Distribution Models vignette gains a transferability / novelty
   section covering both.
 

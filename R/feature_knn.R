@@ -129,8 +129,8 @@
 #' @return A `vectra_node` of `x`'s columns plus `dist_col`, backed by temporary
 #'   `.vtr` spills removed when the node is garbage-collected.
 #'
-#' @seealso [mop()] for the raster transferability surface built on this
-#'   primitive, [spatial_knn()] for geographic nearest neighbours.
+#' @seealso [rast_feature_distance()] for the same distance computed out-of-core
+#'   over a projection raster, [spatial_knn()] for geographic nearest neighbours.
 #'
 #' @references Owens, H.L. et al. (2013) Constraints on interpretation of
 #'   ecological niche models by limited environmental ranges on calibration
@@ -185,11 +185,11 @@ feature_knn <- function(x, y, vars = NULL, k = NULL, percentage = NULL,
   acc$finish(crs = .resolve_crs(x, NA), empty_geom = dist_col)
 }
 
-# -- mop() raster wrapper -----------------------------------------------------
+# -- rast_feature_distance() raster wrapper -----------------------------------
 
 # Resolve `vars` (band names, band indices, or NULL for all) to integer band
-# indices shared by g and m (m's bands are assumed to align to g's by position).
-.mop_bands <- function(vars, gr, nb) {
+# indices into a raster.
+.feature_bands <- function(vars, r, nb) {
   if (is.null(vars)) return(seq_len(nb))
   if (is.numeric(vars)) {
     b <- as.integer(vars)
@@ -198,156 +198,144 @@ feature_knn <- function(x, y, vars = NULL, k = NULL, percentage = NULL,
     return(b)
   }
   if (is.character(vars)) {
-    gn <- gr$band_names
-    if (is.null(gn))
-      stop("`g` has no band names; pass `vars` as band indices")
-    b <- match(vars, gn)
+    bn <- r$band_names
+    if (is.null(bn))
+      stop("raster has no band names; pass `vars` as band indices")
+    b <- match(vars, bn)
     if (anyNA(b))
-      stop(sprintf("band name(s) not found in `g`: %s",
+      stop(sprintf("band name(s) not found: %s",
                    paste(vars[is.na(b)], collapse = ", ")))
     return(as.integer(b))
   }
   stop("`vars` must be band indices, band names, or NULL (all bands)")
 }
 
-# Stream the calibration raster m tile-strip by tile-strip: accumulate the
-# complete-case reference cloud and the per-band calibration range (min/max over
-# all non-NA cells) that the NAC layers test against.
-.mop_reference <- function(mr, bands) {
-  W <- as.integer(mr$width); H <- as.integer(mr$height)
-  TS <- max(1L, as.integer(mr$tile_size))
+# Read a reference raster tile-strip by tile-strip into the complete-case
+# reference cloud (one row per non-NA cell, one column per band).
+.feature_raster_cloud <- function(r, bands) {
+  W <- as.integer(r$width); H <- as.integer(r$height)
+  TS <- max(1L, as.integer(r$tile_size))
   nv <- length(bands)
-  vmin <- rep(Inf, nv); vmax <- rep(-Inf, nv)
   chunks <- list()
   tiles_y <- (H + TS - 1L) %/% TS
   for (ty in seq_len(tiles_y) - 1L) {
     r0 <- ty * TS + 1L; r1 <- min(r0 + TS - 1L, H); out_h <- r1 - r0 + 1L
     sm <- matrix(NA_real_, out_h * W, nv)
     for (b in seq_len(nv))
-      sm[, b] <- as.vector(vec_read_window(mr, band = bands[b],
+      sm[, b] <- as.vector(vec_read_window(r, band = bands[b],
                                            cols = c(1L, W), rows = c(r0, r1)))
-    for (b in seq_len(nv)) {
-      col <- sm[, b]; col <- col[!is.na(col)]
-      if (length(col)) {
-        vmin[b] <- min(vmin[b], min(col))
-        vmax[b] <- max(vmax[b], max(col))
-      }
-    }
     ok <- stats::complete.cases(sm)
     if (any(ok)) chunks[[length(chunks) + 1L]] <- sm[ok, , drop = FALSE]
   }
   if (!length(chunks))
-    stop("calibration raster `m` has no complete cells")
-  list(mat = do.call(rbind, chunks), vmin = vmin, vmax = vmax)
+    stop("`reference` raster has no complete cells")
+  do.call(rbind, chunks)
 }
 
-#' MOP transferability / novelty surface between two environmental rasters
+#' Predictor-space nearest-neighbour distance surface over a raster
 #'
-#' Computes the mobility-oriented parity (MOP) diagnostic of Owens et al. (2013)
-#' between a projection raster `g` and a calibration raster `m`, both multi-band
-#' environmental layers with one band per predictor. It returns, aligned to the
-#' projection grid, both halves of `mop::mop(type = "detailed")`:
+#' Computes, aligned to the grid of a projection raster `x`, a surface of the
+#' mean distance in predictor space from each cell to the nearest cells of a
+#' reference raster `reference`. Both are multi-band environmental rasters with
+#' one band per predictor. This is the raster, out-of-core counterpart of
+#' [feature_knn()]: the reference raster is read once into memory and indexed,
+#' while `x` is walked one tile-row strip at a time and streamed to the sink, so
+#' the projection side is larger-than-RAM. `x` and `reference` need not share a
+#' grid -- the output follows `x`.
 #'
-#' * `mop_distance` -- the continuous MOP surface: per `g` cell, the mean
-#'   distance in predictor space to the nearest `percentage`% (or nearest `k`) of
-#'   the `m` cells, via [feature_knn()].
-#' * The non-analogous-conditions (NAC) / strict-extrapolation layers, per cell:
-#'   `towards_low` (predictors below their calibration minimum), `towards_high`
-#'   (above their calibration maximum), `mop_simple` (their sum, the count of
-#'   out-of-range predictors), and `mop_basic` (1 where any predictor is out of
-#'   range, 0 otherwise).
+#' The distance is the mean distance to the nearest `k`, or nearest
+#' `percentage`% of the reference cells (`ceil(percentage/100 * N)`), under a
+#' Euclidean or Mahalanobis metric. Supply exactly one of `k` or `percentage`.
 #'
-#' The calibration cloud `m` is read once into memory and indexed; the projection
-#' raster `g` is walked one tile-row strip at a time and streamed to the sink, so
-#' the projection side is out-of-core. `g` and `m` need not share a grid -- the
-#' output follows `g`. When both `k` and `percentage` are given, `k` wins.
+#' This is the streaming distance surface behind an environmental-novelty or
+#' transferability diagnostic such as MOP (Owens et al. 2013). The strict
+#' non-analogous-conditions layers (per-predictor out-of-range counts) are a
+#' separate, already-native computation -- a per-band range reduce plus
+#' [rast_calc()] -- and are shown alongside this surface in the
+#' `vignette("sdm")`; this function is the continuous-distance piece only.
 #'
-#' `g` and `m` must be `.vec` rasters (or paths to them); bring GeoTIFFs onto the
-#' `.vec` grid with [warp()] first.
+#' `x` and `reference` must be `.vec` rasters (or paths to them); bring GeoTIFFs
+#' onto the `.vec` grid with [warp()] first.
 #'
-#' @param g,m `vectra_raster` handles or paths to `.vec` rasters: the projection
-#'   region and the calibration region, with matching bands (predictors) in the
-#'   same order.
+#' @param x,reference `vectra_raster` handles or paths to `.vec` rasters: the
+#'   raster to score and the reference raster, with matching bands (predictors)
+#'   in the same order.
 #' @param vars Predictors to use: band names, band indices, or `NULL` (default,
-#'   all bands). Names resolve against `g`'s band names.
-#' @param percentage Percent of the calibration cloud averaged over for the
-#'   distance surface. Default `10`.
-#' @param k Absolute neighbour count for the distance surface. When given it
-#'   overrides `percentage`.
+#'   all bands). Names resolve against `x`'s band names.
+#' @param k Number of nearest reference cells to average over. Supply exactly
+#'   one of `k` or `percentage`.
+#' @param percentage Percent of the reference cells to average over (the nearest
+#'   `ceil(percentage/100 * N)`). Supply exactly one of `k` or `percentage`.
 #' @param metric `"euclidean"` (default) or `"mahalanobis"` (whitened by the
-#'   calibration covariance).
-#' @param path Optional output `.vec` path. When given the five-band result is
-#'   streamed to disk and the opened [vec_open_raster()] handle is returned
-#'   invisibly; when `NULL` a named list of five in-memory matrices is returned.
+#'   reference covariance).
+#' @param path Optional output `.vec` path. When given the surface is streamed to
+#'   disk and the opened [vec_open_raster()] handle is returned invisibly; when
+#'   `NULL` the surface is returned as an in-memory matrix.
 #' @param dtype Storage dtype for `.vec` output. Default `"f32"`.
 #' @param nthreads Threads for the distance scan. `NULL` (default) uses all
 #'   available (capped to two under `R CMD check`).
 #' @param compression Compression effort for `.vec` output. Default `"fast"`.
 #'
-#' @return With `path = NULL`, a named list of five numeric matrices
-#'   (`mop_distance`, `mop_basic`, `mop_simple`, `towards_low`, `towards_high`),
-#'   each carrying `gt`, `extent`, and `crs` attributes and aligned to `g`. With
-#'   `path` given, the written five-band `vectra_raster` handle (invisibly).
+#' @return With `path = NULL`, a numeric matrix on `x`'s grid (row 1 northmost)
+#'   carrying `gt`, `extent`, and `crs` attributes. With `path` given, the
+#'   written single-band `vectra_raster` handle (invisibly). Cells with any `NA`
+#'   predictor come back `NA`.
 #'
-#' @seealso [feature_knn()] for the underlying predictor-space kNN, [warp()] to
-#'   bring rasters onto a shared grid, [rast_calc()] for cellwise raster algebra.
+#' @seealso [feature_knn()] for the table-level primitive, [warp()] to bring
+#'   rasters onto a shared grid, [rast_calc()] for cellwise raster algebra.
 #'
 #' @references Owens, H.L. et al. (2013) Constraints on interpretation of
 #'   ecological niche models by limited environmental ranges on calibration
 #'   areas. \emph{Ecological Modelling} 263:10-18.
 #'
 #' @examples
-#' # Two-band calibration (m) and projection (g) rasters on a shared grid.
+#' # Two-band reference and projection rasters.
 #' set.seed(1)
-#' m1 <- matrix(rnorm(400, 10, 2), 20, 20)
-#' m2 <- matrix(rnorm(400, 800, 40), 20, 20)
-#' g1 <- m1 + 3               # projection shifted warmer/drier -> more novel
-#' g2 <- m2 - 60
-#' fm <- tempfile(fileext = ".vec"); fg <- tempfile(fileext = ".vec")
-#' vec_write_raster(array(c(m1, m2), c(20, 20, 2)), fm, dtype = "f64",
+#' r1 <- matrix(rnorm(400, 10, 2), 20, 20)
+#' r2 <- matrix(rnorm(400, 800, 40), 20, 20)
+#' x1 <- r1 + 3               # projection shifted warmer/drier -> more novel
+#' x2 <- r2 - 60
+#' fr <- tempfile(fileext = ".vec"); fx <- tempfile(fileext = ".vec")
+#' vec_write_raster(array(c(r1, r2), c(20, 20, 2)), fr, dtype = "f64",
 #'                  extent = c(0, 0, 20, 20), band_names = c("bio1", "bio12"))
-#' vec_write_raster(array(c(g1, g2), c(20, 20, 2)), fg, dtype = "f64",
+#' vec_write_raster(array(c(x1, x2), c(20, 20, 2)), fx, dtype = "f64",
 #'                  extent = c(0, 0, 20, 20), band_names = c("bio1", "bio12"))
 #'
-#' out <- mop(fg, fm, percentage = 10)
-#' names(out)
-#' round(mean(out$mop_distance), 2)
-#' unlink(c(fm, fg))
+#' d <- rast_feature_distance(fx, fr, percentage = 10)
+#' round(mean(d), 2)
+#' unlink(c(fr, fx))
 #'
 #' @export
-mop <- function(g, m, vars = NULL, percentage = 10, k = NULL,
-                metric = c("euclidean", "mahalanobis"),
-                path = NULL, dtype = "f32", nthreads = NULL,
-                compression = c("fast", "balanced", "max")) {
+rast_feature_distance <- function(x, reference, vars = NULL, k = NULL,
+                                  percentage = NULL,
+                                  metric = c("euclidean", "mahalanobis"),
+                                  path = NULL, dtype = "f32", nthreads = NULL,
+                                  compression = c("fast", "balanced", "max")) {
   metric <- match.arg(metric)
   comp_code <- switch(match.arg(compression), fast = 0L, balanced = 1L, max = 2L)
 
-  gh <- .zonal_open(g, "g"); mh <- .zonal_open(m, "m")
+  xh <- .zonal_open(x, "x"); rh <- .zonal_open(reference, "reference")
   on.exit({
-    if (gh$close) try(vec_close_raster(gh$r), silent = TRUE)
-    if (mh$close) try(vec_close_raster(mh$r), silent = TRUE)
+    if (xh$close) try(vec_close_raster(xh$r), silent = TRUE)
+    if (rh$close) try(vec_close_raster(rh$r), silent = TRUE)
   }, add = TRUE)
-  gr <- gh$r; mr <- mh$r
+  xr <- xh$r; rr <- rh$r
 
-  nb <- as.integer(gr$n_bands)
-  if (as.integer(mr$n_bands) != nb)
-    stop("`g` and `m` must have the same number of bands (predictors)")
-  bands <- .mop_bands(vars, gr, nb)
+  nb <- as.integer(xr$n_bands)
+  if (as.integer(rr$n_bands) != nb)
+    stop("`x` and `reference` must have the same number of bands (predictors)")
+  bands <- .feature_bands(vars, xr, nb)
   nv <- length(bands)
 
-  ref    <- .mop_reference(mr, bands)
-  refmat <- ref$mat
-  if (!is.null(k)) percentage <- NULL          # k overrides percentage
+  refmat <- .feature_raster_cloud(rr, bands)
   keff   <- .feature_keff(k, percentage, nrow(refmat))
   idx    <- .Call(C_feature_knn_build, refmat, .feature_transform(refmat, metric))
   nt     <- .feature_nthreads(nthreads)
 
-  W <- as.integer(gr$width); H <- as.integer(gr$height); gt <- as.numeric(gr$gt)
-  TS <- max(1L, as.integer(gr$tile_size))
-  epsg <- if (!is.null(gr$epsg)) as.integer(gr$epsg) else 0L
-  bnames <- c("mop_distance", "mop_basic", "mop_simple",
-              "towards_low", "towards_high")
-  sink <- .raster_sink(W, H, 5L, gt, epsg, TS, path, dtype, bnames, comp_code)
+  W <- as.integer(xr$width); H <- as.integer(xr$height); gt <- as.numeric(xr$gt)
+  TS <- max(1L, as.integer(xr$tile_size))
+  epsg <- if (!is.null(xr$epsg)) as.integer(xr$epsg) else 0L
+  sink <- .raster_sink(W, H, 1L, gt, epsg, TS, path, dtype, "distance", comp_code)
 
   tiles_y <- (H + TS - 1L) %/% TS
   for (ty in seq_len(tiles_y) - 1L) {
@@ -355,7 +343,7 @@ mop <- function(g, m, vars = NULL, percentage = 10, k = NULL,
     ncell <- out_h * W
     qm <- matrix(NA_real_, ncell, nv)
     for (b in seq_len(nv))
-      qm[, b] <- as.vector(vec_read_window(gr, band = bands[b],
+      qm[, b] <- as.vector(vec_read_window(xr, band = bands[b],
                                            cols = c(1L, W), rows = c(r0, r1)))
 
     dist <- rep(NA_real_, ncell)
@@ -364,22 +352,10 @@ mop <- function(g, m, vars = NULL, percentage = 10, k = NULL,
       dist[ok] <- .Call(C_feature_knn_query, idx, qm[ok, , drop = FALSE],
                         keff, nt)
 
-    below  <- qm < matrix(ref$vmin, ncell, nv, byrow = TRUE)
-    above  <- qm > matrix(ref$vmax, ncell, nv, byrow = TRUE)
-    tlow   <- rowSums(below)
-    thigh  <- rowSums(above)
-    simple <- tlow + thigh
-    basic  <- as.numeric(simple > 0)
-
-    os <- cbind(matrix(dist,   out_h, W),
-                matrix(basic,  out_h, W),
-                matrix(simple, out_h, W),
-                matrix(tlow,   out_h, W),
-                matrix(thigh,  out_h, W))
-    sink$write(ty, r0, r1, os)
+    sink$write(ty, r0, r1, matrix(dist, out_h, W))
   }
 
   out <- sink$finish()
   if (!is.null(path)) return(invisible(out))
-  stats::setNames(out, bnames)
+  out[[1L]]
 }

@@ -88,6 +88,6 @@ ecological niche models by limited environmental ranges on calibration
 areas. \emph{Ecological Modelling} 263:10-18.
 }
 \seealso{
-\code{\link[=mop]{mop()}} for the raster transferability surface built on this
-primitive, \code{\link[=spatial_knn]{spatial_knn()}} for geographic nearest neighbours.
+\code{\link[=rast_feature_distance]{rast_feature_distance()}} for the same distance computed out-of-core
+over a projection raster, \code{\link[=spatial_knn]{spatial_knn()}} for geographic nearest neighbours.
 }
