@@ -35,12 +35,15 @@ fraction of the file. And it consumes a query one batch at a time, so a model
 matrix that exceeds memory can still be fitted: `chunk_feeder()` streams the
 data through `biglm::bigglm()` one chunk per iteration.
 
-Two operations sit outside vectra's scope, and the rest of this article assumes
-they are handled before extraction:
+The rest of this article assumes two things are handled before extraction:
 
-* **Vector geometry.** vectra has no polygons, lines, or spatial joins. Buffer
-  a study region, intersect with a range map, or rasterize a shapefile using
-  `sf` or `terra` first.
+* **Vector geometry.** vectra streams the vector verbs (`spatial_join()`,
+  `spatial_filter()`, `spatial_clip()`, `spatial_overlay()`, `rasterize()`, ...)
+  around `sf`, one batch at a time -- see
+  [Streaming spatial operations](streaming-spatial.html). It carries no geometry
+  type of its own, so the topology comes from `sf` and GEOS. This article stays
+  on the raster-sampling path and assumes any range-map intersection or
+  study-region buffer is prepared before extraction.
 * **Reprojection.** vectra reads the coordinate reference system of a `GeoTIFF`
   with `tiff_crs()` but does not transform coordinates. Occurrence points must
   already be in the raster's CRS when they reach `tiff_extract_points()`.
