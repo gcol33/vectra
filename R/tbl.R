@@ -23,16 +23,25 @@ tbl <- function(path) {
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 
-#' Create a lazy table reference from a CSV file
+#' Create a lazy table reference from a delimited text file
 #'
-#' Opens a CSV file for lazy, streaming query execution. Column types are
-#' inferred from the first 1000 rows. No data is read until [collect()] is
-#' called. Gzip-compressed files (`.csv.gz`) are supported transparently.
+#' Opens a delimited text file (CSV, TSV, or any single-character separator)
+#' for lazy, streaming query execution. Column types are inferred from the
+#' first 1000 rows. No data is read until [collect()] is called.
+#' Gzip-compressed files (`.csv.gz`, `.tsv.gz`) are supported transparently.
 #'
-#' @param path Path to a `.csv` or `.csv.gz` file.
+#' The field separator is set by `delim`, so tab-separated files (GBIF
+#' occurrence exports, TSV dumps) and semicolon-separated files (many European
+#' exports) are read natively without a transcode step. Quoting follows RFC
+#' 4180 for every delimiter: a field wrapped in double quotes may contain the
+#' delimiter, newlines, and doubled quotes.
+#'
+#' @param path Path to a delimited text file, optionally gzip-compressed.
 #' @param batch_size Number of rows per batch (default 65536).
+#' @param delim Single-character field separator (default `","`). Use `"\t"`
+#'   for tab-separated and `";"` for semicolon-separated files.
 #'
-#' @return A `vectra_node` object representing a lazy scan of the CSV file.
+#' @return A `vectra_node` object representing a lazy scan of the file.
 #'
 #' @examples
 #' f <- tempfile(fileext = ".csv")
@@ -41,12 +50,22 @@ tbl <- function(path) {
 #' print(node)
 #' unlink(f)
 #'
+#' # Tab-separated (e.g. a GBIF occurrence export)
+#' g <- tempfile(fileext = ".tsv")
+#' write.table(mtcars, g, sep = "\t", row.names = FALSE, quote = FALSE)
+#' tbl_csv(g, delim = "\t") |> collect() |> head()
+#' unlink(g)
+#'
 #' @export
-tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE) {
+tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",") {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
+  if (!is.character(delim) || length(delim) != 1 || is.na(delim))
+    stop("delim must be a single character string")
+  if (nchar(delim, type = "bytes") != 1)
+    stop("delim must be a single-byte character (e.g. \",\", \"\\t\", \";\")")
   path <- normalizePath(path, mustWork = TRUE)
-  xptr <- .Call(C_csv_scan_node, path, as.double(batch_size))
+  xptr <- .Call(C_csv_scan_node, path, as.double(batch_size), delim)
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 

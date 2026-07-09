@@ -165,6 +165,89 @@ test_that("tbl_csv reads gzip-compressed CSV via the miniz path", {
   expect_equal(result$c, df$c)
 })
 
+test_that("tbl_csv reads tab-separated files with delim = '\\t'", {
+  f <- tempfile(fileext = ".tsv")
+  on.exit(unlink(f))
+  df <- data.frame(x = 1:3, y = c("a", "b", "c"), z = c(1.5, 2.5, 3.5),
+                   stringsAsFactors = FALSE)
+  write.table(df, f, sep = "\t", row.names = FALSE, quote = FALSE)
+
+  result <- tbl_csv(f, delim = "\t") |> collect()
+  expect_equal(names(result), c("x", "y", "z"))
+  expect_equal(result$x, c(1, 2, 3))
+  expect_equal(result$y, c("a", "b", "c"))
+  expect_equal(result$z, c(1.5, 2.5, 3.5))
+})
+
+test_that("tbl_csv reads semicolon-separated files with delim = ';'", {
+  f <- tempfile(fileext = ".csv")
+  on.exit(unlink(f))
+  writeLines("id;name;score\n1;Alice;90\n2;Bob;85\n3;Charlie;95", f)
+
+  result <- tbl_csv(f, delim = ";") |> collect()
+  expect_equal(names(result), c("id", "name", "score"))
+  expect_equal(result$id, c(1, 2, 3))
+  expect_equal(result$name, c("Alice", "Bob", "Charlie"))
+  expect_equal(result$score, c(90, 85, 95))
+})
+
+test_that("tbl_csv honours quoting when the delimiter is a tab", {
+  # A quoted field containing the tab delimiter and a comma must stay one field.
+  f <- tempfile(fileext = ".tsv")
+  on.exit(unlink(f))
+  writeLines(c("name\tcity",
+               "\"Smith\tJohn\"\t\"New York, NY\"",
+               "Doe\tBoston"), f)
+
+  result <- tbl_csv(f, delim = "\t") |> collect()
+  expect_equal(result$name, c("Smith\tJohn", "Doe"))
+  expect_equal(result$city, c("New York, NY", "Boston"))
+})
+
+test_that("tbl_csv keeps a comma inside a semicolon-delimited field", {
+  f <- tempfile(fileext = ".csv")
+  on.exit(unlink(f))
+  writeLines(c("label;value", "a,b;10", "c;20"), f)
+
+  result <- tbl_csv(f, delim = ";") |> collect()
+  expect_equal(result$label, c("a,b", "c"))
+  expect_equal(result$value, c(10, 20))
+})
+
+test_that("tbl_csv default delim stays comma (a tab file parses as one column)", {
+  f <- tempfile(fileext = ".tsv")
+  on.exit(unlink(f))
+  writeLines(c("x\ty", "1\t2"), f)
+
+  result <- tbl_csv(f) |> collect()
+  expect_equal(ncol(result), 1)
+})
+
+test_that("tbl_csv rejects a multi-character delim", {
+  f <- tempfile(fileext = ".csv")
+  on.exit(unlink(f))
+  writeLines("x,y\n1,2", f)
+
+  expect_error(tbl_csv(f, delim = ", "), "single-byte")
+  expect_error(tbl_csv(f, delim = ""), "single-byte")
+  expect_error(tbl_csv(f, delim = NA_character_), "single character")
+})
+
+test_that("tbl_csv delim works through a filter pipeline on a tab file", {
+  f <- tempfile(fileext = ".tsv")
+  on.exit(unlink(f))
+  write.table(mtcars, f, sep = "\t", row.names = FALSE, quote = FALSE)
+
+  result <- tbl_csv(f, delim = "\t") |>
+    filter(cyl == 6) |>
+    select(mpg, cyl) |>
+    collect()
+
+  expected <- mtcars[mtcars$cyl == 6, c("mpg", "cyl")]
+  expect_equal(nrow(result), nrow(expected))
+  expect_equal(sort(result$mpg), sort(expected$mpg))
+})
+
 test_that("tbl_csv on a gz CSV exercises the type-inference rewind path", {
   # csv_scan infers types from the first 1000 rows, then seeks back to the
   # data start. For the gz path that means seeking inside the in-memory

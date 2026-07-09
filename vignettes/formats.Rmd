@@ -124,6 +124,24 @@ The `batch_size` parameter controls how many rows the CSV scanner reads per
 internal batch. The default (65536) works well for most files. Smaller values
 reduce peak memory at the cost of more read calls.
 
+The field separator is set by `delim`, so tab- and semicolon-separated files
+read natively with no transcode step. GBIF occurrence exports are tab-delimited,
+and many European CSV exports use a semicolon; both stream directly.
+
+```{r csv-delim}
+tsv <- tempfile(fileext = ".tsv")
+write.table(mtcars, tsv, sep = "\t", row.names = FALSE, quote = FALSE)
+
+tbl_csv(tsv, delim = "\t") |>
+  filter(cyl == 6) |>
+  select(mpg, cyl, hp) |>
+  collect()
+```
+
+Quoting follows RFC 4180 for any delimiter: a field wrapped in double quotes may
+contain the delimiter, newlines, and doubled quotes, so a tab inside a quoted
+field in a `delim = "\t"` file stays part of that field.
+
 `write_csv()` streams from any node. It writes a standard comma-separated file
 with a header row. There is no gzip output option; if we need compressed output,
 we convert to `.vtr` instead, which compresses automatically.

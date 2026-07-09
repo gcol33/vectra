@@ -2,22 +2,33 @@
 % Please edit documentation in R/tbl.R
 \name{tbl_csv}
 \alias{tbl_csv}
-\title{Create a lazy table reference from a CSV file}
+\title{Create a lazy table reference from a delimited text file}
 \usage{
-tbl_csv(path, batch_size = .DEFAULT_BATCH_SIZE)
+tbl_csv(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",")
 }
 \arguments{
-\item{path}{Path to a \code{.csv} or \code{.csv.gz} file.}
+\item{path}{Path to a delimited text file, optionally gzip-compressed.}
 
 \item{batch_size}{Number of rows per batch (default 65536).}
+
+\item{delim}{Single-character field separator (default \code{","}). Use \code{"\\t"}
+for tab-separated and \code{";"} for semicolon-separated files.}
 }
 \value{
-A \code{vectra_node} object representing a lazy scan of the CSV file.
+A \code{vectra_node} object representing a lazy scan of the file.
 }
 \description{
-Opens a CSV file for lazy, streaming query execution. Column types are
-inferred from the first 1000 rows. No data is read until \code{\link[=collect]{collect()}} is
-called. Gzip-compressed files (\code{.csv.gz}) are supported transparently.
+Opens a delimited text file (CSV, TSV, or any single-character separator)
+for lazy, streaming query execution. Column types are inferred from the
+first 1000 rows. No data is read until \code{\link[=collect]{collect()}} is called.
+Gzip-compressed files (\code{.csv.gz}, \code{.tsv.gz}) are supported transparently.
+}
+\details{
+The field separator is set by \code{delim}, so tab-separated files (GBIF
+occurrence exports, TSV dumps) and semicolon-separated files (many European
+exports) are read natively without a transcode step. Quoting follows RFC
+4180 for every delimiter: a field wrapped in double quotes may contain the
+delimiter, newlines, and doubled quotes.
 }
 \examples{
 f <- tempfile(fileext = ".csv")
@@ -25,5 +36,11 @@ write.csv(mtcars, f, row.names = FALSE)
 node <- tbl_csv(f)
 print(node)
 unlink(f)
+
+# Tab-separated (e.g. a GBIF occurrence export)
+g <- tempfile(fileext = ".tsv")
+write.table(mtcars, g, sep = "\t", row.names = FALSE, quote = FALSE)
+tbl_csv(g, delim = "\t") |> collect() |> head()
+unlink(g)
 
 }

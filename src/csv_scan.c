@@ -141,9 +141,10 @@ static int csv_read_line(ByteReader *rd, GBuf *line) {
 
 /* Split a raw CSV line into fields. Handles quoted fields.
    The line buffer has already resolved embedded newlines in csv_read_line,
-   but we still need to handle quoting for commas and quotes within fields. */
+   but we still need to handle quoting for the delimiter and quotes within
+   fields. delim is the field separator byte (',' for standard CSV). */
 static void csv_split_fields(const char *raw, int64_t raw_len,
-                              FieldVec *fields) {
+                              FieldVec *fields, char delim) {
     fv_free_items(fields);
     GBuf field;
     gbuf_init(&field);
@@ -168,18 +169,18 @@ static void csv_split_fields(const char *raw, int64_t raw_len,
                     i++;
                 }
             }
-            /* Skip to comma or end */
-            while (i < raw_len && raw[i] != ',') i++;
+            /* Skip to delimiter or end */
+            while (i < raw_len && raw[i] != delim) i++;
         } else {
             /* Unquoted field */
-            while (i < raw_len && raw[i] != ',') {
+            while (i < raw_len && raw[i] != delim) {
                 gbuf_push(&field, raw[i]);
                 i++;
             }
         }
         const char *s = gbuf_str(&field);
         fv_push(fields, s, field.len);
-        if (i < raw_len && raw[i] == ',') i++; /* skip comma */
+        if (i < raw_len && raw[i] == delim) i++; /* skip delimiter */
         else break;
     }
     gbuf_free(&field);
@@ -227,7 +228,8 @@ static int try_parse_bool(const char *s) {
 
 /* Infer types by reading up to infer_n rows from current position.
    Seeks back to original position when done. */
-static VecType *csv_infer_types(ByteReader *rd, int n_cols, int64_t infer_n) {
+static VecType *csv_infer_types(ByteReader *rd, int n_cols, int64_t infer_n,
+                                char delim) {
     int64_t start_pos = rd->tell_fn(rd);
 
     /* Start everything as unknown (use -1 as sentinel) */
@@ -241,7 +243,7 @@ static VecType *csv_infer_types(ByteReader *rd, int n_cols, int64_t infer_n) {
 
     int64_t rows_read = 0;
     while (rows_read < infer_n && csv_read_line(rd, &line) == 0) {
-        csv_split_fields(line.data, line.len, &fields);
+        csv_split_fields(line.data, line.len, &fields, delim);
         int nc = fields.n < n_cols ? fields.n : n_cols;
         for (int c = 0; c < nc; c++) {
             const char *val = fields.items[c];
@@ -370,7 +372,7 @@ static VecBatch *csv_read_batch(CsvScanNode *sn) {
         /* Skip completely blank lines */
         if (line.len == 0) continue;
 
-        csv_split_fields(line.data, line.len, &fields);
+        csv_split_fields(line.data, line.len, &fields, sn->delim);
 
         if (n_rows >= rows_cap) {
             rows_cap *= 2;
@@ -496,7 +498,9 @@ static void csv_scan_free(VecNode *self) {
 
 #define CSV_INFER_ROWS 1000
 
-CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
+CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
+                                  char delim) {
+    if (delim == '\0') delim = ',';
     ByteReader *rd = byte_reader_open(path);
     if (!rd) vectra_error("cannot open CSV file: %s", path);
 
@@ -511,7 +515,7 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
 
     FieldVec header_fields;
     fv_init(&header_fields);
-    csv_split_fields(line.data, line.len, &header_fields);
+    csv_split_fields(line.data, line.len, &header_fields, delim);
     gbuf_free(&line);
 
     int n_cols = header_fields.n;
@@ -525,7 +529,7 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
     int64_t data_start = rd->tell_fn(rd);
 
     /* Infer types from first N rows */
-    VecType *col_types = csv_infer_types(rd, n_cols, CSV_INFER_ROWS);
+    VecType *col_types = csv_infer_types(rd, n_cols, CSV_INFER_ROWS, delim);
 
     /* Seek back to data start for reading */
     rd->seek_fn(rd, data_start);
@@ -547,6 +551,7 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size) {
     sn->n_file_cols = n_cols;
     sn->col_types = col_types;
     sn->batch_size = batch_size > 0 ? batch_size : 65536;
+    sn->delim = delim;
     sn->exhausted = 0;
 
     sn->base.output_schema = schema;

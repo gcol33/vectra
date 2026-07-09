@@ -1,5 +1,14 @@
 # vectra 0.11.0
 
+## Delimited-file reader gains a `delim` argument
+
+* `tbl_csv()` takes a `delim` argument (default `","`), so tab- and
+  semicolon-separated files read natively without a transcode step. `delim =
+  "\t"` streams a GBIF occurrence export (SIMPLE_CSV) straight through; `delim =
+  ";"` reads the semicolon exports common in European data. Quoting stays RFC
+  4180 for any delimiter, so a quoted field may still contain the delimiter,
+  newlines, and doubled quotes.
+
 ## Feature-space nearest-neighbour tools
 
 * New `feature_knn()`: nearest-neighbour search in *predictor* space rather than
