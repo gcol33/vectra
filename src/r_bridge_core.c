@@ -50,7 +50,7 @@ SEXP wrap_node(VecNode *node) {
 
 VecNode *unwrap_node(SEXP xptr) {
     VecNode *node = (VecNode *)R_ExternalPtrAddr(xptr);
-    if (!node) vectra_error("vectra node has been freed or collected");
+    if (!node) vectra_error("this vectra query has already been consumed; a query runs once (collect, write_*, or another verb consumes it) -- rebuild the pipeline to run it again");
     return node;
 }
 

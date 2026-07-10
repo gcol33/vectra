@@ -99,6 +99,15 @@ test_that("offload(by=) on a discrete key is a true partition (list-like)", {
   expect_equal(sort(rebuilt$x), sort(df$x))        # union reproduces input
   for (i in seq_along(p))
     expect_equal(length(unique(collect(p[[i]])$g)), 1L)
+
+  # A shard rebuilds a fresh node on each access, so a partition is
+  # re-collectable: iterating it a second time must reproduce the first pass,
+  # not error on an exhausted plan.
+  again <- do.call(rbind, lapply(p, collect))
+  expect_equal(sort(again$x), sort(df$x))
+  s <- p[["a"]]
+  expect_s3_class(s, "vectra_node")
+  expect_equal(collect(p[["a"]])$g, collect(p[["a"]])$g)  # re-index, re-collect
 })
 
 test_that("offload(by=) auto-range-partitions a continuous key", {

@@ -112,13 +112,18 @@ void vtr_append_node(VecNode *node, const char *path) {
 
 static VecNode *unwrap_node_for_append(SEXP xptr) {
     VecNode *node = (VecNode *)R_ExternalPtrAddr(xptr);
-    if (!node) vectra_error("vectra node has been freed or collected");
+    if (!node) vectra_error("this vectra query has already been consumed; a query runs once (collect, write_*, or another verb consumes it) -- rebuild the pipeline to run it again");
     return node;
 }
 
 SEXP C_append_vtr(SEXP node_xptr, SEXP path_sexp) {
     VecNode *node = unwrap_node_for_append(node_xptr);
+    /* Consume-once: invalidate the handle before draining, so a later terminal
+       op on the same node errors clearly rather than re-running an exhausted
+       plan (mirrors write_node_dispatch and C_collect). */
+    R_ClearExternalPtr(node_xptr);
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
     vtr_append_node(node, path);
+    node->free_node(node);
     return R_NilValue;
 }

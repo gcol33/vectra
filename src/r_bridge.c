@@ -436,7 +436,18 @@ SEXP C_scan_node_temp(SEXP path) {
 
 SEXP C_collect(SEXP node_xptr) {
     VecNode *node = unwrap_node(node_xptr);
-    return vec_collect(node);
+    /* A vectra plan is consumed by exactly one terminal operation, the same
+       consume-once contract every verb enforces on its input (each verb clears
+       its child handle). collect() drains the pull cursor to end-of-stream, so
+       the node is spent afterwards; invalidate the handle here so a second
+       terminal op (another collect(), or a write_*()) on the same node raises
+       the clear "already collected" error instead of silently draining an
+       exhausted plan and returning wrong or empty data. */
+    R_ClearExternalPtr(node_xptr);
+    SEXP result = PROTECT(vec_collect(node));
+    node->free_node(node);
+    UNPROTECT(1);
+    return result;
 }
 
 /* --- C_node_optimize / C_node_next_batch ---

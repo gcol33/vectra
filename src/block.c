@@ -316,7 +316,7 @@ static void block_finalizer(SEXP xptr) {
 
 SEXP C_block_materialize(SEXP node_xptr) {
     VecNode *node = (VecNode *)R_ExternalPtrAddr(node_xptr);
-    if (!node) Rf_error("vectra node has been freed or collected");
+    if (!node) Rf_error("this vectra query has already been consumed; a query runs once (collect, write_*, or another verb consumes it) -- rebuild the pipeline to run it again");
 
     ColumnBlock *blk = block_materialize(node);
 
