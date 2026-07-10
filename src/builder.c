@@ -81,8 +81,26 @@ void vec_builder_reserve(VecArrayBuilder *b, int64_t extra) {
     ensure_capacity(b, extra);
 }
 
+/* The append paths below copy from the union field selected by the BUILDER's
+   type. If the source array's type differs, that copy reads the wrong union
+   member and reinterprets raw bytes (e.g. a VecStrData pointer read as a
+   double). Every caller is expected to hand the builder a matching-typed array;
+   verify that invariant here so a violation is a loud error, not silent
+   corruption. A dictionary-deferred string array (buf.str is a placeholder,
+   the values live in str_dict) is likewise unappendable and must be
+   materialized first. */
+static void builder_check_input(const VecArrayBuilder *b, const VecArray *arr) {
+    if (arr->type != b->type)
+        vectra_error("builder type mismatch: cannot append a %s column to a %s builder",
+                     vec_type_name(arr->type), vec_type_name(b->type));
+    if (arr->type == VEC_STRING && arr->str_dict != NULL)
+        vectra_error("builder cannot append a dictionary-deferred string array; "
+                     "materialize it to a flat string column first");
+}
+
 void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
     if (arr->length == 0) return;
+    builder_check_input(b, arr);
     ensure_capacity(b, arr->length);
 
     /* Copy validity bits — bulk word-level operation */
@@ -139,6 +157,7 @@ void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
 }
 
 void vec_builder_append_one(VecArrayBuilder *b, const VecArray *arr, int64_t row) {
+    builder_check_input(b, arr);
     ensure_capacity(b, 1);
     if (vec_array_is_valid(arr, row)) {
         b->validity[b->length / 8] |= (uint8_t)(1 << (b->length % 8));
