@@ -13,6 +13,12 @@ test_that("offload is the identity on values", {
   expect_equal(collect(spilled), full)
   expect_s3_class(spilled, "vectra_offload")
   expect_s3_class(spilled, "vectra_node")
+
+  # A replay cache is re-collectable: unlike a one-shot node, collecting it
+  # replays from the spill, so a second (and third) read reproduce the first.
+  expect_equal(collect(spilled), full)
+  expect_equal(collect(spilled), full)
+  expect_no_error(print(spilled))   # printing after a collect must still work
 })
 
 test_that("offload preserves string, factor, and Date columns", {

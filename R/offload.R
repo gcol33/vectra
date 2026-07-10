@@ -67,6 +67,23 @@ grade_of <- function(x) {
   node
 }
 
+# An offloaded node is a file-backed replay cache: reading it replays from the
+# spill rather than draining a one-shot pull node, so collect() (and a direct
+# collect_chunked()) open a fresh scan over the spill and can be called
+# repeatedly -- the "O(1) re-reads" the cache promises. (Piping the node through
+# further verbs consumes that derived pipeline as usual; the cache itself stays
+# reachable through the same handle.)
+#' @export
+collect.vectra_offload <- function(x, ...) collect(tbl(x$.path))
+
+#' @rdname collect_chunked
+#' @export
+collect_chunked.vectra_offload <- function(x, f, .init = NULL, combine = NULL,
+                                           commutative = FALSE) {
+  collect_chunked(tbl(x$.path), f, .init = .init, combine = combine,
+                  commutative = commutative)
+}
+
 #' Spill a query to disk and stream it back (the offload functor)
 #'
 #' Materializes a query once to disk and returns a stream that holds the same

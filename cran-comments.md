@@ -1,21 +1,21 @@
 ## Submission
 
-This release fixes the UndefinedBehaviorSanitizer report on the M1 sanitizer
-check (M1-SAN), flagged on the CRAN check page with a request to correct before
-2026-07-14.
+This is an update to the version currently on CRAN (0.9.8).
 
-Cause: the bulk-copy fast path in `df_to_batch()` (src/r_bridge_core.c) called
-`memcpy()` over a double column unconditionally. When the written data frame
-has zero rows, `REAL()` hands back a degenerate (zero-length) pointer; passing
-it to `memcpy()` had clang's alignment sanitizer report a misaligned load of a
-`double *`. The copy is now skipped when the column has no rows, so the
-degenerate pointer is never accessed. This was a regression introduced when the
-per-element copy loop was replaced by a single `memcpy()`; the old loop simply
-did not execute for an empty column.
+The headline fix (issue #5): a lazy query is now consumed by exactly one
+terminal operation. `collect()` and `append_vtr()` join the `write_*()` verbs
+in invalidating a node once its pull cursor is drained, so a second terminal op
+on the same node object raises a clear "already consumed" error instead of
+re-driving an exhausted plan. Previously a `collect()` followed by a
+`write_vtr()` on the same node returned empty output or, on a multi-row-group
+plan, silently reinterpreted a string column's bytes as doubles. `vec_builder_*`
+also now errors on a type-mismatched array rather than reinterpreting raw bytes.
 
-This version also adds new features (embedding columns and distance functions,
-time-series resampling, time-based rolling aggregates, and interval joins); see
-NEWS.md.
+This release additionally folds in the feature work from the 0.10.x and 0.11.0
+development line (bounded-memory joins, sort, grouped and holistic aggregates,
+top-N, fuzzy and interval joins; a k-mer spectrum node; FASTA/BED scan
+backends; feature-space kNN and the MOP transferability surface; and a `delim`
+argument to `tbl_csv()`); see NEWS.md.
 
 ## Test environments
 
@@ -24,14 +24,13 @@ NEWS.md.
 * GitHub Actions: ubuntu-latest (R-devel, R-release, R-oldrel-1),
   macOS-release, windows-release
 
+The OpenMP team size is capped at two cores when `_R_CHECK_LIMIT_CORES_` is set
+(R_init_vectra), so the parallel string, fuzzy-join, and spatial kernels stay
+within the check farm's two-core limit.
+
 ## R CMD check results
 
-0 errors | 0 warnings | 0 notes expected. win-builder may report:
-
-    Days since last update: N
-
-if the previous version was published recently; this resubmission corrects the
-M1-SAN sanitizer report.
+0 errors | 0 warnings | 0 notes expected.
 
 ## Reverse dependencies
 

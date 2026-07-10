@@ -1,3 +1,24 @@
+# vectra 0.11.1
+
+## Bug fixes
+
+* A query is now consumed by exactly one terminal operation. `collect()` and
+  `append_vtr()` join `write_*()` in invalidating the node once its pull cursor
+  is drained, so a second terminal op on the same node (for example
+  `collect()`-ing a pipeline to inspect it and then `write_vtr()`-ing the same
+  object) raises a clear "already consumed" error instead of re-driving an
+  exhausted plan. Previously the second pass returned empty or, on a
+  multi-spill plan, silently reinterpreted a string column's bytes as doubles
+  (#5).
+
+* `offload()` shards are re-collectable: a shard rebuilds a fresh scan on each
+  access, so a partition stays an iterable list of shards under the
+  consume-once rule.
+
+* `vec_builder_*` now errors on a type-mismatched or dictionary-deferred array
+  instead of reinterpreting raw bytes, matching the guard the writer already
+  applied at its own boundary.
+
 # vectra 0.11.0
 
 ## Delimited-file reader gains a `delim` argument

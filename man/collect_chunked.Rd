@@ -4,6 +4,7 @@
 \alias{collect_chunked}
 \alias{collect_chunked.default}
 \alias{collect_chunked.vectra_node}
+\alias{collect_chunked.vectra_offload}
 \alias{collect_chunked.vectra_shard}
 \alias{collect_chunked.vectra_partition}
 \title{Fold a function over a query, one batch at a time}
@@ -13,6 +14,8 @@ collect_chunked(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 \method{collect_chunked}{default}(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 
 \method{collect_chunked}{vectra_node}(x, f, .init = NULL, combine = NULL, commutative = FALSE)
+
+\method{collect_chunked}{vectra_offload}(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 
 \method{collect_chunked}{vectra_shard}(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 
