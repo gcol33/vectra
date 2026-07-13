@@ -4,11 +4,14 @@
 #include <stdint.h>
 
 /* Abstract byte reader for streaming text scans (CSV, FASTA, FASTQ).
-   Implementations: plain FILE* and gzip (whole-file inflate via miniz).
+   Implementations: plain FILE* and gzip (streaming inflate via miniz).
 
    The only seek pattern the scanners use is "tell once, read forward, seek
-   back to that mark", so a memory cursor over the fully-inflated buffer is
-   enough for the gz path -- no streaming inflate needed. */
+   back to that mark", where the mark is a small offset near the start (the
+   header, and the type-inference rewind over the first ~1000 rows). The gz
+   reader satisfies this by streaming inflate through a 32 KB wrapping window
+   and serving a backward seek by re-inflating from the start, so a file whose
+   inflated size exceeds RAM (and a compressed size past 2 GB) reads fine. */
 
 typedef struct ByteReader ByteReader;
 

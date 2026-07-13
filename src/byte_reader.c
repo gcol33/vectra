@@ -6,6 +6,17 @@
 #include <stdint.h>
 #include "miniz/miniz.h"
 
+/* 64-bit file offsets: a plain CSV or the compressed .gz can both exceed 2 GB,
+   where 32-bit ftell/fseek wrap. The scanners only ever seek to small marks, but
+   the size query and any large file must use the wide variants. */
+#if defined(_WIN32)
+  #define VZ_FSEEK64(fp, off) _fseeki64((fp), (int64_t)(off), SEEK_SET)
+  #define VZ_FTELL64(fp)      _ftelli64(fp)
+#else
+  #define VZ_FSEEK64(fp, off) fseeko((fp), (off_t)(off), SEEK_SET)
+  #define VZ_FTELL64(fp)      ftello(fp)
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  Plain FILE* reader                                                 */
 /* ------------------------------------------------------------------ */
@@ -24,11 +35,11 @@ static int file_ungetc(ByteReader *r, int c) {
 }
 
 static int64_t file_tell(ByteReader *r) {
-    return (int64_t)ftell(((FileReader *)r)->fp);
+    return (int64_t)VZ_FTELL64(((FileReader *)r)->fp);
 }
 
 static int file_seek(ByteReader *r, int64_t offset) {
-    return fseek(((FileReader *)r)->fp, (long)offset, SEEK_SET);
+    return VZ_FSEEK64(((FileReader *)r)->fp, offset);
 }
 
 static void file_close(ByteReader *r) {
@@ -54,155 +65,182 @@ static ByteReader *file_reader_open(const char *path) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Memory-cursor reader (used by the gz path)                         */
+/*  Streaming gzip reader                                              */
 /* ------------------------------------------------------------------ */
 /*
- * The gzip path used to wrap zlib's gzFile so getc/ungetc/tell/seek
- * could stream straight off the compressed file. miniz has no gzFile
- * equivalent, but the only seek pattern in the text scanners is "tell
- * once, read forward, seek back to that mark", so we don't need
- * streaming inflate at all. We decompress the whole .gz into memory at
- * open time and expose the result as a cursor.
+ * The gz path used to slurp the whole file into RAM and inflate it whole into
+ * a second buffer, which caps the readable size at available memory (and the
+ * size query used a 32-bit ftell, so a >2 GB .gz failed to open at all on
+ * Windows). Instead we stream: raw deflate is fed through miniz's tinfl coroutine
+ * into a 32 KB wrapping window (which doubles as the LZ dictionary), and getc
+ * serves bytes out of that window, pumping more only when it drains. Peak memory
+ * is the window plus one compressed-input block, independent of file size.
  *
- * Memory cost: decompressed source bytes during the scan. The scan
- * itself materialises the data into typed VecArray columns, which is
- * already several times larger than the raw source, so this is not the
- * bottleneck.
+ * The scanners seek backward only to a small mark near the start (header +
+ * type-inference rewind). We serve a backward seek by re-inflating from the
+ * body start and discarding forward to the target -- cheap because the target
+ * is tiny -- and a forward seek by discarding forward.
  */
+
+#define GZ_IN_CHUNK 65536      /* compressed input block */
+#define GZ_HDR_MAX  4096       /* gzip header (10 B + optional FEXTRA/FNAME/...) */
 
 typedef struct {
     ByteReader base;
-    uint8_t   *buf;  /* malloc'd via miniz, freed in mem_close via mz_free */
-    size_t     len;
-    size_t     pos;
-} MemReader;
+    FILE      *fp;
+    int64_t    body_start;          /* compressed offset of the deflate body */
+    tinfl_decompressor inflator;
+    uint8_t    in_buf[GZ_IN_CHUNK];
+    size_t     in_pos, in_len;
+    int        in_eof;
+    uint8_t    dict[TINFL_LZ_DICT_SIZE];   /* 32 KB output ring == LZ dictionary */
+    size_t     write_ofs;           /* next write position in the ring */
+    size_t     read_ofs;            /* next unread byte in the ring */
+    size_t     avail;               /* produced-but-unconsumed bytes (<= ring) */
+    uint64_t   abs_pos;             /* absolute decompressed position (consumer) */
+    int        done;                /* inflate finished or errored */
+    int        error;               /* hard error */
+} GzReader;
 
-static int mem_getc(ByteReader *r) {
-    MemReader *m = (MemReader *)r;
-    if (m->pos >= m->len) return EOF;
-    return (int)m->buf[m->pos++];
-}
-
-static int mem_ungetc(ByteReader *r, int c) {
-    /* The scanners only ever push back the byte they just read, so we can
-       implement this as a pure cursor decrement. The 'c' argument is
-       ignored on purpose: the original byte still lives at buf[pos-1]. */
-    MemReader *m = (MemReader *)r;
-    if (m->pos == 0) return EOF;
-    m->pos--;
-    return c;
-}
-
-static int64_t mem_tell(ByteReader *r) {
-    return (int64_t)((MemReader *)r)->pos;
-}
-
-static int mem_seek(ByteReader *r, int64_t offset) {
-    MemReader *m = (MemReader *)r;
-    if (offset < 0 || (size_t)offset > m->len) return -1;
-    m->pos = (size_t)offset;
-    return 0;
-}
-
-static void mem_close(ByteReader *r) {
-    MemReader *m = (MemReader *)r;
-    if (m->buf) mz_free(m->buf);
-    free(m);
-}
-
-/* Slurp a whole file into a malloc'd buffer. Caller frees with free(). */
-static int read_whole_file(const char *path, uint8_t **out_data, size_t *out_len) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return -1;
-    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return -1; }
-    long sz = ftell(fp);
-    if (sz < 0) { fclose(fp); return -1; }
-    if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return -1; }
-
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (!buf) { fclose(fp); return -1; }
-
-    size_t got = fread(buf, 1, (size_t)sz, fp);
-    fclose(fp);
-    if (got != (size_t)sz) { free(buf); return -1; }
-
-    *out_data = buf;
-    *out_len = (size_t)sz;
-    return 0;
-}
-
-/* Parse the gzip header (RFC 1952). On success, *body_out points into
-   the input buffer at the start of the raw deflate stream and
-   *body_len_out is the length of that stream (excluding the 8-byte
-   trailer of CRC32 + ISIZE). */
-static int gzip_parse_header(const uint8_t *data, size_t len,
-                             const uint8_t **body_out, size_t *body_len_out) {
-    if (len < 18) return -1;                /* 10 hdr + min body + 8 trailer */
-    if (data[0] != 0x1F || data[1] != 0x8B) return -1;
-    if (data[2] != 8) return -1;            /* CM == DEFLATE */
-
+/* Length of the gzip header (offset to the raw deflate body). RFC 1952. */
+static int gzip_header_len(const uint8_t *data, size_t len, size_t *out_pos) {
+    if (len < 10) return -1;
+    if (data[0] != 0x1F || data[1] != 0x8B || data[2] != 8) return -1;  /* magic + DEFLATE */
     uint8_t flg = data[3];
-    size_t pos = 10;                        /* fixed header size */
-
-    if (flg & 0x04) {                       /* FEXTRA */
+    size_t pos = 10;                                   /* fixed header */
+    if (flg & 0x04) {                                  /* FEXTRA */
         if (pos + 2 > len) return -1;
         size_t xlen = (size_t)data[pos] | ((size_t)data[pos + 1] << 8);
         pos += 2 + xlen;
         if (pos > len) return -1;
     }
-    if (flg & 0x08) {                       /* FNAME (zero-terminated) */
+    if (flg & 0x08) {                                  /* FNAME */
         while (pos < len && data[pos] != 0) pos++;
         if (pos >= len) return -1;
         pos++;
     }
-    if (flg & 0x10) {                       /* FCOMMENT (zero-terminated) */
+    if (flg & 0x10) {                                  /* FCOMMENT */
         while (pos < len && data[pos] != 0) pos++;
         if (pos >= len) return -1;
         pos++;
     }
-    if (flg & 0x02) {                       /* FHCRC (2 bytes) */
+    if (flg & 0x02) {                                  /* FHCRC */
         if (pos + 2 > len) return -1;
         pos += 2;
     }
-
-    if (pos + 8 > len) return -1;           /* trailer must fit */
-    *body_out = data + pos;
-    *body_len_out = len - pos - 8;
+    if (pos > len) return -1;
+    *out_pos = pos;
     return 0;
 }
 
-static ByteReader *gz_reader_open(const char *path) {
-    uint8_t *file_buf = NULL;
-    size_t   file_len = 0;
-    if (read_whole_file(path, &file_buf, &file_len) != 0) return NULL;
+/* Inflate more into the ring; return bytes produced this call (0 at end). */
+static size_t gz_pump(GzReader *g) {
+    while (!g->done) {
+        if (g->in_pos >= g->in_len && !g->in_eof) {
+            g->in_len = fread(g->in_buf, 1, sizeof(g->in_buf), g->fp);
+            g->in_pos = 0;
+            if (g->in_len == 0) g->in_eof = 1;
+        }
+        size_t in_bytes  = g->in_len - g->in_pos;
+        size_t out_bytes = TINFL_LZ_DICT_SIZE - g->write_ofs;   /* to ring end */
+        mz_uint32 flags  = g->in_eof ? 0 : TINFL_FLAG_HAS_MORE_INPUT;
+        tinfl_status st = tinfl_decompress(
+            &g->inflator,
+            (const mz_uint8 *)(g->in_buf + g->in_pos), &in_bytes,
+            (mz_uint8 *)g->dict, (mz_uint8 *)(g->dict + g->write_ofs), &out_bytes,
+            flags);
+        g->in_pos   += in_bytes;
+        g->write_ofs = (g->write_ofs + out_bytes) & (TINFL_LZ_DICT_SIZE - 1);
+        g->avail    += out_bytes;
 
-    const uint8_t *body = NULL;
-    size_t body_len = 0;
-    if (gzip_parse_header(file_buf, file_len, &body, &body_len) != 0) {
-        free(file_buf);
-        return NULL;
+        if (st < TINFL_STATUS_DONE) { g->done = 1; g->error = 1; return out_bytes; }
+        if (st == TINFL_STATUS_DONE) { g->done = 1; return out_bytes; }
+        if (out_bytes > 0) return out_bytes;
+        /* no output: needs more input (loop to refill) or truncated at EOF */
+        if (st == TINFL_STATUS_NEEDS_MORE_INPUT && g->in_eof) {
+            g->done = 1; g->error = 1; return 0;
+        }
     }
+    return 0;
+}
 
-    /* tinfl_decompress_mem_to_heap with flags=0 expects a raw deflate
-       stream (no zlib header, no checksum), which is exactly what sits
-       inside a gzip file body. */
-    size_t out_len = 0;
-    void *decomp = tinfl_decompress_mem_to_heap(body, body_len, &out_len, 0);
-    free(file_buf);
-    if (!decomp) return NULL;
+static int gz_getc(ByteReader *r) {
+    GzReader *g = (GzReader *)r;
+    if (g->avail == 0) {
+        gz_pump(g);
+        if (g->avail == 0) return EOF;
+    }
+    int c = g->dict[g->read_ofs];
+    g->read_ofs = (g->read_ofs + 1) & (TINFL_LZ_DICT_SIZE - 1);
+    g->avail--;
+    g->abs_pos++;
+    return c;
+}
 
-    MemReader *mr = (MemReader *)calloc(1, sizeof(MemReader));
-    if (!mr) { mz_free(decomp); return NULL; }
+static int gz_ungetc(ByteReader *r, int c) {
+    GzReader *g = (GzReader *)r;
+    if (g->abs_pos == 0) return EOF;          /* the pushed byte still sits at read_ofs-1 */
+    g->read_ofs = (g->read_ofs - 1) & (TINFL_LZ_DICT_SIZE - 1);
+    g->avail++;
+    g->abs_pos--;
+    return c;
+}
 
-    mr->buf = (uint8_t *)decomp;
-    mr->len = out_len;
-    mr->pos = 0;
-    mr->base.getc_fn   = mem_getc;
-    mr->base.ungetc_fn = mem_ungetc;
-    mr->base.tell_fn   = mem_tell;
-    mr->base.seek_fn   = mem_seek;
-    mr->base.close_fn  = mem_close;
-    return &mr->base;
+static int64_t gz_tell(ByteReader *r) {
+    return (int64_t)((GzReader *)r)->abs_pos;
+}
+
+static int gz_reset(GzReader *g) {
+    if (VZ_FSEEK64(g->fp, g->body_start) != 0) return -1;
+    tinfl_init(&g->inflator);
+    g->in_pos = g->in_len = 0;
+    g->in_eof = 0;
+    g->write_ofs = g->read_ofs = 0;
+    g->avail = 0;
+    g->abs_pos = 0;
+    g->done = 0;
+    g->error = 0;
+    return 0;
+}
+
+static int gz_seek(ByteReader *r, int64_t offset) {
+    GzReader *g = (GzReader *)r;
+    if (offset < 0) return -1;
+    uint64_t target = (uint64_t)offset;
+    if (target < g->abs_pos && gz_reset(g) != 0) return -1;
+    while (g->abs_pos < target) {
+        if (gz_getc(r) == EOF) return -1;
+    }
+    return 0;
+}
+
+static void gz_close(ByteReader *r) {
+    GzReader *g = (GzReader *)r;
+    if (g->fp) fclose(g->fp);
+    free(g);
+}
+
+static ByteReader *gz_reader_open(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+
+    uint8_t hdr[GZ_HDR_MAX];
+    size_t hn = fread(hdr, 1, sizeof(hdr), fp);
+    size_t body_ofs;
+    if (gzip_header_len(hdr, hn, &body_ofs) != 0) { fclose(fp); return NULL; }
+
+    GzReader *g = (GzReader *)calloc(1, sizeof(GzReader));
+    if (!g) { fclose(fp); return NULL; }
+    g->fp = fp;
+    g->body_start = (int64_t)body_ofs;
+    if (gz_reset(g) != 0) { fclose(fp); free(g); return NULL; }
+
+    g->base.getc_fn   = gz_getc;
+    g->base.ungetc_fn = gz_ungetc;
+    g->base.tell_fn   = gz_tell;
+    g->base.seek_fn   = gz_seek;
+    g->base.close_fn  = gz_close;
+    return &g->base;
 }
 
 /* ------------------------------------------------------------------ */

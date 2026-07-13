@@ -1,3 +1,18 @@
+# vectra 0.11.2
+
+## Bug fixes
+
+* The gzip (`.gz`) reader now streams. It previously read the whole compressed
+  file into memory and inflated it whole into a second buffer, so the readable
+  size was capped at available RAM, and its size query used a 32-bit `ftell`, so
+  a `.gz` past 2 GB compressed failed to open at all on Windows. It now feeds the
+  raw deflate stream through miniz's `tinfl` coroutine into a 32 KB wrapping
+  window (which doubles as the LZ dictionary) and serves bytes from that window,
+  with 64-bit file offsets throughout; peak memory is the window plus one input
+  block, independent of file size. A `.gz` whose inflated size exceeds RAM (and a
+  compressed size past 2 GB) now reads fine. Enables `tbl_csv()` on multi-GB
+  compressed streams.
+
 # vectra 0.11.1
 
 ## Bug fixes
