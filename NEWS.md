@@ -1,3 +1,35 @@
+# vectra 0.11.3
+
+## Bug fixes
+
+* `collect_chunked()` and `chunk_feeder()` now consume their input node, matching
+  every other terminal (`collect()`, `write_vtr()`). The streaming batch cursor
+  previously drained the plan without invalidating the handle, so collecting the
+  same node again re-drove an already-drained spill plan and returned wrong or
+  empty data instead of raising the documented "already consumed" error.
+
+* The holistic aggregates (`median()`, `n_distinct()`) and `kmer()` now bound the
+  fan-in of their external record merge. The shared record sort-merge opened
+  every spilled run at once, so a genuinely larger-than-RAM aggregate could grow
+  its resident read buffers with the run count and exhaust the process file-handle
+  table. It now reduces the runs to a bounded fan-in over multiple passes first,
+  as the row sort behind `arrange()`/grouped `summarise()` already did, keeping
+  peak memory and open handles bounded regardless of input size.
+
+* `propagate()` no longer stops at a fixed 20 levels of hierarchy. A parent-child
+  chain deeper than 20 within a batch left the deepest rows `NA`; propagation now
+  runs to convergence, so an arbitrarily deep hierarchy resolves fully.
+
+* `resolve()` and `propagate()` coerce their foreign-key and primary-key columns
+  to a common type before matching. A key pair stored in different numeric types
+  (for example a `double` foreign key against an integer primary key) could
+  silently fail to match; they are now compared like with like.
+
+* `lookup(.report = TRUE)`, the default, no longer materializes the whole fact
+  table. It collected the entire fact table into memory purely to count its rows
+  for a diagnostic message; the count and the unmatched-key preview now stream in
+  bounded memory.
+
 # vectra 0.11.2
 
 ## Bug fixes

@@ -457,6 +457,20 @@ SEXP C_collect(SEXP node_xptr) {
    NULL at end of stream. The node carries the pull cursor between calls, so the
    node is consumed and cannot be reused once the stream is drained. */
 
+/* Transfer a node out of the caller's handle into a fresh private handle,
+   clearing the caller's handle so the plan is consumed (the same consume-once
+   contract collect()/write_*() enforce). The streaming batch cursor behind
+   collect_chunked()/chunk_feeder() drives the returned handle to end-of-stream;
+   the caller's original node then raises the standard "already consumed" error
+   on any reuse, instead of silently re-driving a drained spill plan and
+   returning wrong data. Ownership moves to the new handle (its finalizer frees
+   the node), so there is no double free: the cleared original is a no-op at GC. */
+SEXP C_node_take(SEXP node_xptr) {
+    VecNode *node = unwrap_node(node_xptr);
+    R_ClearExternalPtr(node_xptr);
+    return wrap_node(node);
+}
+
 SEXP C_node_optimize(SEXP node_xptr) {
     VecNode *node = unwrap_node(node_xptr);
     vec_optimize(node);

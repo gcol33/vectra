@@ -217,6 +217,7 @@ void vec_builder_append_na_n(VecArrayBuilder *b, int64_t n) {
 void vec_builder_append_repeat(VecArrayBuilder *b, const VecArray *arr,
                                int64_t row, int64_t count) {
     if (count <= 0) return;
+    builder_check_input(b, arr);
     ensure_capacity(b, count);
     int valid = vec_array_is_valid(arr, row);
 

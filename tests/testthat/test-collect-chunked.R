@@ -198,3 +198,18 @@ test_that("chunk_feeder drives an out-of-core logistic GLM equal to glm()", {
   ref <- glm(presence ~ bio1 + bio12, data = df, family = binomial())
   expect_equal(unname(coef(fit)), unname(coef(ref)), tolerance = 1e-3)
 })
+
+test_that("collect_chunked consumes the node (consume-once)", {
+  # The batch cursor drains a plan the same way collect() does, so the node is
+  # spent afterwards. Re-driving a drained spill plan returns wrong data, so it
+  # must instead raise the standard consumed error.
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(mtcars, f)
+
+  node <- tbl(f) |> arrange(mpg)
+  collect_chunked(node, function(acc, chunk) acc + nrow(chunk), .init = 0L)
+
+  expect_error(collect(node), "consumed")
+  expect_error(node |> filter(mpg > 20) |> collect(), "consumed")
+})

@@ -180,6 +180,52 @@ test_that("propagate() works with numeric seed values", {
   expect_equal(result$root_weight, c(42.0, 42.0, 42.0, 42.0))
 })
 
+test_that("resolve() coerces mismatched key column types", {
+  # FK stored as double, PK (id) stored as integer -> int64. The two key
+  # columns must be compared like with like; a raw byte reinterpret would hash
+  # 3.0 and int64 3 differently and silently miss every match.
+  df <- data.frame(
+    id = c(1L, 2L, 3L),          # integer -> VEC_INT64
+    name = c("A", "B", "C"),
+    fk = c(3, 1, 2),             # double -> VEC_DOUBLE
+    stringsAsFactors = FALSE
+  )
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+
+  result <- tbl(f) |>
+    mutate(resolved = resolve(fk, id, name)) |>
+    collect()
+
+  expect_equal(result$resolved, c("C", "A", "B"))
+})
+
+test_that("propagate() resolves chains deeper than the old fixed cap", {
+  # A single-batch chain 50 levels deep. The propagation needs 49 passes; a
+  # fixed iteration cap below the depth would leave the deepest nodes NA.
+  n <- 50L
+  df <- data.frame(
+    id = seq_len(n),
+    parent_id = c(NA, seq_len(n - 1L)),
+    rank = c("ROOT", rep("CHILD", n - 1L)),
+    name = c("TopValue", paste0("node", 2:n)),
+    stringsAsFactors = FALSE
+  )
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+
+  result <- tbl(f) |>
+    mutate(root_name = propagate(
+      parent_id, id,
+      ifelse(rank == "ROOT", name, NA)
+    )) |>
+    collect()
+
+  expect_equal(result$root_name, rep("TopValue", n))
+})
+
 test_that("propagate() converges for deep trees", {
   # Chain: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
   n <- 10L

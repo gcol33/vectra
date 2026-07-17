@@ -251,36 +251,39 @@ parse_lookup_refs <- function(exprs, dim_names) {
   requests
 }
 
-# Report unmatched keys for each dimension (opens fresh nodes)
+# Report unmatched keys for each dimension (opens fresh nodes).
+# Everything here streams: the diagnostic never materializes the fact table
+# (it can be larger than RAM). Counts come from a bounded fold; the key preview
+# from a bounded head of the anti-join, never the whole unmatched set.
 report_unmatched <- function(schema, needed_dims) {
-  for (dim_name in needed_dims) {
-    lnk <- schema$dims[[dim_name]]
-
-    # Fresh nodes for the anti_join
+  stream_count <- function(node) {
+    collect_chunked(node, function(a, ch) a + nrow(ch), .init = 0)
+  }
+  make_anti <- function(lnk) {
     fact_node <- reopen_node(schema$fact)
     dim_node <- reopen_node(lnk$node)
     keys <- parse_join_keys(fact_node, dim_node, lnk$key)
-
     anti_xptr <- .join_node(fact_node$.node, dim_node$.node,
                             "anti", keys$left, keys$right, ".x", ".y")
-    anti_node <- structure(list(.node = anti_xptr, .path = NULL),
-                           class = "vectra_node")
-    anti_df <- .Call(C_collect, anti_node$.node)
-    n_unmatched <- nrow(anti_df)
+    list(node = structure(list(.node = anti_xptr, .path = NULL),
+                          class = "vectra_node"),
+         left_key = keys$left[1])
+  }
 
-    # Count total unique keys in fact table
-    fact_node2 <- reopen_node(schema$fact)
-    fact_df <- .Call(C_collect, fact_node2$.node)
-    n_total <- nrow(fact_df)
+  for (dim_name in needed_dims) {
+    lnk <- schema$dims[[dim_name]]
+
+    n_total <- stream_count(reopen_node(schema$fact))
+
+    a <- make_anti(lnk)
+    n_unmatched <- stream_count(a$node)
 
     if (n_unmatched > 0) {
-      unmatched_keys <- unique(anti_df[[keys$left[1]]])
-      preview <- if (length(unmatched_keys) <= 5) {
-        paste(format(unmatched_keys, trim = TRUE), collapse = ", ")
-      } else {
-        paste(c(format(head(unmatched_keys, 5), trim = TRUE), "..."),
-              collapse = ", ")
-      }
+      # Bounded preview: distinct keys from a small head, never the full set.
+      prev_df <- collect(head(make_anti(lnk)$node, 100L))
+      shown <- utils::head(unique(prev_df[[a$left_key]]), 5)
+      preview <- paste(format(shown, trim = TRUE), collapse = ", ")
+      if (n_unmatched > length(shown)) preview <- paste0(preview, ", ...")
       message(sprintf("%s: %d/%d unmatched keys (%s)",
                       dim_name, n_unmatched, n_total, preview))
     } else {

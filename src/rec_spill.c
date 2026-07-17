@@ -6,6 +6,7 @@
 
 #define REC_SPILL_DEFAULT_BUDGET (64LL * 1024 * 1024)  /* 64 MiB */
 #define REC_SPILL_MERGE_BLOCK    4096                    /* records per run read */
+#define REC_SPILL_MAX_FANIN      64                      /* runs open at once */
 
 /* ------------------------------------------------------------------ */
 /*  Construction and spilling                                          */
@@ -173,16 +174,148 @@ static void heap_sift_down(RecMerge *m, int pos) {
     }
 }
 
-RecMerge *rec_spill_merge_begin(RecSpill *s) {
+/* Open a k-way merge over exactly the given runs (explicit path/count arrays),
+   opening k files at once. Callers keep k <= fan-in so peak resident stays
+   O(fan-in) decoded blocks. */
+static RecMerge *merge_open_runs(RecSpill *s, char **paths, int64_t *counts, int n) {
     RecMerge *m = (RecMerge *)calloc(1, sizeof(RecMerge));
     if (!m) vectra_error("rec spill alloc failed");
     m->s = s;
     m->elem = s->elem;
     m->cmp = s->cmp;
+    m->cur = (MergeCursor *)calloc((size_t)n, sizeof(MergeCursor));
+    m->heap = (int *)malloc((size_t)n * sizeof(int));
+    if (!m->cur || !m->heap) vectra_error("rec spill alloc failed");
+    m->n_cursors = n;
+    for (int i = 0; i < n; i++) {
+        MergeCursor *c = &m->cur[i];
+        c->fp = fopen(paths[i], "rb");
+        if (!c->fp) vectra_error("rec spill: cannot reopen run %s", paths[i]);
+        c->block = (unsigned char *)malloc((size_t)REC_SPILL_MERGE_BLOCK * s->elem);
+        if (!c->block) vectra_error("rec spill alloc failed");
+        c->remaining = counts[i];
+        cursor_refill(c, s->elem);
+        if (c->live) { m->heap[m->n] = i; heap_sift_up(m, m->n); m->n++; }
+    }
+    return m;
+}
 
+/* Drain a merge entirely into one new ascending run file, buffering the output
+   in REC_SPILL_MERGE_BLOCK-sized writes. Returns the malloc'd path (caller owns)
+   and the record count via *out_count. */
+static char *merge_drain_to_run(RecSpill *s, RecMerge *m, int64_t *out_count) {
+    char *path = spill_run_path(s->temp_dir);
+    FILE *fp = fopen(path, "wb");
+    if (!fp) vectra_error("rec spill: cannot open run file %s", path);
+    unsigned char *blk =
+        (unsigned char *)malloc((size_t)REC_SPILL_MERGE_BLOCK * s->elem);
+    if (!blk) vectra_error("rec spill alloc failed");
+
+    int64_t nblk = 0, total = 0;
+    while (rec_spill_merge_next(m, blk + (size_t)nblk * s->elem)) {
+        nblk++; total++;
+        if (nblk == REC_SPILL_MERGE_BLOCK) {
+            if (fwrite(blk, s->elem, (size_t)nblk, fp) != (size_t)nblk) {
+                free(blk); fclose(fp);
+                vectra_error("rec spill: short write to %s", path);
+            }
+            nblk = 0;
+        }
+    }
+    if (nblk > 0 && fwrite(blk, s->elem, (size_t)nblk, fp) != (size_t)nblk) {
+        free(blk); fclose(fp);
+        vectra_error("rec spill: short write to %s", path);
+    }
+    free(blk);
+    fclose(fp);
+    *out_count = total;
+    return path;
+}
+
+/* Choose the merge fan-in so k decoded read blocks fit in ~half the budget:
+   k = (budget/2) / (REC_SPILL_MERGE_BLOCK * elem). Clamped to
+   [2, REC_SPILL_MAX_FANIN]. Wide records get a small fan-in, narrow ones a
+   large one, so merge-phase resident memory stays near the budget. */
+static int rec_compute_fanin(size_t elem, int64_t mem_budget) {
+    int64_t budget = mem_budget > 0 ? mem_budget : REC_SPILL_DEFAULT_BUDGET;
+    int64_t block_bytes = (int64_t)REC_SPILL_MERGE_BLOCK * (int64_t)elem;
+    int64_t fanin = (budget / 2) / (block_bytes > 0 ? block_bytes : 1);
+    if (fanin < 2) fanin = 2;
+    if (fanin > REC_SPILL_MAX_FANIN) fanin = REC_SPILL_MAX_FANIN;
+    return (int)fanin;
+}
+
+/* Reduce the spilled run count to <= fanin by repeated bounded-fan-in merge
+   passes. Each pass merges disjoint groups of <= fanin runs into one new run
+   and deletes the consumed inputs; a lone tail run is carried through. After
+   this the final merge opens <= fanin runs at once, so peak resident is
+   O(fanin) blocks (and O(fanin) open handles) rather than O(n_runs). Mirrors
+   sort.c's reduce_runs so median/n_distinct/kmer stay bounded on a
+   larger-than-RAM spill. */
+static void reduce_runs(RecSpill *s, int fanin) {
+    while (s->n_runs > fanin) {
+        char   **new_paths  = NULL;
+        int64_t *new_counts = NULL;
+        int new_n = 0, new_cap = 0;
+
+        for (int start = 0; start < s->n_runs; start += fanin) {
+            int k = s->n_runs - start;
+            if (k > fanin) k = fanin;
+
+            if (new_n >= new_cap) {
+                new_cap = new_cap == 0 ? 8 : new_cap * 2;
+                new_paths  = (char **)realloc(new_paths,
+                    (size_t)new_cap * sizeof(char *));
+                new_counts = (int64_t *)realloc(new_counts,
+                    (size_t)new_cap * sizeof(int64_t));
+                if (!new_paths || !new_counts) vectra_error("rec spill alloc failed");
+            }
+
+            if (k == 1) {
+                /* Lone tail run: carry through, moving ownership. */
+                new_paths[new_n]  = s->run_paths[start];
+                new_counts[new_n] = s->run_counts[start];
+                s->run_paths[start] = NULL;
+                new_n++;
+                continue;
+            }
+
+            RecMerge *m = merge_open_runs(s, &s->run_paths[start],
+                                          &s->run_counts[start], k);
+            int64_t cnt = 0;
+            char *out = merge_drain_to_run(s, m, &cnt);
+            rec_spill_merge_end(m);   /* closes the k input files */
+
+            for (int r = start; r < start + k; r++) {
+                if (s->run_paths[r]) {
+                    remove(s->run_paths[r]);
+                    free(s->run_paths[r]);
+                    s->run_paths[r] = NULL;
+                }
+            }
+            new_paths[new_n]  = out;
+            new_counts[new_n] = cnt;
+            new_n++;
+        }
+
+        free(s->run_paths);
+        free(s->run_counts);
+        s->run_paths  = new_paths;
+        s->run_counts = new_counts;
+        s->n_runs     = new_n;
+        s->runs_cap   = new_cap;
+    }
+}
+
+RecMerge *rec_spill_merge_begin(RecSpill *s) {
     if (s->n_runs == 0) {
         /* Never spilled: sort the buffer once and walk it in place. Identical
            order to the file path, no I/O. */
+        RecMerge *m = (RecMerge *)calloc(1, sizeof(RecMerge));
+        if (!m) vectra_error("rec spill alloc failed");
+        m->s = s;
+        m->elem = s->elem;
+        m->cmp = s->cmp;
         sort_buffer(s);
         m->in_ram = 1;
         m->buf_pos = 0;
@@ -192,22 +325,13 @@ RecMerge *rec_spill_merge_begin(RecSpill *s) {
     /* Push the residual buffer as its own run so every record lives in a run. */
     spill_flush_run(s);
 
-    m->cur = (MergeCursor *)calloc((size_t)s->n_runs, sizeof(MergeCursor));
-    m->heap = (int *)malloc((size_t)s->n_runs * sizeof(int));
-    if (!m->cur || !m->heap) vectra_error("rec spill alloc failed");
-    m->n_cursors = s->n_runs;
+    /* Bound the number of runs opened at once: reduce to <= fan-in first, so a
+       genuinely larger-than-RAM spill does not open every run (handle
+       exhaustion) or hold O(n_runs) read blocks (unbounded memory). */
+    int fanin = rec_compute_fanin(s->elem, s->mem_budget);
+    reduce_runs(s, fanin);
 
-    for (int i = 0; i < s->n_runs; i++) {
-        MergeCursor *c = &m->cur[i];
-        c->fp = fopen(s->run_paths[i], "rb");
-        if (!c->fp) vectra_error("rec spill: cannot reopen run %s", s->run_paths[i]);
-        c->block = (unsigned char *)malloc((size_t)REC_SPILL_MERGE_BLOCK * s->elem);
-        if (!c->block) vectra_error("rec spill alloc failed");
-        c->remaining = s->run_counts[i];
-        cursor_refill(c, s->elem);
-        if (c->live) { m->heap[m->n] = i; heap_sift_up(m, m->n); m->n++; }
-    }
-    return m;
+    return merge_open_runs(s, s->run_paths, s->run_counts, s->n_runs);
 }
 
 int rec_spill_merge_next(RecMerge *m, void *out) {

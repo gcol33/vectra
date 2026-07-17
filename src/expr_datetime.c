@@ -266,6 +266,14 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
         VecArray *fk = vec_expr_eval(expr->operand, batch);
         VecArray *pk = vec_expr_eval(expr->left, batch);
         VecArray *val = vec_expr_eval(expr->right, batch);
+        /* Coerce the two key columns to a common type so hashing and equality
+           compare like with like. A differing fk/pk type would otherwise read
+           one type's bytes through the other and could silently false-match. */
+        if (fk->type != pk->type) {
+            VecType kt = vec_common_type(fk->type, pk->type);
+            if (fk->type != kt) { VecArray *t = vec_coerce(fk, kt); vec_array_free(fk); free(fk); fk = t; }
+            if (pk->type != kt) { VecArray *t = vec_coerce(pk, kt); vec_array_free(pk); free(pk); pk = t; }
+        }
         int64_t n = fk->length;
 
         /* Build hash map: pk_value -> row index.
@@ -391,6 +399,13 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
         VecArray *parent_fk = vec_expr_eval(expr->operand, batch);
         VecArray *pk = vec_expr_eval(expr->left, batch);
         VecArray *seed = vec_expr_eval(expr->right, batch);
+        /* Coerce the two key columns to a common type (see resolve) so a
+           differing fk/pk type cannot silently false-match via a byte reinterpret. */
+        if (parent_fk->type != pk->type) {
+            VecType kt = vec_common_type(parent_fk->type, pk->type);
+            if (parent_fk->type != kt) { VecArray *t = vec_coerce(parent_fk, kt); vec_array_free(parent_fk); free(parent_fk); parent_fk = t; }
+            if (pk->type != kt) { VecArray *t = vec_coerce(pk, kt); vec_array_free(pk); free(pk); pk = t; }
+        }
         int64_t n = parent_fk->length;
 
         /* Build hash map: pk_value -> row index */
@@ -434,9 +449,14 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
         } while (0)
 
         /* Iteratively propagate: copy value from parent row to child row.
-           The result IS the seed array, modified in-place. */
-        int max_iter = 20;
-        for (int iter = 0; iter < max_iter; iter++) {
+           The result IS the seed array, modified in-place. Each pass resolves
+           one more level of the hierarchy and a resolved row is never cleared,
+           so progress is monotonic: the loop converges (breaks on !changed) in
+           at most the chain depth, bounded above by n. Capping at n resolves an
+           arbitrarily deep chain within a batch; a cycle simply stops making
+           progress and breaks. */
+        int64_t max_iter = n;
+        for (int64_t iter = 0; iter < max_iter; iter++) {
             int changed = 0;
             if (seed->type == VEC_STRING) {
                 /* String propagation: need to rebuild buffer each iteration.

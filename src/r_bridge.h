@@ -10,6 +10,7 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress, SEXP col_ty
 SEXP C_scan_node(SEXP path);
 SEXP C_scan_node_temp(SEXP path);
 SEXP C_collect(SEXP node_xptr);
+SEXP C_node_take(SEXP node_xptr);
 SEXP C_node_optimize(SEXP node_xptr);
 SEXP C_node_next_batch(SEXP node_xptr);
 SEXP C_node_schema(SEXP node_xptr);

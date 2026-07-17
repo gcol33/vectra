@@ -14,7 +14,10 @@
 .batch_cursor <- function(x) {
   if (!inherits(x, "vectra_node"))
     stop("`x` must be a vectra_node (build one with tbl(), tbl_csv(), ...)")
-  node <- x$.node
+  # Consume x up front: move the plan into a private handle and clear the
+  # caller's, so a later collect() or verb on x raises the standard consumed
+  # error rather than re-driving this drained cursor and returning wrong data.
+  node <- .Call(C_node_take, x$.node)
   .Call(C_node_optimize, node)
   function() .Call(C_node_next_batch, node)
 }
