@@ -13,6 +13,16 @@
   compressed size past 2 GB) now reads fine. Enables `tbl_csv()` on multi-GB
   compressed streams.
 
+* The gzip reader now follows concatenated gzip members, so a multi-member `.gz`
+  (as produced by `bgzip` and `cat a.gz b.gz`) reads whole instead of stopping
+  at the first member. The header is parsed field by field with no fixed size
+  cap. This affects `tbl_csv()`, `tbl_fasta()`, `tbl_fastq()`, and `tbl_bed()`
+  on any `.gz` input.
+
+* A truncated or corrupt `.gz` now fails loudly. The scanners distinguish a
+  hard decode error from a clean end of stream, so a partial compressed file
+  raises an error instead of silently returning a short read.
+
 # vectra 0.11.1
 
 ## Bug fixes

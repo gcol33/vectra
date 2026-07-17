@@ -103,6 +103,48 @@ test_that("tbl_fasta gzip input matches plain", {
   expect_equal(a$seq, seqs)
 })
 
+test_that("tbl_fasta reads a concatenated multi-member gzip whole", {
+  set.seed(11)
+  ids  <- paste0("m", 1:40)
+  seqs <- rand_dna(40)
+  descs <- rep("", 40)   # full-length so nothing recycles to NA at the split
+  f <- tempfile(fileext = ".fasta"); on.exit(unlink(f))
+  write_fasta(ids, descs, seqs, f)
+
+  # Two independent gzip members (records 1:25, then 26:40) whose raw bytes
+  # concatenate into one multi-member .gz -- exactly what bgzip and
+  # `cat a.gz b.gz` produce. The whole file must read, not just member one.
+  g1 <- tempfile(fileext = ".gz"); on.exit(unlink(g1), add = TRUE)
+  g2 <- tempfile(fileext = ".gz"); on.exit(unlink(g2), add = TRUE)
+  write_fasta(ids[1:25],  descs[1:25],  seqs[1:25],  g1)
+  write_fasta(ids[26:40], descs[26:40], seqs[26:40], g2)
+  fg <- tempfile(fileext = ".fasta.gz"); on.exit(unlink(fg), add = TRUE)
+  writeBin(c(readBin(g1, "raw", file.size(g1)),
+             readBin(g2, "raw", file.size(g2))), fg)
+
+  a <- tbl_fasta(f,  quiet = TRUE) |> collect()
+  b <- tbl_fasta(fg, quiet = TRUE) |> collect()
+  expect_equal(b, a)
+  expect_equal(nrow(b), 40L)
+})
+
+test_that("tbl_fasta errors on a truncated gzip stream instead of a short read", {
+  set.seed(12)
+  ids  <- paste0("t", 1:200)
+  seqs <- rand_dna(200)
+  fg <- tempfile(fileext = ".fasta.gz"); on.exit(unlink(fg))
+  write_fasta(ids, rep("", 200), seqs, fg)
+
+  raw <- readBin(fg, "raw", file.size(fg))
+  # Keep the front two-thirds: cuts deep into the deflate body (past the
+  # trailer), so the stream ends mid-inflate and must fail loudly.
+  trunc <- tempfile(fileext = ".fasta.gz"); on.exit(unlink(trunc), add = TRUE)
+  writeBin(head(raw, floor(length(raw) * 2 / 3)), trunc)
+
+  expect_error(collect(tbl_fasta(trunc, quiet = TRUE)),
+               "truncated|corrupt")
+})
+
 test_that("tbl_fasta is invariant to record batching", {
   set.seed(2)
   ids  <- paste0("s", 1:300)

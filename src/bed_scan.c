@@ -311,6 +311,9 @@ static VecBatch *bed_scan_next_batch(VecNode *self) {
 
     VecBatch *batch = bed_read_batch(sn);
     if (!batch) {
+        if (sn->reader->error_fn && sn->reader->error_fn(sn->reader))
+            vectra_error("failed to read BED file (corrupt or truncated "
+                         "compressed stream): %s", sn->path);
         sn->exhausted = 1;
         bed_log_total(sn);
     }

@@ -348,6 +348,10 @@ static VecBatch *fasta_scan_next_batch(VecNode *self) {
     int eof = 0;
     VecBatch *batch = fasta_read_batch(sn, &eof);
     if (eof) {
+        if (sn->reader->error_fn && sn->reader->error_fn(sn->reader))
+            vectra_error("failed to read %s file (corrupt or truncated "
+                         "compressed stream): %s",
+                         sn->is_fastq ? "FASTQ" : "FASTA", sn->path);
         sn->exhausted = 1;
         fasta_log_total(sn);
     }

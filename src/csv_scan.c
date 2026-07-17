@@ -478,6 +478,9 @@ static VecBatch *csv_scan_next_batch(VecNode *self) {
 
     VecBatch *batch = csv_read_batch(sn);
     if (!batch) {
+        if (sn->reader->error_fn && sn->reader->error_fn(sn->reader))
+            vectra_error("failed to read CSV (corrupt or truncated "
+                         "compressed stream)");
         sn->exhausted = 1;
         return NULL;
     }
