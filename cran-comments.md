@@ -1,28 +1,38 @@
 ## Submission
 
-This is an update to the version currently on CRAN (0.9.8).
+This is a bug-fix hotfix for the version currently on CRAN (0.11.1).
 
-The headline fix (issue #5): a lazy query is now consumed by exactly one
-terminal operation. `collect()` and `append_vtr()` join the `write_*()` verbs
-in invalidating a node once its pull cursor is drained, so a second terminal op
-on the same node object raises a clear "already consumed" error instead of
-re-driving an exhausted plan. Previously a `collect()` followed by a
-`write_vtr()` on the same node returned empty output or, on a multi-row-group
-plan, silently reinterpreted a string column's bytes as doubles. `vec_builder_*`
-also now errors on a type-mismatched array rather than reinterpreting raw bytes.
+It corrects five defects found in an audit of the package's bounded-memory and
+consume-once invariants:
 
-This release additionally folds in the feature work from the 0.10.x and 0.11.0
-development line (bounded-memory joins, sort, grouped and holistic aggregates,
-top-N, fuzzy and interval joins; a k-mer spectrum node; FASTA/BED scan
-backends; feature-space kNN and the MOP transferability surface; and a `delim`
-argument to `tbl_csv()`); see NEWS.md.
+* `collect_chunked()` / `chunk_feeder()` now consume their input node like the
+  other terminals, so re-collecting a drained streaming cursor raises the
+  documented "already consumed" error instead of re-driving an exhausted plan
+  and returning wrong data.
+* the external record merge behind `median()`, `n_distinct()` and `kmer()` now
+  reduces its spilled runs to a bounded fan-in before the final merge (as the
+  row sort already did), so a larger-than-RAM aggregate no longer opens every
+  run at once and cannot exhaust the file-handle table.
+* `propagate()` runs to convergence instead of a fixed 20 iterations.
+* `resolve()` / `propagate()` coerce their key columns to a common type before
+  matching, so mismatched numeric key types no longer silently miss.
+* `lookup(.report = TRUE)` streams its diagnostic counts instead of collecting
+  the whole fact table.
+
+It also folds in the streaming gzip reader from the unreleased 0.11.2 (a `.gz`
+larger than RAM, and past 2 GB compressed, now reads).
+
+The incoming-feasibility NOTE flags the maintainer update count. These are
+memory-safety and silent-wrong-answer fixes to a larger-than-RAM engine, hence
+the quick turnaround after 0.11.1; there are no user-facing API changes.
 
 ## Test environments
 
 * Local: Windows 11, R 4.6.0 -- 0 errors | 0 warnings | 0 notes
-* win-builder: R-devel (ucrt)
+* win-builder: R-devel (ucrt) -- 0 errors | 0 warnings | 1 NOTE (incoming
+  feasibility: maintainer update count)
 * GitHub Actions: ubuntu-latest (R-devel, R-release, R-oldrel-1),
-  macOS-release, windows-release
+  macOS-release, windows-release -- all OK; ASAN/UBSAN clean
 
 The OpenMP team size is capped at two cores when `_R_CHECK_LIMIT_CORES_` is set
 (R_init_vectra), so the parallel string, fuzzy-join, and spatial kernels stay
@@ -30,7 +40,7 @@ within the check farm's two-core limit.
 
 ## R CMD check results
 
-0 errors | 0 warnings | 0 notes expected.
+0 errors | 0 warnings | 1 NOTE (incoming feasibility only).
 
 ## Reverse dependencies
 
