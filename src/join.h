@@ -90,6 +90,14 @@ typedef struct {
     int        bnl_fin_side;  /* finalize sub-stage: 0 = probe scan, 1 = build */
     uint8_t   *bnl_pmatched;  /* bitset over probe rows (non-inner kinds) */
     uint8_t   *bnl_bmatched;  /* bitset over build rows (full only) */
+    /* Resumable cursor over one BNL probe batch (bounds the many-to-many emit
+       against a build block, the same way the resident probe path does). */
+    VecBatch  *bnl_pb;           /* active probe batch (owned); NULL = none */
+    VecArray  *bnl_pcols;        /* coerced probe key columns */
+    VecArray  *bnl_pcoerced[16]; /* owned coerced key arrays, freed at drain */
+    VecArray  *bnl_phcols;       /* hash_cols out-param from coerce */
+    int64_t    bnl_probe_li;     /* next logical probe row in the batch */
+    int64_t    bnl_chain_br;     /* resume build row mid-chain, or -1 */
 
     /* State machine */
     JoinState state;
@@ -118,6 +126,20 @@ typedef struct {
     int64_t    merge_r_group;    /* start of current equal-key group in build */
     int64_t    merge_r_group_end;/* end (exclusive) of current group */
     int64_t    merge_r_sub;      /* current position within group (for M:N) */
+
+    /* Resumable hash-probe cursor: bounds the many-to-many output so one hot
+       key in a probe batch cannot materialize batch_size * chain_len rows at
+       once. State persists across next_batch calls for one probe batch. */
+    VecBatch  *probe_cur;            /* active probe batch (owned); NULL = none */
+    VecArray  *probe_cols;           /* coerced probe key columns (from coerce) */
+    VecArray  *probe_coerced[16];    /* owned coerced key arrays, freed at drain */
+    VecArray  *probe_hash_cols;      /* hash_cols out-param from coerce */
+    uint64_t  *probe_hash;           /* per-logical-row key hashes */
+    uint8_t   *probe_matched;        /* left/full: matched-probe bitset (else NULL) */
+    int64_t    probe_li;             /* next logical row (match phase) */
+    int64_t    probe_chain_br;       /* resume build row mid-chain, or -1 */
+    int        probe_phase;          /* 0 = matching, 1 = emit-unmatched (left/full) */
+    int64_t    probe_unmatched_li;   /* cursor for the emit-unmatched phase */
 } JoinNode;
 
 JoinNode *join_node_create(VecNode *left, VecNode *right,

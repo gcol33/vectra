@@ -34,6 +34,11 @@
   returns a logical (an `NA` operand is `FALSE`, or `TRUE` if the set contains
   `NA`).
 
+* Hash joins now emit many-to-many output in bounded chunks: a hot key matched
+  by a large probe batch no longer materializes the whole cross product in one
+  resident batch (the probe resumes mid-chain across batches, on both the
+  in-memory and spilled block-nested-loop paths).
+
 * `fuzzy_join()` errors on a non-string key/blocking column instead of
   crashing; a join on more than 16 key columns is rejected rather than
   overrunning internal buffers.

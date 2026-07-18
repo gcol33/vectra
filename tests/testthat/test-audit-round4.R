@@ -233,3 +233,75 @@ test_that("%in% returns a logical (never NA) and matches NA via an NA in the set
   expect_equal(rs$a, c("a", "b", NA, "c") %in% c("a", "c"))
   expect_equal(rs$b, c("a", "b", NA, "c") %in% c("a", NA))
 })
+
+test_that("hash join bounds the many-to-many output across batches", {
+  K <- 300L; M <- 300L                       # 90000 pairs, > JOIN_PROBE_EMIT_MAX
+  fb <- tempfile(fileext = ".vtr"); fp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fb, fp)))
+  write_vtr(data.frame(k = rep(1L, K), vb = seq_len(K)), fb)
+  write_vtr(data.frame(k = rep(1L, M), vp = seq_len(M)), fp, batch_size = 131072)
+
+  r <- inner_join(tbl(fp), tbl(fb), by = "k") |> collect()
+  expect_equal(nrow(r), K * M)
+  d <- dplyr::inner_join(data.frame(k = rep(1L, M), vp = seq_len(M)),
+                         data.frame(k = rep(1L, K), vb = seq_len(K)), by = "k",
+                         relationship = "many-to-many")
+  expect_equal(sort(r$vp * 10000L + r$vb), sort(d$vp * 10000L + d$vb))
+
+  # emitted in bounded chunks, not one giant batch
+  n_chunks <- 0L; max_rows <- 0L
+  total <- collect_chunked(inner_join(tbl(fp), tbl(fb), by = "k"),
+                           function(acc, chunk) {
+                             n_chunks <<- n_chunks + 1L
+                             max_rows <<- max(max_rows, nrow(chunk))
+                             acc + nrow(chunk)
+                           }, 0)
+  expect_equal(total, K * M)
+  expect_gt(n_chunks, 1L)
+  expect_lte(max_rows, 65536L)
+})
+
+test_that("left join over a hot key resumes correctly and keeps unmatched rows", {
+  K <- 300L; M <- 300L
+  fb <- tempfile(fileext = ".vtr"); fp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fb, fp)))
+  write_vtr(data.frame(k = rep(1L, K), vb = seq_len(K)), fb)
+  px <- data.frame(k = c(rep(1L, M), 2L, 3L), vp = c(seq_len(M), 999L, 998L))
+  write_vtr(px, fp, batch_size = 131072)
+  rl <- left_join(tbl(fp), tbl(fb), by = "k") |> collect()
+  expect_equal(nrow(rl), K * M + 2L)
+  expect_equal(sum(is.na(rl$vb)), 2L)   # k = 2, 3 unmatched
+})
+
+test_that("BNL fallback (spilled hot key) also bounds the many-to-many output", {
+  old <- options(vectra.mem = 4096)   # tiny budget: spill a single hot key to BNL
+  on.exit(options(old))
+  K <- 400L; M <- 400L
+  fb <- tempfile(fileext = ".vtr"); fp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fb, fp)), add = TRUE)
+  write_vtr(data.frame(k = rep(7L, K), vb = seq_len(K)), fb, batch_size = 64)
+  write_vtr(data.frame(k = rep(7L, M), vp = seq_len(M)), fp, batch_size = 64)
+
+  r <- inner_join(tbl(fp), tbl(fb), by = "k") |> collect()
+  expect_equal(nrow(r), K * M)
+  d <- dplyr::inner_join(data.frame(k = rep(7L, M), vp = seq_len(M)),
+                         data.frame(k = rep(7L, K), vb = seq_len(K)), by = "k",
+                         relationship = "many-to-many")
+  expect_equal(sort(r$vp * 10000L + r$vb), sort(d$vp * 10000L + d$vb))
+
+  max_rows <- 0L
+  total <- collect_chunked(inner_join(tbl(fp), tbl(fb), by = "k"),
+                           function(acc, chunk) {
+                             max_rows <<- max(max_rows, nrow(chunk)); acc + nrow(chunk)
+                           }, 0)
+  expect_equal(total, K * M)
+  expect_lte(max_rows, 65536L)
+
+  # left/full over the spilled hot key keep the unmatched rows
+  px <- data.frame(k = c(rep(7L, M), 8L), vp = c(seq_len(M), 111L))
+  fp2 <- tempfile(fileext = ".vtr"); on.exit(unlink(fp2), add = TRUE)
+  write_vtr(px, fp2, batch_size = 64)
+  rl <- left_join(tbl(fp2), tbl(fb), by = "k") |> collect()
+  expect_equal(nrow(rl), K * M + 1L)
+  expect_equal(sum(is.na(rl$vb)), 1L)
+})
