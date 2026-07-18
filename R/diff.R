@@ -16,6 +16,16 @@
 #' as modified — use `added` and `deleted` together to detect updates (a key
 #' that appears in both means a row was replaced).
 #'
+#' `key_col` is treated as a **primary key**: keys are assumed unique within
+#' each file, so if the same key appears on several rows of `new_path` only one
+#' is reported in `added`.
+#'
+#' The current implementation holds all distinct keys of `old_path` resident
+#' while streaming `new_path`, so peak memory scales with the number of distinct
+#' keys in the old file (the added rows and the diff itself stream). For a diff
+#' whose key cardinality does not fit in memory this is a bounded-memory hole
+#' slated for an external sort-merge rewrite.
+#'
 #' @param old_path Path to the older `.vtr` file.
 #' @param new_path Path to the newer `.vtr` file.
 #' @param key_col  Name of the column to use as the row key (must exist in
