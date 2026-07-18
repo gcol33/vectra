@@ -397,15 +397,18 @@ static int64_t batch_to_sexp_direct(const VecBatch *batch, int col_idx,
                 }
             }
         } else {
-            if (vec_array_all_valid(arr)) {
-                for (int64_t i = 0; i < n; i++)
-                    out[i] = (double)arr->buf.i64[i];
-            } else {
-                for (int64_t i = 0; i < n; i++) {
-                    if (!vec_array_is_valid(arr, i))
-                        out[i] = NA_REAL;
-                    else
-                        out[i] = (double)arr->buf.i64[i];
+            /* Same precision-loss warning as array_to_sexp: this fast path is the
+               one the common hint>0 collect actually takes, so without it a value
+               above 2^53 lost precision silently. Runs on the main thread. */
+            int warned = 0;
+            for (int64_t i = 0; i < n; i++) {
+                if (!vec_array_is_valid(arr, i)) { out[i] = NA_REAL; continue; }
+                int64_t v = arr->buf.i64[i];
+                out[i] = (double)v;
+                if (!warned && (v > ((int64_t)1 << 53) || v < -((int64_t)1 << 53))) {
+                    Rf_warning("int64 value exceeds 2^53; precision lost. "
+                               "Use options(vectra.int64 = \"bit64\") for exact representation.");
+                    warned = 1;
                 }
             }
         }

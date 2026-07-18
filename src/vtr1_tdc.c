@@ -192,7 +192,8 @@ static uint64_t count_nulls(const uint8_t *validity, int64_t n_rows) {
  * Returns 1 if any column has stats (so the encoder call should fire),
  * 0 if every column collapsed to has_stats == 0 (e.g. zero-row group). */
 static int vtr1_tdc_compute_rowgroup_stats(const VecBatch *batch,
-                                           tdc_column_stats *out) {
+                                           tdc_column_stats *out,
+                                           const VtrQuantizeSpec *qspecs) {
     int any = 0;
     int n_cols = batch->n_cols;
     int64_t n_rows = batch->n_rows;
@@ -234,6 +235,17 @@ static int vtr1_tdc_compute_rowgroup_stats(const VecBatch *batch,
                 found = 1;
             }
             if (found) {
+                /* If this column is quantized, the reader reconstructs each value
+                   as round((v-offset)*scale)/scale+offset, which differs from the
+                   raw v by up to 0.5/scale. The filter evaluates the reconstructed
+                   value, so widen the zone-map range by that half-step; otherwise a
+                   group whose reconstructed edge crosses a predicate boundary could
+                   be pruned while it actually matches. */
+                if (qspecs && qspecs[c].enabled && qspecs[c].scale > 0.0) {
+                    double half = 0.5 / qspecs[c].scale;
+                    mn -= half;
+                    mx += half;
+                }
                 uint64_t mn_bits, mx_bits;
                 memcpy(&mn_bits, &mn, 8);
                 memcpy(&mx_bits, &mx, 8);
@@ -423,7 +435,7 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         tdc_column_stats *stats =
             (tdc_column_stats *)calloc((size_t)n_cols, sizeof(tdc_column_stats));
         if (!stats) vectra_error("alloc failed for tdc_column_stats");
-        int any = vtr1_tdc_compute_rowgroup_stats(batch, stats);
+        int any = vtr1_tdc_compute_rowgroup_stats(batch, stats, qspecs);
         if (any) {
             tdc_status sst = tdc_stream_encoder_set_rowgroup_stats(
                 w->enc, stats, (uint16_t)n_cols);

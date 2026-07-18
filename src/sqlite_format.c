@@ -100,6 +100,14 @@ static int write_varint(uint8_t *p, int64_t val) {
 
 #define MAX_BTREE_DEPTH 20
 #define PAGE1_HEADER_OFFSET 100 /* B-tree header on page 1 starts at 100 */
+/* Reject a cell whose declared payload exceeds this: a corrupt varint can claim
+   a multi-GB payload and drive a huge realloc + over-read. Well past any real
+   SQLite row (SQLITE_MAX_LENGTH defaults to ~1e9). */
+#define SQLFMT_MAX_PAYLOAD ((int64_t)1 << 31)
+/* Slack appended to a page buffer so the two leaf-cell header varints (payload
+   size + rowid, up to 18 bytes total) read near the page end stay inside the
+   allocation even for a corrupt cell pointer at the last byte. */
+#define SQLFMT_PAGE_SLACK 24
 
 typedef struct {
     uint32_t page_no;
@@ -160,7 +168,7 @@ static int init_level(SqlfmtReader *r, int lvl, uint32_t page_no) {
     L->hdr_offset = (page_no == 1) ? PAGE1_HEADER_OFFSET : 0;
 
     if (!L->page_buf) {
-        L->page_buf = (uint8_t *)malloc(r->page_size);
+        L->page_buf = (uint8_t *)malloc(r->page_size + SQLFMT_PAGE_SLACK);
         if (!L->page_buf) return -1;
     }
     if (read_page(r, page_no, L->page_buf) != 0) return -1;
@@ -212,7 +220,9 @@ static int64_t sqlfmt_local_payload(uint32_t usable, int64_t payload) {
 static int read_payload(SqlfmtReader *r, const uint8_t *cell_data,
                          int64_t total_payload, int64_t local_size,
                          uint32_t overflow_page) {
-    if (total_payload > r->record_cap) {
+    /* Keep >= 9 bytes of headroom past record_len so parse_record's serial-type
+       varint scan (up to 9 bytes) near the header end stays in the allocation. */
+    if (total_payload + 9 > r->record_cap) {
         r->record_cap = total_payload + 256;
         r->record_buf = (uint8_t *)realloc(r->record_buf, (size_t)r->record_cap);
         if (!r->record_buf) return -1;
@@ -254,16 +264,22 @@ static int parse_record(SqlfmtReader *r) {
     const uint8_t *p = r->record_buf;
     int64_t hdr_size;
     int off = read_varint(p, &hdr_size);
+    /* The header size includes its own varint and cannot exceed the record. */
+    if (hdr_size < off || hdr_size > r->record_len) return -1;
 
     int ncol = 0;
     int64_t data_offset = hdr_size;
     while (off < hdr_size && ncol < SQLFMT_MAX_COLS) {
         int64_t st;
         off += read_varint(p + off, &st);
+        int64_t len = serial_type_len((int)st);
+        /* A value that spills past the record end would let the value readers
+           over-read record_buf; a corrupt header is rejected rather than trusted. */
+        if (len < 0 || data_offset + len > r->record_len) return -1;
         r->cols[ncol].serial_type = (int)st;
         r->cols[ncol].offset = data_offset;
-        r->cols[ncol].length = serial_type_len((int)st);
-        data_offset += r->cols[ncol].length;
+        r->cols[ncol].length = len;
+        data_offset += len;
         ncol++;
     }
     r->cur_n_cols = ncol;
@@ -276,7 +292,9 @@ static int read_leaf_cell(SqlfmtReader *r) {
     if (L->cell_idx >= L->n_cells) return 0;
 
     uint16_t cp = cell_ptr(L, L->cell_idx);
+    if (cp >= r->page_size) return -1;   /* corrupt cell pointer */
     const uint8_t *cell = L->page_buf + cp;
+    int64_t page_avail = (int64_t)r->page_size - cp;  /* bytes left in page */
     int off = 0;
 
     /* Payload size (varint) */
@@ -288,12 +306,16 @@ static int read_leaf_cell(SqlfmtReader *r) {
     off += read_varint(cell + off, &rowid);
     (void)rowid;
 
+    if (payload_size < 0 || payload_size > SQLFMT_MAX_PAYLOAD) return -1;
+
     /* Compute local payload size and overflow page */
     uint32_t usable = r->page_size - r->reserved;
     int64_t local_size = sqlfmt_local_payload(usable, payload_size);
+    if (local_size < 0 || off + local_size > page_avail) return -1;  /* spills past page */
     uint32_t overflow_page = 0;
     if (local_size < payload_size) {
-        /* Overflow page number follows the local payload */
+        /* Overflow page number (4 bytes) follows the local payload */
+        if (off + local_size + 4 > page_avail) return -1;
         overflow_page = read_be32(cell + off + (int)local_size);
     }
 
@@ -327,6 +349,7 @@ static int btree_next(SqlfmtReader *r) {
             uint32_t child;
             if (L->cell_idx < L->n_cells) {
                 uint16_t cp = cell_ptr(L, L->cell_idx);
+                if (cp + 4 > r->page_size) return -1;  /* corrupt cell pointer */
                 child = read_be32(L->page_buf + cp);
             } else {
                 child = L->right_child;

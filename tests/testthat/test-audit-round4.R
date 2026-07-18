@@ -107,3 +107,63 @@ test_that("GeoTIFF with DEFLATE + horizontal predictor (2) decodes correctly", {
   v <- tbl_tiff(f) |> collect()
   expect_equal(sort(v$band1), sort(terra::values(terra::rast(f))[, 1]))
 })
+
+test_that("ntile front-loads the remainder like dplyr", {
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(x = 1:10, id = 1:10), f)
+  expect_equal((tbl(f) |> arrange(x) |> mutate(nt = ntile(3)) |> collect())$nt,
+               dplyr::ntile(1:10, 3))
+  expect_equal((tbl(f) |> arrange(x) |> mutate(nt = ntile(4)) |> collect())$nt,
+               dplyr::ntile(1:10, 4))
+  expect_equal((tbl(f) |> arrange(x) |> mutate(nt = ntile(7)) |> collect())$nt,
+               dplyr::ntile(1:10, 7))
+})
+
+test_that("row_number(desc(x)) keeps ties in first-arrival order (grouped)", {
+  x <- c(5, 5, 3, 1, 3)
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(x = x, g = rep("a", 5), id = seq_along(x)), f)
+  r <- tbl(f) |> group_by(g) |> mutate(rn = row_number(desc(x))) |> collect()
+  r <- r[order(r$id), ]
+  expect_equal(r$rn, dplyr::row_number(dplyr::desc(x)))
+})
+
+test_that("logical columns feed numeric/rank windows correctly", {
+  x <- c(3, 7, 2, 9, 6)
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(x = x, id = seq_along(x)), f)
+  r <- tbl(f) |> mutate(c = cumsum(x > 5)) |> collect()
+  r <- r[order(r$id), ]
+  expect_equal(r$c, cumsum(x > 5))
+})
+
+test_that("zone-map pruning keeps rows whose quantized value crosses a predicate boundary", {
+  # 4.6 reconstructs to 5.0 under precision=1; the raw max 4.6 must not prune it.
+  x <- c(1.6, 2.6, 3.6, 4.6, 5.6)
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(x = x, id = seq_along(x)), f,
+            quantize = list(x = list(precision = 1, type = "int16")), batch_size = 1)
+  res <- tbl(f) |> filter(x >= 5) |> collect()
+  expect_equal(sort(res$id), c(4, 5))
+})
+
+test_that("int64 above 2^53 warns about precision loss on the fast collect path", {
+  skip_if_not_installed("bit64")
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  big <- bit64::as.integer64(2)^60
+  write_vtr(data.frame(x = big, id = 1L), f)
+  expect_warning(tbl(f) |> collect(), "precision lost")
+})
+
+test_that("untyped SQLite columns (BLOB affinity) render numbers instead of all-NA", {
+  skip_if_not_installed("RSQLite")
+  skip_if_not_installed("DBI")
+  f <- tempfile(fileext = ".sqlite"); on.exit(unlink(f))
+  con <- DBI::dbConnect(RSQLite::SQLite(), f)
+  DBI::dbExecute(con, "CREATE TABLE t (id INTEGER, x, label TEXT)")
+  DBI::dbExecute(con, "INSERT INTO t VALUES (1, 42, 'a'), (2, 100, 'b')")
+  DBI::dbDisconnect(con)
+  r <- tbl_sqlite(f, "t") |> collect()
+  expect_false(all(is.na(r$x)))
+  expect_equal(r$x, c("42", "100"))
+})

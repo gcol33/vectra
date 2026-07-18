@@ -8,6 +8,7 @@ typedef struct {
     VecNode        base;
     SqlfmtReader  *reader;
     VecType       *col_types;
+    uint8_t       *col_untyped; /* 1 = column had no declared type (BLOB affinity) */
     int            n_cols;
     int64_t        batch_size;
     int            exhausted;

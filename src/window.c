@@ -25,6 +25,7 @@ static inline double win_get_double(const VecArray *arr, int64_t i) {
     case VEC_INT32:  return (double)arr->buf.i32[i];
     case VEC_INT16:  return (double)arr->buf.i16[i];
     case VEC_INT8:   return (double)arr->buf.i8[i];
+    case VEC_BOOL:   return arr->buf.bln[i] ? 1.0 : 0.0;
     default:         return 0.0;
     }
 }
@@ -157,6 +158,10 @@ static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
         double va = arr->buf.dbl[a], vb = arr->buf.dbl[b];
         return (va < vb) ? -1 : (va > vb) ? 1 : 0;
     }
+    case VEC_BOOL: {
+        int va = arr->buf.bln[a] ? 1 : 0, vb = arr->buf.bln[b] ? 1 : 0;
+        return (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    }
     case VEC_STRING: {
         int64_t sa = arr->buf.str.offsets[a], ea = arr->buf.str.offsets[a + 1];
         int64_t sb = arr->buf.str.offsets[b], eb = arr->buf.str.offsets[b + 1];
@@ -169,6 +174,38 @@ static int vec_compare_values(const VecArray *arr, int64_t a, int64_t b) {
     }
     default:
         return 0;
+    }
+}
+
+/* dplyr's ntile front-loads the remainder: the first (N %% k) buckets hold
+   ceil(N/k) rows, the rest floor(N/k). pos0 is the 0-based rank in [0, N). */
+static int64_t win_ntile_bucket(int64_t pos0, int64_t N, int64_t k) {
+    if (k <= 0 || N <= 0) return 1;
+    int64_t nl = N % k;               /* number of larger buckets */
+    int64_t large = (N + k - 1) / k;  /* ceil(N/k) */
+    int64_t small = N / k;            /* floor(N/k) */
+    int64_t thr = nl * large;         /* rows covered by the larger buckets */
+    if (pos0 < thr) return pos0 / large + 1;
+    if (small == 0) return nl;        /* N < k: only nl one-row buckets are used */
+    return nl + (pos0 - thr) / small + 1;
+}
+
+/* Assign row_number(desc(x)) = rank(desc, ties = "first") into result over the
+   ascending-sorted index array idx[0..n-1]: largest value gets 1, and within a
+   tie group the earlier-arriving row (lower original index) gets the smaller
+   number, so ties are not reversed. */
+static void win_row_number_desc(VecArray *result, const int64_t *idx,
+                                int64_t n, const VecArray *cmp_arr) {
+    int64_t i = 0;
+    while (i < n) {
+        int64_t j = i;
+        while (j + 1 < n && vec_compare_values(cmp_arr, idx[j + 1], idx[i]) == 0) j++;
+        int64_t base = n - j;  /* (# strictly greater) + 1 */
+        for (int64_t p = i; p <= j; p++) {
+            vec_array_set_valid(result, idx[p]);
+            result->buf.dbl[idx[p]] = (double)(base + (p - i));
+        }
+        i = j + 1;
     }
 }
 
@@ -312,10 +349,13 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
             int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
             for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
             win_sort_indices(idx, seg_len, input);
-            for (int64_t i = 0; i < seg_len; i++) {
-                vec_array_set_valid(result, idx[i]);
-                result->buf.dbl[idx[i]] =
-                    desc ? (double)(seg_len - i) : (double)(i + 1);
+            if (!desc) {
+                for (int64_t i = 0; i < seg_len; i++) {
+                    vec_array_set_valid(result, idx[i]);
+                    result->buf.dbl[idx[i]] = (double)(i + 1);
+                }
+            } else {
+                win_row_number_desc(result, idx, seg_len, input);
             }
             free(idx);
         } else {
@@ -450,9 +490,8 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         int k = offset;
         for (int64_t i = start; i < end; i++) {
             int64_t row_idx = i - start;  /* 0-based within partition */
-            int64_t bucket = (row_idx * k / seg_len) + 1;
             vec_array_set_valid(result, i);
-            result->buf.dbl[i] = (double)bucket;
+            result->buf.dbl[i] = (double)win_ntile_bucket(row_idx, seg_len, k);
         }
         break;
     }
@@ -1097,7 +1136,7 @@ static VecBatch *window_ostream_next(WindowNode *wn) {
                 st->seen++;
                 int64_t pos = st->seen - 1;
                 vec_array_set_valid(&out, i);
-                out.buf.dbl[i] = (double)((pos * k) / wn->total_n + 1);
+                out.buf.dbl[i] = (double)win_ntile_bucket(pos, wn->total_n, k);
             }
             break;
         }
@@ -1387,9 +1426,12 @@ static VecBatch *window_next_batch(VecNode *self) {
                         int64_t *stmp   = (int64_t *)malloc((size_t)glen * sizeof(int64_t));
                         for (int64_t j = 0; j < glen; j++) sorted[j] = rows[j];
                         win_merge_sort(sorted, stmp, glen, in_arr);
-                        for (int64_t j = 0; j < glen; j++)
-                            out.buf.dbl[sorted[j]] =
-                                ws->desc ? (double)(glen - j) : (double)(j + 1);
+                        if (ws->desc) {
+                            win_row_number_desc(&out, sorted, glen, in_arr);
+                        } else {
+                            for (int64_t j = 0; j < glen; j++)
+                                out.buf.dbl[sorted[j]] = (double)(j + 1);
+                        }
                         free(stmp);
                         free(sorted);
                     } else {
@@ -1531,10 +1573,8 @@ static VecBatch *window_next_batch(VecNode *self) {
 
                 case WIN_NTILE: {
                     int nt = ws->offset;  /* number of tiles */
-                    for (int64_t j = 0; j < glen; j++) {
-                        int64_t bucket = (j * nt / glen) + 1;
-                        out.buf.dbl[rows[j]] = (double)bucket;
-                    }
+                    for (int64_t j = 0; j < glen; j++)
+                        out.buf.dbl[rows[j]] = (double)win_ntile_bucket(j, glen, nt);
                     break;
                 }
 
