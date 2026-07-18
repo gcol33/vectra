@@ -70,7 +70,8 @@ parse_join_keys <- function(x, y, by) {
 #' unlink(c(f1, f2))
 #'
 #' @export
-left_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+left_join <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                       na_matches = c("na", "never"), ...) {
   UseMethod("left_join")
 }
 
@@ -119,7 +120,8 @@ left_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
 
 #' @rdname left_join
 #' @export
-inner_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+inner_join <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                       na_matches = c("na", "never"), ...) {
   UseMethod("inner_join")
 }
 
@@ -135,7 +137,8 @@ inner_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
 
 #' @rdname left_join
 #' @export
-right_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+right_join <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                       na_matches = c("na", "never"), ...) {
   UseMethod("right_join")
 }
 
@@ -224,7 +227,8 @@ right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
 
 #' @rdname left_join
 #' @export
-full_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+full_join <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                       na_matches = c("na", "never"), ...) {
   UseMethod("full_join")
 }
 
@@ -240,7 +244,7 @@ full_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
 
 #' @rdname left_join
 #' @export
-semi_join <- function(x, y, by = NULL, ...) {
+semi_join <- function(x, y, by = NULL, na_matches = c("na", "never"), ...) {
   UseMethod("semi_join")
 }
 
@@ -254,7 +258,7 @@ semi_join.vectra_node <- function(x, y, by = NULL,
 
 #' @rdname left_join
 #' @export
-anti_join <- function(x, y, by = NULL, ...) {
+anti_join <- function(x, y, by = NULL, na_matches = c("na", "never"), ...) {
   UseMethod("anti_join")
 }
 

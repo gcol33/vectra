@@ -9,17 +9,45 @@
 \alias{anti_join}
 \title{Join two vectra tables}
 \usage{
-left_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+left_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-inner_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+inner_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-right_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+right_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-full_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+full_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-semi_join(x, y, by = NULL, ...)
+semi_join(x, y, by = NULL, na_matches = c("na", "never"), ...)
 
-anti_join(x, y, by = NULL, ...)
+anti_join(x, y, by = NULL, na_matches = c("na", "never"), ...)
 }
 \arguments{
 \item{x}{A \code{vectra_node} object (left table).}
@@ -32,10 +60,10 @@ like \code{c("a" = "b")}. \code{NULL} for natural join (common columns).}
 \item{suffix}{A character vector of length 2 for disambiguating non-key
 columns with the same name (default \code{c(".x", ".y")}).}
 
-\item{...}{Ignored.}
-
 \item{na_matches}{How to match \code{NA} keys: \code{"na"} (default, as in dplyr) treats
 \code{NA} as matching \code{NA}; \code{"never"} uses SQL semantics where \code{NA} never matches.}
+
+\item{...}{Ignored.}
 }
 \value{
 A \code{vectra_node} with the joined result.
