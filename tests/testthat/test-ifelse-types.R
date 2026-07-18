@@ -46,3 +46,11 @@ test_that("earliest-known-year pattern: unknown maps to NA and sorts last", {
   res <- res[order(res$piece_id), ]
   expect_equal(res$STATUS_YR, c(1990, 0, 1985))   # piece 2 stays unknown (0)
 })
+
+test_that("if_else honours the missing argument", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c(1, NA, 3)), f)
+  expect_equal(collect(mutate(tbl(f), z = if_else(x > 2, 1, 0, -99)))$z,
+               dplyr::if_else(c(1, NA, 3) > 2, 1, 0, -99))
+})

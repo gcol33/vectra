@@ -703,6 +703,10 @@ static uint8_t *read_block(TiffReader *r, int64_t block_idx,
     int64_t expected_bytes = block_expected_bytes(r, block_idx);
 
     if (r->compression == COMPRESS_NONE) {
+        /* A corrupt/hostile file can record a byte count smaller than the block's
+           pixel geometry; reject it so extract_pixel cannot read past the buffer. */
+        if (compressed_len < expected_bytes)
+            return NULL;
         uint8_t *buf = (uint8_t *)malloc((size_t)compressed_len);
         if (!buf) return NULL;
         if (tio_read_at(&r->io, offset, buf, (size_t)compressed_len) != 0) {

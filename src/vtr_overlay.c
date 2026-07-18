@@ -79,13 +79,20 @@ static GEOSGeometry *areal_only(GEOSContextHandle_t ctx, const GEOSGeometry *g) 
 
 /* ---- small dynamic int vector -------------------------------------------- */
 
-typedef struct { int *idx; int n, cap; } IntVec;
-static void iv_init(IntVec *v) { v->idx = NULL; v->n = 0; v->cap = 0; }
+/* `oom` is set on an allocation failure instead of raising, because these run
+ * inside OpenMP worker threads (iv_push also inside a GEOS query callback) where
+ * an R error would longjmp out of the thread (UB). process_tile propagates the
+ * flag to its OutList and the region driver raises on the master thread. */
+typedef struct { int *idx; int n, cap; int oom; } IntVec;
+static void iv_init(IntVec *v) { v->idx = NULL; v->n = 0; v->cap = 0; v->oom = 0; }
 static void iv_push(IntVec *v, int x) {
+    if (v->oom) return;
     if (v->n == v->cap) {
-        v->cap = v->cap ? v->cap * 2 : 16;
-        v->idx = (int *) realloc(v->idx, (size_t) v->cap * sizeof(int));
-        if (v->idx == NULL) error("vectra overlay: out of memory");
+        int nc = v->cap ? v->cap * 2 : 16;
+        int *ni = (int *) realloc(v->idx, (size_t) nc * sizeof(int));
+        if (ni == NULL) { v->oom = 1; return; }
+        v->idx = ni;
+        v->cap = nc;
     }
     v->idx[v->n++] = x;
 }
@@ -107,14 +114,17 @@ static void uf_union(int *p, int a, int b) {
  * `face` ties the rows that came from the same polygonised face together, so the
  * caller can rebuild the piece-id the overlaps are grouped by. */
 typedef struct { char *hex; int origin; double area; int face; } OutPiece;
-typedef struct { OutPiece *a; size_t n, cap; } OutList;
+typedef struct { OutPiece *a; size_t n, cap; int oom; } OutList;
 
-static void ol_init(OutList *o) { o->a = NULL; o->n = 0; o->cap = 0; }
+static void ol_init(OutList *o) { o->a = NULL; o->n = 0; o->cap = 0; o->oom = 0; }
 static void ol_push(OutList *o, char *hex, int origin, double area, int face) {
+    if (o->oom) { free(hex); return; }
     if (o->n == o->cap) {
-        o->cap = o->cap ? o->cap * 2 : 256;
-        o->a = (OutPiece *) realloc(o->a, o->cap * sizeof(OutPiece));
-        if (o->a == NULL) error("vectra overlay: out of memory");
+        size_t nc = o->cap ? o->cap * 2 : 256;
+        OutPiece *na = (OutPiece *) realloc(o->a, nc * sizeof(OutPiece));
+        if (na == NULL) { o->oom = 1; free(hex); return; }
+        o->a = na;
+        o->cap = nc;
     }
     o->a[o->n].hex = hex; o->a[o->n].origin = origin;
     o->a[o->n].area = area; o->a[o->n].face = face; o->n++;
@@ -126,6 +136,7 @@ static void emit_piece(GEOSContextHandle_t ctx, GEOSWKBWriter *writer, OutList *
     unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, geom, &len);
     if (buf == NULL) return;
     char *hex = (char *) malloc(len + 1);
+    if (hex == NULL) { out->oom = 1; GEOSFree_r(ctx, buf); return; }
     memcpy(hex, buf, len); hex[len] = '\0';
     GEOSFree_r(ctx, buf);
     ol_push(out, hex, origin, area, face);
@@ -141,12 +152,17 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBWriter *writer,
                          GEOSGeometry * const *base, const double *base_area, const int *uniq,
                          const int *members, int nmem, const double *rect,
                          OutList *out, double *inarea, int *gface, double prec, int pip) {
+    if (out->oom) return;   /* a prior tile on this worker already ran out of memory */
     GEOSGeometry **poly = (GEOSGeometry **) calloc((size_t) nmem, sizeof(GEOSGeometry *));
     unsigned char *owned = (unsigned char *) calloc((size_t) nmem, 1);
     const GEOSPreparedGeometry **prep =
         (const GEOSPreparedGeometry **) calloc((size_t) nmem, sizeof(const GEOSPreparedGeometry *));
     int *store = (int *) malloc((size_t) nmem * sizeof(int));
-    if (poly == NULL || owned == NULL || prep == NULL || store == NULL) error("vectra overlay: out of memory");
+    if (poly == NULL || owned == NULL || prep == NULL || store == NULL) {
+        free(poly); free(owned); free((void *) prep); free(store);
+        out->oom = 1;
+        return;
+    }
 
     GEOSSTRtree *tree = GEOSSTRtree_create_r(ctx, 10);
     int live = 0;
@@ -282,6 +298,7 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBWriter *writer,
                     }
                     if (fpt != NULL) GEOSGeom_destroy_r(ctx, fpt);
                 }
+                if (cand.oom) out->oom = 1;
                 free(cand.idx);
                 GEOSGeom_destroy_r(ctx, faces);
             }
@@ -435,6 +452,8 @@ SEXP C_overlay_components(SEXP bbox_sexp) {
             if (cand.idx[c] > i) uf_union(parent, i, cand.idx[c]);
         if ((i & 4095) == 0) R_CheckUserInterrupt();
     }
+    /* This loop is serial (main thread), so raising here is safe. */
+    if (cand.oom) { free(cand.idx); error("vectra overlay: out of memory"); }
     free(cand.idx);
 
     SEXP comp = PROTECT(allocVector(INTSXP, n));
@@ -653,6 +672,19 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
         GEOS_finish_r(fctx);
     }
     R_Free(base); R_Free(base_area);
+
+    {   /* raise on the master thread if any worker ran out of memory */
+        int oom = 0;
+        for (int t = 0; t < nw; t++) if (worker[t].oom) oom = 1;
+        if (oom) {
+            for (int t = 0; t < nw; t++) {
+                for (size_t k = 0; k < worker[t].n; k++) free(worker[t].a[k].hex);
+                free(worker[t].a);
+            }
+            R_Free(inarea); R_Free(jfill); R_Free(jsize);
+            error("vectra overlay: out of memory");
+        }
+    }
 
     size_t total = 0;
     for (int t = 0; t < nw; t++) total += worker[t].n;

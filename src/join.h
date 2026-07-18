@@ -49,6 +49,7 @@ typedef struct {
     VecNode  *right;
     JoinKind  kind;
     int       n_keys;
+    int       na_matches;    /* 1 = NA matches NA (dplyr default), 0 = SQL */
     JoinKey  *keys;
     char     *suffix_x;
     char     *suffix_y;

@@ -91,13 +91,19 @@ static uint64_t hash_join_key(const VecArray *cols, const int *key_indices,
 
 static int join_keys_equal(const VecArray *probe_cols, const int *probe_key_idx,
                            const VecArray *build_cols, const int *build_key_idx,
-                           int n_keys, int64_t probe_row, int64_t build_row) {
+                           int n_keys, int64_t probe_row, int64_t build_row,
+                           int na_matches) {
     for (int k = 0; k < n_keys; k++) {
         const VecArray *pa = &probe_cols[probe_key_idx[k]];
         const VecArray *ba = &build_cols[build_key_idx[k]];
         int pv = vec_array_is_valid(pa, probe_row);
         int bv = vec_array_is_valid(ba, build_row);
-        if (!pv || !bv) return 0;  /* NA never matches */
+        if (!pv || !bv) {
+            /* na_matches: NA matches NA (dplyr default); otherwise NA never
+               matches (SQL). One side NA and the other not is never a match. */
+            if (na_matches && !pv && !bv) continue;
+            return 0;
+        }
         switch (pa->type) {
         case VEC_INT64:
             if (pa->buf.i64[probe_row] != ba->buf.i64[build_row]) return 0;
@@ -137,7 +143,7 @@ static int join_keys_equal(const VecArray *probe_cols, const int *probe_key_idx,
 static int64_t jht_probe(const JoinHT *jht, uint64_t hash,
                           const VecArray *probe_cols, const int *probe_key_idx,
                           const VecArray *build_cols, const int *build_key_idx,
-                          int n_keys, int64_t probe_row) {
+                          int n_keys, int64_t probe_row, int na_matches) {
     int64_t mask = jht->n_slots - 1;
     int64_t slot = (int64_t)(hash & (uint64_t)mask);
     for (;;) {
@@ -147,7 +153,7 @@ static int64_t jht_probe(const JoinHT *jht, uint64_t hash,
             while (br >= 0) {
                 if (join_keys_equal(probe_cols, probe_key_idx,
                                     build_cols, build_key_idx,
-                                    n_keys, probe_row, br))
+                                    n_keys, probe_row, br, na_matches))
                     return br;
                 br = jht->build_next[br];
             }
@@ -159,12 +165,12 @@ static int64_t jht_probe(const JoinHT *jht, uint64_t hash,
 static int64_t jht_chain_next(const JoinHT *jht, int64_t build_row,
                                const VecArray *probe_cols, const int *probe_key_idx,
                                const VecArray *build_cols, const int *build_key_idx,
-                               int n_keys, int64_t probe_row) {
+                               int n_keys, int64_t probe_row, int na_matches) {
     int64_t br = jht->build_next[build_row];
     while (br >= 0) {
         if (join_keys_equal(probe_cols, probe_key_idx,
                             build_cols, build_key_idx,
-                            n_keys, probe_row, br))
+                            n_keys, probe_row, br, na_matches))
             return br;
         br = jht->build_next[br];
     }
@@ -555,6 +561,7 @@ static VecNode *make_partition_join(JoinNode *jn, int p) {
     JoinNode *sj = join_node_create((VecNode *)lsc, (VecNode *)rsc, jn->kind,
                                     jn->n_keys, keys, jn->suffix_x, jn->suffix_y,
                                     jn->mem_budget, jn->temp_dir);
+    sj->na_matches = jn->na_matches;   /* inherit NA-matching in re-partition */
     sj->spill_depth = jn->spill_depth + 1;
     return (VecNode *)sj;
 }
@@ -716,7 +723,7 @@ static VecBatch *bnl_probe_batch(JoinNode *jn, VecBatch *pbatch) {
         int64_t gord = jn->bnl_pbase + li;
         uint64_t h = hash_join_key(probe_cols, jn->lkey_idx, jn->n_keys, pr);
         int64_t br = jht_probe(&jn->jht, h, probe_cols, jn->lkey_idx,
-                               jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+                               jn->r_cols, jn->rkey_idx, jn->n_keys, pr, jn->na_matches);
         if (br < 0) continue;  /* no match in this block */
 
         if (jn->kind != JOIN_INNER)
@@ -731,7 +738,7 @@ static VecBatch *bnl_probe_batch(JoinNode *jn, VecBatch *pbatch) {
                 }
                 join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                 br = jht_chain_next(&jn->jht, br, probe_cols, jn->lkey_idx,
-                                    jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+                                    jn->r_cols, jn->rkey_idx, jn->n_keys, pr, jn->na_matches);
             }
         }
         /* semi/anti: only the pmatched bit; output happens in finalize */
@@ -1060,7 +1067,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
         int64_t br = jht_probe(&jn->jht, phash[li],
                                 probe_cols, jn->lkey_idx,
                                 jn->r_cols, jn->rkey_idx,
-                                jn->n_keys, pr);
+                                jn->n_keys, pr, jn->na_matches);
 
         switch (jn->kind) {
         case JOIN_SEMI:
@@ -1078,7 +1085,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
                 join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                 br = jht_chain_next(&jn->jht, br,
                     probe_cols, jn->lkey_idx,
-                    jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+                    jn->r_cols, jn->rkey_idx, jn->n_keys, pr, jn->na_matches);
             }
             break;
 
@@ -1089,7 +1096,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
                     join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                     br = jht_chain_next(&jn->jht, br,
                         probe_cols, jn->lkey_idx,
-                        jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+                        jn->r_cols, jn->rkey_idx, jn->n_keys, pr, jn->na_matches);
                 }
             }
             break;
@@ -1103,7 +1110,7 @@ static VecBatch *join_probe_one(JoinNode *jn, VecBatch *pbatch) {
                     join_emit_matched(jn, out, pbatch->columns, l_ncols, pr, br);
                     br = jht_chain_next(&jn->jht, br,
                         probe_cols, jn->lkey_idx,
-                        jn->r_cols, jn->rkey_idx, jn->n_keys, pr);
+                        jn->r_cols, jn->rkey_idx, jn->n_keys, pr, jn->na_matches);
                 }
             }
             break;
@@ -1408,11 +1415,12 @@ static VecBatch *merge_join_batch(JoinNode *jn) {
                 emitted++;
             }
             jn->merge_r_cursor++;
-        } else if (merge_left_key_na(jn, pr)) {
-            /* cmp == 0 with an NA key means both keys are NA, which must not
-               match (as in the hash path). Treat this left row as unmatched and
-               advance it; the NA build rows are left for the finalize pass (full)
-               or dropped (inner/left/semi/anti). */
+        } else if (!jn->na_matches && merge_left_key_na(jn, pr)) {
+            /* SQL semantics: cmp == 0 with an NA key means both keys are NA,
+               which must not match. Treat this left row as unmatched and advance
+               it; the NA build rows are left for the finalize pass (full) or
+               dropped (inner/left/semi/anti). Under na_matches this branch is
+               skipped so NA falls into the equal-key match below (dplyr). */
             if (jn->kind == JOIN_LEFT || jn->kind == JOIN_FULL)
                 join_emit_left_only(jn, out, jn->merge_l_batch->columns,
                                     l_ncols, pr);
@@ -1632,6 +1640,7 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     jn->right = right;
     jn->kind = kind;
     jn->n_keys = n_keys;
+    jn->na_matches = 1;   /* dplyr default; the bridge overrides from R */
     jn->keys = keys;
     jn->mem_budget = mem_budget;
     if (temp_dir) {

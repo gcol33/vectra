@@ -73,6 +73,10 @@ parse_window_spec <- function(expr, output_name) {
     args <- as.list(expr)[-1]  # drop function name
     arg_names <- names(args)
 
+    if (!is.null(arg_names) && !is.na(match("order_by", arg_names)))
+      stop(sprintf(paste0("%s(order_by=) is not supported; arrange() the data ",
+                          "first, then %s() operates in that order"), fn, fn))
+
     if (length(args) >= 2) {
       # Second arg is n (positional or named)
       if (!is.null(arg_names) && !is.na(match("n", arg_names))) {
@@ -93,7 +97,11 @@ parse_window_spec <- function(expr, output_name) {
   }
 
   if (fn == "ntile") {
-    # ntile(n) - divide into n buckets
+    # ntile(n) - divide arrival order into n buckets. dplyr's ntile(x, n)
+    # orders by x first, which this engine does not do inline.
+    if (length(expr) >= 3)
+      stop("ntile(order_col, n) with an ordering column is not supported; ",
+           "arrange() the data first, then use ntile(n)")
     n_tiles <- as.integer(eval(expr[[2]]))
     return(list(name = output_name, kind = "ntile", col = NULL,
                 offset = n_tiles, default = NULL))

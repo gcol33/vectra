@@ -79,6 +79,53 @@ test_that("if_else with NA condition returns NA", {
   expect_equal(result$label[3], 1)
 })
 
+# --- arithmetic semantics (match base R) ---
+
+test_that("division is always double", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(a = c(1L, 7L, 0L), b = c(2L, 0L, 0L)), f)
+  z <- collect(mutate(tbl(f), z = a / b))$z
+  expect_equal(z, c(1L, 7L, 0L) / c(2L, 0L, 0L))  # 0.5, Inf, NaN
+})
+
+test_that("modulo takes the divisor's sign (floored)", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(a = c(-7L, 7L, 8L), b = c(3L, -3L, 3L)), f)
+  expect_equal(collect(mutate(tbl(f), z = a %% b))$z,
+               c(-7L, 7L, 8L) %% c(3L, -3L, 3L))
+  write_vtr(data.frame(a = c(-7.5, 7.5), b = c(3, -3)), f)
+  expect_equal(collect(mutate(tbl(f), z = a %% b))$z, c(-7.5, 7.5) %% c(3, -3))
+})
+
+test_that("round(x, digits) honours the digit count", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c(3.14159, 2.71828, 123.456)), f)
+  expect_equal(collect(mutate(tbl(f), z = round(x, 2)))$z,
+               round(c(3.14159, 2.71828, 123.456), 2))
+  expect_equal(collect(mutate(tbl(f), z = round(x, 0)))$z,
+               round(c(3.14159, 2.71828, 123.456), 0))
+})
+
+test_that("log(x, base) honours the base", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c(1, 10, 100, 8)), f)
+  expect_equal(collect(mutate(tbl(f), z = log(x, 10)))$z, log(c(1, 10, 100, 8), 10))
+  expect_equal(collect(mutate(tbl(f), z = log(x, 2)))$z, log(c(1, 10, 100, 8), 2))
+})
+
+test_that("grepl treats the pattern as a regex by default", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(s = c("Apple", "Banana", "Cherry")), f)
+  expect_equal(collect(filter(tbl(f), grepl("^A|^B", s)))$s, c("Apple", "Banana"))
+  # fixed = TRUE restores literal matching
+  expect_equal(collect(filter(tbl(f), grepl(".", s, fixed = TRUE)))$s, character(0))
+})
+
 # --- %in% ---
 
 test_that("%in% works in filter", {
@@ -97,6 +144,63 @@ test_that("%in% works with strings", {
   write_vtr(df, f)
   result <- tbl(f) |> filter(s %in% c("a", "c")) |> collect()
   expect_equal(result$s, c("a", "c"))
+})
+
+test_that("%in% coerces a mismatched operand and set type (no crash)", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  # double column against an integer set -- previously a segfault
+  write_vtr(data.frame(x = c(1.0, 2.0, 5.0)), f)
+  expect_equal(nrow(collect(filter(tbl(f), x %in% 1:3))), 2L)
+  expect_equal(collect(mutate(tbl(f), h = x %in% 1:3))$h, c(1, 2, 5) %in% 1:3)
+  # integer column against a double set
+  write_vtr(data.frame(x = c(1L, 2L, 5L)), f)
+  expect_equal(collect(mutate(tbl(f), h = x %in% c(2, 4)))$h,
+               c(1L, 2L, 5L) %in% c(2, 4))
+  # large mismatched set takes the hash path
+  write_vtr(data.frame(x = as.numeric(1:30)), f)
+  expect_equal(collect(mutate(tbl(f), h = x %in% 5:25))$h, (1:30) %in% 5:25)
+  # logical set against a logical column
+  write_vtr(data.frame(x = c(TRUE, FALSE, TRUE)), f)
+  expect_equal(collect(mutate(tbl(f), h = x %in% c(TRUE)))$h,
+               c(TRUE, FALSE, TRUE) %in% c(TRUE))
+})
+
+test_that("%in% treats -0.0 and 0.0 as equal in the hash path", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c(-0.0, 3.0)), f)
+  expect_equal(collect(mutate(tbl(f), h = x %in% c(0, 2:18)))$h,
+               c(-0.0, 3.0) %in% c(0, 2:18))
+})
+
+test_that("%in% rejects a string column against a numeric set", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c("a", "b")), f)
+  expect_error(collect(filter(tbl(f), x %in% c(1, 2))))
+})
+
+# --- case_when / coalesce mixed value types ---
+
+test_that("case_when promotes to the common value type", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c(1L, 3L)), f)
+  # integer branch, double default -> double, not a bit reinterpret
+  expect_equal(collect(mutate(tbl(f), z = case_when(x > 2 ~ 1L, .default = 2.5)))$z,
+               c(2.5, 1))
+  expect_equal(collect(mutate(tbl(f), z = case_when(x > 2 ~ 2.5, .default = 1L)))$z,
+               c(1, 2.5))
+})
+
+test_that("coalesce promotes to the common argument type", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(a = c(NA, 1.5), b = c(7L, 9L)), f)
+  expect_equal(collect(mutate(tbl(f), z = coalesce(a, b)))$z, c(7, 1.5))
+  write_vtr(data.frame(a = c(NA_integer_, 3L), b = c(4.5, 9.5)), f)
+  expect_equal(collect(mutate(tbl(f), z = coalesce(a, b)))$z, c(4.5, 3))
 })
 
 # --- between ---
@@ -253,4 +357,21 @@ test_that("sub replaces only first occurrence", {
   write_vtr(df, f)
   result <- tbl(f) |> mutate(r = sub("X", "_", s)) |> collect()
   expect_equal(result$r, c("a_bXc", "_dX"))
+})
+
+# --- pmin/pmax multi-arg, paste collapse ---
+
+test_that("pmin/pmax accept more than two arguments", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(a = c(5, 1), b = c(3, 4), c = c(2, 9)), f)
+  expect_equal(collect(mutate(tbl(f), z = pmin(a, b, c)))$z, pmin(c(5, 1), c(3, 4), c(2, 9)))
+  expect_equal(collect(mutate(tbl(f), z = pmax(a, b, c)))$z, pmax(c(5, 1), c(3, 4), c(2, 9)))
+})
+
+test_that("paste(collapse=) errors rather than silently dropping", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c("a", "b")), f)
+  expect_error(collect(mutate(tbl(f), z = paste(x, collapse = ","))), "collapse")
 })

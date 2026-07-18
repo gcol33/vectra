@@ -22,7 +22,8 @@ Filter uses zero-copy selection vectors: matching rows are indexed without
 copying data. Multiple conditions are combined with \code{&}. Supported
 expression types: arithmetic (\code{+}, \code{-}, \code{*}, \code{/}, \code{\%\%}), comparison
 (\code{==}, \code{!=}, \code{<}, \code{<=}, \code{>}, \code{>=}), boolean (\code{&}, \code{|}, \code{!}), \code{is.na()},
-and string functions (\code{nchar()}, \code{substr()}, \code{grepl()} with fixed patterns).
+and string functions (\code{nchar()}, \code{substr()}, \code{grepl()}; patterns are regex
+by default, as in base R, or literal with \code{fixed = TRUE}).
 
 NA comparisons return NA (SQL semantics). Use \code{is.na()} to filter NAs
 explicitly.

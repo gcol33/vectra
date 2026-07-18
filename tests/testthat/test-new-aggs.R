@@ -218,3 +218,55 @@ test_that("transmute supports across() in summarise context", {
   expect_equal(result$x, 2)
   expect_equal(result$y, 20)
 })
+
+# --- min/max on logical, any/all NA semantics ---
+
+test_that("min and max on a logical column reduce to 0/1", {
+  df <- data.frame(b = c(TRUE, FALSE, TRUE))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(df, f)
+  expect_equal(collect(summarise(tbl(f), m = min(b)))$m, min(c(TRUE, FALSE, TRUE)))
+  expect_equal(collect(summarise(tbl(f), m = max(b)))$m, max(c(TRUE, FALSE, TRUE)))
+})
+
+test_that("any/all follow R's three-valued NA logic", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  # a determining value wins over NA
+  write_vtr(data.frame(b = c(TRUE, NA)), f)
+  expect_equal(collect(summarise(tbl(f), m = any(b)))$m, as.numeric(any(c(TRUE, NA))))
+  write_vtr(data.frame(b = c(FALSE, NA)), f)
+  expect_equal(collect(summarise(tbl(f), m = all(b)))$m, as.numeric(all(c(FALSE, NA))))
+  # NA only when the result is undetermined
+  write_vtr(data.frame(b = c(FALSE, NA)), f)
+  expect_true(is.na(collect(summarise(tbl(f), m = any(b)))$m))
+  write_vtr(data.frame(b = c(TRUE, NA)), f)
+  expect_true(is.na(collect(summarise(tbl(f), m = all(b)))$m))
+})
+
+test_that("across() forwards extra arguments and names an unnamed fn list", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  # ... args (na.rm) reach each function
+  write_vtr(data.frame(a = c(1, NA, 3), b = c(10, 20, NA)), f)
+  r <- collect(summarise(tbl(f), across(c(a, b), mean, na.rm = TRUE)))
+  expect_equal(r$a, mean(c(1, NA, 3), na.rm = TRUE))
+  expect_equal(r$b, mean(c(10, 20, NA), na.rm = TRUE))
+  # an unnamed list of functions is indexed, not collapsed onto one column
+  write_vtr(data.frame(a = c(1, 2, 3)), f)
+  r <- collect(summarise(tbl(f), across(a, list(mean, sum))))
+  expect_equal(sort(names(r)), c("a_1", "a_2"))
+  expect_equal(r$a_1, 2)
+  expect_equal(r$a_2, 6)
+})
+
+test_that("n_distinct counts NA by default and drops it with na.rm", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = c(1, 2, NA, 2, NA)), f)
+  expect_equal(collect(summarise(tbl(f), d = n_distinct(x)))$d,
+               dplyr::n_distinct(c(1, 2, NA, 2, NA)))                 # 3
+  expect_equal(collect(summarise(tbl(f), d = n_distinct(x, na.rm = TRUE)))$d,
+               dplyr::n_distinct(c(1, 2, NA, 2, NA), na.rm = TRUE))   # 2
+})

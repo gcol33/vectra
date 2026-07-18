@@ -177,13 +177,20 @@ static int resolve_threads(SEXP nthreads_sexp, int work) {
 
 /* ---- per-row matching (shared by filter and join) ------------------------ */
 
-/* small dynamic int vector, used both for STRtree candidates and match lists */
-typedef struct { int *idx; int n, cap; } IntVec;
+/* small dynamic int vector, used both for STRtree candidates and match lists.
+ * `oom` is set on an allocation failure instead of raising: intvec_push runs
+ * inside OpenMP worker threads (and inside the GEOS query callback), where an R
+ * error would longjmp out of the thread (UB). The caller checks the flag and
+ * raises on the master thread. */
+typedef struct { int *idx; int n, cap; int oom; } IntVec;
 static void intvec_push(IntVec *v, int x) {
+    if (v->oom) return;
     if (v->n == v->cap) {
-        v->cap = v->cap ? v->cap * 2 : 16;
-        v->idx = (int *) realloc(v->idx, (size_t) v->cap * sizeof(int));
-        if (v->idx == NULL) error("vectra: out of memory in spatial match");
+        int nc = v->cap ? v->cap * 2 : 16;
+        int *ni = (int *) realloc(v->idx, (size_t) nc * sizeof(int));
+        if (ni == NULL) { v->oom = 1; return; }
+        v->idx = ni;
+        v->cap = nc;
     }
     v->idx[v->n++] = x;
 }
@@ -237,6 +244,9 @@ static int row_relate(GEOSContextHandle_t ctx, GeosLocator *loc,
         }
     }
     if (qfree != NULL) GEOSGeom_destroy_r(ctx, qfree);
+    /* Propagate an allocation failure in either scratch vector; the caller
+       raises on the master thread (see intvec_push). */
+    if (cand->oom || (hits != NULL && hits->oom)) return -1;
     return nh;
 }
 
@@ -265,6 +275,7 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
     SEXP out = PROTECT(allocVector(LGLSXP, m));
     int *res = LOGICAL(out);
     int nt = resolve_threads(nthreads_sexp, m);
+    volatile int oom = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
@@ -277,11 +288,12 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
          * lazily so only candidates ever touched are prepared */
         const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
             calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
-        IntVec cand; cand.idx = NULL; cand.n = 0; cand.cap = 0;
+        IntVec cand = {0};
 #ifdef _OPENMP
         #pragma omp for schedule(dynamic, 256)
 #endif
         for (int r = 0; r < m; r++) {
+            if (oom) continue;
             int hit = 0;
             if (hex[r] != NULL) {
                 GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
@@ -296,6 +308,11 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
                     }
                     GEOSGeom_destroy_r(ctx, xg);
                 }
+                if (cand.oom) {
+                    #pragma omp atomic write
+                    oom = 1;
+                    continue;
+                }
             }
             res[r] = negate ? !hit : hit;
         }
@@ -307,6 +324,7 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
         GEOS_finish_r(ctx);
     }
 
+    if (oom) error("vectra: out of memory in spatial filter");
     UNPROTECT(1);
     return out;
 }
@@ -337,6 +355,7 @@ SEXP C_geos_join(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
     int *mlen = (int *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(int));
     for (int r = 0; r < m; r++) { mptr[r] = NULL; mlen[r] = 0; }
     int nt = resolve_threads(nthreads_sexp, m);
+    volatile int oom = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
@@ -347,22 +366,32 @@ SEXP C_geos_join(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
         GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
         const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
             calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
-        IntVec cand; cand.idx = NULL; cand.n = 0; cand.cap = 0;
-        IntVec hits; hits.idx = NULL; hits.n = 0; hits.cap = 0;
+        IntVec cand = {0};
+        IntVec hits = {0};
 #ifdef _OPENMP
         #pragma omp for schedule(dynamic, 256)
 #endif
         for (int r = 0; r < m; r++) {
+            if (oom) continue;
             if (hex[r] == NULL) continue;
             GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
             if (xg == NULL) continue;
             hits.n = 0;
             row_relate(ctx, loc, prep, &cand, xg, pred, dist, 0, &hits);
             GEOSGeom_destroy_r(ctx, xg);
+            if (cand.oom || hits.oom) {
+                #pragma omp atomic write
+                oom = 1;
+                continue;
+            }
             if (hits.n > 0) {
                 qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
                 int *a = (int *) malloc((size_t) hits.n * sizeof(int));
-                if (a == NULL) error("vectra: out of memory in spatial join");
+                if (a == NULL) {
+                    #pragma omp atomic write
+                    oom = 1;
+                    continue;
+                }
                 for (int j = 0; j < hits.n; j++) a[j] = hits.idx[j] + 1;
                 mptr[r] = a; mlen[r] = hits.n;
             }
@@ -374,6 +403,11 @@ SEXP C_geos_join(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
         free(hits.idx);
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOS_finish_r(ctx);
+    }
+
+    if (oom) {
+        for (int r = 0; r < m; r++) free(mptr[r]);
+        error("vectra: out of memory in spatial join");
     }
 
     SEXP out = PROTECT(allocVector(VECSXP, m));
@@ -503,6 +537,7 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
         for (int r = 0; r < m; r++) res[r] = NA_INTEGER;
     }
     int nt = resolve_threads(nthreads_sexp, m);
+    volatile int oom = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
@@ -512,12 +547,13 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
         GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
         const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
             calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
-        IntVec cand; cand.idx = NULL; cand.n = 0; cand.cap = 0;
-        IntVec hits; hits.idx = NULL; hits.n = 0; hits.cap = 0;
+        IntVec cand = {0};
+        IntVec hits = {0};
 #ifdef _OPENMP
         #pragma omp for schedule(dynamic, 256)
 #endif
         for (int r = 0; r < m; r++) {
+            if (oom) continue;
             double xr = xs[r], yr = ys[r];
             if (ISNAN(xr) || ISNAN(yr)) continue;
             GEOSGeometry *pt = GEOSGeom_createPointFromXY_r(ctx, xr, yr);
@@ -536,11 +572,20 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
             hits.n = 0;
             row_relate(ctx, loc, prep, &cand, pt, pred, dist, 0, &hits);
             GEOSGeom_destroy_r(ctx, pt);
+            if (cand.oom || hits.oom) {
+                #pragma omp atomic write
+                oom = 1;
+                continue;
+            }
             if (hits.n == 0) continue;
             if (want_all) {
                 qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
                 int *a = (int *) malloc((size_t) hits.n * sizeof(int));
-                if (a == NULL) error("vectra: out of memory in spatial locate");
+                if (a == NULL) {
+                    #pragma omp atomic write
+                    oom = 1;
+                    continue;
+                }
                 for (int j = 0; j < hits.n; j++) a[j] = hits.idx[j] + 1;
                 mptr[r] = a; mlen[r] = hits.n;
             } else {
@@ -555,6 +600,11 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
         free(cand.idx);
         free(hits.idx);
         GEOS_finish_r(ctx);
+    }
+
+    if (oom) {
+        if (want_all) for (int r = 0; r < m; r++) free(mptr[r]);
+        error("vectra: out of memory in spatial locate");
     }
 
     if (!want_all) { UNPROTECT(1); return out_first; }
@@ -633,6 +683,7 @@ SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_se
     char **cut = (char **) R_alloc((size_t) (m > 0 ? m : 1), sizeof(char *));
     for (int r = 0; r < m; r++) { disp[r] = 0; cut[r] = NULL; }
     int nt = resolve_threads(nthreads_sexp, m);
+    volatile int oom = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
@@ -647,6 +698,7 @@ SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_se
         #pragma omp for schedule(dynamic, 128)
 #endif
         for (int r = 0; r < m; r++) {
+            if (oom) continue;
             if (hex[r] == NULL) { disp[r] = 0; continue; }
             GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
             if (xg == NULL) { disp[r] = 0; continue; }
@@ -667,7 +719,12 @@ SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_se
             GEOSGeom_destroy_r(ctx, g);
             if (buf == NULL) { disp[r] = 0; continue; }
             char *s = (char *) malloc(len + 1);
-            if (s == NULL) error("vectra: out of memory in spatial clip");
+            if (s == NULL) {
+                GEOSFree_r(ctx, buf);
+                #pragma omp atomic write
+                oom = 1;
+                continue;
+            }
             memcpy(s, buf, len); s[len] = '\0';
             GEOSFree_r(ctx, buf);
             cut[r] = s; disp[r] = 1;
@@ -676,6 +733,11 @@ SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_se
         GEOSWKBWriter_destroy_r(ctx, writer);
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOS_finish_r(ctx);
+    }
+
+    if (oom) {
+        for (int r = 0; r < m; r++) free(cut[r]);
+        error("vectra: out of memory in spatial clip");
     }
 
     SEXP out = PROTECT(allocVector(STRSXP, m));

@@ -14,6 +14,8 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
 
     VecType common = vec_common_type(left->type, right->type);
     if (common == VEC_BOOL) common = VEC_INT64; /* promote bool for arith */
+    /* R's "/" is always double division: 1L/2L is 0.5, 1/0 is Inf, 0/0 NaN. */
+    if (op == '/') common = VEC_DOUBLE;
 
     /* Skip coercion when type already matches (avoids alloc+copy) */
     int cl_owned = (left->type != common);
@@ -48,7 +50,11 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
             case '%':
                 for (int64_t i = 0; i < n; i++) {
                     if (b[i] == 0) vec_array_set_null(out, i);
-                    else o[i] = a[i] % b[i];
+                    else {
+                        int64_t m = a[i] % b[i];
+                        if (m != 0 && ((m < 0) != (b[i] < 0))) m += b[i];
+                        o[i] = m;
+                    }
                 }
                 break;
             default: vectra_error("unknown arith op: %c", op);
@@ -61,7 +67,13 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
             case '-': for (int64_t i = 0; i < n; i++) o[i] = a[i] - b[i]; break;
             case '*': for (int64_t i = 0; i < n; i++) o[i] = a[i] * b[i]; break;
             case '/': for (int64_t i = 0; i < n; i++) o[i] = a[i] / b[i]; break;
-            case '%': for (int64_t i = 0; i < n; i++) o[i] = fmod(a[i], b[i]); break;
+            case '%':
+                for (int64_t i = 0; i < n; i++) {
+                    double m = fmod(a[i], b[i]);
+                    if (m != 0 && ((m < 0) != (b[i] < 0))) m += b[i];
+                    o[i] = m;
+                }
+                break;
             default: vectra_error("unknown arith op: %c", op);
             }
         }
@@ -87,7 +99,11 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
                     break;
                 case '%':
                     if (b == 0) { vec_array_set_null(out, i); }
-                    else out->buf.i64[i] = a % b;
+                    else {
+                        int64_t m = a % b;
+                        if (m != 0 && ((m < 0) != (b < 0))) m += b;
+                        out->buf.i64[i] = m;
+                    }
                     break;
                 default: vectra_error("unknown arith op: %c", op);
                 }
@@ -98,7 +114,12 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
                 case '-': out->buf.dbl[i] = a - b; break;
                 case '*': out->buf.dbl[i] = a * b; break;
                 case '/': out->buf.dbl[i] = a / b; break;
-                case '%': out->buf.dbl[i] = fmod(a, b); break;
+                case '%': {
+                    double m = fmod(a, b);
+                    if (m != 0 && ((m < 0) != (b < 0))) m += b;
+                    out->buf.dbl[i] = m;
+                    break;
+                }
                 default: vectra_error("unknown arith op: %c", op);
                 }
             }
@@ -111,6 +132,17 @@ VecArray *vec_arith(const VecArray *left, const VecArray *right, char op) {
 }
 
 /* --- Comparison --- */
+
+/* Map a three-way compare (-1/0/1) to the boolean result of the operator. */
+static inline uint8_t cmp_to_bool(int cmp, char op, char op2) {
+    if (op == '=' && op2 == '=') return (uint8_t)(cmp == 0);
+    if (op == '!' && op2 == '=') return (uint8_t)(cmp != 0);
+    if (op == '<' && op2 == ' ') return (uint8_t)(cmp < 0);
+    if (op == '<' && op2 == '=') return (uint8_t)(cmp <= 0);
+    if (op == '>' && op2 == ' ') return (uint8_t)(cmp > 0);
+    if (op == '>' && op2 == '=') return (uint8_t)(cmp >= 0);
+    return 0;
+}
 
 VecArray *vec_cmp(const VecArray *left, const VecArray *right, char op, char op2) {
     if (left->length != right->length)
@@ -169,50 +201,33 @@ VecArray *vec_cmp(const VecArray *left, const VecArray *right, char op, char op2
     /* Fast path: both inputs all-valid */
     int all_valid = vec_array_all_valid(cl) && vec_array_all_valid(cr);
 
-    if (all_valid) {
+    if (all_valid && common == VEC_INT64) {
+        /* int64 has no NaN, so this path stays branch-free and vectorizable */
         vec_array_set_all_valid(out);
-        if (common == VEC_INT64) {
-            const int64_t *a = cl->buf.i64, *b = cr->buf.i64;
-            uint8_t *o = out->buf.bln;
-            if (op == '=' && op2 == '=')      { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] == b[i]); }
-            else if (op == '!' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] != b[i]); }
-            else if (op == '<' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <  b[i]); }
-            else if (op == '<' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <= b[i]); }
-            else if (op == '>' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >  b[i]); }
-            else if (op == '>' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >= b[i]); }
-        } else {
-            const double *a = cl->buf.dbl, *b = cr->buf.dbl;
-            uint8_t *o = out->buf.bln;
-            if (op == '=' && op2 == '=')      { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] == b[i]); }
-            else if (op == '!' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] != b[i]); }
-            else if (op == '<' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <  b[i]); }
-            else if (op == '<' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <= b[i]); }
-            else if (op == '>' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >  b[i]); }
-            else if (op == '>' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >= b[i]); }
-        }
+        const int64_t *a = cl->buf.i64, *b = cr->buf.i64;
+        uint8_t *o = out->buf.bln;
+        if (op == '=' && op2 == '=')      { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] == b[i]); }
+        else if (op == '!' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] != b[i]); }
+        else if (op == '<' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <  b[i]); }
+        else if (op == '<' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] <= b[i]); }
+        else if (op == '>' && op2 == ' ') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >  b[i]); }
+        else if (op == '>' && op2 == '=') { for (int64_t i = 0; i < n; i++) o[i] = (uint8_t)(a[i] >= b[i]); }
     } else {
         for (int64_t i = 0; i < n; i++) {
             int valid = vec_array_is_valid(cl, i) && vec_array_is_valid(cr, i);
             if (!valid) { vec_array_set_null(out, i); continue; }
-            vec_array_set_valid(out, i);
 
-            int cmp;
             if (common == VEC_INT64) {
                 int64_t a = cl->buf.i64[i], b = cr->buf.i64[i];
-                cmp = (a > b) - (a < b);
+                vec_array_set_valid(out, i);
+                out->buf.bln[i] = cmp_to_bool((a > b) - (a < b), op, op2);
             } else {
                 double a = cl->buf.dbl[i], b = cr->buf.dbl[i];
-                cmp = (a > b) - (a < b);
+                /* R: any comparison involving NaN is NA (unordered) */
+                if (isnan(a) || isnan(b)) { vec_array_set_null(out, i); continue; }
+                vec_array_set_valid(out, i);
+                out->buf.bln[i] = cmp_to_bool((a > b) - (a < b), op, op2);
             }
-
-            int result = 0;
-            if (op == '=' && op2 == '=') result = (cmp == 0);
-            else if (op == '!' && op2 == '=') result = (cmp != 0);
-            else if (op == '<' && op2 == ' ') result = (cmp < 0);
-            else if (op == '<' && op2 == '=') result = (cmp <= 0);
-            else if (op == '>' && op2 == ' ') result = (cmp > 0);
-            else if (op == '>' && op2 == '=') result = (cmp >= 0);
-            out->buf.bln[i] = (uint8_t)result;
         }
     }
 

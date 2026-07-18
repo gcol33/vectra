@@ -94,27 +94,36 @@ test_that("inner_join with duplicates on right produces multiple rows", {
 
 # --- NA key handling ---
 
-test_that("NAs in join keys do not match", {
+test_that("NA join keys match NA by default (dplyr), not with na_matches = never", {
   f1 <- tempfile(fileext = ".vtr")
   f2 <- tempfile(fileext = ".vtr")
   on.exit(unlink(c(f1, f2)))
   write_vtr(data.frame(id = c(1, NA, 3), x = c(10, 20, 30)), f1)
   write_vtr(data.frame(id = c(1, NA, 4), y = c(100, 200, 400)), f2)
+  # default na_matches = "na": NA matches NA, so id 1 and id NA both join
   result <- inner_join(tbl(f1), tbl(f2), by = "id") |> collect()
-  expect_equal(nrow(result), 1)
-  expect_equal(result$id, 1)
+  expect_equal(nrow(result), 2)
+  expect_equal(sort(result$x), c(10, 20))
+  # na_matches = "never" restores SQL semantics: only id 1 matches
+  sql <- inner_join(tbl(f1), tbl(f2), by = "id", na_matches = "never") |> collect()
+  expect_equal(nrow(sql), 1)
+  expect_equal(sql$id, 1)
 })
 
-test_that("left_join with NA keys: unmatched NAs get NA right cols", {
+test_that("left_join NA keys follow na_matches", {
   f1 <- tempfile(fileext = ".vtr")
   f2 <- tempfile(fileext = ".vtr")
   on.exit(unlink(c(f1, f2)))
   write_vtr(data.frame(id = c(1, NA), x = c(10, 20)), f1)
   write_vtr(data.frame(id = c(1, NA), y = c(100, 200)), f2)
+  # default: the NA row matches the build NA row, so its right col is filled
   result <- left_join(tbl(f1), tbl(f2), by = "id") |> collect()
   expect_equal(nrow(result), 2)
   expect_equal(result$y[which(result$id == 1)], 100)
-  expect_true(is.na(result$y[which(is.na(result$id))]))
+  expect_equal(result$y[which(is.na(result$id))], 200)
+  # na_matches = "never": the NA row is unmatched, right col is NA
+  sql <- left_join(tbl(f1), tbl(f2), by = "id", na_matches = "never") |> collect()
+  expect_true(is.na(sql$y[which(is.na(sql$id))]))
 })
 
 # --- suffix for name collisions ---

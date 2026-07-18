@@ -599,22 +599,27 @@ static void flbuf_init(FuzzyLookupBuf *buf, int64_t cap) {
         vectra_error("alloc failed for FuzzyLookupBuf");
 }
 
-static void flbuf_push(FuzzyLookupBuf *buf, int64_t qi, int64_t br, double d) {
+/* Returns 1 on allocation failure so a caller inside a parallel region can
+   latch it and raise on the master thread rather than longjmp off a worker. */
+static int flbuf_push(FuzzyLookupBuf *buf, int64_t qi, int64_t br, double d) {
     if (buf->count >= buf->capacity) {
-        buf->capacity *= 2;
-        buf->query_idx = (int64_t *)realloc(buf->query_idx,
-            (size_t)buf->capacity * sizeof(int64_t));
-        buf->block_row = (int64_t *)realloc(buf->block_row,
-            (size_t)buf->capacity * sizeof(int64_t));
-        buf->dist = (double *)realloc(buf->dist,
-            (size_t)buf->capacity * sizeof(double));
-        if (!buf->query_idx || !buf->block_row || !buf->dist)
-            vectra_error("realloc failed for FuzzyLookupBuf");
+        int64_t nc = buf->capacity * 2;
+        int64_t *q = (int64_t *)realloc(buf->query_idx, (size_t)nc * sizeof(int64_t));
+        if (!q) return 1;
+        buf->query_idx = q;
+        int64_t *b = (int64_t *)realloc(buf->block_row, (size_t)nc * sizeof(int64_t));
+        if (!b) return 1;
+        buf->block_row = b;
+        double *dd = (double *)realloc(buf->dist, (size_t)nc * sizeof(double));
+        if (!dd) return 1;
+        buf->dist = dd;
+        buf->capacity = nc;
     }
     buf->query_idx[buf->count] = qi;
     buf->block_row[buf->count] = br;
     buf->dist[buf->count]      = d;
     buf->count++;
+    return 0;
 }
 
 static void flbuf_free(FuzzyLookupBuf *buf) {
@@ -701,6 +706,7 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
         flbuf_init(&tbufs[t], 256);
 
     int64_t blk_nrows = blk->n_rows;
+    volatile int oom = 0;
 
     if (use_blocking) {
         /* ---- Blocked fuzzy lookup ---- */
@@ -715,6 +721,7 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
             #else
             int tid = 0;
             #endif
+            if (oom) continue;
 
             SEXP ks = STRING_ELT(keys, (R_xlen_t)q);
             if (ks == NA_STRING) continue;
@@ -747,8 +754,11 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
                     int64_t blen = blk_str_len(match_arr, r);
                     double d = blk_compute_dist(method, key, key_len,
                                                 bstr, blen, max_dist);
-                    if (d <= max_dist)
-                        flbuf_push(&tbufs[tid], q, r, d);
+                    if (d <= max_dist && flbuf_push(&tbufs[tid], q, r, d)) {
+                        #pragma omp atomic write
+                        oom = 1;
+                        break;
+                    }
                 }
                 e = blk_idx->entry_next[e];
             }
@@ -764,6 +774,7 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
             #else
             int tid = 0;
             #endif
+            if (oom) continue;
 
             SEXP ks = STRING_ELT(keys, (R_xlen_t)q);
             if (ks == NA_STRING) continue;
@@ -778,10 +789,19 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
                 int64_t blen = blk_str_len(match_arr, r);
                 double d = blk_compute_dist(method, key, key_len,
                                             bstr, blen, max_dist);
-                if (d <= max_dist)
-                    flbuf_push(&tbufs[tid], q, r, d);
+                if (d <= max_dist && flbuf_push(&tbufs[tid], q, r, d)) {
+                    #pragma omp atomic write
+                    oom = 1;
+                    break;
+                }
             }
         }
+    }
+
+    if (oom) {
+        for (int t = 0; t < n_threads; t++) flbuf_free(&tbufs[t]);
+        free(tbufs);
+        vectra_error("alloc failed for fuzzy-lookup matches");
     }
 
     /* Merge thread-local buffers */

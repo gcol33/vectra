@@ -183,8 +183,15 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
         VecArray *res = (VecArray *)malloc(sizeof(VecArray));
         *res = vec_array_alloc(VEC_BOOL, o->length);
         vec_array_set_all_valid(res);
-        for (int64_t i = 0; i < o->length; i++)
-            res->buf.bln[i] = (uint8_t)(!vec_array_is_valid(o, i));
+        /* R's is.na() is TRUE for a computed NaN as well as a missing value */
+        if (o->type == VEC_DOUBLE) {
+            for (int64_t i = 0; i < o->length; i++)
+                res->buf.bln[i] = (uint8_t)(!vec_array_is_valid(o, i) ||
+                                            isnan(o->buf.dbl[i]));
+        } else {
+            for (int64_t i = 0; i < o->length; i++)
+                res->buf.bln[i] = (uint8_t)(!vec_array_is_valid(o, i));
+        }
         vec_array_free(o); free(o);
         return res;
     }
@@ -275,6 +282,19 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
         VecArray *def_val = has_default
             ? vec_expr_eval(expr->children[expr->n_children - 1], batch) : NULL;
         VecType out_type = expr->result_type;
+        /* Coerce every branch to the common output type so the copies below
+           read the right buffer -- a branch of a different type would otherwise
+           be reinterpreted bit-for-bit. */
+        for (int p = 0; p < n_pairs; p++) {
+            if (vals[p]->type != out_type) {
+                VecArray *c = vec_coerce(vals[p], out_type);
+                vec_array_free(vals[p]); free(vals[p]); vals[p] = c;
+            }
+        }
+        if (def_val && def_val->type != out_type) {
+            VecArray *c = vec_coerce(def_val, out_type);
+            vec_array_free(def_val); free(def_val); def_val = c;
+        }
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(out_type, n);
         for (int64_t i = 0; i < n; i++) {
@@ -350,8 +370,15 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
         VecType out_type = expr->result_type;
         /* Evaluate all children */
         VecArray **args = (VecArray **)malloc((size_t)nc * sizeof(VecArray *));
-        for (int64_t c = 0; c < nc; c++)
+        for (int64_t c = 0; c < nc; c++) {
             args[c] = vec_expr_eval(expr->children[c], batch);
+            /* Coerce to the common type so the picks below read the right
+               buffer regardless of each argument's own type. */
+            if (args[c]->type != out_type) {
+                VecArray *cc = vec_coerce(args[c], out_type);
+                vec_array_free(args[c]); free(args[c]); args[c] = cc;
+            }
+        }
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(out_type, n);
         if (out_type == VEC_STRING) {

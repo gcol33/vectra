@@ -2,6 +2,7 @@
 #include "r_bridge_internal.h"
 #include "types.h"
 #include "array.h"
+#include "coerce.h"
 #include "batch.h"
 #include "schema.h"
 #include "scan.h"
@@ -350,6 +351,29 @@ SEXP list_get(SEXP lst, const char *field) {
     return R_NilValue;
 }
 
+/* Narrow ints are widened to int64 at eval (see EXPR_COL_REF), so a value
+   branch's effective runtime type is its widened form. */
+static VecType widen_narrow_int(VecType t) {
+    return (t == VEC_INT8 || t == VEC_INT16 || t == VEC_INT32) ? VEC_INT64 : t;
+}
+
+/* Common result type over N value branches, matching R's case_when/coalesce
+   and this engine's if_else rule: a string branch wins (numeric branches then
+   format to string at eval); otherwise the widest numeric/bool type. */
+static VecType fold_value_type(VecExpr **vals, int nvals) {
+    int any_string = 0, have = 0;
+    VecType acc = VEC_BOOL;
+    for (int i = 0; i < nvals; i++) {
+        VecType vt = vals[i]->result_type;
+        if (vt == VEC_STRING) { any_string = 1; continue; }
+        vt = widen_narrow_int(vt);
+        acc = have ? vec_common_type(acc, vt) : vt;
+        have = 1;
+    }
+    if (any_string) return VEC_STRING;
+    return have ? acc : VEC_BOOL;
+}
+
 VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
     if (TYPEOF(lst) != VECSXP)
         vectra_error("expression must be a list");
@@ -411,10 +435,11 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->op = op_str[0];
         e->left = parse_expr(list_get(lst, "left"), schema);
         e->right = parse_expr(list_get(lst, "right"), schema);
-        /* Infer result type */
+        /* Infer result type. "/" is always double (R semantics), matching
+           vec_arith which forces double division. */
         VecType lt = e->left->result_type;
         VecType rt = e->right->result_type;
-        if (lt == VEC_DOUBLE || rt == VEC_DOUBLE)
+        if (e->op == '/' || lt == VEC_DOUBLE || rt == VEC_DOUBLE)
             e->result_type = VEC_DOUBLE;
         else
             e->result_type = VEC_INT64;
@@ -539,20 +564,64 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         VecExpr *e = vec_expr_alloc(EXPR_IN);
         e->operand = parse_expr(list_get(lst, "operand"), schema);
         SEXP set_sexp = list_get(lst, "set");
-        e->n_set = Rf_length(set_sexp);
-        if (TYPEOF(set_sexp) == REALSXP) {
-            e->set_dbl = (double *)malloc((size_t)e->n_set * sizeof(double));
-            for (int64_t i = 0; i < e->n_set; i++) e->set_dbl[i] = REAL(set_sexp)[i];
-        } else if (TYPEOF(set_sexp) == INTSXP) {
-            e->set_i64 = (int64_t *)malloc((size_t)e->n_set * sizeof(int64_t));
-            for (int64_t i = 0; i < e->n_set; i++) e->set_i64[i] = (int64_t)INTEGER(set_sexp)[i];
-        } else if (TYPEOF(set_sexp) == STRSXP) {
-            e->set_str = (char **)malloc((size_t)e->n_set * sizeof(char *));
-            for (int64_t i = 0; i < e->n_set; i++) {
+        int64_t raw_n = Rf_length(set_sexp);
+        VecType ot = e->operand->result_type;
+        int set_is_str = (TYPEOF(set_sexp) == STRSXP);
+
+        /* Match on a common comparison type derived from the operand column
+         * and the literal set, mirroring R's promotion in match(). A string
+         * column only meets a string set (numeric<->string coercion would have
+         * to reproduce R's formatting, so it is rejected rather than guessed);
+         * otherwise both sides compare as double when either is double, else as
+         * int64. NA set elements can only match an NA operand (handled by the
+         * matcher's validity check) so they are dropped. */
+        if (ot == VEC_STRING || set_is_str) {
+            if (ot != VEC_STRING || !set_is_str)
+                vectra_error("%%in%%: a string column can only be matched against "
+                             "a character set (and vice versa)");
+            e->set_type = VEC_STRING;
+            e->n_set = raw_n;
+            e->set_str = (char **)malloc((size_t)(raw_n > 0 ? raw_n : 1) * sizeof(char *));
+            for (int64_t i = 0; i < raw_n; i++) {
                 const char *s = CHAR(STRING_ELT(set_sexp, i));
                 e->set_str[i] = (char *)malloc(strlen(s) + 1);
                 strcpy(e->set_str[i], s);
             }
+        } else if (ot == VEC_DOUBLE || TYPEOF(set_sexp) == REALSXP) {
+            e->set_type = VEC_DOUBLE;
+            e->set_dbl = (double *)malloc((size_t)(raw_n > 0 ? raw_n : 1) * sizeof(double));
+            int64_t k = 0;
+            for (int64_t i = 0; i < raw_n; i++) {
+                double v;
+                if (TYPEOF(set_sexp) == REALSXP) {
+                    v = REAL(set_sexp)[i];
+                    if (R_IsNA(v)) continue;      /* keep NaN, drop true NA */
+                } else if (TYPEOF(set_sexp) == INTSXP) {
+                    if (INTEGER(set_sexp)[i] == NA_INTEGER) continue;
+                    v = (double)INTEGER(set_sexp)[i];
+                } else { /* LGLSXP */
+                    if (LOGICAL(set_sexp)[i] == NA_LOGICAL) continue;
+                    v = (double)LOGICAL(set_sexp)[i];
+                }
+                e->set_dbl[k++] = v;
+            }
+            e->n_set = k;
+        } else { /* operand int64/bool, set int or logical */
+            e->set_type = VEC_INT64;
+            e->set_i64 = (int64_t *)malloc((size_t)(raw_n > 0 ? raw_n : 1) * sizeof(int64_t));
+            int64_t k = 0;
+            for (int64_t i = 0; i < raw_n; i++) {
+                if (TYPEOF(set_sexp) == INTSXP) {
+                    if (INTEGER(set_sexp)[i] == NA_INTEGER) continue;
+                    e->set_i64[k++] = (int64_t)INTEGER(set_sexp)[i];
+                } else if (TYPEOF(set_sexp) == LGLSXP) {
+                    if (LOGICAL(set_sexp)[i] == NA_LOGICAL) continue;
+                    e->set_i64[k++] = (int64_t)LOGICAL(set_sexp)[i];
+                } else {
+                    vectra_error("%%in%%: unsupported set type for a numeric column");
+                }
+            }
+            e->n_set = k;
         }
         e->result_type = VEC_BOOL;
         return e;
@@ -592,18 +661,23 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         VecExpr *e = vec_expr_alloc(EXPR_CASE_WHEN);
         e->n_children = n_cases * 2 + (has_default ? 1 : 0);
         e->children = (VecExpr **)malloc((size_t)e->n_children * sizeof(VecExpr *));
-        VecType val_type = VEC_STRING; /* will be overridden by first value */
         for (int i = 0; i < n_cases; i++) {
             SEXP cas = VECTOR_ELT(cases_sexp, i);
             e->children[i * 2] = parse_expr(list_get(cas, "cond"), schema);
             e->children[i * 2 + 1] = parse_expr(list_get(cas, "val"), schema);
-            if (i == 0) val_type = e->children[1]->result_type;
         }
-        if (has_default) {
+        if (has_default)
             e->children[n_cases * 2] = parse_expr(def_sexp, schema);
-            if (n_cases == 0) val_type = e->children[0]->result_type;
-        }
-        e->result_type = val_type;
+        /* Result type is the common type of every value branch and the
+           default, not the first value's type -- so a mix like
+           case_when(x > 2 ~ 1L, .default = 2.5) yields double, not a
+           reinterpret of 2.5's bits as int64. */
+        VecExpr **vals = (VecExpr **)malloc((size_t)(n_cases + 1) * sizeof(VecExpr *));
+        int nvals = 0;
+        for (int i = 0; i < n_cases; i++) vals[nvals++] = e->children[i * 2 + 1];
+        if (has_default) vals[nvals++] = e->children[n_cases * 2];
+        e->result_type = fold_value_type(vals, nvals);
+        free(vals);
         return e;
     }
     if (strcmp(kind, "coalesce") == 0) {
@@ -614,7 +688,9 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->children = (VecExpr **)malloc((size_t)nc * sizeof(VecExpr *));
         for (int64_t i = 0; i < nc; i++)
             e->children[i] = parse_expr(VECTOR_ELT(args_sexp, (R_xlen_t)i), schema);
-        e->result_type = (nc > 0) ? e->children[0]->result_type : VEC_DOUBLE;
+        /* Common type of all arguments, not the first -- coalesce(dbl, int)
+           must compare as double, not read the int's bits as a double. */
+        e->result_type = (nc > 0) ? fold_value_type(e->children, (int)nc) : VEC_DOUBLE;
         return e;
     }
     if (strcmp(kind, "startsWith") == 0) {

@@ -96,6 +96,7 @@ struct VecExpr {
 
     /* EXPR_IN */
     int64_t  n_set;
+    VecType  set_type;   /* comparison type: VEC_DOUBLE, VEC_INT64, or VEC_STRING */
     double  *set_dbl;
     int64_t *set_i64;
     char   **set_str;

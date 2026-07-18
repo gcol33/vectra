@@ -47,7 +47,13 @@ static int compare_value(const VecArray *a, int64_t ra,
     switch (a->type) {
     case VEC_DOUBLE: {
         double va = a->buf.dbl[ra], vb = b->buf.dbl[rb];
-        cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+        /* A computed NaN is a valid value; sort all NaN together, after finite
+           values, so grouping sees them as one key (matches R). */
+        int na = va != va, nb = vb != vb;
+        if (na || nb)
+            cmp = (na && nb) ? 0 : (na ? 1 : -1);
+        else
+            cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
         break;
     }
     case VEC_INT64: {
@@ -127,6 +133,10 @@ static inline uint64_t radix_encode_dbl(double v, int valid, int desc) {
     uint64_t u;
     if (!valid) {
         u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;
+    } else if (v != v) {
+        /* All NaN payloads map to one key, just past +Inf and before NA, so
+           NaN rows cluster into a single group (matches compare_value). */
+        u = 0xFFFFFFFFFFFFFFFEULL;
     } else {
         uint64_t bits;
         memcpy(&bits, &v, sizeof(bits));

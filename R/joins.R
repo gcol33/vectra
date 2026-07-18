@@ -45,6 +45,8 @@ parse_join_keys <- function(x, y, by) {
 #'   like `c("a" = "b")`. `NULL` for natural join (common columns).
 #' @param suffix A character vector of length 2 for disambiguating non-key
 #'   columns with the same name (default `c(".x", ".y")`).
+#' @param na_matches How to match `NA` keys: `"na"` (default, as in dplyr) treats
+#'   `NA` as matching `NA`; `"never"` uses SQL semantics where `NA` never matches.
 #' @param ... Ignored.
 #'
 #' @return A `vectra_node` with the joined result.
@@ -54,7 +56,8 @@ parse_join_keys <- function(x, y, by) {
 #' table is materialized into a hash table; left-side batches stream through.
 #' Memory cost is proportional to the right-side table size.
 #'
-#' NA keys never match (SQL NULL semantics). Key types are auto-coerced
+#' By default `NA` keys match `NA` (dplyr's `na_matches = "na"`); pass
+#' `na_matches = "never"` for SQL NULL semantics. Key types are auto-coerced
 #' following the `bool < int64 < double` hierarchy. Joining string against
 #' numeric keys is an error.
 #'
@@ -76,32 +79,42 @@ left_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 # (the grace-hash spill threshold) so all joins share one source of truth. When
 # the build side exceeds the budget, the C engine spills to a partitioned join.
 .join_node <- function(left, right, kind, lkeys, rkeys, sx, sy,
-                       mem = vectra_mem()) {
-  .Call(C_join_node, left, right, kind, lkeys, rkeys, sx, sy, as.numeric(mem))
+                       mem = vectra_mem(), na_matches = TRUE) {
+  .Call(C_join_node, left, right, kind, lkeys, rkeys, sx, sy, as.numeric(mem),
+        isTRUE(na_matches))
 }
 
-join_impl <- function(x, y, by, suffix, type) {
+# Resolve the dplyr-style na_matches argument to a logical.
+.na_matches_flag <- function(na_matches) {
+  if (is.logical(na_matches)) return(isTRUE(na_matches))
+  match.arg(na_matches, c("na", "never")) == "na"
+}
+
+join_impl <- function(x, y, by, suffix, type, na_matches = "na") {
   keys <- parse_join_keys(x, y, by)
   new_xptr <- .join_node(x$.node, y$.node,
-                         type, keys$left, keys$right, suffix[1], suffix[2])
+                         type, keys$left, keys$right, suffix[1], suffix[2],
+                         na_matches = .na_matches_flag(na_matches))
   structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
 }
 
 # Internal: shared implementation for filtering joins (semi, anti)
-filter_join_impl <- function(x, y, by, type) {
+filter_join_impl <- function(x, y, by, type, na_matches = "na") {
   keys <- parse_join_keys(x, y, by)
   new_xptr <- .join_node(x$.node, y$.node,
-                         type, keys$left, keys$right, ".x", ".y")
+                         type, keys$left, keys$right, ".x", ".y",
+                         na_matches = .na_matches_flag(na_matches))
   structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
 }
 
 #' @export
-left_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+left_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                                  na_matches = c("na", "never"), ...) {
   if (!inherits(y, "vectra_node"))
     stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
   if (!is.character(suffix) || length(suffix) != 2)
     stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
-  join_impl(x, y, by, suffix, "left")
+  join_impl(x, y, by, suffix, "left", na_matches)
 }
 
 #' @rdname left_join
@@ -111,12 +124,13 @@ inner_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 }
 
 #' @export
-inner_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+inner_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                                   na_matches = c("na", "never"), ...) {
   if (!inherits(y, "vectra_node"))
     stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
   if (!is.character(suffix) || length(suffix) != 2)
     stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
-  join_impl(x, y, by, suffix, "inner")
+  join_impl(x, y, by, suffix, "inner", na_matches)
 }
 
 #' @rdname left_join
@@ -126,7 +140,8 @@ right_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 }
 
 #' @export
-right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                                   na_matches = c("na", "never"), ...) {
   if (!inherits(y, "vectra_node"))
     stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
   if (!is.character(suffix) || length(suffix) != 2)
@@ -140,7 +155,8 @@ right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...)
 
   # Swap: build on left (x), probe with right (y)
   new_xptr <- .join_node(y$.node, x$.node,
-                         "left", keys$right, keys$left, suffix[2], suffix[1])
+                         "left", keys$right, keys$left, suffix[2], suffix[1],
+                         na_matches = .na_matches_flag(na_matches))
   result_node <- structure(list(.node = new_xptr, .path = NULL),
                            class = "vectra_node")
   schema <- .Call(C_node_schema, result_node$.node)
@@ -213,12 +229,13 @@ full_join <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
 }
 
 #' @export
-full_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"), ...) {
+full_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
+                                  na_matches = c("na", "never"), ...) {
   if (!inherits(y, "vectra_node"))
     stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
   if (!is.character(suffix) || length(suffix) != 2)
     stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
-  join_impl(x, y, by, suffix, "full")
+  join_impl(x, y, by, suffix, "full", na_matches)
 }
 
 #' @rdname left_join
@@ -228,10 +245,11 @@ semi_join <- function(x, y, by = NULL, ...) {
 }
 
 #' @export
-semi_join.vectra_node <- function(x, y, by = NULL, ...) {
+semi_join.vectra_node <- function(x, y, by = NULL,
+                                  na_matches = c("na", "never"), ...) {
   if (!inherits(y, "vectra_node"))
     stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
-  filter_join_impl(x, y, by, "semi")
+  filter_join_impl(x, y, by, "semi", na_matches)
 }
 
 #' @rdname left_join
@@ -241,10 +259,11 @@ anti_join <- function(x, y, by = NULL, ...) {
 }
 
 #' @export
-anti_join.vectra_node <- function(x, y, by = NULL, ...) {
+anti_join.vectra_node <- function(x, y, by = NULL,
+                                  na_matches = c("na", "never"), ...) {
   if (!inherits(y, "vectra_node"))
     stop(sprintf("y must be a vectra_node, got %s", class(y)[1]))
-  filter_join_impl(x, y, by, "anti")
+  filter_join_impl(x, y, by, "anti", na_matches)
 }
 
 #' Cross join two vectra tables

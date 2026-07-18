@@ -354,7 +354,7 @@ parse_agg_expr <- function(expr, output_name) {
     if (is.null(col_name))
       stop("n_distinct() requires a simple column reference, not an expression")
     return(list(name = output_name, kind = "n_distinct", col = col_name,
-                na_rm = FALSE))
+                na_rm = na_rm))
   }
 
   if (is.name(col_arg)) {

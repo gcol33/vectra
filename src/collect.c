@@ -955,6 +955,17 @@ SEXP vec_collect(VecNode *root) {
     VecBatch *batch;
     while ((batch = root->next_batch(root)) != NULL) {
         if (!batch->sel) {
+            /* Reserve on the master thread first: growing the builders inside
+               the parallel region could realloc-fail and longjmp off a worker
+               (UB). Pre-sized here, the parallel append never reallocs. */
+            for (int i = 0; i < n_cols; i++) {
+                const VecArray *col = &batch->columns[i];
+                if (col->length == 0) continue;  /* append_array skips these too */
+                vec_builder_reserve(&builders[i], col->length);
+                if (col->type == VEC_STRING)
+                    vec_builder_reserve_data(&builders[i],
+                        col->buf.str.offsets[col->length] - col->buf.str.offsets[0]);
+            }
             /* Fast path: no selection vector, bulk append */
             #pragma omp parallel for if(n_cols > 8) schedule(static)
             for (int i = 0; i < n_cols; i++)

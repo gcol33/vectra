@@ -353,12 +353,17 @@ static VecArray win_eval_segment(WinKind kind, const VecArray *input,
         break;
     }
     case WIN_DENSE_RANK: {
-        /* O(n log n) dense_rank via sort-then-scan (thread-safe) */
+        /* O(n log n) dense_rank via sort-then-scan (thread-safe). dplyr returns
+           NA for an NA input row; NA sorts last, so skip those rows. */
         int64_t *idx = (int64_t *)malloc((size_t)seg_len * sizeof(int64_t));
         for (int64_t i = 0; i < seg_len; i++) idx[i] = start + i;
         win_sort_indices(idx, seg_len, input);
         int64_t rank = 1;
         for (int64_t i = 0; i < seg_len; i++) {
+            if (!vec_array_is_valid(input, idx[i])) {
+                vec_array_set_null(result, idx[i]);
+                continue;
+            }
             if (i > 0 && vec_compare_values(input, idx[i], idx[i - 1]) != 0)
                 rank++;
             vec_array_set_valid(result, idx[i]);
@@ -1043,6 +1048,14 @@ static VecBatch *window_ostream_next(WindowNode *wn) {
         case WIN_DENSE_RANK:
         case WIN_PERCENT_RANK:
             for (int64_t i = 0; i < n; i++) {
+                /* dplyr's dense_rank returns NA for an NA input row. NA sorts
+                   last, so skip it without advancing the dense counter. (rank
+                   and percent_rank keep base-R behaviour here.) */
+                if (ws->kind == WIN_DENSE_RANK && in_arr &&
+                    !vec_array_is_valid(in_arr, i)) {
+                    vec_array_set_null(&out, i);
+                    continue;
+                }
                 int newgrp = (i == 0)
                     ? (!st->prev_set ||
                        !win_cells_equal(&st->prev, 0, in_arr, i))
@@ -1403,6 +1416,11 @@ static VecBatch *window_next_batch(VecNode *self) {
                     win_merge_sort(sorted, stmp, glen, in_arr);
                     int64_t rank = 1;
                     for (int64_t j = 0; j < glen; j++) {
+                        /* dplyr: an NA input row is NA (NA sorts last, skip it) */
+                        if (!vec_array_is_valid(in_arr, sorted[j])) {
+                            null_flags[sorted[j]] = 1;
+                            continue;
+                        }
                         if (j > 0 && vec_compare_values(in_arr,
                                 sorted[j], sorted[j - 1]) != 0)
                             rank++;

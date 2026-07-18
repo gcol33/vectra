@@ -33,6 +33,9 @@ like \code{c("a" = "b")}. \code{NULL} for natural join (common columns).}
 columns with the same name (default \code{c(".x", ".y")}).}
 
 \item{...}{Ignored.}
+
+\item{na_matches}{How to match \code{NA} keys: \code{"na"} (default, as in dplyr) treats
+\code{NA} as matching \code{NA}; \code{"never"} uses SQL semantics where \code{NA} never matches.}
 }
 \value{
 A \code{vectra_node} with the joined result.
@@ -45,7 +48,8 @@ All joins use a build-right, probe-left hash join. The entire right-side
 table is materialized into a hash table; left-side batches stream through.
 Memory cost is proportional to the right-side table size.
 
-NA keys never match (SQL NULL semantics). Key types are auto-coerced
+By default \code{NA} keys match \code{NA} (dplyr's \code{na_matches = "na"}); pass
+\code{na_matches = "never"} for SQL NULL semantics. Key types are auto-coerced
 following the \verb{bool < int64 < double} hierarchy. Joining string against
 numeric keys is an error.
 }

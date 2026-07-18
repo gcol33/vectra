@@ -63,13 +63,18 @@ static inline int64_t str_len(const VecArray *a, int64_t row) {
     return a->buf.str.offsets[row + 1] - a->buf.str.offsets[row];
 }
 
-/* Grow a per-thread float scratch buffer to at least `need` elements. */
-static inline void ensure_cap(float **buf, int64_t *cap, int64_t need) {
+/* Grow a per-thread float scratch buffer to at least `need` elements.
+   Returns 1 on allocation failure so a caller inside a parallel region can
+   latch the error and raise it on the master thread instead of longjmp-ing
+   out of a worker thread. */
+static inline int ensure_cap(float **buf, int64_t *cap, int64_t need) {
     if (need > *cap) {
+        float *nb = (float *)realloc(*buf, (size_t)need * sizeof(float));
+        if (!nb) return 1;
+        *buf = nb;
         *cap = need;
-        *buf = (float *)realloc(*buf, (size_t)need * sizeof(float));
-        if (!*buf) vectra_error("alloc failed for embedding scratch");
     }
+    return 0;
 }
 
 static inline double vec_distance(char fn, const float *a, const float *b,
@@ -116,6 +121,7 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
 
     char fn = expr->vec_fn;
     int do_par = (n > VEC_PAR_THRESHOLD);
+    volatile int oom = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel if(do_par)
@@ -127,11 +133,16 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
         #pragma omp for schedule(dynamic, VEC_CHUNK)
 #endif
         for (int64_t i = 0; i < n; i++) {
+            if (oom) continue;
             if (!vec_array_is_valid(a, i)) { vec_array_set_null(out, i); continue; }
 
             int64_t da = hex_dim(str_len(a, i));
             if (da == 0) { vec_array_set_null(out, i); continue; }
-            ensure_cap(&ta, &capa, da);
+            if (ensure_cap(&ta, &capa, da)) {
+                #pragma omp atomic write
+                oom = 1;
+                continue;
+            }
             if (decode_hex_floats(str_ptr(a, i), da, ta) != 0) {
                 vec_array_set_null(out, i); continue;
             }
@@ -142,7 +153,11 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
                 if (!vec_array_is_valid(b, i)) { vec_array_set_null(out, i); continue; }
                 db = hex_dim(str_len(b, i));
                 if (db == 0) { vec_array_set_null(out, i); continue; }
-                ensure_cap(&tb, &capb, db);
+                if (ensure_cap(&tb, &capb, db)) {
+                    #pragma omp atomic write
+                    oom = 1;
+                    continue;
+                }
                 if (decode_hex_floats(str_ptr(b, i), db, tb) != 0) {
                     vec_array_set_null(out, i); continue;
                 }
@@ -161,6 +176,14 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
         }
         free(ta);
         free(tb);
+    }
+
+    if (oom) {
+        vec_array_free(out); free(out);
+        free(qvec);
+        vec_array_free(a); free(a);
+        if (b) { vec_array_free(b); free(b); }
+        vectra_error("alloc failed for embedding scratch");
     }
 
     free(qvec);

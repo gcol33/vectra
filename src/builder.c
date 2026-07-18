@@ -81,6 +81,10 @@ void vec_builder_reserve(VecArrayBuilder *b, int64_t extra) {
     ensure_capacity(b, extra);
 }
 
+void vec_builder_reserve_data(VecArrayBuilder *b, int64_t extra_bytes) {
+    if (b->type == VEC_STRING) ensure_str_data(b, extra_bytes);
+}
+
 /* The append paths below copy from the union field selected by the BUILDER's
    type. If the source array's type differs, that copy reads the wrong union
    member and reinterprets raw bytes (e.g. a VecStrData pointer read as a

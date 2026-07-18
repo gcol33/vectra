@@ -70,14 +70,19 @@ static void fmbuf_init(FuzzyMatchBuf *buf, int64_t initial_cap) {
     if (!buf->buf) vectra_error("alloc failed for FuzzyMatchBuf");
 }
 
-static void fmbuf_push(FuzzyMatchBuf *buf, int64_t pi, int64_t bi, double d) {
+/* Returns 1 on allocation failure so a caller inside a parallel region can
+   latch it and raise on the master thread rather than longjmp off a worker. */
+static int fmbuf_push(FuzzyMatchBuf *buf, int64_t pi, int64_t bi, double d) {
     if (buf->count >= buf->capacity) {
-        buf->capacity *= 2;
-        buf->buf = (FuzzyMatch *)realloc(buf->buf,
-            (size_t)buf->capacity * sizeof(FuzzyMatch));
-        if (!buf->buf) vectra_error("realloc failed for FuzzyMatchBuf");
+        int64_t new_cap = buf->capacity * 2;
+        FuzzyMatch *nb = (FuzzyMatch *)realloc(buf->buf,
+            (size_t)new_cap * sizeof(FuzzyMatch));
+        if (!nb) return 1;
+        buf->buf = nb;
+        buf->capacity = new_cap;
     }
     buf->buf[buf->count++] = (FuzzyMatch){pi, bi, d};
+    return 0;
 }
 
 static void fmbuf_free(FuzzyMatchBuf *buf) {
@@ -257,6 +262,7 @@ static void fuzzy_match_batch_vs(FuzzyJoinNode *fj, VecBatch *batch,
     FuzzyMethod method = fj->method;
     double max_dist = fj->max_dist;
     int64_t b_nrows = bnrows;
+    volatile int oom = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic, 64) num_threads(n_threads)
@@ -267,6 +273,7 @@ static void fuzzy_match_batch_vs(FuzzyJoinNode *fj, VecBatch *batch,
 #else
         int tid = 0;
 #endif
+        if (oom) continue;
         FuzzyMatchBuf *buf = &tbufs[tid];
 
         int64_t phys = vec_batch_physical_row(batch, li);
@@ -295,8 +302,18 @@ static void fuzzy_match_batch_vs(FuzzyJoinNode *fj, VecBatch *batch,
             double d = compute_dist(method, ps, pl,
                                     str_ptr(b_key, bi), str_len(b_key, bi),
                                     max_dist);
-            if (d <= max_dist) fmbuf_push(buf, li, bi, d);
+            if (d <= max_dist && fmbuf_push(buf, li, bi, d)) {
+                #pragma omp atomic write
+                oom = 1;
+                break;
+            }
         }
+    }
+
+    if (oom) {
+        for (int t = 0; t < n_threads; t++) fmbuf_free(&tbufs[t]);
+        free(tbufs);
+        vectra_error("alloc failed for fuzzy-join matches");
     }
 
     int64_t total = 0;

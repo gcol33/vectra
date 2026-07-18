@@ -31,6 +31,11 @@ VecArrayBuilder vec_builder_init(VecType type);
    Avoids repeated realloc in tight loops. */
 void vec_builder_reserve(VecArrayBuilder *b, int64_t extra);
 
+/* Pre-allocate the string-data arena for at least `extra_bytes` more bytes
+   (no-op for non-string builders). Lets a caller reserve before a parallel
+   append so the append never reallocs (and so never longjmps off a worker). */
+void vec_builder_reserve_data(VecArrayBuilder *b, int64_t extra_bytes);
+
 /* Append a full VecArray to the builder */
 void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr);
 

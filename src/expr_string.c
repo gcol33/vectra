@@ -64,6 +64,33 @@ static double jaro_winkler_sim(const char *s, int64_t len_s,
     return strdist_jaro_winkler(s, len_s, t, len_t);
 }
 
+/* %in% helpers: read a numeric operand cell as the comparison key bits.
+ * For VEC_DOUBLE keys, -0.0 is normalized to +0.0 so it hashes and compares
+ * equal to +0.0 (matching R); an int64/bool operand promotes to double. For
+ * VEC_INT64 keys, a bool operand promotes to int64. Both produce an 8-byte key
+ * so one bit-keyed hash set serves both numeric comparison types. */
+static inline uint64_t in_key_from_operand(const VecArray *o, int64_t i,
+                                           VecType set_type) {
+    uint64_t bits;
+    if (set_type == VEC_DOUBLE) {
+        double v = (o->type == VEC_DOUBLE) ? o->buf.dbl[i]
+                 : (o->type == VEC_INT64)  ? (double)o->buf.i64[i]
+                 :                           (double)o->buf.bln[i];
+        if (v == 0.0) v = 0.0; /* collapse -0.0 to +0.0 */
+        memcpy(&bits, &v, sizeof(bits));
+    } else {
+        int64_t v = (o->type == VEC_INT64) ? o->buf.i64[i]
+                  : (o->type == VEC_DOUBLE) ? (int64_t)o->buf.dbl[i]
+                  :                           (int64_t)o->buf.bln[i];
+        memcpy(&bits, &v, sizeof(bits));
+    }
+    return bits;
+}
+
+static inline uint64_t in_key_hash(uint64_t bits) {
+    return bits * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
+}
+
 VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                                 const VecBatch *batch) {
     switch (op) {
@@ -171,21 +198,33 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             if (regcomp(&re_check, pattern, REG_EXTENDED | REG_NOSUB) != 0)
                 vectra_error("grepl: invalid regex pattern: %s", pattern);
             regfree(&re_check);
+            volatile int oom = 0;
             #pragma omp parallel if(n > 1000)
             {
                 regex_t re_local;
                 regcomp(&re_local, pattern, REG_EXTENDED | REG_NOSUB);
                 int64_t tl_cap = 256;
                 char *tl_buf = (char *)malloc((size_t)tl_cap);
+                if (!tl_buf) {
+                    #pragma omp atomic write
+                    oom = 1;
+                }
                 #pragma omp for schedule(dynamic, 64)
                 for (int64_t i = 0; i < n; i++) {
+                    if (oom) continue;
                     if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
                     vec_array_set_valid(out, i);
                     int64_t so = s->buf.str.offsets[i];
                     int64_t slen = s->buf.str.offsets[i + 1] - so;
                     if (slen + 1 > tl_cap) {
+                        char *nb = (char *)realloc(tl_buf, (size_t)(slen + 1));
+                        if (!nb) {
+                            #pragma omp atomic write
+                            oom = 1;
+                            continue;
+                        }
+                        tl_buf = nb;
                         tl_cap = slen + 1;
-                        tl_buf = (char *)realloc(tl_buf, (size_t)tl_cap);
                     }
                     memcpy(tl_buf, s->buf.str.data + so, (size_t)slen);
                     tl_buf[slen] = '\0';
@@ -194,6 +233,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 free(tl_buf);
                 regfree(&re_local);
             }
+            if (oom) vectra_error("grepl: alloc failed");
         } else {
             /* Fixed substring match */
             for (int64_t i = 0; i < n; i++) {
@@ -277,107 +317,125 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         VecArray *o = vec_expr_eval(expr->operand, batch);
         int64_t n = o->length;
         int64_t ns = expr->n_set;
+        VecType st = expr->set_type;
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_BOOL, n);
 
-        /* For large sets, build a hash set for O(1) lookup */
-        if (ns > 16) {
-            /* FNV-1a hash set with open addressing */
-            int64_t ht_cap = 1;
-            while (ht_cap < ns * 2) ht_cap <<= 1;
-            int64_t mask = ht_cap - 1;
-            uint64_t *ht_hashes = (uint64_t *)calloc((size_t)ht_cap, sizeof(uint64_t));
-            int8_t *ht_used = (int8_t *)calloc((size_t)ht_cap, sizeof(int8_t));
-            int64_t *ht_idx = (int64_t *)malloc((size_t)ht_cap * sizeof(int64_t));
-            /* Insert set values */
-            for (int64_t j = 0; j < ns; j++) {
-                uint64_t h;
-                if (o->type == VEC_DOUBLE) {
-                    double v = expr->set_dbl[j];
-                    memcpy(&h, &v, sizeof(h));
-                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
-                } else if (o->type == VEC_INT64) {
-                    int64_t v = expr->set_i64[j];
-                    memcpy(&h, &v, sizeof(h));
-                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
-                } else {
+        if (st == VEC_STRING) {
+            if (o->type != VEC_STRING)
+                vectra_error("%%in%%: a character set can only match a string column");
+            if (ns > 16) {
+                /* FNV-1a hash set over the string set */
+                int64_t ht_cap = 1;
+                while (ht_cap < ns * 2) ht_cap <<= 1;
+                int64_t mask = ht_cap - 1;
+                uint64_t *ht_hashes = (uint64_t *)calloc((size_t)ht_cap, sizeof(uint64_t));
+                int8_t *ht_used = (int8_t *)calloc((size_t)ht_cap, sizeof(int8_t));
+                int64_t *ht_idx = (int64_t *)malloc((size_t)ht_cap * sizeof(int64_t));
+                for (int64_t j = 0; j < ns; j++) {
                     const char *s = expr->set_str[j];
-                    h = 0xcbf29ce484222325ULL;
+                    uint64_t h = 0xcbf29ce484222325ULL;
                     for (const char *p = s; *p; p++)
                         h = (h ^ (uint8_t)*p) * 0x00000100000001B3ULL;
+                    int64_t slot = (int64_t)(h & (uint64_t)mask);
+                    while (ht_used[slot]) slot = (slot + 1) & mask;
+                    ht_hashes[slot] = h; ht_used[slot] = 1; ht_idx[slot] = j;
                 }
-                int64_t slot = (int64_t)(h & (uint64_t)mask);
-                while (ht_used[slot]) slot = (slot + 1) & mask;
-                ht_hashes[slot] = h;
-                ht_used[slot] = 1;
-                ht_idx[slot] = j;
-            }
-            for (int64_t i = 0; i < n; i++) {
-                if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
-                vec_array_set_valid(out, i);
-                uint64_t h;
-                if (o->type == VEC_DOUBLE) {
-                    double v = o->buf.dbl[i];
-                    memcpy(&h, &v, sizeof(h));
-                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
-                } else if (o->type == VEC_INT64) {
-                    int64_t v = o->buf.i64[i];
-                    memcpy(&h, &v, sizeof(h));
-                    h = h * 0x00000100000001B3ULL ^ 0xcbf29ce484222325ULL;
-                } else {
+                for (int64_t i = 0; i < n; i++) {
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    vec_array_set_valid(out, i);
                     int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
-                    h = 0xcbf29ce484222325ULL;
+                    int64_t slen2 = eo2 - so2;
+                    uint64_t h = 0xcbf29ce484222325ULL;
                     for (int64_t k = so2; k < eo2; k++)
                         h = (h ^ (uint8_t)o->buf.str.data[k]) * 0x00000100000001B3ULL;
-                }
-                int found = 0;
-                int64_t slot = (int64_t)(h & (uint64_t)mask);
-                while (ht_used[slot]) {
-                    if (ht_hashes[slot] == h) {
-                        int64_t j = ht_idx[slot];
-                        /* Verify equality */
-                        if (o->type == VEC_DOUBLE) {
-                            if (o->buf.dbl[i] == expr->set_dbl[j]) { found = 1; break; }
-                        } else if (o->type == VEC_INT64) {
-                            if (o->buf.i64[i] == expr->set_i64[j]) { found = 1; break; }
-                        } else {
-                            int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
-                            int64_t slen2 = eo2 - so2;
+                    int found = 0;
+                    int64_t slot = (int64_t)(h & (uint64_t)mask);
+                    while (ht_used[slot]) {
+                        if (ht_hashes[slot] == h) {
+                            int64_t j = ht_idx[slot];
                             int64_t clen = (int64_t)strlen(expr->set_str[j]);
                             if (slen2 == clen && memcmp(o->buf.str.data + so2, expr->set_str[j], (size_t)slen2) == 0)
                                 { found = 1; break; }
                         }
+                        slot = (slot + 1) & mask;
                     }
-                    slot = (slot + 1) & mask;
+                    out->buf.bln[i] = (uint8_t)found;
                 }
-                out->buf.bln[i] = (uint8_t)found;
-            }
-            free(ht_hashes); free(ht_used); free(ht_idx);
-        } else {
-            /* Small set: linear scan */
-            for (int64_t i = 0; i < n; i++) {
-                if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
-                vec_array_set_valid(out, i);
-                int found = 0;
-                if (o->type == VEC_DOUBLE) {
-                    double v = o->buf.dbl[i];
-                    for (int64_t j = 0; j < ns; j++)
-                        if (v == expr->set_dbl[j]) { found = 1; break; }
-                } else if (o->type == VEC_INT64) {
-                    int64_t v = o->buf.i64[i];
-                    for (int64_t j = 0; j < ns; j++)
-                        if (v == expr->set_i64[j]) { found = 1; break; }
-                } else if (o->type == VEC_STRING) {
+                free(ht_hashes); free(ht_used); free(ht_idx);
+            } else {
+                for (int64_t i = 0; i < n; i++) {
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    vec_array_set_valid(out, i);
                     int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
                     int64_t slen2 = eo2 - so2;
+                    int found = 0;
                     for (int64_t j = 0; j < ns; j++) {
                         int64_t clen = (int64_t)strlen(expr->set_str[j]);
                         if (slen2 == clen && memcmp(o->buf.str.data + so2, expr->set_str[j], (size_t)slen2) == 0)
                             { found = 1; break; }
                     }
+                    out->buf.bln[i] = (uint8_t)found;
                 }
-                out->buf.bln[i] = (uint8_t)found;
             }
+        } else {
+            /* numeric %in%: the set is coerced (at parse) to the operand's
+             * comparison type, so both sides reduce to an 8-byte key and one
+             * bit-keyed hash/linear routine serves VEC_DOUBLE and VEC_INT64. */
+            if (o->type == VEC_STRING)
+                vectra_error("%%in%%: a numeric set cannot match a string column");
+            uint64_t *set_keys = (uint64_t *)malloc((size_t)(ns > 0 ? ns : 1) * sizeof(uint64_t));
+            for (int64_t j = 0; j < ns; j++) {
+                uint64_t bits;
+                if (st == VEC_DOUBLE) {
+                    double v = expr->set_dbl[j];
+                    if (v == 0.0) v = 0.0; /* collapse -0.0 to +0.0 */
+                    memcpy(&bits, &v, sizeof(bits));
+                } else {
+                    int64_t v = expr->set_i64[j];
+                    memcpy(&bits, &v, sizeof(bits));
+                }
+                set_keys[j] = bits;
+            }
+            if (ns > 16) {
+                int64_t ht_cap = 1;
+                while (ht_cap < ns * 2) ht_cap <<= 1;
+                int64_t mask = ht_cap - 1;
+                uint64_t *ht_hashes = (uint64_t *)calloc((size_t)ht_cap, sizeof(uint64_t));
+                int8_t *ht_used = (int8_t *)calloc((size_t)ht_cap, sizeof(int8_t));
+                int64_t *ht_idx = (int64_t *)malloc((size_t)ht_cap * sizeof(int64_t));
+                for (int64_t j = 0; j < ns; j++) {
+                    uint64_t h = in_key_hash(set_keys[j]);
+                    int64_t slot = (int64_t)(h & (uint64_t)mask);
+                    while (ht_used[slot]) slot = (slot + 1) & mask;
+                    ht_hashes[slot] = h; ht_used[slot] = 1; ht_idx[slot] = j;
+                }
+                for (int64_t i = 0; i < n; i++) {
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    vec_array_set_valid(out, i);
+                    uint64_t kb = in_key_from_operand(o, i, st);
+                    uint64_t h = in_key_hash(kb);
+                    int found = 0;
+                    int64_t slot = (int64_t)(h & (uint64_t)mask);
+                    while (ht_used[slot]) {
+                        if (ht_hashes[slot] == h && set_keys[ht_idx[slot]] == kb) { found = 1; break; }
+                        slot = (slot + 1) & mask;
+                    }
+                    out->buf.bln[i] = (uint8_t)found;
+                }
+                free(ht_hashes); free(ht_used); free(ht_idx);
+            } else {
+                for (int64_t i = 0; i < n; i++) {
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    vec_array_set_valid(out, i);
+                    uint64_t kb = in_key_from_operand(o, i, st);
+                    int found = 0;
+                    for (int64_t j = 0; j < ns; j++)
+                        if (set_keys[j] == kb) { found = 1; break; }
+                    out->buf.bln[i] = (uint8_t)found;
+                }
+            }
+            free(set_keys);
         }
         vec_array_free(o); free(o);
         return out;

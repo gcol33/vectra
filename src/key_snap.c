@@ -45,9 +45,12 @@ int snap_matches(const KeySnap *s, const VecBatch *batch,
         case VEC_INT8:
             if ((int64_t)col->buf.i8[row] != s->i64[k]) return 0;
             break;
-        case VEC_DOUBLE:
-            if (col->buf.dbl[row] != s->dbl[k]) return 0;
+        case VEC_DOUBLE: {
+            double a = col->buf.dbl[row], b = s->dbl[k];
+            /* NaN keys are one group (R); -0.0 == 0.0 already holds */
+            if (a != b && !(a != a && b != b)) return 0;
             break;
+        }
         case VEC_BOOL:
             if (col->buf.bln[row] != s->bln[k]) return 0;
             break;

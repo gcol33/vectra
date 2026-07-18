@@ -86,7 +86,8 @@ desc <- function(x) {
 #' copying data. Multiple conditions are combined with `&`. Supported
 #' expression types: arithmetic (`+`, `-`, `*`, `/`, `%%`), comparison
 #' (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`&`, `|`, `!`), `is.na()`,
-#' and string functions (`nchar()`, `substr()`, `grepl()` with fixed patterns).
+#' and string functions (`nchar()`, `substr()`, `grepl()`; patterns are regex
+#' by default, as in base R, or literal with `fixed = TRUE`).
 #'
 #' NA comparisons return NA (SQL semantics). Use `is.na()` to filter NAs
 #' explicitly.

@@ -14,6 +14,7 @@ static inline int64_t agg_get_i64(const VecArray *col, int64_t row) {
     case VEC_INT32:  return (int64_t)col->buf.i32[row];
     case VEC_INT16:  return (int64_t)col->buf.i16[row];
     case VEC_INT8:   return (int64_t)col->buf.i8[row];
+    case VEC_BOOL:   return (int64_t)col->buf.bln[row];
     default:         return 0;
     }
 }
@@ -42,6 +43,11 @@ AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm,
        The feed function uses agg_get_i64() to read any int width. */
     acc.input_type = (input_type == VEC_INT8 || input_type == VEC_INT16 ||
                       input_type == VEC_INT32) ? VEC_INT64 : input_type;
+    /* min()/max() have no logical read path; a logical column reduces to its
+       0/1 integer values, matching R's min(c(TRUE, FALSE)) == 0. Other kinds
+       keep the logical type (sum/mean/any/all read it directly). */
+    if (acc.input_type == VEC_BOOL && (kind == AGG_MIN || kind == AGG_MAX))
+        acc.input_type = VEC_INT64;
     acc.na_rm = na_rm;
     acc.mem_budget = mem_budget;
     acc.temp_dir = temp_dir;
@@ -334,13 +340,21 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         }
         break;
     case AGG_N_DISTINCT:
-        if (!is_valid) break; /* NAs are not counted as distinct values */
+        if (!is_valid) {
+            /* dplyr's default na.rm = FALSE counts NA as one distinct value */
+            if (!acc->na_rm) acc->has_na[group_id] = 1;
+            break;
+        }
         {
             uint64_t h;
             if (acc->input_type == VEC_INT64)
                 h = nd_hash_val_i64(agg_get_i64(col, row));
-            else if (acc->input_type == VEC_DOUBLE)
-                h = nd_hash_val_dbl(col->buf.dbl[row]);
+            else if (acc->input_type == VEC_DOUBLE) {
+                double v = col->buf.dbl[row];
+                if (v == 0.0) v = 0.0;         /* -0.0 and 0.0 are one value */
+                else if (v != v) v = (double)NAN; /* all NaN are one value */
+                h = nd_hash_val_dbl(v);
+            }
             else if (acc->input_type == VEC_STRING) {
                 int64_t so = col->buf.str.offsets[row];
                 int64_t slen = col->buf.str.offsets[row+1] - so;
@@ -516,15 +530,32 @@ VecArray agg_accum_finish(AggAccum *acc) {
         }
         return arr;
     }
-    case AGG_ANY:
-    case AGG_ALL: {
+    case AGG_ANY: {
+        /* R: a TRUE determines the result even with NAs present; NA only when
+           no TRUE was seen and an NA was. has_value == a TRUE was seen. */
         VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
         for (int64_t i = 0; i < n; i++) {
-            if (acc->has_na && acc->has_na[i]) {
+            if (acc->has_value[i]) {
+                vec_array_set_valid(&arr, i); arr.buf.dbl[i] = 1.0;
+            } else if (acc->has_na && acc->has_na[i]) {
                 vec_array_set_null(&arr, i);
             } else {
-                vec_array_set_valid(&arr, i);
-                arr.buf.dbl[i] = (double)acc->has_value[i];
+                vec_array_set_valid(&arr, i); arr.buf.dbl[i] = 0.0;
+            }
+        }
+        return arr;
+    }
+    case AGG_ALL: {
+        /* R: a FALSE determines the result even with NAs present; NA only when
+           no FALSE was seen and an NA was. has_value == 0 means a FALSE seen. */
+        VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
+        for (int64_t i = 0; i < n; i++) {
+            if (!acc->has_value[i]) {
+                vec_array_set_valid(&arr, i); arr.buf.dbl[i] = 0.0;
+            } else if (acc->has_na && acc->has_na[i]) {
+                vec_array_set_null(&arr, i);
+            } else {
+                vec_array_set_valid(&arr, i); arr.buf.dbl[i] = 1.0;
             }
         }
         return arr;
@@ -532,9 +563,11 @@ VecArray agg_accum_finish(AggAccum *acc) {
     case AGG_N_DISTINCT: {
         VecArray arr = vec_array_alloc(VEC_DOUBLE, n);
         vec_array_set_all_valid(&arr);
-        for (int64_t i = 0; i < n; i++)
-            arr.buf.dbl[i] = acc->store
-                ? (double)agg_spill_n_distinct(&acc->store[i]) : 0.0;
+        for (int64_t i = 0; i < n; i++) {
+            double d = acc->store ? (double)agg_spill_n_distinct(&acc->store[i]) : 0.0;
+            if (acc->has_na && acc->has_na[i]) d += 1.0; /* NA counts once */
+            arr.buf.dbl[i] = d;
+        }
         return arr;
     }
     case AGG_MEDIAN: {

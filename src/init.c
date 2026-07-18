@@ -136,7 +136,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_limit_node",     (DL_FUNC) &C_limit_node,      2},
     {"C_topn_node",      (DL_FUNC) &C_topn_node,       4},
     {"C_group_topn_node",(DL_FUNC) &C_group_topn_node, 5},
-    {"C_join_node",      (DL_FUNC) &C_join_node,       8},
+    {"C_join_node",      (DL_FUNC) &C_join_node,       9},
     {"C_window_node",    (DL_FUNC) &C_window_node,     3},
     {"C_concat_node",   (DL_FUNC) &C_concat_node,    1},
     {"C_write_csv",     (DL_FUNC) &C_write_csv,      2},

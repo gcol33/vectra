@@ -3,6 +3,7 @@
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <assert.h>
 
 /* FNV-1a constants */
@@ -36,8 +37,10 @@ uint64_t vec_hash_value(const VecArray *arr, int64_t row) {
     }
     case VEC_DOUBLE: {
         double v = arr->buf.dbl[row];
-        /* Normalize -0 to +0 */
+        /* Normalize -0 to +0, and all NaN payloads to one canonical NaN so
+           every NaN key hashes into the same group (matching R). */
         if (v == 0.0) v = 0.0;
+        else if (v != v) v = (double)NAN;
         const uint8_t *p = (const uint8_t *)&v;
         for (int k = 0; k < 8; k++) { h ^= p[k]; h *= FNV_PRIME; }
         break;
@@ -72,7 +75,10 @@ int vec_val_equal(const VecArray *a, int64_t ra, const VecArray *b, int64_t rb) 
     case VEC_INT32:  return a->buf.i32[ra] == b->buf.i32[rb];
     case VEC_INT16:  return a->buf.i16[ra] == b->buf.i16[rb];
     case VEC_INT8:   return a->buf.i8[ra]  == b->buf.i8[rb];
-    case VEC_DOUBLE: return a->buf.dbl[ra] == b->buf.dbl[rb];
+    case VEC_DOUBLE: {
+        double x = a->buf.dbl[ra], y = b->buf.dbl[rb];
+        return x == y || (x != x && y != y); /* NaN keys group together (R) */
+    }
     case VEC_BOOL:   return a->buf.bln[ra] == b->buf.bln[rb];
     case VEC_STRING: {
         int64_t as = a->buf.str.offsets[ra], ae = a->buf.str.offsets[ra + 1];

@@ -25,10 +25,11 @@
 
 SEXP C_filter_node(SEXP node_xptr, SEXP expr_list) {
     VecNode *child = unwrap_node(node_xptr);
-    /* Clear the external pointer so the old R object can't double-free */
-    R_ClearExternalPtr(node_xptr);
-
+    /* Parse first: if it fails (e.g. a column typo) the input node is left
+       intact and owned by its R handle, so the pipeline survives the error
+       and the child is not leaked. Clear only once we take ownership. */
     VecExpr *pred = parse_expr(expr_list, &child->output_schema);
+    R_ClearExternalPtr(node_xptr);
     FilterNode *fn = filter_node_create(child, pred);
     return wrap_node((VecNode *)fn);
 }
@@ -37,7 +38,8 @@ SEXP C_filter_node(SEXP node_xptr, SEXP expr_list) {
 
 SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists) {
     VecNode *child = unwrap_node(node_xptr);
-    R_ClearExternalPtr(node_xptr);
+    /* Cleared after the parse loop below so a parse error (e.g. a column typo)
+       leaves the input pipeline intact rather than destroying it. */
 
     const VecSchema *schema = &child->output_schema;
 
@@ -82,6 +84,7 @@ SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists) {
     free(ext_names);
     free(ext_types);
 
+    R_ClearExternalPtr(node_xptr);
     ProjectNode *pn = project_node_create(child, n, entries);
     return wrap_node((VecNode *)pn);
 }
@@ -274,7 +277,8 @@ SEXP C_group_topn_node(SEXP node_xptr, SEXP key_names_sexp,
 
 SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
                  SEXP kind_sexp, SEXP left_keys_sexp, SEXP right_keys_sexp,
-                 SEXP suffix_x_sexp, SEXP suffix_y_sexp, SEXP mem_sexp) {
+                 SEXP suffix_x_sexp, SEXP suffix_y_sexp, SEXP mem_sexp,
+                 SEXP na_matches_sexp) {
     VecNode *left = unwrap_node(left_xptr);
     R_ClearExternalPtr(left_xptr);
     VecNode *right = unwrap_node(right_xptr);
@@ -311,6 +315,7 @@ SEXP C_join_node(SEXP left_xptr, SEXP right_xptr,
     int64_t mem_budget = (int64_t)Rf_asReal(mem_sexp);
     JoinNode *jn = join_node_create(left, right, kind, n_keys, keys, sx, sy,
                                     mem_budget, get_r_tempdir());
+    jn->na_matches = Rf_asLogical(na_matches_sexp) == 1 ? 1 : 0;
     return wrap_node((VecNode *)jn);
 }
 

@@ -51,10 +51,51 @@
 #                 sign, trunc, pmin, pmax
 .serialize_math <- function(fn, expr, env, cols) {
   if (fn == "pmin" || fn == "pmax") {
-    return(list(kind = fn,
-                left = serialize_expr(expr[[2]], env, cols),
-                right = serialize_expr(expr[[3]], env, cols)))
+    call_args <- as.list(expr)[-1]
+    nms <- names(call_args)
+    if (!is.null(nms) && any(nms == "na.rm"))
+      stop(sprintf("%s(na.rm=) is not supported", fn))
+    data_args <- if (is.null(nms)) call_args else call_args[!nzchar(nms)]
+    if (length(data_args) < 2)
+      stop(sprintf("%s() needs at least two arguments", fn))
+    # Left-fold N arguments into nested binary pmin/pmax.
+    acc <- serialize_expr(data_args[[1]], env, cols)
+    for (k in 2:length(data_args)) {
+      acc <- list(kind = fn, left = acc,
+                  right = serialize_expr(data_args[[k]], env, cols))
+    }
+    return(acc)
   }
+
+  # round(x, digits): the engine has only single-argument round, so express
+  # round(x, n) as round(x * 10^n) / 10^n via existing primitives.
+  if (fn == "round" && length(expr) >= 3) {
+    sx <- serialize_expr(expr[[2]], env, cols)
+    digits_expr <- expr[[3]]
+    dv <- tryCatch(eval(digits_expr, env), error = function(e) NULL)
+    if (!is.null(dv) && is.numeric(dv) && length(dv) == 1L && !is.na(dv)) {
+      factor_node <- list(kind = "lit_double", value = 10^dv)
+    } else {
+      # 10^d = exp(d * log(10)) for a non-constant number of digits
+      factor_node <- list(kind = "math_unary", fn = "e",
+        operand = list(kind = "arith", op = "*",
+          left = serialize_expr(digits_expr, env, cols),
+          right = list(kind = "lit_double", value = log(10))))
+    }
+    scaled  <- list(kind = "arith", op = "*", left = sx, right = factor_node)
+    rounded <- list(kind = "math_unary", fn = "r", operand = scaled)
+    return(list(kind = "arith", op = "/", left = rounded, right = factor_node))
+  }
+
+  # log(x, base): express as log(x) / log(base).
+  if (fn == "log" && length(expr) >= 3) {
+    return(list(kind = "arith", op = "/",
+      left  = list(kind = "math_unary", fn = "l",
+                   operand = serialize_expr(expr[[2]], env, cols)),
+      right = list(kind = "math_unary", fn = "l",
+                   operand = serialize_expr(expr[[3]], env, cols))))
+  }
+
   fn_char <- switch(fn,
     abs = "a", sqrt = "s", log = "l", exp = "e",
     floor = "f", ceiling = "c", round = "r",
@@ -83,7 +124,7 @@
     x <- expr[[3]]
     if (!is.character(pattern))
       stop("grepl: pattern must be a string literal")
-    fixed <- TRUE
+    fixed <- FALSE  # base R default: pattern is a regex unless fixed = TRUE
     nms <- names(expr)
     if (!is.null(nms)) {
       fi <- match("fixed", nms)
@@ -117,7 +158,9 @@
         data_args <- call_args[-si]
       }
       ci <- match("collapse", names(data_args))
-      if (!is.na(ci)) data_args <- data_args[-ci]
+      if (!is.na(ci))
+        stop("paste(collapse=) is not supported: paste is row-wise here, ",
+             "so it cannot reduce a column to a single string")
     }
     args <- lapply(data_args, serialize_expr, env = env, cols = cols)
     return(list(kind = "paste", args = args, sep = sep))
@@ -143,7 +186,7 @@
     x <- expr[[4]]
     if (!is.character(pattern)) stop(paste0(fn, ": pattern must be a string literal"))
     if (!is.character(replacement)) stop(paste0(fn, ": replacement must be a string literal"))
-    fixed <- TRUE
+    fixed <- FALSE  # base R default: pattern is a regex unless fixed = TRUE
     nms <- names(expr)
     if (!is.null(nms)) {
       fi <- match("fixed", nms)
@@ -204,10 +247,32 @@
   }
 
   # if_else / ifelse
-  list(kind = "if_else",
-       cond = serialize_expr(expr[[2]], env, cols),
-       then_expr = serialize_expr(expr[[3]], env, cols),
-       else_expr = serialize_expr(expr[[4]], env, cols))
+  sc <- serialize_expr(expr[[2]], env, cols)
+  sy <- serialize_expr(expr[[3]], env, cols)
+  sn <- serialize_expr(expr[[4]], env, cols)
+
+  # dplyr's if_else() has a 4th argument, `missing`, used where the condition
+  # is NA. Express it via case_when so NA conditions take the missing value.
+  if (fn == "if_else") {
+    args <- as.list(expr)[-1]
+    an <- names(args)
+    missing_expr <- NULL
+    if (!is.null(an) && !is.na(match("missing", an))) {
+      missing_expr <- args[[match("missing", an)]]
+    } else if (length(args) >= 4L && (is.null(an) || an[4] == "")) {
+      missing_expr <- args[[4]]
+    }
+    if (!is.null(missing_expr)) {
+      return(list(kind = "case_when",
+        cases = list(
+          list(cond = list(kind = "is_na", operand = sc),
+               val  = serialize_expr(missing_expr, env, cols)),
+          list(cond = sc, val = sy)),
+        default = sn))
+    }
+  }
+
+  list(kind = "if_else", cond = sc, then_expr = sy, else_expr = sn)
 }
 
 # Type casting: as.numeric, as.double, as.integer, as.character, as.logical
