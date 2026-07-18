@@ -203,9 +203,16 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
     }
     case EXPR_MATH_UNARY: {
         VecArray *o = vec_expr_eval(expr->operand, batch);
-        /* Coerce to double if int64 */
-        VecArray *d = vec_type_is_int(o->type) ? vec_coerce(o, VEC_DOUBLE) : copy_col(o);
-        if (vec_type_is_int(o->type)) { vec_array_free(o); free(o); o = d; } else { free(d); d = o; }
+        /* Coerce to double if int; otherwise take ownership of the already-double
+           operand directly (no copy — copying and then free()ing only the wrapper
+           leaked the data+validity buffers on every batch). */
+        VecArray *d;
+        if (vec_type_is_int(o->type)) {
+            d = vec_coerce(o, VEC_DOUBLE);
+            vec_array_free(o); free(o);
+        } else {
+            d = o;
+        }
         /* d is now VEC_DOUBLE */
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_DOUBLE, d->length);

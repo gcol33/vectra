@@ -374,6 +374,21 @@ static VecType fold_value_type(VecExpr **vals, int nvals) {
     return have ? acc : VEC_BOOL;
 }
 
+/* Resolve whether a datetime operand is a Date (days) or POSIXct (seconds)
+   from the source column's schema annotation. Only a direct column reference
+   carries the class through; a computed operand returns 0 (unknown). */
+static char resolve_date_scale(const VecExpr *operand, const VecSchema *schema) {
+    if (!operand || operand->kind != EXPR_COL_REF || !schema->col_annotations)
+        return 0;
+    int idx = vec_schema_find_col(schema, operand->col_name);
+    if (idx < 0) return 0;
+    const char *ann = schema->col_annotations[idx];
+    if (!ann) return 0;
+    if (strncmp(ann, "Date", 4) == 0) return 'D';
+    if (strncmp(ann, "POSIXct", 7) == 0) return 'T';
+    return 0;
+}
+
 VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
     if (TYPEOF(lst) != VECSXP)
         vectra_error("expression must be a list");
@@ -753,6 +768,7 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         VecExpr *e = vec_expr_alloc(EXPR_DATE_PART);
         e->date_part = part[0];
         e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->date_scale = resolve_date_scale(e->operand, schema);
         e->result_type = VEC_DOUBLE;
         return e;
     }
@@ -879,6 +895,7 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         VecExpr *e = vec_expr_alloc(EXPR_FLOOR_TIME);
         e->date_part = unit[0];
         e->operand = parse_expr(list_get(lst, "operand"), schema);
+        e->date_scale = resolve_date_scale(e->operand, schema);
         SEXP nn = list_get(lst, "n");
         e->lit_i64 = 1;
         if (nn != R_NilValue) {

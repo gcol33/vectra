@@ -7,6 +7,7 @@
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* Pack first 8 bytes of a string into big-endian uint64 for zone map comparison.
  * pad=0x00 for min/query-lo, pad=0xFF for max/query-hi. */
@@ -277,6 +278,23 @@ static int extract_simple_pred(const VecExpr *pred, const VecSchema *schema,
     } else if (lit_expr->kind == EXPR_LIT_DOUBLE) {
         *lit_dbl = lit_expr->lit_dbl;
         *lit_i64 = (int64_t)lit_expr->lit_dbl;
+        /* Integer column compared against a *fractional* double: the integer-space
+           binary search uses *lit_i64 as a hard row-group cutoff. Truncation
+           toward zero rounds the wrong way for half the operators (and for all
+           fractional negatives), which can drop a row group that actually
+           matches. Convert to the operator-appropriate integer bound so the
+           search stays conservative. '==' is left truncated: no integer equals a
+           fractional literal, so any resulting prune is safe (the filter re-checks). */
+        if (vec_type_is_int(*col_type)) {
+            double t  = lit_expr->lit_dbl;
+            double fl = floor(t), ce = ceil(t);
+            if (fl != ce) {
+                if      (*op == '>' && *op2 == ' ') *lit_i64 = (int64_t)fl; /* x>t : skip max<=floor */
+                else if (*op == '>' && *op2 == '=') *lit_i64 = (int64_t)ce; /* x>=t: skip max< ceil  */
+                else if (*op == '<' && *op2 == ' ') *lit_i64 = (int64_t)ce; /* x<t : skip min>=ceil  */
+                else if (*op == '<' && *op2 == '=') *lit_i64 = (int64_t)fl; /* x<=t: skip min> floor */
+            }
+        }
     } else if (lit_expr->kind == EXPR_LIT_STRING) {
         *lit_str = lit_expr->lit_str;
         *lit_str_len = lit_expr->lit_str ? (int64_t)strlen(lit_expr->lit_str) : 0;

@@ -105,6 +105,12 @@ struct VecExpr {
     /* EXPR_DATE_PART */
     char date_part;  /* 'Y'=year, 'M'=month, 'D'=day, 'h'=hour, 'm'=minute, 's'=second */
 
+    /* EXPR_DATE_PART / EXPR_FLOOR_TIME: scale of the operand's epoch value,
+       resolved from the source column's schema annotation at parse time.
+       'D' = Date (days since epoch), 'T' = POSIXct (seconds since epoch),
+       0 = unknown (operand is a computed expression) -> magnitude heuristic. */
+    char date_scale;
+
     /* EXPR_FLOOR_TIME reuses date_part for the unit ('s' second, 'n' minute,
        'h' hour, 'd' day, 'w' week, 'M' month, 'q' quarter, 'y' year) and
        lit_i64 for the integer multiple. */

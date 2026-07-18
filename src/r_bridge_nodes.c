@@ -50,15 +50,23 @@ SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists) {
     int schema_cap = schema_n + n;
     char **ext_names = (char **)malloc((size_t)schema_cap * sizeof(char *));
     VecType *ext_types = (VecType *)malloc((size_t)schema_cap * sizeof(VecType));
+    /* Carry the child's per-column annotations (Date / POSIXct / factor) into the
+       parse schema so expressions like year()/floor_time() can resolve a Date vs
+       POSIXct operand exactly instead of guessing by magnitude. The pointers alias
+       the child schema's strings (which outlive this parse); new mutate columns get
+       NULL. */
+    char **ext_annotations = (char **)calloc((size_t)schema_cap, sizeof(char *));
     for (int i = 0; i < schema_n; i++) {
         ext_names[i] = schema->col_names[i];
         ext_types[i] = schema->col_types[i];
+        ext_annotations[i] = schema->col_annotations ? schema->col_annotations[i] : NULL;
     }
     VecSchema ext_schema;
     memset(&ext_schema, 0, sizeof(ext_schema));
     ext_schema.n_cols = schema_n;
     ext_schema.col_names = ext_names;
     ext_schema.col_types = ext_types;
+    ext_schema.col_annotations = ext_annotations;
 
     ProjEntry *entries = (ProjEntry *)calloc((size_t)n, sizeof(ProjEntry));
     if (!entries) vectra_error("alloc failed for ProjEntry");
@@ -83,6 +91,7 @@ SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists) {
 
     free(ext_names);
     free(ext_types);
+    free(ext_annotations);  /* aliased strings owned by child schema; free array only */
 
     R_ClearExternalPtr(node_xptr);
     ProjectNode *pn = project_node_create(child, n, entries);
@@ -434,6 +443,11 @@ SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
         vectra_error("fuzzy_join: probe key column not found: %s", pk);
     if (build_key < 0)
         vectra_error("fuzzy_join: build key column not found: %s", bk);
+    /* The distance kernels read the key columns as strings (buf.str.offsets/data);
+       a numeric key would reinterpret the int64/double union as pointers. Guard. */
+    if (pschema->col_types[probe_key] != VEC_STRING ||
+        bschema->col_types[build_key] != VEC_STRING)
+        vectra_error("fuzzy_join: key columns must be string");
 
     /* Resolve optional blocking columns */
     int probe_block = -1, build_block = -1;
@@ -446,6 +460,9 @@ SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
             vectra_error("fuzzy_join: probe block column not found: %s", bp);
         if (build_block < 0)
             vectra_error("fuzzy_join: build block column not found: %s", bb);
+        if (pschema->col_types[probe_block] != VEC_STRING ||
+            bschema->col_types[build_block] != VEC_STRING)
+            vectra_error("fuzzy_join: blocking 'by' columns must be string");
     }
 
     /* Parse method */

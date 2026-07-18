@@ -224,6 +224,11 @@ static int vtr1_tdc_compute_rowgroup_stats(const VecBatch *batch,
             for (int64_t i = 0; i < n_rows; i++) {
                 if (!vec_array_is_valid(col, i)) continue;
                 double v = col->buf.dbl[i];
+                /* NaN is a valid double but has no ordering: folding it in would
+                   leave an inverted range (min=+Inf, max=-Inf) with has_stats=1,
+                   which corrupts sorted-column detection and the binary search.
+                   Skip it — a NaN never satisfies a comparison predicate anyway. */
+                if (isnan(v)) continue;
                 if (v < mn) mn = v;
                 if (v > mx) mx = v;
                 found = 1;

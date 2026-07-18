@@ -879,6 +879,22 @@ static void win_roll_stream_step(WinRunState *st, WinKind kind,
     /* Grow the ring buffer if the live window would overflow it. Compact
        first (drop everything left of roll_head) so growth is amortized. */
     if (st->roll_len - st->roll_base >= st->roll_cap) {
+        /* Rebase the min/max deque storage to the front. roll_dq_head/tail are
+           absolute counters that only advance; without this rebase they outrun
+           roll_cap (which grows only when the value window overflows) and the
+           push at roll_dq[roll_dq_tail++] writes out of bounds. The block fires
+           exactly when the value window equals roll_cap, so the live deque
+           (a subset of the live window) is always <= roll_cap and fits. */
+        if (st->roll_dq_tail > st->roll_dq_head) {
+            int64_t dsize = st->roll_dq_tail - st->roll_dq_head;
+            if (st->roll_dq_head > 0)
+                memmove(st->roll_dq, st->roll_dq + st->roll_dq_head,
+                        (size_t)dsize * sizeof(int64_t));
+            st->roll_dq_head = 0;
+            st->roll_dq_tail = dsize;
+        } else {
+            st->roll_dq_head = st->roll_dq_tail = 0;
+        }
         int64_t live = st->roll_len - st->roll_head;
         if (st->roll_head > st->roll_base && live < st->roll_cap) {
             int64_t shift = st->roll_head - st->roll_base;
