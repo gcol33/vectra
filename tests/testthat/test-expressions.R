@@ -308,15 +308,16 @@ test_that("paste0 concatenates two string columns", {
   expect_equal(result$c, c("hello world", "foobar"))
 })
 
-test_that("paste0 with NA returns NA", {
+test_that("paste0 stringifies NA to 'NA' (base R semantics)", {
   df <- data.frame(a = c("hello", NA), b = c(" world", "bar"),
                    stringsAsFactors = FALSE)
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))
   write_vtr(df, f)
   result <- tbl(f) |> mutate(c = paste0(a, b)) |> collect()
+  # base R: paste0(NA, "bar") == "NAbar" -- paste never returns NA.
   expect_equal(result$c[1], "hello world")
-  expect_true(is.na(result$c[2]))
+  expect_equal(result$c[2], "NAbar")
 })
 
 # --- startsWith / endsWith ---

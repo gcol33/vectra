@@ -207,7 +207,10 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
            operand directly (no copy — copying and then free()ing only the wrapper
            leaked the data+validity buffers on every batch). */
         VecArray *d;
-        if (vec_type_is_int(o->type)) {
+        if (o->type != VEC_DOUBLE) {
+            /* Coerce any non-double operand (int64 AND bool). A bool operand is
+               a 1-byte-per-element buffer; reading it through buf.dbl[i] below
+               would over-read the allocation and return garbage. */
             d = vec_coerce(o, VEC_DOUBLE);
             vec_array_free(o); free(o);
         } else {

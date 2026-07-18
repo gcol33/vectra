@@ -13,6 +13,9 @@ typedef struct {
     int64_t     batch_size;    /* rows per batch */
     char        delim;         /* field separator byte */
     int         exhausted;
+    int         coercion_pending; /* a cell failed to match its inferred type */
+    int         coercion_warned;  /* one-per-scan coercion warning emitted */
+    int         coercion_col;     /* column index of the first such failure */
 } CsvScanNode;
 
 /* Create a CSV scan node.

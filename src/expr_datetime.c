@@ -77,9 +77,12 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
     case EXPR_PMAX: {
         VecArray *l = vec_expr_eval(expr->left, batch);
         VecArray *r = vec_expr_eval(expr->right, batch);
-        /* Coerce both to double */
-        if (l->type == VEC_INT64) { VecArray *t = vec_coerce(l, VEC_DOUBLE); vec_array_free(l); free(l); l = t; }
-        if (r->type == VEC_INT64) { VecArray *t = vec_coerce(r, VEC_DOUBLE); vec_array_free(r); free(r); r = t; }
+        /* Coerce any non-double operand to double before reading buf.dbl.
+           A bool/narrow-int operand has a smaller element than double, so
+           reading it through buf.dbl would over-read; a string operand
+           errors cleanly in vec_coerce rather than being type-punned. */
+        if (l->type != VEC_DOUBLE) { VecArray *t = vec_coerce(l, VEC_DOUBLE); vec_array_free(l); free(l); l = t; }
+        if (r->type != VEC_DOUBLE) { VecArray *t = vec_coerce(r, VEC_DOUBLE); vec_array_free(r); free(r); r = t; }
         int64_t n = l->length;
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_DOUBLE, n);
@@ -95,8 +98,10 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
     }
     case EXPR_DATE_PART: {
         VecArray *o = vec_expr_eval(expr->operand, batch);
-        /* Coerce to double if needed */
-        if (o->type == VEC_INT64) {
+        /* Coerce any non-double operand to double before reading buf.dbl;
+           a bool/narrow-int operand would otherwise be over-read, a string
+           operand errors cleanly in vec_coerce. */
+        if (o->type != VEC_DOUBLE) {
             VecArray *t = vec_coerce(o, VEC_DOUBLE);
             vec_array_free(o); free(o); o = t;
         }
@@ -137,11 +142,14 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
             /* Parse YYYY-MM-DD format */
             if (slen < 10) { vec_array_set_null(out, i); continue; }
             const char *p = s->buf.str.data + so;
-            /* Require the exact YYYY-MM-DD shape with digit fields and '-'
-               separators; validate the day against the actual month length so
-               "2021-02-30" is rejected (returns NA, as base R does) rather than
-               normalized to a bogus date. */
-            int ok = (p[4] == '-' && p[7] == '-');
+            /* Require the exact YYYY-MM-DD shape with digit fields and a single
+               separator character ('-' or '/', consistent across both slots, as
+               base R's default tryFormats accepts both %Y-%m-%d and %Y/%m/%d);
+               validate the day against the actual month length so "2021-02-30"
+               is rejected (returns NA, as base R does) rather than normalized to
+               a bogus date. */
+            char sepc = p[4];
+            int ok = ((sepc == '-' || sepc == '/') && p[7] == sepc);
             for (int j = 0; ok && j < 10; j++)
                 if (j != 4 && j != 7 && (p[j] < '0' || p[j] > '9')) ok = 0;
             if (!ok) { vec_array_set_null(out, i); continue; }
@@ -165,7 +173,10 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
            magnitude like EXPR_DATE_PART; the result is returned in the same
            scale so it stays a valid Date / POSIXct value. */
         VecArray *o = vec_expr_eval(expr->operand, batch);
-        if (o->type == VEC_INT64) {
+        /* Coerce any non-double operand to double before reading buf.dbl;
+           a bool/narrow-int operand would otherwise be over-read, a string
+           operand errors cleanly in vec_coerce. */
+        if (o->type != VEC_DOUBLE) {
             VecArray *t = vec_coerce(o, VEC_DOUBLE);
             vec_array_free(o); free(o); o = t;
         }
@@ -225,9 +236,13 @@ VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
         VecArray *cond = vec_expr_eval(expr->cond, batch);
         VecArray *then_v = vec_expr_eval(expr->then_expr, batch);
         VecArray *else_v = vec_expr_eval(expr->else_expr, batch);
-        /* Coerce then/else to common type (string > double > int64 > bool) */
-        VecType common = (then_v->type == VEC_STRING || else_v->type == VEC_STRING) ? VEC_STRING :
-                         (then_v->type == VEC_DOUBLE || else_v->type == VEC_DOUBLE) ? VEC_DOUBLE : then_v->type;
+        /* Coerce then/else to a symmetric common type: string wins if either
+           branch is a string, otherwise the wider numeric type of the two.
+           Using vec_common_type keeps this order-independent, so
+           if_else(cond, TRUE, 5L) and if_else(cond, 5L, TRUE) agree. */
+        VecType common = (then_v->type == VEC_STRING || else_v->type == VEC_STRING)
+                         ? VEC_STRING
+                         : vec_common_type(then_v->type, else_v->type);
         if (then_v->type != common) { VecArray *t2 = vec_coerce(then_v, common); vec_array_free(then_v); free(then_v); then_v = t2; }
         if (else_v->type != common) { VecArray *e2 = vec_coerce(else_v, common); vec_array_free(else_v); free(else_v); else_v = e2; }
         int64_t n = cond->length;

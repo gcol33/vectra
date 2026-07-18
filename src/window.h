@@ -9,7 +9,9 @@ typedef enum {
     WIN_LEAD,
     WIN_ROW_NUMBER,
     WIN_RANK,
+    WIN_AVG_RANK,    /* base::rank ties.method = "average" (double result) */
     WIN_DENSE_RANK,
+    WIN_N,           /* partition/group size repeated per row (dplyr n() in mutate) */
     WIN_CUMSUM,
     WIN_CUMMEAN,
     WIN_CUMMIN,

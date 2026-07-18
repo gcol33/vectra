@@ -964,15 +964,19 @@ SEXP vec_collect(VecNode *root) {
             for (int i = 0; i < n_cols; i++) {
                 const VecArray *col = &batch->columns[i];
                 if (col->length == 0) continue;  /* append_array skips these too */
+                /* Validate on the master: append_array's type/dict check longjmps
+                   on failure, which is UB inside the parallel region below. */
+                vec_builder_check_append(&builders[i], col);
                 vec_builder_reserve(&builders[i], col->length);
                 if (col->type == VEC_STRING)
                     vec_builder_reserve_data(&builders[i],
                         col->buf.str.offsets[col->length] - col->buf.str.offsets[0]);
             }
-            /* Fast path: no selection vector, bulk append */
+            /* Fast path: no selection vector, bulk append. Pre-validated and
+               pre-reserved above, so the append contains no longjmp-capable call. */
             #pragma omp parallel for if(n_cols > 8) schedule(static)
             for (int i = 0; i < n_cols; i++)
-                vec_builder_append_array(&builders[i], &batch->columns[i]);
+                vec_builder_append_array_nocheck(&builders[i], &batch->columns[i]);
         } else {
             /* Selection vector: append selected rows one by one */
             int64_t n_logical = vec_batch_logical_rows(batch);

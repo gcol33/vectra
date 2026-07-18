@@ -155,7 +155,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 7},
     {"C_append_vtr",     (DL_FUNC) &C_append_vtr,     2},
     {"C_delete_vtr",     (DL_FUNC) &C_delete_vtr,      2},
-    {"C_diff_vtr",       (DL_FUNC) &C_diff_vtr,        3},
+    {"C_diff_vtr",       (DL_FUNC) &C_diff_vtr,        4},
     {"C_fuzzy_join_node", (DL_FUNC) &C_fuzzy_join_node, 11},
     {"C_interval_join_node", (DL_FUNC) &C_interval_join_node, 13},
     {"C_block_materialize", (DL_FUNC) &C_block_materialize, 1},

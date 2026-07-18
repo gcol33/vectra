@@ -145,8 +145,9 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             int64_t sp = (stop_a->type == VEC_DOUBLE)
                          ? vec_d2i_saturate(stop_a->buf.dbl[i])
                          : stop_a->buf.i64[i];
-            st = st - 1; /* R is 1-based */
-            if (st < 0) st = 0;
+            /* R is 1-based. Clamp before subtracting: a saturated st == INT64_MIN
+               would overflow (UB) on st - 1. Any start <= 1 clamps to 0 anyway. */
+            if (st > 0) st = st - 1; else st = 0;
             if (sp > slen) sp = slen;
             if (sp > st) total_len += sp - st;
         }
@@ -175,8 +176,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             int64_t sp = (stop_a->type == VEC_DOUBLE)
                          ? vec_d2i_saturate(stop_a->buf.dbl[i])
                          : stop_a->buf.i64[i];
-            st = st - 1;
-            if (st < 0) st = 0;
+            if (st > 0) st = st - 1; else st = 0;  /* clamp before -1 (avoid INT64_MIN UB) */
             if (sp > slen) sp = slen;
             int64_t sub_len = (sp > st) ? sp - st : 0;
             if (sub_len > 0) {
@@ -878,16 +878,16 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             }
         }
 
-        /* Pass 1: compute total output length */
+        /* Pass 1: compute total output length. An NA operand stringifies to the
+           literal "NA" (2 bytes), matching base R (paste never yields NA); the
+           row is never nulled. */
         int64_t total = 0;
         for (int64_t i = 0; i < n; i++) {
-            int any_na = 0;
             for (int64_t c = 0; c < nc; c++) {
-                if (!vec_array_is_valid(args[c], i)) { any_na = 1; break; }
-            }
-            if (any_na) continue;
-            for (int64_t c = 0; c < nc; c++) {
-                total += args[c]->buf.str.offsets[i+1] - args[c]->buf.str.offsets[i];
+                if (vec_array_is_valid(args[c], i))
+                    total += args[c]->buf.str.offsets[i+1] - args[c]->buf.str.offsets[i];
+                else
+                    total += 2; /* "NA" */
                 if (c < nc - 1) total += sep_len;
             }
         }
@@ -898,21 +898,22 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         out->buf.str.data = (char *)malloc((size_t)(total > 0 ? total : 1));
         out->buf.str.data_len = total;
 
-        /* Pass 2: fill */
+        /* Pass 2: fill. An NA operand contributes the literal "NA" (2 bytes),
+           kept identical to the length pass; the output row is always valid. */
         int64_t off = 0;
         for (int64_t i = 0; i < n; i++) {
             out->buf.str.offsets[i] = off;
-            int any_na = 0;
-            for (int64_t c = 0; c < nc; c++) {
-                if (!vec_array_is_valid(args[c], i)) { any_na = 1; break; }
-            }
-            if (any_na) { vec_array_set_null(out, i); continue; }
             vec_array_set_valid(out, i);
             for (int64_t c = 0; c < nc; c++) {
-                int64_t s = args[c]->buf.str.offsets[i];
-                int64_t l = args[c]->buf.str.offsets[i+1] - s;
-                if (l > 0) memcpy(out->buf.str.data + off, args[c]->buf.str.data + s, (size_t)l);
-                off += l;
+                if (vec_array_is_valid(args[c], i)) {
+                    int64_t s = args[c]->buf.str.offsets[i];
+                    int64_t l = args[c]->buf.str.offsets[i+1] - s;
+                    if (l > 0) memcpy(out->buf.str.data + off, args[c]->buf.str.data + s, (size_t)l);
+                    off += l;
+                } else {
+                    memcpy(out->buf.str.data + off, "NA", 2);
+                    off += 2;
+                }
                 if (c < nc - 1 && sep_len > 0) {
                     memcpy(out->buf.str.data + off, sep, (size_t)sep_len);
                     off += sep_len;

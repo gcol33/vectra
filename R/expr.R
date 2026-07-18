@@ -680,6 +680,18 @@ serialize_expr <- function(expr, env = parent.frame(), cols = NULL) {
       val <- get(varname, envir = env)
       return(.env_val_to_literal(varname, val))
     }
+
+    # .data$col or .data[["col"]] / .data[[var]] -- the tidy-eval column pronoun.
+    # Resolves to a plain column reference; for [[var]] the name is evaluated in
+    # the caller's environment.
+    if (is.name(lhs) && identical(as.character(lhs), ".data") &&
+        (identical(op, quote(`$`)) || identical(op, quote(`[[`)))) {
+      colname <- if (identical(op, quote(`$`))) as.character(expr[[3]])
+                 else eval(expr[[3]], env)
+      if (!is.character(colname) || length(colname) != 1L)
+        stop(".data[[...]] must resolve to a single column name")
+      return(list(kind = "col_ref", name = colname))
+    }
   }
 
   fn <- as.character(expr[[1]])

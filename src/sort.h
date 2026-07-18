@@ -6,6 +6,12 @@
 typedef struct {
     int   col_index;
     int   descending;   /* 1 = DESC, 0 = ASC */
+    int   na_last;      /* 1 = NA sorts positionally last regardless of desc
+                           (dplyr arrange, na.last = TRUE);
+                           0 = NA behaves as the maximum value and flips with
+                           desc (window value sorts: cume_dist treats NA as the
+                           largest value). Both keep the radix run generation
+                           and the merge comparator consistent. */
 } SortKey;
 
 typedef struct {
@@ -31,6 +37,14 @@ typedef struct {
 
 /* Default sort spill threshold, and the floor vectra_mem() enforces. */
 #define VECTRA_SORT_MEM_DEFAULT (1024LL * 1024 * 1024)
+
+/* Total-order comparison of one column's value at row ra of `a` versus row rb
+   of `b`, matching the sort/merge ordering exactly. `desc` flips the result;
+   `na_last` controls NA placement (see SortKey). Exposed so streaming consumers
+   that merge over external SortNodes (e.g. the primary-key diff) use the same
+   ordering the sort produced, rather than re-deriving it. */
+int sort_compare_value(const VecArray *a, int64_t ra,
+                       const VecArray *b, int64_t rb, int desc, int na_last);
 
 /* Create a sort node.
    temp_dir: directory for spill files (NULL = in-memory only).

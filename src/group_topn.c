@@ -353,9 +353,11 @@ GroupTopNNode *group_topn_node_create(VecNode *child, int n_keys,
     for (int k = 0; k < n_keys; k++) {
         sk[k].col_index = key_idx[k];
         sk[k].descending = 0;
+        sk[k].na_last = 0;   /* cluster NA group keys consistently */
     }
     sk[n_keys].col_index = rowid_idx;
     sk[n_keys].descending = 0;
+    sk[n_keys].na_last = 0;  /* row-id is never NA */
     int64_t sort_mem = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
     /* sort_node_create takes ownership of sk (freed in sort_node_free). */
     SortNode *sn = sort_node_create((VecNode *)rid, nsk, sk, temp_dir, sort_mem);

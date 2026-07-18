@@ -6,6 +6,15 @@
 #include <math.h>
 #include "miniz/miniz.h"
 
+/* 64-bit file seek. A plain fseek(..., (long)offset, ...) truncates to 32 bits
+   on LLP64 (Windows), so a strip/tile/IFD offset past 2 GB in a BigTIFF would
+   seek to the wrong place -- exactly the large-file case this reader supports. */
+#if defined(_WIN32)
+#  define TIFF_FSEEK64(fp, off) _fseeki64((fp), (int64_t)(off), SEEK_SET)
+#else
+#  define TIFF_FSEEK64(fp, off) fseeko((fp), (off_t)(off), SEEK_SET)
+#endif
+
 /* ================================================================== */
 /*  TIFF tag IDs and constants                                         */
 /* ================================================================== */
@@ -109,7 +118,7 @@ static double tio_readf64(TiffIO *io, const uint8_t *p) {
 }
 
 static int tio_read_at(TiffIO *io, int64_t offset, void *buf, size_t n) {
-    if (fseek(io->fp, (long)offset, SEEK_SET) != 0) return -1;
+    if (TIFF_FSEEK64(io->fp, offset) != 0) return -1;
     if (fread(buf, 1, n, io->fp) != n) return -1;
     return 0;
 }
@@ -242,6 +251,7 @@ static double *read_tag_doubles(TiffIO *io, int dtype, int64_t count,
 static char *read_tag_ascii(TiffIO *io, int64_t count,
                              const uint8_t *value_or_offset,
                              int entry_val_bytes) {
+    if (count < 0 || count > TIFF_MAX_TAG_COUNT) return NULL;
     char *out = (char *)malloc((size_t)(count + 1));
     if (!out) return NULL;
 
@@ -321,7 +331,10 @@ static void parse_geokeys(TiffReader *r,
                           const char *ascii_params, int64_t ascii_count) {
     if (!dir || dir_count < 4) return;
     int64_t n_keys = dir[3];
-    if (n_keys < 0 || dir_count < 4 + n_keys * 4) return;
+    /* n_keys is file-controlled; bound it WITHOUT computing n_keys * 4, which
+       overflows int64 for a crafted n_keys (~2^61) and would let the guard pass
+       before the loop reads dir[4 + i*4] far past the allocation. */
+    if (n_keys < 0 || n_keys > (dir_count - 4) / 4) return;
 
     int32_t epsg_pcs = 0, epsg_geog = 0;
     int64_t cit_pcs_off  = -1, cit_pcs_count  = 0;
@@ -362,8 +375,12 @@ static void parse_geokeys(TiffReader *r,
         cit_off = cit_geog_off; cit_count = cit_geog_count;
     }
 
+    /* cit_off / cit_count are file-controlled; check each side against
+       ascii_count without summing (cit_off + cit_count overflows to negative
+       for crafted values, which would pass a naive sum <= ascii_count check and
+       let the memcpy below read from ascii_params + cit_off out of bounds). */
     if (cit_off >= 0 && cit_count > 0 && ascii_params &&
-        cit_off + cit_count <= ascii_count) {
+        cit_off <= ascii_count && cit_count <= ascii_count - cit_off) {
         /* GeoAsciiParams strings are pipe-terminated; trim if present. */
         int64_t actual = cit_count;
         if (actual > 0 && ascii_params[cit_off + actual - 1] == '|') actual--;
@@ -408,6 +425,14 @@ static int parse_ifd(TiffReader *r) {
         n_entries = (int64_t)tio_read64(io, cnt_buf);
     else
         n_entries = tio_read16(io, cnt_buf);
+    /* A classic-TIFF count is a 16-bit field; BigTIFF widens it to 64 bits with
+       no practical upper bound, so a crafted file can declare ~2^63 entries and
+       spin the loop below. A real IFD holds at most a few hundred tags; cap
+       well above that so we reject the DoS without rejecting any valid file. */
+    if (n_entries < 0 || n_entries > (1 << 20)) {
+        snprintf(r->errmsg, 256, "implausible IFD entry count");
+        return -1;
+    }
 
     int entry_size = io->bigtiff ? 20 : 12;
     int entry_val_bytes = io->bigtiff ? 8 : 4;
@@ -442,7 +467,8 @@ static int parse_ifd(TiffReader *r) {
         uint8_t entry[20];
         if (tio_read_at(io, entries_offset + i * entry_size,
                          entry, (size_t)entry_size) != 0)
-            continue;
+            break;  /* entries are sequential: if entry i is unreadable, so are
+                       all i+1.. -- stop rather than spin to n_entries. */
 
         uint16_t tag = tio_read16(io, entry);
         uint16_t dtype = tio_read16(io, entry + 2);

@@ -64,6 +64,36 @@ expand_across <- function(dots, schema_names, env, proxy = NULL) {
   e
 }
 
+# Substitute a specific formal-argument symbol (e.g. the `x` of \(x) ...) with a
+# column symbol throughout an expression tree.
+.subst_named_sym <- function(e, name, sym) {
+  if (is.name(e)) {
+    if (identical(as.character(e), name)) return(sym)
+    return(e)
+  }
+  if (is.call(e)) {
+    for (i in seq_along(e)) e[[i]] <- .subst_named_sym(e[[i]], name, sym)
+    return(e)
+  }
+  e
+}
+
+# Inline an anonymous closure (\(x) body) by substituting its first formal
+# argument with the target column symbol -- the closure analogue of the formula
+# lambda path.
+.subst_across_closure <- function(fn_obj, sym) {
+  fmls <- formals(fn_obj)
+  if (length(fmls) < 1L)
+    stop("across(): an anonymous function must take at least one argument")
+  .subst_named_sym(body(fn_obj), names(fmls)[1], sym)
+}
+
+# TRUE when a string is a single syntactic R name (so it came from resolving a
+# named function), FALSE for a deparsed anonymous closure ("function (x) ...").
+.is_syntactic_name <- function(s) {
+  length(s) == 1L && nzchar(s) && grepl("^[.a-zA-Z][.a-zA-Z0-9._]*$", s)
+}
+
 # Resolve a function to its name string (e.g., sum -> "sum")
 resolve_fn_str <- function(fn) {
   # Check if it's a primitive or builtin
@@ -80,9 +110,13 @@ resolve_fn_str <- function(fn) {
       if (identical(get(nm, envir = env), fn)) return(nm)
     }
   }
-  # Try matching known functions
+  # Try matching known functions. get() must be guarded: some of these (e.g.
+  # "n") are not base objects, and an unguarded get() would error out before an
+  # anonymous lambda reaches the deparse fallback below.
   for (nm in c("sum", "mean", "min", "max", "n", "sd", "var", "median")) {
-    if (identical(fn, get(nm, envir = baseenv(), inherits = TRUE)))
+    fx <- tryCatch(get(nm, envir = baseenv(), inherits = TRUE),
+                   error = function(e) NULL)
+    if (!is.null(fx) && identical(fn, fx))
       return(nm)
   }
   # Fallback: deparse
@@ -119,7 +153,7 @@ do_expand_across <- function(expr, schema_names, env, proxy = NULL) {
     names(named_cols) <- schema_names
     proxy <- named_cols
   }
-  sel <- tidyselect::eval_select(cols_expr, data = proxy)
+  sel <- tidyselect::eval_select(cols_expr, data = proxy, env = env)
   selected_cols <- unname(schema_names[sel])
 
   # Evaluate fns
@@ -139,40 +173,49 @@ do_expand_across <- function(expr, schema_names, env, proxy = NULL) {
     stop("across .fns must be a function, formula, or named list")
   }
 
-  # An unnamed list of several functions is disambiguated by index, as dplyr
-  # does (col_1, col_2, ...), so the columns do not collide and overwrite.
-  multi_unnamed <- is.null(fn_names) && length(fn_list) > 1
+  # {.fn} in .names is the function's name when named, else its 1-based position
+  # ("1", "2", ...), matching dplyr -- including the single-unnamed-function case
+  # (dplyr substitutes {.fn} = "1"). Whether the default naming appends "_{.fn}"
+  # still depends on there being several or named functions.
+  append_fn <- !is.null(fn_names) || length(fn_list) > 1
 
   # Generate expressions
   result <- list()
   for (fi in seq_along(fn_list)) {
+    fn_label <- if (!is.null(fn_names) && nzchar(fn_names[fi])) fn_names[fi]
+                else as.character(fi)
     for (col in selected_cols) {
-      fn_name <- if (!is.null(fn_names)) fn_names[fi]
-                 else if (multi_unnamed) as.character(fi)
-                 else NULL
-
       # Determine output name
       if (!is.null(names_pattern)) {
         out_name <- names_pattern
         out_name <- gsub("{.col}", col, out_name, fixed = TRUE)
-        if (!is.null(fn_name))
-          out_name <- gsub("{.fn}", fn_name, out_name, fixed = TRUE)
-      } else if (!is.null(fn_name)) {
-        out_name <- paste0(col, "_", fn_name)
+        out_name <- gsub("{.fn}", fn_label, out_name, fixed = TRUE)
+      } else if (append_fn) {
+        out_name <- paste0(col, "_", fn_label)
       } else {
         out_name <- col
       }
 
-      # Build the call expression for this (fn, col). A formula lambda inlines
-      # its body with .x / . replaced by the column symbol; a plain function
-      # becomes fn(col, <extra args>) with the across `...` forwarded.
+      # Build the call expression for this (fn, col). A formula lambda (~ .x + 1)
+      # and an anonymous closure (\(x) x + 1) both inline their body with the
+      # lambda argument replaced by the column symbol; a named function becomes
+      # fn(col, <extra args>) with the across `...` forwarded.
       fn_obj <- fn_list[[fi]]
       if (rlang::is_formula(fn_obj)) {
         call_expr <- .subst_across_dot(rlang::f_rhs(fn_obj), as.name(col))
       } else {
         fn_str <- resolve_fn_str(fn_obj)
-        call_expr <- as.call(c(list(as.name(fn_str), as.name(col)), extra_args))
+        if (is.function(fn_obj) && !is.primitive(fn_obj) &&
+            !.is_syntactic_name(fn_str)) {
+          call_expr <- .subst_across_closure(fn_obj, as.name(col))
+        } else {
+          call_expr <- as.call(c(list(as.name(fn_str), as.name(col)), extra_args))
+        }
       }
+      if (out_name %in% names(result))
+        stop(sprintf(paste0("across() would produce the duplicate output name '%s'. ",
+                            "Names must be unique -- use a .names pattern with ",
+                            "{.fn} (e.g. .names = \"{.col}_{.fn}\")."), out_name))
       result[[out_name]] <- call_expr
     }
   }

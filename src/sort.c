@@ -34,14 +34,22 @@
 /*  Value comparison (works across different VecArray pointers)        */
 /* ------------------------------------------------------------------ */
 
-static int compare_value(const VecArray *a, int64_t ra,
-                         const VecArray *b, int64_t rb, int desc) {
+int sort_compare_value(const VecArray *a, int64_t ra,
+                       const VecArray *b, int64_t rb, int desc, int na_last) {
     int a_valid = vec_array_is_valid(a, ra);
     int b_valid = vec_array_is_valid(b, rb);
 
+    /* NA handling is keyed by na_last so the merge comparator stays consistent
+       with the radix run encoder in either mode (a mismatch mis-orders valid
+       rows across spilled runs). na_last = 1: NA sorts positionally last
+       regardless of desc (dplyr arrange). na_last = 0: NA behaves as the
+       maximum value and flips with desc (window value sorts -- cume_dist
+       treats NA as the largest). */
     if (!a_valid && !b_valid) return 0;
-    if (!a_valid) return desc ? -1 : 1;   /* NA sorts last in ASC */
-    if (!b_valid) return desc ? 1 : -1;
+    if (!a_valid || !b_valid) {
+        int cmp = !a_valid ? 1 : -1;   /* NA compares as the greater value */
+        return na_last ? cmp : (desc ? -cmp : cmp);
+    }
 
     int cmp = 0;
     switch (a->type) {
@@ -103,8 +111,8 @@ static int compare_rows_cross(const VecArray *cols_a, int64_t ra,
                                const SortKey *keys, int n_keys) {
     for (int k = 0; k < n_keys; k++) {
         int ci = keys[k].col_index;
-        int cmp = compare_value(&cols_a[ci], ra, &cols_b[ci], rb,
-                                keys[k].descending);
+        int cmp = sort_compare_value(&cols_a[ci], ra, &cols_b[ci], rb,
+                                keys[k].descending, keys[k].na_last);
         if (cmp != 0) return cmp;
     }
     return 0;
@@ -116,10 +124,15 @@ static int compare_rows_cross(const VecArray *cols_a, int64_t ra,
 
 /* Encode int64 as uint64 for radix sort: flip sign bit so that
    negative values sort before positive.  NAs get max value (sort last). */
-static inline uint64_t radix_encode_i64(int64_t v, int valid, int desc) {
+static inline uint64_t radix_encode_i64(int64_t v, int valid, int desc,
+                                        int na_last) {
     uint64_t u;
     if (!valid) {
-        u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;  /* NAs last */
+        /* na_last: NA is positionally last in both directions (final key is the
+           max after the desc flip). Otherwise NA is the maximum value and flips
+           with desc. Must match compare_value's NA handling. */
+        if (na_last) u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;
+        else         u = 0xFFFFFFFFFFFFFFFFULL;
     } else {
         u = (uint64_t)v ^ 0x8000000000000000ULL;   /* flip sign bit */
     }
@@ -129,10 +142,12 @@ static inline uint64_t radix_encode_i64(int64_t v, int valid, int desc) {
 /* Encode double as uint64 for radix sort: IEEE 754 bit trick.
    Positive doubles already sort correctly as uint64 after sign flip.
    Negative doubles need all bits flipped. */
-static inline uint64_t radix_encode_dbl(double v, int valid, int desc) {
+static inline uint64_t radix_encode_dbl(double v, int valid, int desc,
+                                        int na_last) {
     uint64_t u;
     if (!valid) {
-        u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;
+        if (na_last) u = desc ? 0ULL : 0xFFFFFFFFFFFFFFFFULL;
+        else         u = 0xFFFFFFFFFFFFFFFFULL;
     } else if (v != v) {
         /* All NaN payloads map to one key, just past +Inf and before NA, so
            NaN rows cluster into a single group (matches compare_value). */
@@ -203,6 +218,7 @@ static int try_radix_sort(int64_t *indices, int64_t n,
     int ci = keys[0].col_index;
     const VecArray *col = &columns[ci];
     int desc = keys[0].descending;
+    int na_last = keys[0].na_last;
 
     if (col->type != VEC_INT64 && col->type != VEC_DOUBLE) return 0;
 
@@ -218,11 +234,13 @@ static int try_radix_sort(int64_t *indices, int64_t n,
     if (col->type == VEC_INT64) {
         for (int64_t i = 0; i < n; i++)
             enc[i] = radix_encode_i64(col->buf.i64[indices[i]],
-                                       vec_array_is_valid(col, indices[i]), desc);
+                                       vec_array_is_valid(col, indices[i]),
+                                       desc, na_last);
     } else {
         for (int64_t i = 0; i < n; i++)
             enc[i] = radix_encode_dbl(col->buf.dbl[indices[i]],
-                                       vec_array_is_valid(col, indices[i]), desc);
+                                       vec_array_is_valid(col, indices[i]),
+                                       desc, na_last);
     }
 
     radix_sort_u64(enc, indices, tmp_i, tmp_k, n);
@@ -589,9 +607,19 @@ static int merge_run_advance(MergeRun *run) {
 static int merge_compare(const MergeState *ms, int a, int b) {
     MergeRun *ra = &ms->runs[a];
     MergeRun *rb = &ms->runs[b];
-    return compare_rows_cross(ra->batch->columns, ra->cursor,
-                              rb->batch->columns, rb->cursor,
-                              ms->keys, ms->n_keys);
+    int cmp = compare_rows_cross(ra->batch->columns, ra->cursor,
+                                 rb->batch->columns, rb->cursor,
+                                 ms->keys, ms->n_keys);
+    if (cmp != 0) return cmp;
+    /* Stable tiebreak across runs: on equal keys prefer the row from the
+       lower-indexed run. Runs are generated in input order (run 0 holds the
+       earliest input rows) and each run is internally stable (radix LSD /
+       merge_sort_impl), and reduce_runs merges consecutive groups so the
+       ordering is preserved across reduction passes — so lower run index =
+       earlier input position. Within one run only the cursor row competes,
+       so intra-run order is already input order. This makes the spilled
+       merge match the in-memory stable path. */
+    return (a < b) ? -1 : (a > b) ? 1 : 0;
 }
 
 /* ---- Min-heap operations ---- */

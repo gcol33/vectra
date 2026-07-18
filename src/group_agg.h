@@ -18,10 +18,11 @@ typedef struct {
     char      **key_names;
     int         n_aggs;
     AggSpec    *agg_specs;
-    int         done;        /* 1 after result emitted */
+    int         done;        /* 1 after result emitted (hash path) */
     int         use_sorted;  /* 1 = sort-based agg (spill-safe) */
     int64_t     mem_budget;  /* spill threshold shared by the sort + holistic aggs */
     char       *temp_dir;    /* owned copy; run-file dir for holistic spill */
+    void       *sagg;        /* SortedAggState* for the streaming sorted path */
 } GroupAggNode;
 
 /* Create a group-by + aggregate node.

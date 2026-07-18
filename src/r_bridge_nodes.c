@@ -205,6 +205,7 @@ SEXP C_sort_node(SEXP node_xptr, SEXP col_names_sexp, SEXP desc_sexp,
             vectra_error("arrange: column not found: %s", nm);
         keys[k].col_index = idx;
         keys[k].descending = LOGICAL(desc_sexp)[k];
+        keys[k].na_last = 1;   /* arrange: NA sorts last (dplyr na.last = TRUE) */
     }
 
     int64_t mem_budget = (int64_t)Rf_asReal(mem_sexp);
@@ -242,6 +243,7 @@ SEXP C_topn_node(SEXP node_xptr, SEXP col_names_sexp,
             vectra_error("topn: column not found: %s", nm);
         keys[k].col_index = idx;
         keys[k].descending = LOGICAL(desc_sexp)[k];
+        keys[k].na_last = 0;   /* topn uses its own NA-last comparator (topn.c) */
     }
 
     int64_t limit = (int64_t)Rf_asReal(n_sexp);
@@ -335,7 +337,9 @@ static WinKind parse_win_kind(const char *s) {
     if (strcmp(s, "lead") == 0) return WIN_LEAD;
     if (strcmp(s, "row_number") == 0) return WIN_ROW_NUMBER;
     if (strcmp(s, "rank") == 0) return WIN_RANK;
+    if (strcmp(s, "avg_rank") == 0) return WIN_AVG_RANK;
     if (strcmp(s, "dense_rank") == 0) return WIN_DENSE_RANK;
+    if (strcmp(s, "n") == 0) return WIN_N;
     if (strcmp(s, "cumsum") == 0) return WIN_CUMSUM;
     if (strcmp(s, "cummean") == 0) return WIN_CUMMEAN;
     if (strcmp(s, "cummin") == 0) return WIN_CUMMIN;

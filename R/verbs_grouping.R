@@ -73,6 +73,12 @@ summarise <- function(.data, ..., .groups = NULL) {
 #' @export
 summarise.vectra_node <- function(.data, ..., .groups = NULL) {
   dots <- eval(substitute(alist(...)))
+  meta <- .strip_meta_args(dots)
+  dots <- meta$dots
+  # summarise() takes .by and .groups; .keep/.preserve are not summarise args,
+  # so reject them rather than silently discarding (base R would error too).
+  if (!is.null(meta$keep))     stop("summarise() does not support `.keep`.")
+  if (!is.null(meta$preserve)) stop("summarise() does not support `.preserve`.")
   # Expand across() calls
   schema <- .Call(C_node_schema, .data$.node)
   proxy <- schema_proxy(schema)
@@ -81,23 +87,48 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
   if (is.null(dot_names) || any(dot_names == ""))
     stop("all summarise expressions must be named")
 
-  key_names <- .data$.groups
-  if (is.null(key_names)) key_names <- character(0)
-
-  # Parse agg expressions, detecting nested expressions like mean(x + y)
-  agg_specs <- vector("list", length(dots))
-  mutate_exprs <- list()  # nested exprs that need a hidden mutate
-  for (i in seq_along(dots)) {
-    parsed <- parse_agg_expr(dots[[i]], dot_names[i])
-    if (!is.null(parsed$.nested_expr)) {
-      # The inner expression needs a hidden mutate column
-      tmp_name <- parsed$.nested_col
-      mutate_exprs[[tmp_name]] <- parsed$.nested_expr
-      parsed$.nested_expr <- NULL
-      parsed$.nested_col <- NULL
-    }
-    agg_specs[[i]] <- parsed
+  # dplyr 1.1 `.by`: group by the selected columns for this call only and
+  # return an ungrouped result. Mutually exclusive with group_by()/.groups.
+  use_by <- !is.null(meta$by)
+  if (use_by) {
+    if (!is.null(.data$.groups))
+      stop("Can't supply `.by` when `.data` is already grouped.")
+    if (!is.null(.groups))
+      stop("Can't supply both `.by` and `.groups`.")
+    key_names <- .resolve_by_cols(meta$by, schema, parent.frame())
+  } else {
+    key_names <- .data$.groups
+    if (is.null(key_names)) key_names <- character(0)
   }
+
+  # Parse agg expressions. A bare aggregate (sum(x), mean(y, na.rm=TRUE)) becomes
+  # an agg spec directly; a compound post-aggregation expression (mean(x)/sum(x),
+  # or m2 = m * 2 referencing an earlier output) has its aggregate sub-calls
+  # extracted into hidden specs, and the surrounding expression runs as a mutate
+  # on the aggregated result. Nested aggregate arguments (mean(x + y)) still
+  # auto-insert a hidden pre-aggregation mutate column.
+  agg_specs <- list()
+  mutate_exprs <- list()  # nested agg-argument exprs -> hidden pre-agg mutate
+  post_dots <- list()     # compound outputs -> post-agg mutate, in declaration order
+  ctx <- new.env(parent = emptyenv()); ctx$k <- 0L; ctx$specs <- list()
+
+  add_spec <- function(sp) {
+    if (!is.null(sp$.nested_expr)) {
+      mutate_exprs[[sp$.nested_col]] <<- sp$.nested_expr
+      sp$.nested_expr <- NULL
+      sp$.nested_col <- NULL
+    }
+    agg_specs[[length(agg_specs) + 1L]] <<- sp
+  }
+
+  for (i in seq_along(dots)) {
+    if (.summ_is_agg_call(dots[[i]])) {
+      add_spec(parse_agg_expr(dots[[i]], dot_names[i]))
+    } else {
+      post_dots[[dot_names[i]]] <- .summ_extract_aggs(dots[[i]], ctx)
+    }
+  }
+  for (sp in ctx$specs) add_spec(sp)
 
   # Insert hidden mutate node if there are nested expressions
   node <- .data
@@ -167,14 +198,34 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
 
   new_xptr <- .group_agg_node(node$.node, key_names, agg_specs)
 
-  # Determine residual grouping
-  if (is.null(.groups)) .groups <- "drop_last"
-  result_groups <- switch(.groups,
-    drop_last = if (length(key_names) > 1) key_names[-length(key_names)] else NULL,
-    drop = NULL,
-    keep = key_names,
-    stop(sprintf(".groups must be 'drop_last', 'drop', or 'keep', got '%s'", .groups))
-  )
+  # Post-aggregation expressions: apply the compound outputs as a mutate on the
+  # aggregated result (which carries the group keys and the extracted temp agg
+  # columns), then select the group keys plus the declared outputs in order,
+  # dropping the temps. The mutate runs ungrouped and left-to-right, so a later
+  # output can reference an earlier one (dplyr's sequential summarise()).
+  if (length(post_dots) > 0) {
+    agg_node <- structure(list(.node = new_xptr, .path = .data$.path,
+                               .groups = NULL), class = "vectra_node")
+    agg_node <- .apply_mutate_dots(agg_node, post_dots, parent.frame())
+    final_schema <- .Call(C_node_schema, agg_node$.node)
+    sel_names <- c(key_names, dot_names)
+    sel_exprs <- lapply(sel_names, function(nm)
+      serialize_expr(as.name(nm), parent.frame(), final_schema$name))
+    new_xptr <- .Call(C_project_node, agg_node$.node, sel_names, sel_exprs)
+  }
+
+  # Determine residual grouping. `.by` always yields an ungrouped result.
+  if (use_by) {
+    result_groups <- NULL
+  } else {
+    if (is.null(.groups)) .groups <- "drop_last"
+    result_groups <- switch(.groups,
+      drop_last = if (length(key_names) > 1) key_names[-length(key_names)] else NULL,
+      drop = NULL,
+      keep = key_names,
+      stop(sprintf(".groups must be 'drop_last', 'drop', or 'keep', got '%s'", .groups))
+    )
+  }
 
   structure(list(.node = new_xptr, .path = .data$.path,
                  .groups = result_groups), class = "vectra_node")
@@ -255,13 +306,9 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
                            .groups = grp_names), class = "vectra_node")
   }
 
-  if (is.null(wt_expr) || identical(wt_expr, quote(NULL))) {
-    agg_specs <- list(list(name = cnt_name, kind = "n", col = NULL, na_rm = FALSE))
-  } else {
-    # dplyr sums weights with na.rm = TRUE.
-    wt_name <- as.character(wt_expr)
-    agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = TRUE))
-  }
+  wt <- .count_wt_agg(node, wt_expr, cnt_name, parent.frame())
+  node <- wt$node
+  agg_specs <- list(wt$spec)
 
   new_xptr <- .group_agg_node(node$.node, grp_names, agg_specs)
   if (sort) {
@@ -287,20 +334,81 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
   wt_expr <- substitute(wt)
   key_names <- if (!is.null(x$.groups)) x$.groups else character(0)
 
-  if (is.null(wt_expr) || identical(wt_expr, quote(NULL))) {
-    agg_specs <- list(list(name = cnt_name, kind = "n", col = NULL, na_rm = FALSE))
-  } else {
-    # dplyr sums weights with na.rm = TRUE.
-    wt_name <- as.character(wt_expr)
-    agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = TRUE))
-  }
+  wt <- .count_wt_agg(x, wt_expr, cnt_name, parent.frame())
+  node <- wt$node
+  agg_specs <- list(wt$spec)
 
-  new_xptr <- .group_agg_node(x$.node, key_names, agg_specs)
+  new_xptr <- .group_agg_node(node$.node, key_names, agg_specs)
   if (sort) {
     sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
-    return(structure(list(.node = sort_xptr, .path = x$.path), class = "vectra_node"))
+    return(structure(list(.node = sort_xptr, .path = node$.path), class = "vectra_node"))
   }
-  structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+  structure(list(.node = new_xptr, .path = node$.path), class = "vectra_node")
+}
+
+# Build the aggregation spec (and, if needed, a hidden weight column) for
+# count()/tally()'s `wt`. dplyr: no wt -> row count; a bare column -> sum(col);
+# an expression -> sum(<expr>). An expression weight is materialized once as a
+# temp column that the sum consumes, so it never appears in the output.
+.count_wt_agg <- function(node, wt_expr, cnt_name, env) {
+  if (is.null(wt_expr) || identical(wt_expr, quote(NULL))) {
+    return(list(node = node,
+                spec = list(name = cnt_name, kind = "n", col = NULL,
+                            na_rm = FALSE)))
+  }
+  # dplyr sums weights with na.rm = TRUE.
+  if (is.name(wt_expr)) {
+    return(list(node = node,
+                spec = list(name = cnt_name, kind = "sum",
+                            col = as.character(wt_expr), na_rm = TRUE)))
+  }
+  # Expression weight: materialize a hidden column, then sum it.
+  cur_schema <- .Call(C_node_schema, node$.node)
+  existing <- cur_schema$name
+  tmp_name <- ".vectra_wt"
+  out_names <- c(existing, tmp_name)
+  out_exprs <- c(vector("list", length(existing)),
+                 list(serialize_expr(wt_expr, env, existing)))
+  new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
+  node2 <- structure(list(.node = new_xptr, .path = node$.path,
+                          .groups = node$.groups), class = "vectra_node")
+  list(node = node2,
+       spec = list(name = cnt_name, kind = "sum", col = tmp_name, na_rm = TRUE))
+}
+
+.summ_valid_aggs <- c("n", "sum", "mean", "min", "max", "sd", "var", "first",
+                      "last", "any", "all", "median", "n_distinct")
+
+# Is `expr` a bare aggregate call (top-level function is an aggregate)? Handles
+# namespace qualification (vectra::mean). A compound expression such as
+# mean(x) + 1 or a / b is not a bare aggregate and takes the post-agg path.
+.summ_is_agg_call <- function(expr) {
+  if (!is.call(expr)) return(FALSE)
+  fc <- expr[[1L]]
+  if (is.call(fc) && length(fc) == 3L && is.name(fc[[1L]]) &&
+      as.character(fc[[1L]]) %in% c("::", ":::"))
+    fc <- fc[[3L]]
+  is.name(fc) && as.character(fc) %in% .summ_valid_aggs
+}
+
+# Rewrite a post-aggregation expression: every aggregate sub-call is replaced by
+# a reference to a hidden temp column and parsed into an agg spec (accumulated in
+# ctx$specs, named .__sagg_k__). The returned expression computes the summarise
+# output from those temp columns, the group keys, and earlier outputs -- run as a
+# mutate on the aggregated result, mirroring dplyr's sequential summarise().
+.summ_extract_aggs <- function(expr, ctx) {
+  if (.summ_is_agg_call(expr)) {
+    ctx$k <- ctx$k + 1L
+    tmp <- paste0(".__sagg_", ctx$k, "__")
+    ctx$specs[[length(ctx$specs) + 1L]] <- parse_agg_expr(expr, tmp)
+    return(as.name(tmp))
+  }
+  if (is.call(expr)) {
+    idx <- seq_along(expr)
+    for (i in idx[-1L]) expr[[i]] <- .summ_extract_aggs(expr[[i]], ctx)
+    return(expr)
+  }
+  expr
 }
 
 # Parse an aggregation expression like sum(x), mean(y, na.rm = TRUE), n()
@@ -346,21 +454,17 @@ parse_agg_expr <- function(expr, output_name) {
     }
   }
 
-  # median and n_distinct are now native C aggregations
-  if (fn == "median") {
-    col_name <- if (is.name(col_arg)) as.character(col_arg) else NULL
-    if (is.null(col_name))
-      stop("median() requires a simple column reference, not an expression")
-    return(list(name = output_name, kind = "median", col = col_name,
-                na_rm = na_rm))
-  }
-
-  if (fn == "n_distinct") {
-    col_name <- if (is.name(col_arg)) as.character(col_arg) else NULL
-    if (is.null(col_name))
-      stop("n_distinct() requires a simple column reference, not an expression")
-    return(list(name = output_name, kind = "n_distinct", col = col_name,
-                na_rm = na_rm))
+  # median and n_distinct are native C aggregations. A bare column feeds the C
+  # aggregation directly; anything else (an expression like median(x + y), or the
+  # .data[[var]] pronoun) is materialized into a hidden mutate column first, the
+  # same nested-expression path mean()/sum() use below.
+  if (fn == "median" || fn == "n_distinct") {
+    if (is.name(col_arg))
+      return(list(name = output_name, kind = fn, col = as.character(col_arg),
+                  na_rm = na_rm))
+    tmp_name <- paste0(".vectra_tmp_", output_name)
+    return(list(name = output_name, kind = fn, col = tmp_name, na_rm = na_rm,
+                .nested_expr = col_arg, .nested_col = tmp_name))
   }
 
   if (is.name(col_arg)) {

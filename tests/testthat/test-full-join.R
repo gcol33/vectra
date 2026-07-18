@@ -103,7 +103,8 @@ test_that("bind_rows with .id", {
   write_vtr(data.frame(x = c(3.0, 4.0)), f2)
   result <- bind_rows(tbl(f1), tbl(f2), .id = "source")
   expect_true("source" %in% names(result))
-  expect_equal(result$source, c(1, 1, 2, 2))
+  # dplyr: .id is a character column (input names, or positions as strings).
+  expect_equal(result$source, c("1", "1", "2", "2"))
 })
 
 test_that("streaming bind_rows composes with filter", {

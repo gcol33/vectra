@@ -178,6 +178,15 @@ static int init_level(SqlfmtReader *r, int lvl, uint32_t page_no) {
     L->is_leaf = (ptype == 0x0D);
     L->n_cells = read_be16(hdr + 3);
     L->right_child = L->is_leaf ? 0 : read_be32(hdr + 8);
+
+    /* The cell-pointer array (hdr + 8 or 12, two bytes per cell) must fit
+       inside the page, or cell_ptr() would read pointer slots past the
+       allocation. A declared n_cells too large for the page is corrupt. */
+    int cell_hdr = L->is_leaf ? 8 : 12;
+    if ((int64_t)L->hdr_offset + cell_hdr + 2 * (int64_t)L->n_cells >
+        (int64_t)r->page_size) {
+        return -1;
+    }
     return 0;
 }
 
@@ -550,10 +559,29 @@ int sqlfmt_reader_open(const char *path, const char *table,
         return -1;
     }
 
-    /* Page size: 2 bytes at offset 16. Value of 1 means 65536. */
+    /* Page size: 2 bytes at offset 16. Value of 1 means 65536. Enforce
+       SQLite's own invariant (a power of two in [512, 65536]) before it is
+       used to size page buffers and offset every page read -- a corrupt or
+       hostile value would otherwise under-allocate page_buf and let the
+       page-1 header / cell-pointer reads run off the allocation. */
     uint16_t raw_ps = read_be16(hdr + 16);
     r->page_size = (raw_ps == 1) ? 65536 : (uint32_t)raw_ps;
+    if (r->page_size < 512 || r->page_size > 65536 ||
+        (r->page_size & (r->page_size - 1)) != 0) {
+        snprintf(r->errmsg, 256, "invalid SQLite page size (%u)", r->page_size);
+        *out = r;
+        return -1;
+    }
     r->reserved = hdr[20];
+    /* The usable region (page_size - reserved) must leave room for a minimal
+       page; SQLite requires it to be at least 480 bytes. Guarding here keeps
+       usable = page_size - reserved from underflowing downstream. */
+    if ((uint32_t)r->reserved > r->page_size - 480) {
+        snprintf(r->errmsg, 256, "invalid SQLite reserved region (%u)",
+                 (unsigned)r->reserved);
+        *out = r;
+        return -1;
+    }
     r->n_pages = read_be32(hdr + 28);
 
     /* Only support UTF-8 */

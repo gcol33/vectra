@@ -437,8 +437,8 @@ static VecNode *sort_by_block_start(VecNode *child, int block_col, int start_col
     int nk = (block_col >= 0) ? 2 : 1;
     SortKey *sk = (SortKey *)malloc((size_t)nk * sizeof(SortKey));
     int i = 0;
-    if (block_col >= 0) { sk[i].col_index = block_col; sk[i].descending = 0; i++; }
-    sk[i].col_index = start_col; sk[i].descending = 0;
+    if (block_col >= 0) { sk[i].col_index = block_col; sk[i].descending = 0; sk[i].na_last = 0; i++; }
+    sk[i].col_index = start_col; sk[i].descending = 0; sk[i].na_last = 0;
     int64_t m = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
     /* sort_node_create takes ownership of sk. */
     SortNode *sn = sort_node_create(child, nk, sk, temp_dir, m);

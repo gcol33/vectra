@@ -309,11 +309,14 @@ static VecType *csv_infer_types(ByteReader *rd, int n_cols, int64_t infer_n,
 /* ------------------------------------------------------------------ */
 
 /* Parse a field value into the appropriate column array at row index i.
-   Sets validity bits. */
-static void csv_parse_cell(VecArray *col, int64_t i, const char *val) {
+   Sets validity bits. Returns 1 when a non-NA token failed to parse to the
+   inferred column type (the cell is set to NA as documented for guess_max,
+   but the caller latches this so the loss is reported once instead of being
+   silent); returns 0 for a genuine NA or a successful parse. */
+static int csv_parse_cell(VecArray *col, int64_t i, const char *val) {
     if (is_na_field(val)) {
         vec_array_set_null(col, i);
-        return;
+        return 0;
     }
     vec_array_set_valid(col, i);
 
@@ -323,18 +326,22 @@ static void csv_parse_cell(VecArray *col, int64_t i, const char *val) {
     case VEC_INT16:
     case VEC_INT32: {
         int64_t v;
-        if (try_parse_int64(val, &v))
+        if (try_parse_int64(val, &v)) {
             col->buf.i64[i] = v;
-        else
-            vec_array_set_null(col, i); /* shouldn't happen after inference */
+        } else {
+            vec_array_set_null(col, i); /* value outside the inferred int type */
+            return 1;
+        }
         break;
     }
     case VEC_DOUBLE: {
         double v;
-        if (try_parse_double(val, &v))
+        if (try_parse_double(val, &v)) {
             col->buf.dbl[i] = v;
-        else
+        } else {
             vec_array_set_null(col, i);
+            return 1;
+        }
         break;
     }
     case VEC_BOOL:
@@ -344,13 +351,16 @@ static void csv_parse_cell(VecArray *col, int64_t i, const char *val) {
         else if (strcmp(val, "FALSE") == 0 || strcmp(val, "false") == 0 ||
                  strcmp(val, "False") == 0)
             col->buf.bln[i] = 0;
-        else
+        else {
             vec_array_set_null(col, i); /* not a bool token past guess_max -> NA */
+            return 1;
+        }
         break;
     case VEC_STRING:
         /* Strings are accumulated in a second pass — handled by caller */
         break;
     }
+    return 0;
 }
 
 /* Read up to batch_size rows into a VecBatch. Returns NULL on EOF. */
@@ -453,8 +463,15 @@ static VecBatch *csv_read_batch(CsvScanNode *sn) {
             }
             arr.buf.str.offsets[n_rows] = offset;
         } else {
-            for (int64_t r = 0; r < n_rows; r++)
-                csv_parse_cell(&arr, r, rows_data[r][c]);
+            for (int64_t r = 0; r < n_rows; r++) {
+                if (csv_parse_cell(&arr, r, rows_data[r][c]) &&
+                    !sn->coercion_warned && !sn->coercion_pending) {
+                    /* Latch the first column whose value did not fit the
+                       inferred type; the main-thread return path warns once. */
+                    sn->coercion_pending = 1;
+                    sn->coercion_col = c;
+                }
+            }
         }
 
         batch->columns[c] = arr;
@@ -486,6 +503,18 @@ static VecBatch *csv_scan_next_batch(VecNode *self) {
                          "compressed stream)");
         sn->exhausted = 1;
         return NULL;
+    }
+    /* csv_read_batch latched a coercion-to-NA on the pull thread (no R alloc
+       there); surface it here, on the R main thread, exactly once per scan. */
+    if (sn->coercion_pending && !sn->coercion_warned) {
+        const char *col_nm = sn->base.output_schema.col_names[sn->coercion_col];
+        sn->coercion_warned = 1;
+        sn->coercion_pending = 0;
+        Rf_warning(
+            "CSV column '%s' has values that do not match the column type "
+            "inferred from the type-inference sample; those cells were read as "
+            "NA. Increase guess_max= or set col_types= to read them.",
+            col_nm);
     }
     return batch;
 }

@@ -3389,9 +3389,22 @@ spatial_overlay <- function(x, y = NULL, vars = NULL, vars_y = NULL,
   # Process the heaviest tiles first. A tile's cost tracks its feature bytes, and
   # the dense archipelago tiles cost far more than the rest; running them first
   # keeps every thread busy instead of stranding one on a giant tile at the tail.
-  if (length(jobs) > 1L) {
-    jcost <- vapply(jobs, function(t) sum(wbytes[t$idx]), numeric(1))
+  jcost <- vapply(jobs, function(t) sum(wbytes[t$idx]), numeric(1))
+  if (length(jobs) > 1L)
     jobs <- jobs[order(jcost, decreasing = TRUE)]
+  # A tile still over the byte budget is a component of mutually-overlapping
+  # features whose bounding boxes all span the extent, so the quadtree cannot
+  # separate them and clipping cannot shrink them (depth cap reached). Such a
+  # tile is noded monolithically, so peak memory can exceed mem_limit. Warn
+  # rather than silently blow the budget, so the caller can raise mem_limit.
+  if (length(jcost) && max(jcost) > tile_bytes) {
+    over <- sum(jcost > tile_bytes)
+    warning(sprintf(paste0(
+      "spatial_overlay: %d tile(s) exceed the per-tile budget (%.3g > %.3g bytes) ",
+      "-- a component of mutually-overlapping features the quadtree cannot tile ",
+      "apart is noded monolithically, so peak memory may exceed mem_limit. ",
+      "Raise mem_limit if the overlay runs out of memory."),
+      over, max(jcost), tile_bytes), call. = FALSE)
   }
   if (!quiet)
     message(sprintf(paste0("spatial_overlay: %d inputs (%d distinct), %d components, %d jobs, ",

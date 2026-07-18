@@ -42,11 +42,11 @@ that appears in both means a row was replaced).
 each file, so if the same key appears on several rows of \code{new_path} only one
 is reported in \code{added}.
 
-The current implementation holds all distinct keys of \code{old_path} resident
-while streaming \code{new_path}, so peak memory scales with the number of distinct
-keys in the old file (the added rows and the diff itself stream). For a diff
-whose key cardinality does not fit in memory this is a bounded-memory hole
-slated for an external sort-merge rewrite.
+Both files are streamed through the external sort (keyed by \code{key_col}) and
+merged in a single forward pass, so peak memory is bounded by the sort's
+spill budget (\code{\link[=vectra_mem]{vectra_mem()}}) rather than by the number of distinct keys.
+The added rows stream to a temp file; only the returned \code{deleted} key vector
+is materialised (its size is the number of deleted keys).
 }
 \examples{
 f1 <- tempfile(fileext = ".vtr")

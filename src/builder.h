@@ -39,6 +39,17 @@ void vec_builder_reserve_data(VecArrayBuilder *b, int64_t extra_bytes);
 /* Append a full VecArray to the builder */
 void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr);
 
+/* Validate that arr may be appended to b (matching type, not a dictionary-
+   deferred string array). Raises a vectra_error otherwise. Exposed so a caller
+   can hoist the check ahead of a parallel append (the check longjmps on failure,
+   which is UB inside an OpenMP region). */
+void vec_builder_check_append(const VecArrayBuilder *b, const VecArray *arr);
+
+/* Like vec_builder_append_array but skips the input validation. The caller MUST
+   have already validated via vec_builder_check_append and reserved capacity;
+   this contains no longjmp-capable call, so it is safe inside an OpenMP region. */
+void vec_builder_append_array_nocheck(VecArrayBuilder *b, const VecArray *arr);
+
 /* Append a single value from arr at row index */
 void vec_builder_append_one(VecArrayBuilder *b, const VecArray *arr, int64_t row);
 

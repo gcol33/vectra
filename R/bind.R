@@ -28,6 +28,29 @@
 #' @export
 bind_rows <- function(..., .id = NULL) {
   dots <- list(...)
+  dot_names <- names(dots)
+
+  # Splice bare lists (bind_rows(list(df1, df2))) into individual inputs, as
+  # dplyr does. data.frames and vectra_nodes are lists too, so they are kept
+  # whole. Names carry through for `.id` (list element names, or the `...` name).
+  flat <- list()
+  flat_names <- character(0)
+  for (i in seq_along(dots)) {
+    d <- dots[[i]]
+    dn <- if (!is.null(dot_names)) dot_names[i] else ""
+    if (is.list(d) && !is.data.frame(d) && !inherits(d, "vectra_node")) {
+      inner <- names(d)
+      for (j in seq_along(d)) {
+        flat[[length(flat) + 1L]] <- d[[j]]
+        flat_names <- c(flat_names,
+                        if (!is.null(inner) && nzchar(inner[j])) inner[j] else "")
+      }
+    } else {
+      flat[[length(flat) + 1L]] <- d
+      flat_names <- c(flat_names, if (is.null(dn) || is.na(dn)) "" else dn)
+    }
+  }
+  dots <- flat
 
   # Check if we can use streaming ConcatNode
   all_nodes <- all(vapply(dots, inherits, logical(1), "vectra_node"))
@@ -64,8 +87,12 @@ bind_rows <- function(..., .id = NULL) {
   rownames(result) <- NULL
 
   if (!is.null(.id)) {
-    src <- rep(seq_along(aligned), vapply(aligned, nrow, integer(1)))
-    result <- cbind(stats::setNames(data.frame(src), .id), result)
+    # dplyr yields a CHARACTER id: the input's name where named, else its
+    # 1-based position as a string.
+    labels <- ifelse(nzchar(flat_names), flat_names, as.character(seq_along(dots)))
+    src <- rep(labels, vapply(aligned, nrow, integer(1)))
+    result <- cbind(stats::setNames(data.frame(src, stringsAsFactors = FALSE), .id),
+                    result)
   }
 
   result

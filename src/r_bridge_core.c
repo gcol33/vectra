@@ -544,6 +544,7 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         VecType tt = e->then_expr->result_type, et = e->else_expr->result_type;
         if (tt == VEC_STRING || et == VEC_STRING)      e->result_type = VEC_STRING;
         else if (tt == VEC_DOUBLE || et == VEC_DOUBLE) e->result_type = VEC_DOUBLE;
+        else if (tt == VEC_INT64 || et == VEC_INT64)   e->result_type = VEC_INT64;
         else                                           e->result_type = tt;
         return e;
     }

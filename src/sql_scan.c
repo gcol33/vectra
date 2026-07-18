@@ -28,6 +28,18 @@ static VecType decltype_to_vectype(const char *decl) {
 /*  Batch reading                                                      */
 /* ------------------------------------------------------------------ */
 
+/* realloc that raises on OOM instead of returning NULL. On failure the
+   original block is left untouched (realloc does not free it when it returns
+   NULL), and vectra_error longjmps before the caller overwrites its pointer,
+   so the caller's buffer stays valid rather than being clobbered to NULL and
+   dereferenced. */
+static void *sql_grow_buffer(void *ptr, size_t nbytes) {
+    void *tmp = realloc(ptr, nbytes);
+    if (!tmp)
+        vectra_error("SQL scan: out of memory growing column buffer");
+    return tmp;
+}
+
 static VecBatch *sql_read_batch(SqlScanNode *sn) {
     int n_cols = sn->n_cols;
     int64_t batch_size = sn->batch_size;
@@ -76,7 +88,7 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
         if (n_rows >= rows_cap) {
             rows_cap *= 2;
             for (int c = 0; c < n_cols; c++) {
-                col_nulls[c] = (uint8_t *)realloc(col_nulls[c],
+                col_nulls[c] = (uint8_t *)sql_grow_buffer(col_nulls[c],
                     (size_t)rows_cap * sizeof(uint8_t));
                 memset(col_nulls[c] + n_rows, 0,
                     (size_t)(rows_cap - n_rows));
@@ -85,18 +97,18 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
                 case VEC_INT8:
                 case VEC_INT16:
                 case VEC_INT32:
-                    col_i64[c] = (int64_t *)realloc(col_i64[c],
+                    col_i64[c] = (int64_t *)sql_grow_buffer(col_i64[c],
                         (size_t)rows_cap * sizeof(int64_t)); break;
                 case VEC_DOUBLE:
-                    col_dbl[c] = (double *)realloc(col_dbl[c],
+                    col_dbl[c] = (double *)sql_grow_buffer(col_dbl[c],
                         (size_t)rows_cap * sizeof(double)); break;
                 case VEC_BOOL:
-                    col_bln[c] = (uint8_t *)realloc(col_bln[c],
+                    col_bln[c] = (uint8_t *)sql_grow_buffer(col_bln[c],
                         (size_t)rows_cap * sizeof(uint8_t)); break;
                 case VEC_STRING:
-                    col_str_ptrs[c] = (char **)realloc(col_str_ptrs[c],
+                    col_str_ptrs[c] = (char **)sql_grow_buffer(col_str_ptrs[c],
                         (size_t)rows_cap * sizeof(char *));
-                    col_str_lens[c] = (int64_t *)realloc(col_str_lens[c],
+                    col_str_lens[c] = (int64_t *)sql_grow_buffer(col_str_lens[c],
                         (size_t)rows_cap * sizeof(int64_t)); break;
                 }
             }

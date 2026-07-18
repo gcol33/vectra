@@ -989,6 +989,18 @@ int vecr_reader_open(const char *path, VecrReader **out) {
     /* Index */
     r->n_index = r->hdr.n_tiles_total;
     if (r->n_index > 0) {
+        /* n_tiles_total is file-controlled; bound it against the file so a
+           crafted value cannot overflow the allocation byte count (n_index *
+           sizeof(entry)) or make the fread below read past EOF. */
+        if (vecr_fseek64(r->fp, 0, SEEK_END) != 0) {
+            vecr_reader_set_err(r, "seek to end failed"); return -1;
+        }
+        int64_t flen = vecr_ftell64(r->fp);
+        int64_t max_entries = (r->hdr.index_offset >= 0 && flen >= r->hdr.index_offset)
+            ? (flen - r->hdr.index_offset) / (int64_t)sizeof(VecrIndexEntry) : -1;
+        if (max_entries < 0 || r->n_index > max_entries) {
+            vecr_reader_set_err(r, "index count exceeds file"); return -1;
+        }
         r->index = (VecrIndexEntry *)malloc((size_t)r->n_index *
                                              sizeof(VecrIndexEntry));
         if (!r->index) { vecr_reader_set_err(r, "alloc index"); return -1; }
@@ -1823,21 +1835,32 @@ static double vecr_resample_2x2_mode(const double *src, int64_t W, int64_t H,
     return vals[best];
 }
 
-/* Bilinear-style: 3x3 weighted [1,2,1; 2,4,2; 1,2,1]/16 anchored at the
- * source pixel that maps to (r, c) at the output, then 2x decimate. Skips
- * NaN cells in the weighted sum and renormalises by the active weight. */
+/* Bilinear 2x decimation centred on the SAME 2x2 source block that `average`
+ * uses: the output pixel (r, c) represents source block [2r,2r+1]x[2c,2c+1],
+ * whose centre is (2r+0.5, 2c+0.5). A separable 4-tap {1,3,3,1}/8 per axis
+ * over source rows/cols {2r-1, 2r, 2r+1, 2r+2} is symmetric about that centre,
+ * i.e. the 4x4 kernel
+ *      1 3 3 1
+ *      3 9 9 3
+ *      3 9 9 3
+ *      1 3 3 1   (sum 64),
+ * so there is no half-pixel NW shift and georeferencing stays consistent
+ * across levels. Out-of-range and NaN taps drop out and the weight
+ * renormalises (matching `average`); all-nodata -> NaN. O(1) per pixel. */
 static double vecr_resample_2x2_bilinear(const double *src, int64_t W, int64_t H,
                                           int64_t r, int64_t c) {
     int64_t r2 = r * 2, c2 = c * 2;
-    static const int wgrid[3][3] = {{1, 2, 1}, {2, 4, 2}, {1, 2, 1}};
+    static const int tap[4] = {1, 3, 3, 1};   /* source offsets -1, 0, +1, +2 */
     double acc = 0; int wtot = 0;
-    for (int dr = -1; dr <= 1; ++dr) {
-        for (int dc = -1; dc <= 1; ++dc) {
-            int64_t rr = r2 + dr, cc = c2 + dc;
-            if (rr < 0 || rr >= H || cc < 0 || cc >= W) continue;
+    for (int dr = 0; dr < 4; ++dr) {
+        int64_t rr = r2 - 1 + dr;
+        if (rr < 0 || rr >= H) continue;
+        for (int dc = 0; dc < 4; ++dc) {
+            int64_t cc = c2 - 1 + dc;
+            if (cc < 0 || cc >= W) continue;
             double v = src[rr * W + cc];
             if (isnan(v)) continue;
-            int w = wgrid[dr + 1][dc + 1];
+            int w = tap[dr] * tap[dc];
             acc += v * w; wtot += w;
         }
     }

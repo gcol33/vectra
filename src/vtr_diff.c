@@ -2,164 +2,15 @@
 #include "vtr1_tdc.h"
 #include "scan.h"
 #include "schema.h"
-#include "hash.h"
+#include "sort.h"
+#include "builder.h"
 #include "array.h"
 #include "batch.h"
 #include "error.h"
+#include "r_bridge_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-
-/* ------------------------------------------------------------------ */
-/*  Key arena: stores one copy of each unique key (single-key diff)   */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    VecType  key_type;
-    int64_t  capacity;
-    int64_t  length;
-    VecArray arena;      /* one VecArray for the single key column */
-    /* For VEC_STRING: separate owned string buffer (arena.buf.str.data
-       is a borrowed pointer into str_data). */
-    char    *str_data;
-    int64_t  str_data_len;
-    int64_t  str_data_cap;
-} DiffKeyArena;
-
-static void dka_init(DiffKeyArena *ka, VecType key_type) {
-    ka->key_type     = key_type;
-    ka->capacity     = 64;
-    ka->length       = 0;
-    ka->str_data     = NULL;
-    ka->str_data_len = 0;
-    ka->str_data_cap = 0;
-    ka->arena = vec_array_alloc(key_type, ka->capacity);
-    if (key_type == VEC_STRING)
-        ka->arena.owns_data = 0;  /* we own str_data separately */
-}
-
-static void dka_ensure(DiffKeyArena *ka, int64_t n) {
-    if (n <= ka->capacity) return;
-    int64_t new_cap = ka->capacity;
-    while (new_cap < n) new_cap *= 2;
-
-    VecArray old = ka->arena;
-    VecArray new_arr = vec_array_alloc(ka->key_type, new_cap);
-    /* Copy validity bits */
-    memcpy(new_arr.validity, old.validity,
-           (size_t)((old.length + 7) / 8));
-    switch (ka->key_type) {
-    case VEC_INT64:
-        memcpy(new_arr.buf.i64, old.buf.i64,
-               (size_t)old.length * sizeof(int64_t));
-        break;
-    case VEC_INT32:
-        memcpy(new_arr.buf.i32, old.buf.i32,
-               (size_t)old.length * sizeof(int32_t));
-        break;
-    case VEC_INT16:
-        memcpy(new_arr.buf.i16, old.buf.i16,
-               (size_t)old.length * sizeof(int16_t));
-        break;
-    case VEC_INT8:
-        memcpy(new_arr.buf.i8, old.buf.i8,
-               (size_t)old.length * sizeof(int8_t));
-        break;
-    case VEC_DOUBLE:
-        memcpy(new_arr.buf.dbl, old.buf.dbl,
-               (size_t)old.length * sizeof(double));
-        break;
-    case VEC_BOOL:
-        memcpy(new_arr.buf.bln, old.buf.bln, (size_t)old.length);
-        break;
-    case VEC_STRING:
-        memcpy(new_arr.buf.str.offsets, old.buf.str.offsets,
-               (size_t)(old.length + 1) * sizeof(int64_t));
-        free(new_arr.buf.str.data);   /* free the 1-byte alloc */
-        new_arr.buf.str.data     = ka->str_data;
-        new_arr.buf.str.data_len = ka->str_data_len;
-        new_arr.owns_data        = 0;
-        break;
-    }
-    new_arr.length = old.length;
-    vec_array_free(&old);
-    ka->arena    = new_arr;
-    ka->capacity = new_cap;
-}
-
-static void dka_append(DiffKeyArena *ka, const VecArray *col, int64_t row) {
-    int64_t pos = ka->length;
-    dka_ensure(ka, pos + 1);
-
-    VecArray *a = &ka->arena;
-    a->length = pos + 1;
-
-    if (!vec_array_is_valid(col, row)) {
-        vec_array_set_null(a, pos);
-        if (ka->key_type == VEC_STRING) {
-            int64_t cur = ka->str_data_len;
-            a->buf.str.offsets[pos]     = cur;
-            a->buf.str.offsets[pos + 1] = cur;
-            a->buf.str.data             = ka->str_data;
-            a->buf.str.data_len         = cur;
-        }
-    } else {
-        vec_array_set_valid(a, pos);
-        switch (ka->key_type) {
-        case VEC_INT64:
-            a->buf.i64[pos] = col->buf.i64[row];
-            break;
-        case VEC_INT32:
-            a->buf.i32[pos] = col->buf.i32[row];
-            break;
-        case VEC_INT16:
-            a->buf.i16[pos] = col->buf.i16[row];
-            break;
-        case VEC_INT8:
-            a->buf.i8[pos] = col->buf.i8[row];
-            break;
-        case VEC_DOUBLE:
-            a->buf.dbl[pos] = col->buf.dbl[row];
-            break;
-        case VEC_BOOL:
-            a->buf.bln[pos] = col->buf.bln[row];
-            break;
-        case VEC_STRING: {
-            int64_t s    = col->buf.str.offsets[row];
-            int64_t e    = col->buf.str.offsets[row + 1];
-            int64_t slen = e - s;
-            int64_t needed = ka->str_data_len + slen;
-            if (needed > ka->str_data_cap) {
-                int64_t nc = (ka->str_data_cap == 0) ? 256 : ka->str_data_cap;
-                while (nc < needed) nc *= 2;
-                ka->str_data     = (char *)realloc(ka->str_data, (size_t)nc);
-                if (!ka->str_data) vectra_error("dka_append: alloc failed");
-                ka->str_data_cap = nc;
-            }
-            a->buf.str.offsets[pos] = ka->str_data_len;
-            if (slen > 0)
-                memcpy(ka->str_data + ka->str_data_len,
-                       col->buf.str.data + s, (size_t)slen);
-            ka->str_data_len += slen;
-            a->buf.str.offsets[pos + 1] = ka->str_data_len;
-            a->buf.str.data             = ka->str_data;
-            a->buf.str.data_len         = ka->str_data_len;
-            break;
-        }
-        }
-    }
-    ka->length = pos + 1;
-}
-
-static void dka_free(DiffKeyArena *ka) {
-    if (ka->key_type == VEC_STRING) {
-        /* arena.buf.str.data is borrowed; free str_data directly */
-        ka->arena.owns_data = 0;
-        free(ka->str_data);
-        ka->str_data = NULL;
-    }
-    vec_array_free(&ka->arena);
-}
 
 /* ------------------------------------------------------------------ */
 /*  Convert a single VecArray column (may have sel) to an R vector    */
@@ -269,13 +120,115 @@ static SEXP array_col_to_sexp(const VecArray *arr) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Bounded sweep-merge diff                                           */
+/* ------------------------------------------------------------------ */
+/*
+ * Both files are streamed through the external sort (keyed ascending by the key
+ * column, NA last) and swept in one merged pass. No hash set of A's keys is held
+ * resident -- peak state is the two sorts' own bounded spill, the current output
+ * chunk of added rows, and the deleted-key builder (which is the returned diff).
+ * The key is a primary key (unique per file), but the sweep still collapses any
+ * equal-key run defensively so repeated keys collapse to one, matching the
+ * old set semantics. sort_compare_value is shared with the sort's own merge, so
+ * the sweep and the sort agree on ordering (NaN clustering, NA placement).
+ */
+
+#define DIFF_EMIT_CHUNK 8192
+
+typedef struct {
+    VecNode  *node;
+    VecBatch *batch;
+    int64_t   li, nlog;
+    int       done;
+    int       key_col;
+    int64_t   phys;      /* physical row of the current position */
+} DiffCursor;
+
+static void dcur_load(DiffCursor *c) {
+    if (c->batch) { vec_batch_free(c->batch); c->batch = NULL; }
+    c->batch = c->node->next_batch(c->node);
+    if (!c->batch) { c->done = 1; return; }
+    c->li   = 0;
+    c->nlog = vec_batch_logical_rows(c->batch);
+}
+
+/* Advance to the next physical row, loading batches as needed. */
+static void dcur_next(DiffCursor *c) {
+    while (!c->done) {
+        if (!c->batch || c->li >= c->nlog) {
+            dcur_load(c);
+            if (c->done) return;
+            continue;
+        }
+        c->phys = vec_batch_physical_row(c->batch, c->li);
+        c->li++;
+        return;
+    }
+}
+
+static inline const VecArray *dcur_key(const DiffCursor *c) {
+    return &c->batch->columns[c->key_col];
+}
+
+/* One-row copy of the cursor's current key (survives batch reload). */
+static VecArray dcur_key_snap(const DiffCursor *c) {
+    int32_t r = (int32_t)c->phys;
+    return vec_array_gather(dcur_key(c), &r, 1);
+}
+
+/* Advance the cursor past every row whose key equals `ref` (a 1-row array). */
+static void dcur_skip_run(DiffCursor *c, const VecArray *ref) {
+    dcur_next(c);
+    while (!c->done) {
+        if (sort_compare_value(dcur_key(c), c->phys, ref, 0, 0, 1) != 0) break;
+        dcur_next(c);
+    }
+}
+
+/* Wrap a child scan in a SortNode keyed ascending (NA last) by one column. */
+static VecNode *diff_sort_by_key(VecNode *child, int key_col,
+                                 const char *temp_dir, int64_t mem_budget) {
+    SortKey *sk = (SortKey *)malloc(sizeof(SortKey));
+    if (!sk) vectra_error("C_diff_vtr: alloc failed for sort key");
+    sk->col_index = key_col;
+    sk->descending = 0;
+    sk->na_last = 1;
+    int64_t m = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    /* sort_node_create takes ownership of sk. */
+    return (VecNode *)sort_node_create(child, 1, sk, temp_dir, m);
+}
+
+/* Flush the accumulated added-row builders as one row group. Re-inits the
+   builders to empty for the next chunk. */
+static void diff_flush_added(Vtr1TdcWriter *w, const VecSchema *bs,
+                             VecArrayBuilder *bb, int64_t *added_n) {
+    if (*added_n == 0) return;
+    int nb = bs->n_cols;
+    VecBatch *batch = vec_batch_alloc(nb, *added_n);
+    for (int c = 0; c < nb; c++)
+        batch->columns[c] = vec_builder_finish(&bb[c]);
+    for (int c = 0; c < nb; c++) {
+        free(batch->col_names[c]);
+        batch->col_names[c] = strdup(bs->col_names[c]);
+    }
+    batch->n_rows = *added_n;
+    vtr1_write_rowgroup_tdc(w, batch, VTR_COMPRESS_FAST, NULL, NULL);
+    vec_batch_free(batch);
+    for (int c = 0; c < nb; c++)
+        bb[c] = vec_builder_init(bs->col_types[c]);
+    *added_n = 0;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main diff implementation                                           */
 /* ------------------------------------------------------------------ */
 
-SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
+SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp,
+                SEXP mem_sexp) {
     const char *path_a  = CHAR(STRING_ELT(path_a_sexp, 0));
     const char *path_b  = CHAR(STRING_ELT(path_b_sexp, 0));
     const char *key_col = CHAR(STRING_ELT(key_col_sexp, 0));
+    int64_t mem_budget  = (int64_t)Rf_asReal(mem_sexp);
 
     /* ---- Validate key column exists in both files ---- */
     Vtr1TdcFile *fa = vtr1_open_tdc(path_a);
@@ -309,220 +262,126 @@ SEXP C_diff_vtr(SEXP path_a_sexp, SEXP path_b_sexp, SEXP key_col_sexp) {
                      key_col);
     }
 
-    /* ---- Pass 1: stream A, build hash set of all keys ---- */
-    DiffKeyArena arena;
-    dka_init(&arena, key_type);
+    const char *temp_dir = get_r_tempdir();
 
-    VecHashTable ht = vec_ht_create(256);
+    /* ---- Build a temp .vtr path for the added rows ---- */
+    SEXP td_call   = PROTECT(Rf_lang1(Rf_install("tempdir")));
+    SEXP td_result = PROTECT(Rf_eval(td_call, R_BaseEnv));
+    const char *tmpdir = CHAR(STRING_ELT(td_result, 0));
 
-    /* Scan A with only the key column */
-    int col_idx_a[1] = { key_idx_a };
-    ScanNode *scan_a = scan_node_create(path_a, col_idx_a, 1);
-    VecNode  *node_a = (VecNode *)scan_a;
+    static unsigned int diff_counter = 0;
+    diff_counter++;
 
-    VecBatch *batch;
-    while ((batch = node_a->next_batch(node_a)) != NULL) {
-        int64_t n_logical = vec_batch_logical_rows(batch);
-        /* The key is always in column 0 of the single-column batch */
-        const VecArray *key_arr = &batch->columns[0];
-
-        for (int64_t li = 0; li < n_logical; li++) {
-            int64_t pi = vec_batch_physical_row(batch, li);
-            uint64_t h = vec_hash_value(key_arr, pi);
-            int was_new = 0;
-            vec_ht_find_or_insert(&ht, h,
-                                   key_arr, 1, pi,
-                                   &arena.arena, arena.length,
-                                   &was_new);
-            if (was_new)
-                dka_append(&arena, key_arr, pi);
-        }
-        vec_batch_free(batch);
-    }
-    node_a->free_node(node_a);
-
-    int64_t n_a_keys = arena.length;
-
-    /* ---- Allocate seen_in_b flags for each key in A ---- */
-    uint8_t *seen_in_b = (uint8_t *)calloc((size_t)(n_a_keys > 0 ? n_a_keys : 1),
-                                            sizeof(uint8_t));
-    if (!seen_in_b) {
-        vec_schema_free(&b_schema);
-        vectra_error("C_diff_vtr: alloc failed for seen_in_b");
-    }
-
-    /* ---- Open temp .vtr file to stream added rows ---- */
-    /* Build a temp path: <R tempdir>/vectra_diff_XXXXXX.vtr */
-    {
-        /* Compute a temp path using R's tempdir */
-        SEXP td_call   = PROTECT(Rf_lang1(Rf_install("tempdir")));
-        SEXP td_result = PROTECT(Rf_eval(td_call, R_BaseEnv));
-        const char *tmpdir = CHAR(STRING_ELT(td_result, 0));
-
-        static const char suffix[] = "/vectra_diff_added.vtr";
-        /* Use a counter to make unique names within a session */
-        static unsigned int diff_counter = 0;
-        diff_counter++;
-
-        /* Build path: <tmpdir>/vectra_diff_added_<counter>.vtr */
-        size_t tmpdir_len = strlen(tmpdir);
-        static const char prefix[] = "/vectra_diff_added_";
-        char counter_str[32];
-        int counter_len = snprintf(counter_str, sizeof(counter_str),
-                                   "%u", diff_counter);
-        static const char ext[] = ".vtr";
-        size_t tmp_path_len = tmpdir_len
-                            + strlen(prefix)
-                            + (size_t)counter_len
-                            + strlen(ext);
-        char *tmp_path = (char *)malloc(tmp_path_len + 1);
-        if (!tmp_path) {
-            UNPROTECT(2);
-            vec_schema_free(&b_schema);
-            free(seen_in_b);
-            vectra_error("C_diff_vtr: alloc failed for tmp_path");
-        }
-        memcpy(tmp_path, tmpdir, tmpdir_len);
-        memcpy(tmp_path + tmpdir_len, prefix, strlen(prefix));
-        memcpy(tmp_path + tmpdir_len + strlen(prefix),
-               counter_str, (size_t)counter_len);
-        memcpy(tmp_path + tmpdir_len + strlen(prefix) + (size_t)counter_len,
-               ext, strlen(ext) + 1); /* +1 for '\0' */
-
+    size_t tmpdir_len = strlen(tmpdir);
+    static const char prefix[] = "/vectra_diff_added_";
+    char counter_str[32];
+    int counter_len = snprintf(counter_str, sizeof(counter_str), "%u", diff_counter);
+    static const char ext[] = ".vtr";
+    size_t tmp_path_len = tmpdir_len + strlen(prefix) + (size_t)counter_len + strlen(ext);
+    char *tmp_path = (char *)malloc(tmp_path_len + 1);
+    if (!tmp_path) {
         UNPROTECT(2);
-
-        /* Suppress unused-variable warning for 'suffix' */
-        (void)suffix;
-
-        Vtr1TdcWriter *tmp_w = vtr1_open_tdc_writer(tmp_path, &b_schema);
-        /* tdc writer aborts via vectra_error on open failure; on success
-         * it owns the file handle for the duration of the diff pass. */
-
-        /* ---- Pass 2: stream ALL columns of B, write added rows ---- */
-        ScanNode *scan_b = scan_node_create(path_b, NULL, 0);
-        VecNode  *node_b = (VecNode *)scan_b;
-
-        while ((batch = node_b->next_batch(node_b)) != NULL) {
-            int64_t n_logical = vec_batch_logical_rows(batch);
-            /* Key column is at key_idx_b in the full-scan batch */
-            const VecArray *key_arr = &batch->columns[key_idx_b];
-
-            /* Allocate a per-batch selection buffer for added rows.
-               vec_batch_compact -> vec_batch_free will free batch->sel,
-               so we hand ownership to the batch after setting it. */
-            int32_t *added_sel = (int32_t *)malloc(
-                (size_t)(n_logical > 0 ? n_logical : 1) * sizeof(int32_t));
-            if (!added_sel) {
-                vec_batch_free(batch);
-                node_b->free_node(node_b);
-                vtr1_close_tdc_writer(tmp_w);
-                free(tmp_path);
-                vec_schema_free(&b_schema);
-                free(seen_in_b);
-                vectra_error("C_diff_vtr: alloc failed for added_sel");
-            }
-            int32_t n_added_this_batch = 0;
-
-            for (int64_t li = 0; li < n_logical; li++) {
-                int64_t pi = vec_batch_physical_row(batch, li);
-                uint64_t h = vec_hash_value(key_arr, pi);
-                int was_new = 0;
-                int64_t gid = vec_ht_find_or_insert(&ht, h,
-                                                     key_arr, 1, pi,
-                                                     &arena.arena, arena.length,
-                                                     &was_new);
-                if (was_new) {
-                    /* Key in B but not A: record physical row for this batch */
-                    added_sel[n_added_this_batch++] = (int32_t)pi;
-                    /* Extend arena and seen_in_b for completeness */
-                    dka_append(&arena, key_arr, pi);
-                    int64_t new_total = arena.length;
-                    seen_in_b = (uint8_t *)realloc(seen_in_b, (size_t)new_total);
-                    if (!seen_in_b) {
-                        vec_batch_free(batch);
-                        node_b->free_node(node_b);
-                        free(added_sel);
-                        vtr1_close_tdc_writer(tmp_w);
-                        free(tmp_path);
-                        vec_schema_free(&b_schema);
-                        vectra_error("C_diff_vtr: realloc failed for seen_in_b");
-                    }
-                    seen_in_b[new_total - 1] = 0;
-                } else {
-                    /* Key found in A: mark as seen */
-                    seen_in_b[gid] = 1;
-                }
-            }
-
-            /* If this batch has any added rows, write them as a row group.
-               Install the selection vector into the batch; vec_batch_compact
-               will compact it into a new flat batch and free the original
-               (including batch->sel = added_sel). */
-            if (n_added_this_batch > 0) {
-                batch->sel   = added_sel;
-                batch->sel_n = n_added_this_batch;
-                VecBatch *compact = vec_batch_compact(batch);
-                /* batch is now freed by compact — do not use */
-                vtr1_write_rowgroup_tdc(tmp_w, compact, VTR_COMPRESS_FAST,
-                                        NULL, NULL);
-                vec_batch_free(compact);
-            } else {
-                free(added_sel);
-                vec_batch_free(batch);
-            }
-        }
-        node_b->free_node(node_b);
-
-        /* tdc writer self-finalizes the trailing rowgroup index in close;
-         * no equivalent of v4's manual n_rowgroups patch is needed. */
-        vtr1_close_tdc_writer(tmp_w);
-
-        vec_ht_free(&ht);
         vec_schema_free(&b_schema);
-
-        /* ---- Build deleted_keys from A keys not seen in B ---- */
-        int64_t n_deleted = 0;
-        for (int64_t i = 0; i < n_a_keys; i++)
-            if (!seen_in_b[i]) n_deleted++;
-
-        int32_t *del_sel = NULL;
-        if (n_deleted > 0) {
-            del_sel = (int32_t *)malloc((size_t)n_deleted * sizeof(int32_t));
-            if (!del_sel) {
-                free(seen_in_b);
-                free(tmp_path);
-                dka_free(&arena);
-                vectra_error("C_diff_vtr: alloc failed for del_sel");
-            }
-            int64_t j = 0;
-            for (int64_t i = 0; i < n_a_keys; i++)
-                if (!seen_in_b[i]) del_sel[j++] = (int32_t)i;
-        }
-        free(seen_in_b);
-
-        /* Gather deleted keys from arena */
-        VecArray del_arr = vec_array_gather(&arena.arena, del_sel, (int32_t)n_deleted);
-        free(del_sel);
-        dka_free(&arena);
-
-        SEXP deleted_sexp  = PROTECT(array_col_to_sexp(&del_arr));
-        vec_array_free(&del_arr);
-
-        /* Return the temp path as a string */
-        SEXP added_path_sexp = PROTECT(Rf_allocVector(STRSXP, 1));
-        SET_STRING_ELT(added_path_sexp, 0, Rf_mkCharCE(tmp_path, CE_UTF8));
-        free(tmp_path);
-
-        /* ---- Assemble result list ---- */
-        SEXP result    = PROTECT(Rf_allocVector(VECSXP, 2));
-        SEXP res_names = PROTECT(Rf_allocVector(STRSXP, 2));
-        SET_VECTOR_ELT(result, 0, added_path_sexp);
-        SET_VECTOR_ELT(result, 1, deleted_sexp);
-        SET_STRING_ELT(res_names, 0, Rf_mkChar("added_path"));
-        SET_STRING_ELT(res_names, 1, Rf_mkChar("deleted_keys"));
-        Rf_setAttrib(result, R_NamesSymbol, res_names);
-
-        UNPROTECT(4);  /* result, res_names, added_path_sexp, deleted_sexp */
-        return result;
+        vectra_error("C_diff_vtr: alloc failed for tmp_path");
     }
+    memcpy(tmp_path, tmpdir, tmpdir_len);
+    memcpy(tmp_path + tmpdir_len, prefix, strlen(prefix));
+    memcpy(tmp_path + tmpdir_len + strlen(prefix), counter_str, (size_t)counter_len);
+    memcpy(tmp_path + tmpdir_len + strlen(prefix) + (size_t)counter_len,
+           ext, strlen(ext) + 1);
+    UNPROTECT(2);
+
+    /* ---- Wire both sides through the external sort, keyed by the key col ---- */
+    int col_idx_a[1] = { key_idx_a };
+    VecNode *node_a = diff_sort_by_key(
+        (VecNode *)scan_node_create(path_a, col_idx_a, 1),
+        0, temp_dir, mem_budget);
+    VecNode *node_b = diff_sort_by_key(
+        (VecNode *)scan_node_create(path_b, NULL, 0),
+        key_idx_b, temp_dir, mem_budget);
+
+    Vtr1TdcWriter *tmp_w = vtr1_open_tdc_writer(tmp_path, &b_schema);
+
+    /* Added-row builders (all B columns); deleted-key builder (key col only). */
+    int nbcols = b_schema.n_cols;
+    VecArrayBuilder *bb = (VecArrayBuilder *)calloc((size_t)nbcols,
+                                                    sizeof(VecArrayBuilder));
+    if (!bb) vectra_error("C_diff_vtr: alloc failed for added builders");
+    for (int c = 0; c < nbcols; c++)
+        bb[c] = vec_builder_init(b_schema.col_types[c]);
+    int64_t added_n = 0;
+    VecArrayBuilder del_b = vec_builder_init(key_type);
+
+    /* ---- Sweep-merge the two sorted key streams ---- */
+    DiffCursor A = {0}, B = {0};
+    A.node = node_a; A.key_col = 0;
+    B.node = node_b; B.key_col = key_idx_b;
+    dcur_next(&A);
+    dcur_next(&B);
+
+    while (!A.done || !B.done) {
+        int order;
+        if (A.done)      order = 1;
+        else if (B.done) order = -1;
+        else order = sort_compare_value(dcur_key(&A), A.phys,
+                                        dcur_key(&B), B.phys, 0, 1);
+
+        if (order < 0) {
+            /* key in A, absent from B -> deleted */
+            vec_builder_append_one(&del_b, dcur_key(&A), A.phys);
+            VecArray k = dcur_key_snap(&A);
+            dcur_skip_run(&A, &k);
+            vec_array_free(&k);
+        } else if (order > 0) {
+            /* key in B, absent from A -> added: emit the whole B row */
+            for (int c = 0; c < nbcols; c++)
+                vec_builder_append_one(&bb[c], &B.batch->columns[c], B.phys);
+            added_n++;
+            if (added_n >= DIFF_EMIT_CHUNK)
+                diff_flush_added(tmp_w, &b_schema, bb, &added_n);
+            VecArray k = dcur_key_snap(&B);
+            dcur_skip_run(&B, &k);
+            vec_array_free(&k);
+        } else {
+            /* key in both -> unchanged: skip the run on both sides */
+            VecArray ka = dcur_key_snap(&A);
+            dcur_skip_run(&A, &ka);
+            vec_array_free(&ka);
+            VecArray kb = dcur_key_snap(&B);
+            dcur_skip_run(&B, &kb);
+            vec_array_free(&kb);
+        }
+    }
+
+    diff_flush_added(tmp_w, &b_schema, bb, &added_n);
+
+    if (A.batch) vec_batch_free(A.batch);
+    if (B.batch) vec_batch_free(B.batch);
+    node_a->free_node(node_a);
+    node_b->free_node(node_b);
+    vtr1_close_tdc_writer(tmp_w);
+    for (int c = 0; c < nbcols; c++)
+        vec_builder_free(&bb[c]);
+    free(bb);
+    vec_schema_free(&b_schema);
+
+    /* ---- Assemble result ---- */
+    VecArray del_arr = vec_builder_finish(&del_b);
+    SEXP deleted_sexp = PROTECT(array_col_to_sexp(&del_arr));
+    vec_array_free(&del_arr);
+
+    SEXP added_path_sexp = PROTECT(Rf_allocVector(STRSXP, 1));
+    SET_STRING_ELT(added_path_sexp, 0, Rf_mkCharCE(tmp_path, CE_UTF8));
+    free(tmp_path);
+
+    SEXP result    = PROTECT(Rf_allocVector(VECSXP, 2));
+    SEXP res_names = PROTECT(Rf_allocVector(STRSXP, 2));
+    SET_VECTOR_ELT(result, 0, added_path_sexp);
+    SET_VECTOR_ELT(result, 1, deleted_sexp);
+    SET_STRING_ELT(res_names, 0, Rf_mkChar("added_path"));
+    SET_STRING_ELT(res_names, 1, Rf_mkChar("deleted_keys"));
+    Rf_setAttrib(result, R_NamesSymbol, res_names);
+
+    UNPROTECT(4);
+    return result;
 }

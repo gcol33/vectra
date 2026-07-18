@@ -20,11 +20,11 @@
 #' each file, so if the same key appears on several rows of `new_path` only one
 #' is reported in `added`.
 #'
-#' The current implementation holds all distinct keys of `old_path` resident
-#' while streaming `new_path`, so peak memory scales with the number of distinct
-#' keys in the old file (the added rows and the diff itself stream). For a diff
-#' whose key cardinality does not fit in memory this is a bounded-memory hole
-#' slated for an external sort-merge rewrite.
+#' Both files are streamed through the external sort (keyed by `key_col`) and
+#' merged in a single forward pass, so peak memory is bounded by the sort's
+#' spill budget ([vectra_mem()]) rather than by the number of distinct keys.
+#' The added rows stream to a temp file; only the returned `deleted` key vector
+#' is materialised (its size is the number of deleted keys).
 #'
 #' @param old_path Path to the older `.vtr` file.
 #' @param new_path Path to the newer `.vtr` file.
@@ -63,11 +63,11 @@ diff_vtr <- function(old_path, new_path, key_col) {
   old_path <- normalizePath(old_path, mustWork = TRUE)
   new_path <- normalizePath(new_path, mustWork = TRUE)
 
-  # Delegate key-set diff to C.
-  # Pass 1: stream A key column -> build hash set.
-  # Pass 2: stream ALL B columns; write added rows to a temp .vtr file.
+  # Delegate key-set diff to C: a bounded sweep-merge over both files sorted by
+  # the key column (no resident hash set of A's keys).
   # Returns list(added_path = <string>, deleted_keys = <vector>).
-  raw          <- .Call(C_diff_vtr, old_path, new_path, key_col)
+  raw          <- .Call(C_diff_vtr, old_path, new_path, key_col,
+                        as.numeric(vectra_mem()))
   added_path   <- raw$added_path
   deleted_keys <- raw$deleted_keys
 

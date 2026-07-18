@@ -296,7 +296,9 @@ VecArray *vec_negate(const VecArray *arr) {
     int64_t n = arr->length;
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     if (!out) vectra_error("alloc failed");
-    *out = vec_array_alloc(arr->type, n);
+    /* R promotes a logical to integer under unary minus: -TRUE == -1L. */
+    VecType out_type = (arr->type == VEC_BOOL) ? VEC_INT64 : arr->type;
+    *out = vec_array_alloc(out_type, n);
     memcpy(out->validity, arr->validity, (size_t)vec_validity_bytes(n));
 
     switch (arr->type) {
@@ -307,6 +309,10 @@ VecArray *vec_negate(const VecArray *arr) {
     case VEC_DOUBLE:
         for (int64_t i = 0; i < n; i++)
             out->buf.dbl[i] = -arr->buf.dbl[i];
+        break;
+    case VEC_BOOL:
+        for (int64_t i = 0; i < n; i++)
+            out->buf.i64[i] = -(int64_t)arr->buf.bln[i];
         break;
     default:
         vec_array_free(out); free(out);

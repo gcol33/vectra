@@ -776,7 +776,15 @@ static VecBatch *bnl_probe_emit(JoinNode *jn) {
                                     jn->r_cols, jn->rkey_idx, jn->n_keys, pr,
                                     jn->na_matches);
                 if (out[0].length >= JOIN_PROBE_EMIT_MAX) {
-                    jn->bnl_chain_br = br;   /* resume mid-chain next call */
+                    if (br < 0) {
+                        /* Chain exhausted exactly at the cap: this row is done.
+                           Advance so the next call starts a fresh probe rather
+                           than re-emitting this chain. */
+                        jn->bnl_probe_li++;
+                        jn->bnl_chain_br = -1;
+                    } else {
+                        jn->bnl_chain_br = br;   /* resume mid-chain next call */
+                    }
                     return join_finish_out(jn, out, out_ncols);
                 }
             }
@@ -1176,7 +1184,17 @@ static VecBatch *join_probe_emit(JoinNode *jn) {
                                     jn->r_cols, jn->rkey_idx, jn->n_keys, pr,
                                     jn->na_matches);
                 if (out[0].length >= JOIN_PROBE_EMIT_MAX) {
-                    jn->probe_chain_br = br;   /* resume mid-chain next call */
+                    if (br < 0) {
+                        /* Chain exhausted exactly at the cap: this row is done.
+                           Advance so the next call starts a fresh probe rather
+                           than re-emitting this chain (br == -1 is also the
+                           not-resuming sentinel, so it must not be left here
+                           with probe_li unadvanced). */
+                        jn->probe_li++;
+                        jn->probe_chain_br = -1;
+                    } else {
+                        jn->probe_chain_br = br;   /* resume mid-chain next call */
+                    }
                     return join_finish_out(jn, out, out_ncols);
                 }
             }

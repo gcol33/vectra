@@ -6,7 +6,7 @@
 # Known window function names
 .win_fns <- c("lag", "lead", "row_number", "rank", "min_rank", "dense_rank",
               "cumsum", "cummean", "cummin", "cummax",
-              "ntile", "percent_rank", "cume_dist",
+              "ntile", "percent_rank", "cume_dist", "n",
               "roll_sum", "roll_mean", "roll_min", "roll_max", "roll_n")
 
 # Convert a time-window string ("1 hour", "15 min") to seconds. Rolling
@@ -53,11 +53,32 @@ parse_window_spec <- function(expr, output_name) {
   }
 
   if (fn == "rank" || fn == "min_rank") {
-    # dplyr's min_rank() is rank with ties.method = "min", which is exactly
-    # this engine's rank window.
+    # dplyr's min_rank() is rank with ties.method = "min", which is exactly this
+    # engine's rank window. Bare rank() keeps that "min" default (established
+    # behaviour); base::rank's "average" is available when requested explicitly.
     pa <- .parse_order_arg(expr[[2]])
-    return(list(name = output_name, kind = "rank", col = pa$col,
+    kind <- "rank"
+    if (fn == "rank") {
+      args <- as.list(expr)[-1]
+      an <- names(args)
+      if (!is.null(an) && !is.na(match("ties.method", an))) {
+        tm <- as.character(eval(args[[match("ties.method", an)]]))
+        if (identical(tm, "average"))   kind <- "avg_rank"
+        else if (identical(tm, "min"))  kind <- "rank"
+        else stop(sprintf(paste0("rank(ties.method = \"%s\") is not supported; ",
+                                 "use \"min\" (dplyr min_rank) or \"average\"."), tm))
+      }
+    }
+    return(list(name = output_name, kind = kind, col = pa$col,
                 offset = 1L, default = NULL, desc = pa$desc))
+  }
+
+  if (fn == "n") {
+    # dplyr n() inside mutate(): the partition (or group) size repeated per row.
+    if (length(expr) != 1L)
+      stop("n() takes no arguments")
+    return(list(name = output_name, kind = "n", col = NULL,
+                offset = 1L, default = NULL))
   }
 
   if (fn == "dense_rank") {
@@ -88,10 +109,34 @@ parse_window_spec <- function(expr, output_name) {
       }
     }
 
+    # dplyr keeps the default in the column's type. The C window node stores a
+    # single numeric default (Rf_asReal) and always emits a double column, so a
+    # numeric or logical default is carried through as its literal value (not
+    # force-coerced) and a string default -- which the engine cannot represent
+    # -- is rejected rather than silently turned into NA.
+    default_raw <- NULL
     if (!is.null(arg_names) && !is.na(match("default", arg_names))) {
-      default_val <- as.double(eval(args[[match("default", arg_names)]]))
+      default_raw <- eval(args[[match("default", arg_names)]])
     } else if (length(args) >= 3 && (is.null(arg_names) || arg_names[3] == "")) {
-      default_val <- as.double(eval(args[[3]]))
+      default_raw <- eval(args[[3]])
+    }
+    if (!is.null(default_raw)) {
+      if (length(default_raw) != 1L)
+        stop(sprintf("%s(default=) must be a length-1 value", fn))
+      if (is.na(default_raw)) {
+        default_val <- NULL             # NA default == no default (engine fills NA)
+      } else if (is.character(default_raw)) {
+        stop(sprintf(paste0("%s(default=) with a string value is not supported: ",
+                            "the window engine returns a numeric column, so a ",
+                            "string default cannot be represented. Use ",
+                            "default = NA or omit it."), fn))
+      } else if (is.numeric(default_raw) || is.logical(default_raw)) {
+        default_val <- default_raw      # carry the literal; C coerces via Rf_asReal
+      } else if (is.double(unclass(default_raw))) {
+        default_val <- as.double(default_raw)  # Date/POSIXct etc.: double-backed
+      } else {
+        stop(sprintf("%s(default=) must be numeric, logical, or NA", fn))
+      }
     }
 
     return(list(name = output_name, kind = fn, col = col,

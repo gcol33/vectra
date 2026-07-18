@@ -51,6 +51,29 @@ test_that("diff_vtr matches a brute-force key-set diff (string keys, random)", {
   }
 })
 
+test_that("diff_vtr matches brute force under a forced-spill sort budget", {
+  # A tiny memory budget forces both sides through the external sort's spill +
+  # k-way merge path; the bounded sweep must still recover the exact key-set diff.
+  old <- options(vectra.memory = "1KB"); on.exit(options(old), add = TRUE)
+  for (seed in 101:110) {
+    set.seed(seed)
+    a_keys <- sample(1:5000, 3000)
+    b_keys <- sample(1:5000, 3000)
+    f1 <- tempfile(fileext = ".vtr"); f2 <- tempfile(fileext = ".vtr")
+    write_vtr(data.frame(id = a_keys, val = seq_along(a_keys) * 1.0), f1,
+              batch_size = 256)
+    write_vtr(data.frame(id = b_keys, val = seq_along(b_keys) * 1.0), f2,
+              batch_size = 256)
+
+    d <- diff_vtr(f1, f2, "id")
+    expect_equal(sort(unique(d$deleted)), sort(setdiff(a_keys, b_keys)),
+                 info = paste("seed", seed))
+    expect_equal(sort(collect(d$added)$id), sort(setdiff(b_keys, a_keys)),
+                 info = paste("seed", seed))
+    unlink(c(f1, f2))
+  }
+})
+
 test_that("diff_vtr edge cases: no overlap, full overlap, single-side", {
   mk <- function(keys) {
     f <- tempfile(fileext = ".vtr")

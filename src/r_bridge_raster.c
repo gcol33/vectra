@@ -717,63 +717,100 @@ SEXP C_vec_to_tiff(SEXP vec_path_sexp, SEXP tiff_path_sexp,
         tiff_writer_set_crs(w, 0, epsg, NULL);
     }
 
-    /* Decode each band as doubles and hand to the TIFF writer in one shot. */
-    int64_t n_pixels = width * height;
+    /* Stream the export in horizontal row strips so peak memory stays
+     * bounded (a few strips of rows) instead of materialising every band's
+     * full width*height grid at once. tiff_writer_write_rows commits whole
+     * TIFF strips; the strip-mode writer opened above uses 256-row strips
+     * (clamped to the image height), so each streaming strip must be a whole
+     * multiple of that granularity. Then every TIFF strip lies inside exactly
+     * one write_rows call and is written once, making the output bytes
+     * identical to a single whole-raster write. */
     size_t  esz = vecr_dtype_size(dt);
+    int     has_nd = vecr_reader_has_nodata(r);
+    double  nd = vecr_reader_nodata(r);
+    int     is_float = (pix == TIFF_PIXEL_FLOAT32 || pix == TIFF_PIXEL_FLOAT64);
+
+    /* TIFF writer strip granularity (rows_per_strip, clamped to height). */
+    int64_t writer_strip = height < 256 ? height : 256;
+    if (writer_strip < 1) writer_strip = 1;
+
+    /* Size the streaming strip from a fixed resident budget: n_bands double
+     * buffers plus one raw decode buffer, each strip_rows*width wide. */
+    const int64_t mem_budget = (int64_t)256 << 20;   /* 256 MiB */
+    int64_t per_row_bytes = width * ((int64_t)n_bands * (int64_t)sizeof(double)
+                                     + (int64_t)esz);
+    int64_t strip_rows = (per_row_bytes > 0) ? (mem_budget / per_row_bytes)
+                                             : height;
+    /* Round down to a whole number of writer strips, at least one. */
+    strip_rows = (strip_rows / writer_strip) * writer_strip;
+    if (strip_rows < writer_strip) strip_rows = writer_strip;
+    if (strip_rows > height)       strip_rows = height;
 
     double **bands = (double **)malloc((size_t)n_bands * sizeof(double *));
     if (!bands) {
         tiff_writer_close(w); vecr_reader_close(r);
         vectra_error("alloc failed for band table");
     }
-    void *raw = malloc((size_t)n_pixels * esz);
+    for (int b = 0; b < n_bands; ++b) bands[b] = NULL;
+
+    void *raw = malloc((size_t)strip_rows * (size_t)width * esz);
     if (!raw) {
         free(bands);
         tiff_writer_close(w); vecr_reader_close(r);
         vectra_error("alloc failed for raw buffer");
     }
-
-    int rc = 0;
-    int has_nd = vecr_reader_has_nodata(r);
-    double nd = vecr_reader_nodata(r);
-
     for (int b = 0; b < n_bands; ++b) {
-        bands[b] = (double *)malloc((size_t)n_pixels * sizeof(double));
-        if (!bands[b]) { rc = -1; break; }
-
-        if (vecr_reader_read_window(r, b, 0, 0, 0, width - 1, height - 1, raw)
-              != 0) { rc = -1; break; }
-
-        cast_dtype_to_doubles(raw, n_pixels, dt, bands[b]);
-
-        /* For float dtypes the reader may have left NaN in nodata cells;
-         * the TIFF writer maps NaN to nodata via the writer's tag. For
-         * integer dtypes we leave the cast value and rely on TIFF's
-         * GDAL_NODATA tag to flag it on read. NaN-fill nodata cells when
-         * writing to a float TIFF so terra etc. recognise them. */
-        if (has_nd && (pix == TIFF_PIXEL_FLOAT32 || pix == TIFF_PIXEL_FLOAT64)) {
-            for (int64_t i = 0; i < n_pixels; ++i) {
-                if (bands[b][i] == nd) bands[b][i] = NAN;
-            }
+        bands[b] = (double *)malloc((size_t)strip_rows * (size_t)width
+                                    * sizeof(double));
+        if (!bands[b]) {
+            for (int k = 0; k < b; ++k) free(bands[k]);
+            free(bands); free(raw);
+            tiff_writer_close(w); vecr_reader_close(r);
+            vectra_error("alloc failed for strip buffer");
         }
     }
+
+    for (int64_t row0 = 0; row0 < height; row0 += strip_rows) {
+        int64_t nr = strip_rows;
+        if (row0 + nr > height) nr = height - row0;
+        int64_t n_strip_px = nr * width;
+
+        for (int b = 0; b < n_bands; ++b) {
+            if (vecr_reader_read_window(r, b, 0, 0, row0,
+                                        width - 1, row0 + nr - 1, raw) != 0) {
+                const char *m = vecr_reader_errmsg(r);
+                for (int k = 0; k < n_bands; ++k) free(bands[k]);
+                free(bands); free(raw);
+                tiff_writer_close(w); vecr_reader_close(r);
+                vectra_error("vec_to_tiff: %s", m);
+            }
+
+            cast_dtype_to_doubles(raw, n_strip_px, dt, bands[b]);
+
+            /* For float dtypes the reader may have left NaN in nodata cells;
+             * the TIFF writer maps NaN to nodata via the writer's tag. For
+             * integer dtypes we leave the cast value and rely on TIFF's
+             * GDAL_NODATA tag to flag it on read. NaN-fill nodata cells when
+             * writing to a float TIFF so terra etc. recognise them. */
+            if (has_nd && is_float) {
+                for (int64_t i = 0; i < n_strip_px; ++i) {
+                    if (bands[b][i] == nd) bands[b][i] = NAN;
+                }
+            }
+        }
+
+        if (tiff_writer_write_rows(w, row0, nr,
+                                    (const double *const *)bands) != 0) {
+            const char *m = tiff_writer_errmsg(w);
+            for (int k = 0; k < n_bands; ++k) free(bands[k]);
+            free(bands); free(raw);
+            tiff_writer_close(w); vecr_reader_close(r);
+            vectra_error("vec_to_tiff write error: %s", m);
+        }
+    }
+
     free(raw);
 
-    if (rc != 0) {
-        for (int b = 0; b < n_bands; ++b) free(bands[b]);
-        free(bands);
-        tiff_writer_close(w); vecr_reader_close(r);
-        vectra_error("vec_to_tiff: failed to decode bands");
-    }
-
-    if (tiff_writer_write_rows(w, 0, height,
-                                (const double *const *)bands) != 0) {
-        const char *m = tiff_writer_errmsg(w);
-        for (int b = 0; b < n_bands; ++b) free(bands[b]);
-        free(bands);
-        tiff_writer_close(w); vecr_reader_close(r);
-        vectra_error("vec_to_tiff write error: %s", m);
-    }
     if (tiff_writer_finish(w) != 0) {
         const char *m = tiff_writer_errmsg(w);
         for (int b = 0; b < n_bands; ++b) free(bands[b]);

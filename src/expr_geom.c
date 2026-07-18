@@ -187,6 +187,17 @@ VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch) {
         size_t hl; const unsigned char *hx = (n > 0) ? hex_at(rarr, 0, &hl) : NULL;
         if (hx) cgeom = GEOSWKBReader_readHEX_r(cctx, rd, hx, hl);
         GEOSWKBReader_destroy_r(cctx, rd);
+        if (cgeom) {
+            /* The binary relate predicates short-circuit through
+             * getEnvelopeInternal(), which lazily caches the envelope INSIDE the
+             * geometry on first touch. cgeom is shared read-only across the worker
+             * threads below, so warm its envelope once here on the master thread --
+             * before the parallel region -- to keep the workers from racing to
+             * populate that cache. cctx is live until GEOS_finish_r(cctx) further
+             * down, so it is valid to query cgeom in it here. */
+            double xmin, ymin, xmax, ymax;
+            GEOSGeom_getExtent_r(cctx, cgeom, &xmin, &ymin, &xmax, &ymax);
+        }
     }
 
     /* Numeric / boolean outputs land straight in the result array; string and

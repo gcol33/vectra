@@ -102,9 +102,18 @@ static void builder_check_input(const VecArrayBuilder *b, const VecArray *arr) {
                      "materialize it to a flat string column first");
 }
 
+void vec_builder_check_append(const VecArrayBuilder *b, const VecArray *arr) {
+    builder_check_input(b, arr);
+}
+
 void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
     if (arr->length == 0) return;
     builder_check_input(b, arr);
+    vec_builder_append_array_nocheck(b, arr);
+}
+
+void vec_builder_append_array_nocheck(VecArrayBuilder *b, const VecArray *arr) {
+    if (arr->length == 0) return;
     ensure_capacity(b, arr->length);
 
     /* Copy validity bits — bulk word-level operation */

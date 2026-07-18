@@ -42,7 +42,8 @@ test_that("guess_max controls a type that only appears past the inference window
   f <- tempfile(fileext = ".csv"); on.exit(unlink(f))
   .write_csv_lf(f, c("x", as.character(1:1200), "3.5"))
   # default guess_max = 1000: column inferred int64, the trailing 3.5 -> NA
-  d1 <- collect(tbl_csv(f))
+  # (and now a warning names the offending column).
+  expect_warning(d1 <- collect(tbl_csv(f)), "do not match the column type")
   expect_true(is.na(d1$x[1201]))
   # whole-file inference widens the column to double, preserving 3.5
   d2 <- collect(tbl_csv(f, guess_max = Inf))
@@ -52,7 +53,7 @@ test_that("guess_max controls a type that only appears past the inference window
 test_that("a non-bool value past guess_max becomes NA, not silently FALSE", {
   f <- tempfile(fileext = ".csv"); on.exit(unlink(f))
   .write_csv_lf(f, c("b", rep("TRUE", 1200), "maybe"))
-  d <- collect(tbl_csv(f))
+  expect_warning(d <- collect(tbl_csv(f)), "do not match the column type")
   expect_true(all(d$b[1:1200]))
   expect_true(is.na(d$b[1201]))
 })

@@ -262,6 +262,38 @@ test_that("hash join bounds the many-to-many output across batches", {
   expect_lte(max_rows, 65536L)
 })
 
+test_that("resumable probe is correct when a chain ends exactly on the emit cap", {
+  # JOIN_PROBE_EMIT_MAX is 65536. A build chain whose length divides 65536 makes
+  # a probe row's chain end land exactly on the cap boundary, where the "chain
+  # exhausted" and "not resuming" sentinels (br == -1) collide. K = 256 divides
+  # 65536, so probe row 255's chain completes at cumulative 256*256 = 65536.
+  K <- 256L; M <- 256L
+  fb <- tempfile(fileext = ".vtr"); fp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fb, fp)))
+  write_vtr(data.frame(k = rep(1L, K), vb = seq_len(K)), fb)
+  write_vtr(data.frame(k = rep(1L, M), vp = seq_len(M)), fp, batch_size = 131072)
+
+  r <- inner_join(tbl(fp), tbl(fb), by = "k") |> collect()
+  expect_equal(nrow(r), K * M)                          # no duplicated chain
+  expected <- as.vector(outer(seq_len(M) * 10000L, seq_len(K), `+`))
+  expect_equal(sort(r$vp * 10000L + r$vb), sort(expected))
+})
+
+test_that("resumable probe: a build chain filling a whole batch does not hang", {
+  # A single probe row whose chain length equals the cap fills a fresh output
+  # batch to exactly 65536 at the chain end on every call. Pre-fix this never
+  # advanced probe_li -> infinite loop; post-fix it terminates with 65536 rows.
+  K <- 65536L
+  fb <- tempfile(fileext = ".vtr"); fp <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fb, fp)))
+  write_vtr(data.frame(k = rep(1L, K), vb = seq_len(K)), fb)
+  write_vtr(data.frame(k = 1L, vp = 1L), fp)
+
+  r <- inner_join(tbl(fp), tbl(fb), by = "k") |> collect()
+  expect_equal(nrow(r), K)
+  expect_equal(sort(r$vb), seq_len(K))
+})
+
 test_that("left join over a hot key resumes correctly and keeps unmatched rows", {
   K <- 300L; M <- 300L
   fb <- tempfile(fileext = ".vtr"); fp <- tempfile(fileext = ".vtr")

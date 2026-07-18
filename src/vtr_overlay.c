@@ -232,6 +232,11 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBWriter *writer,
         }
         GEOSGeometry *coll = (nb > 0)
             ? GEOSGeom_createCollection_r(ctx, GEOS_GEOMETRYCOLLECTION, bnds, nb) : NULL;
+        if (coll == NULL && nb > 0) {
+            /* createCollection does not take ownership on failure: destroy the nb
+             * boundary geometries before freeing the array (matches areal_only). */
+            for (int b = 0; b < nb; b++) GEOSGeom_destroy_r(ctx, bnds[b]);
+        }
         free(bnds);
         GEOSGeometry *noded = (coll == NULL) ? NULL
             : (prec > 0.0 ? GEOSUnaryUnionPrec_r(ctx, coll, prec) : GEOSUnaryUnion_r(ctx, coll));

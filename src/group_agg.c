@@ -32,6 +32,14 @@ static int64_t agg_holistic_budget(const GroupAggNode *ga) {
 /*  Hash-based aggregation (original path)                            */
 /* ================================================================== */
 
+/* Output column type of an aggregate. Every aggregate emits a double except
+   first()/last() on a string column, which preserve the string type. */
+static VecType agg_output_type(AggKind kind, VecType input_type) {
+    if ((kind == AGG_FIRST || kind == AGG_LAST) && input_type == VEC_STRING)
+        return VEC_STRING;
+    return VEC_DOUBLE;
+}
+
 static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
     const VecSchema *child_schema = &ga->child->output_schema;
 
@@ -265,130 +273,194 @@ static void flush_group(const KeySnap *snap,
     }
 }
 
-static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
-    const VecSchema *child_schema = &ga->child->output_schema;
+/* Emit the sorted grouped result in bounded batches rather than one giant batch
+   whose size is O(#groups). State persists on the node across next_batch calls;
+   completed groups accumulate in the builders and are flushed out once the
+   emit threshold is reached, while the open group's accumulator + key snapshot
+   carry over. Peak resident output is the emit threshold plus one child batch
+   of groups -- bounded by the child rowgroup size, not the total group count. */
+#define GROUP_AGG_EMIT 131072
 
-    /* Resolve key column indices */
-    int *key_indices = (int *)malloc((size_t)ga->n_keys * sizeof(int));
-    VecType *key_types = (VecType *)malloc((size_t)ga->n_keys * sizeof(VecType));
+typedef struct {
+    int              inited;
+    int              scan_done;   /* child exhausted; last group flushed */
+    int             *key_indices;
+    VecType         *key_types;
+    int             *agg_col_indices;
+    VecType         *agg_types;
+    VecArrayBuilder *key_builders;
+    VecArrayBuilder *agg_builders;
+    AggAccum        *accums;
+    int64_t          store_mem;
+    KeySnap          snap;
+    VecBatch        *cur_batch;   /* child batch being scanned (mid-batch resume) */
+    int64_t          cur_row;     /* next row to process in cur_batch */
+} SortedAggState;
+
+/* (Re)initialize the keys+aggs output builders after a flush-out. */
+static void sagg_reset_builders(SortedAggState *st, GroupAggNode *ga) {
+    for (int k = 0; k < ga->n_keys; k++)
+        st->key_builders[k] = vec_builder_init(st->key_types[k]);
+    for (int a = 0; a < ga->n_aggs; a++)
+        st->agg_builders[a] = vec_builder_init(
+            agg_output_type(ga->agg_specs[a].kind, st->agg_types[a]));
+}
+
+static SortedAggState *sagg_init(GroupAggNode *ga) {
+    const VecSchema *child_schema = &ga->child->output_schema;
+    SortedAggState *st = (SortedAggState *)calloc(1, sizeof(SortedAggState));
+    if (!st) vectra_error("alloc failed for SortedAggState");
+
+    st->key_indices = (int *)malloc((size_t)ga->n_keys * sizeof(int));
+    st->key_types = (VecType *)malloc((size_t)ga->n_keys * sizeof(VecType));
     for (int k = 0; k < ga->n_keys; k++) {
-        key_indices[k] = vec_schema_find_col(child_schema, ga->key_names[k]);
-        if (key_indices[k] < 0)
+        st->key_indices[k] = vec_schema_find_col(child_schema, ga->key_names[k]);
+        if (st->key_indices[k] < 0)
             vectra_error("group_by: column not found: %s", ga->key_names[k]);
-        key_types[k] = child_schema->col_types[key_indices[k]];
+        st->key_types[k] = child_schema->col_types[st->key_indices[k]];
     }
 
-    /* Resolve agg input column indices */
-    int *agg_col_indices = (int *)malloc((size_t)ga->n_aggs * sizeof(int));
-    VecType *agg_types = (VecType *)malloc((size_t)ga->n_aggs * sizeof(VecType));
+    st->agg_col_indices = (int *)malloc((size_t)ga->n_aggs * sizeof(int));
+    st->agg_types = (VecType *)malloc((size_t)ga->n_aggs * sizeof(VecType));
     for (int a = 0; a < ga->n_aggs; a++) {
         if (ga->agg_specs[a].kind == AGG_COUNT_STAR) {
-            agg_col_indices[a] = -1;
-            agg_types[a] = VEC_INT64;
+            st->agg_col_indices[a] = -1;
+            st->agg_types[a] = VEC_INT64;
         } else {
-            agg_col_indices[a] = vec_schema_find_col(child_schema,
+            st->agg_col_indices[a] = vec_schema_find_col(child_schema,
                 ga->agg_specs[a].input_col);
-            if (agg_col_indices[a] < 0)
+            if (st->agg_col_indices[a] < 0)
                 vectra_error("summarise: column not found: %s",
                              ga->agg_specs[a].input_col);
-            agg_types[a] = child_schema->col_types[agg_col_indices[a]];
+            st->agg_types[a] = child_schema->col_types[st->agg_col_indices[a]];
         }
     }
 
-    /* Output builders: keys + aggs */
-    VecArrayBuilder *key_builders = (VecArrayBuilder *)calloc(
+    st->key_builders = (VecArrayBuilder *)calloc(
         (size_t)ga->n_keys, sizeof(VecArrayBuilder));
-    for (int k = 0; k < ga->n_keys; k++)
-        key_builders[k] = vec_builder_init(key_types[k]);
-
-    VecArrayBuilder *agg_builders = (VecArrayBuilder *)calloc(
+    st->agg_builders = (VecArrayBuilder *)calloc(
         (size_t)ga->n_aggs, sizeof(VecArrayBuilder));
-    for (int a = 0; a < ga->n_aggs; a++)
-        agg_builders[a] = vec_builder_init(VEC_DOUBLE); /* all aggs -> double */
+    sagg_reset_builders(st, ga);
 
-    /* Accumulators for current group (always group_id = 0) */
-    int64_t store_mem = agg_holistic_budget(ga);
-    AggAccum *accums = (AggAccum *)malloc((size_t)ga->n_aggs * sizeof(AggAccum));
+    st->store_mem = agg_holistic_budget(ga);
+    st->accums = (AggAccum *)malloc((size_t)ga->n_aggs * sizeof(AggAccum));
     for (int a = 0; a < ga->n_aggs; a++) {
-        accums[a] = agg_accum_init(ga->agg_specs[a].kind,
-                                    agg_types[a],
-                                    ga->agg_specs[a].na_rm,
-                                    store_mem, ga->temp_dir);
-        agg_accum_ensure(&accums[a], 1);
+        st->accums[a] = agg_accum_init(ga->agg_specs[a].kind, st->agg_types[a],
+                                       ga->agg_specs[a].na_rm,
+                                       st->store_mem, ga->temp_dir);
+        agg_accum_ensure(&st->accums[a], 1);
     }
 
-    KeySnap snap = snap_create(ga->n_keys, key_types);
+    st->snap = snap_create(ga->n_keys, st->key_types);
+    st->inited = 1;
+    return st;
+}
 
-    /* Linear scan of sorted input */
-    VecBatch *batch;
-    while ((batch = ga->child->next_batch(ga->child)) != NULL) {
-        int64_t n_rows = batch->n_rows;
-
-        for (int64_t row = 0; row < n_rows; row++) {
-            if (!snap_matches(&snap, batch, row, key_indices)) {
-                /* Group boundary */
-                if (snap.initialized) {
-                    flush_group(&snap, key_builders, ga->n_keys,
-                                agg_builders, ga->n_aggs,
-                                accums, agg_types, ga->agg_specs,
-                                store_mem, ga->temp_dir);
-                }
-                snap_update(&snap, batch, row, key_indices);
-            }
-
-            /* Feed accumulators (always group 0) */
-            for (int a = 0; a < ga->n_aggs; a++) {
-                if (agg_col_indices[a] >= 0) {
-                    agg_accum_feed(&accums[a], 0,
-                                   &batch->columns[agg_col_indices[a]], row);
-                } else {
-                    agg_accum_feed(&accums[a], 0, NULL, 0);
-                }
-            }
-        }
-
-        vec_batch_free(batch);
+static void sagg_free(SortedAggState *st, int n_keys, int n_aggs) {
+    if (!st) return;
+    if (st->cur_batch) { vec_batch_free(st->cur_batch); st->cur_batch = NULL; }
+    for (int a = 0; a < n_aggs; a++)
+        agg_accum_free(&st->accums[a]);
+    free(st->accums);
+    /* Builders that were never finished (e.g. abandoned mid-stream) still own
+       their buffers; finishing frees them. A finished builder is already empty. */
+    for (int k = 0; k < n_keys; k++) {
+        VecArray a = vec_builder_finish(&st->key_builders[k]);
+        vec_array_free(&a);
     }
-
-    /* Flush the last group */
-    if (snap.initialized) {
-        flush_group(&snap, key_builders, ga->n_keys,
-                    agg_builders, ga->n_aggs,
-                    accums, agg_types, ga->agg_specs,
-                    store_mem, ga->temp_dir);
+    for (int a = 0; a < n_aggs; a++) {
+        VecArray arr = vec_builder_finish(&st->agg_builders[a]);
+        vec_array_free(&arr);
     }
+    free(st->key_builders);
+    free(st->agg_builders);
+    free(st->key_indices);
+    free(st->key_types);
+    free(st->agg_col_indices);
+    free(st->agg_types);
+    snap_free(&st->snap);
+    free(st);
+}
 
-    /* Build result batch */
-    int64_t n_groups = key_builders[0].length;
+/* Finish the current builders into a result batch and reset them for reuse. */
+static VecBatch *sagg_emit(SortedAggState *st, GroupAggNode *ga) {
+    int64_t n_groups = st->key_builders[0].length;
     int n_out = ga->n_keys + ga->n_aggs;
     VecBatch *result = vec_batch_alloc(n_out, n_groups);
-
     for (int k = 0; k < ga->n_keys; k++) {
-        result->columns[k] = vec_builder_finish(&key_builders[k]);
+        result->columns[k] = vec_builder_finish(&st->key_builders[k]);
         size_t kn_len = strlen(ga->key_names[k]);
         result->col_names[k] = (char *)malloc(kn_len + 1);
         memcpy(result->col_names[k], ga->key_names[k], kn_len + 1);
     }
     for (int a = 0; a < ga->n_aggs; a++) {
-        result->columns[ga->n_keys + a] = vec_builder_finish(&agg_builders[a]);
+        result->columns[ga->n_keys + a] = vec_builder_finish(&st->agg_builders[a]);
         size_t on_len = strlen(ga->agg_specs[a].output_name);
         result->col_names[ga->n_keys + a] = (char *)malloc(on_len + 1);
-        memcpy(result->col_names[ga->n_keys + a], ga->agg_specs[a].output_name, on_len + 1);
+        memcpy(result->col_names[ga->n_keys + a],
+               ga->agg_specs[a].output_name, on_len + 1);
+    }
+    sagg_reset_builders(st, ga);   /* fresh builders; open group carries over */
+    return result;
+}
+
+static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
+    SortedAggState *st = (SortedAggState *)ga->sagg;
+    if (st == NULL) {
+        st = sagg_init(ga);
+        ga->sagg = st;
+    }
+    if (st->scan_done)
+        return NULL;
+
+    /* Linear scan of sorted input with mid-batch resume. The emit threshold is
+       checked after every row (not just at child-batch boundaries) because the
+       child sort can hand back one arbitrarily large batch; buffering a whole
+       such batch of groups would defeat the bound. Completed groups sit in the
+       builders; the open group's accumulator + snap carry over between calls. */
+    while (1) {
+        if (st->cur_batch == NULL) {
+            st->cur_batch = ga->child->next_batch(ga->child);
+            st->cur_row = 0;
+            if (st->cur_batch == NULL) break;   /* child exhausted */
+        }
+        VecBatch *batch = st->cur_batch;
+        int64_t n_rows = batch->n_rows;
+        while (st->cur_row < n_rows) {
+            int64_t row = st->cur_row;
+            if (!snap_matches(&st->snap, batch, row, st->key_indices)) {
+                if (st->snap.initialized)
+                    flush_group(&st->snap, st->key_builders, ga->n_keys,
+                                st->agg_builders, ga->n_aggs,
+                                st->accums, st->agg_types, ga->agg_specs,
+                                st->store_mem, ga->temp_dir);
+                snap_update(&st->snap, batch, row, st->key_indices);
+            }
+            for (int a = 0; a < ga->n_aggs; a++) {
+                if (st->agg_col_indices[a] >= 0)
+                    agg_accum_feed(&st->accums[a], 0,
+                                   &batch->columns[st->agg_col_indices[a]], row);
+                else
+                    agg_accum_feed(&st->accums[a], 0, NULL, 0);
+            }
+            st->cur_row++;
+            /* The open group (the one just fed) is not yet flushed, so the
+               builders hold only completed groups. Emit and resume here. */
+            if (st->key_builders[0].length >= GROUP_AGG_EMIT)
+                return sagg_emit(st, ga);
+        }
+        vec_batch_free(batch);
+        st->cur_batch = NULL;
     }
 
-    /* Cleanup */
-    for (int a = 0; a < ga->n_aggs; a++)
-        agg_accum_free(&accums[a]);
-    free(accums);
-    free(key_builders);
-    free(agg_builders);
-    free(key_indices);
-    free(key_types);
-    free(agg_col_indices);
-    free(agg_types);
-    snap_free(&snap);
-
-    return result;
+    /* Child exhausted: flush the last open group and emit the tail. */
+    if (st->snap.initialized)
+        flush_group(&st->snap, st->key_builders, ga->n_keys,
+                    st->agg_builders, ga->n_aggs,
+                    st->accums, st->agg_types, ga->agg_specs,
+                    st->store_mem, ga->temp_dir);
+    st->scan_done = 1;
+    return sagg_emit(st, ga);   /* may be an empty batch (0 groups) */
 }
 
 /* ================================================================== */
@@ -397,17 +469,22 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
 
 static VecBatch *group_agg_next_batch(VecNode *self) {
     GroupAggNode *ga = (GroupAggNode *)self;
-    if (ga->done) return NULL;
-    ga->done = 1;
-
+    /* Sorted path streams its output in bounded batches and signals completion
+       by returning NULL itself (via SortedAggState.scan_done). */
     if (ga->use_sorted)
         return sorted_agg_next_batch(ga);
-    else
-        return hash_agg_next_batch(ga);
+    /* Hash path (single group, n_keys == 0) is one-shot. */
+    if (ga->done) return NULL;
+    ga->done = 1;
+    return hash_agg_next_batch(ga);
 }
 
 static void group_agg_free(VecNode *self) {
     GroupAggNode *ga = (GroupAggNode *)self;
+    if (ga->sagg) {
+        sagg_free((SortedAggState *)ga->sagg, ga->n_keys, ga->n_aggs);
+        ga->sagg = NULL;
+    }
     ga->child->free_node(ga->child);
     for (int k = 0; k < ga->n_keys; k++)
         free(ga->key_names[k]);
@@ -449,6 +526,7 @@ GroupAggNode *group_agg_node_create(VecNode *child,
                 vectra_error("group_by: column not found: %s", key_names[k]);
             sort_keys[k].col_index = idx;
             sort_keys[k].descending = 0;
+            sort_keys[k].na_last = 0;   /* cluster NA keys as one group */
         }
         SortNode *sn = sort_node_create(child, n_keys, sort_keys, temp_dir,
                                         sort_mem);
@@ -476,7 +554,12 @@ GroupAggNode *group_agg_node_create(VecNode *child,
     }
     for (int a = 0; a < n_aggs; a++) {
         out_names[n_keys + a] = agg_specs[a].output_name;
-        out_types[n_keys + a] = VEC_DOUBLE;
+        VecType it = VEC_DOUBLE;
+        if (agg_specs[a].kind != AGG_COUNT_STAR && agg_specs[a].input_col) {
+            int ci = vec_schema_find_col(cs, agg_specs[a].input_col);
+            if (ci >= 0) it = cs->col_types[ci];
+        }
+        out_types[n_keys + a] = agg_output_type(agg_specs[a].kind, it);
     }
 
     ga->base.output_schema = vec_schema_create(n_out, out_names, out_types);

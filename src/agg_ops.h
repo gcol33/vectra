@@ -40,14 +40,20 @@ typedef struct {
     double   *max_dbl;
     int64_t  *min_i64;
     int64_t  *max_i64;
-    int      *has_value;   /* 1 if any non-NA value seen (for min/max/last) */
-    int      *has_na;      /* 1 if any NA seen in group (for na poisoning) */
+    int      *has_value;   /* 1 if any non-NA value seen (min/max); 1 if any
+                              row seen at all (last, at na_rm=FALSE) */
+    int      *has_na;      /* 1 if any NA seen in group (for na poisoning); for
+                              first/last, 1 if the captured element is itself NA */
     double   *m2;          /* Welford's M2 for var/sd */
-    double   *first_dbl;   /* first non-NA value for first() */
+    double   *first_dbl;   /* captured first element for first() */
     int64_t  *first_i64;
-    double   *last_dbl;    /* last non-NA value for last() */
+    double   *last_dbl;    /* captured last element for last() */
     int64_t  *last_i64;
-    int      *has_first;   /* 1 if first value captured */
+    int      *has_first;   /* 1 if the first element has been captured */
+    /* first()/last() on a VEC_STRING column: one owned byte slot per group
+       (first captures once, last overwrites). NULL slot = nothing captured. */
+    char    **str_val;
+    int64_t  *str_len;
     /* median / n_distinct: one spill-safe scalar store per group. median feeds
        bit-cast doubles and selects the middle; n_distinct feeds 64-bit value
        hashes and counts distinct hashes. Both spill to run files past
