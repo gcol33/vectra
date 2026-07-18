@@ -470,11 +470,13 @@ test_that("dense_rank returns NA for NA input rows (dplyr semantics)", {
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))
   x <- c(10, NA, 20, 10, NA)
+  # dense rank with NA preserved: match into the sorted distinct (non-NA) values
+  dense_rank_ref <- function(v) match(v, sort(unique(v)))
   # ungrouped
   write_vtr(data.frame(x = x), f)
-  expect_equal(collect(mutate(tbl(f), r = dense_rank(x)))$r, dplyr::dense_rank(x))
+  expect_equal(collect(mutate(tbl(f), r = dense_rank(x)))$r, dense_rank_ref(x))
   # grouped, two groups
   write_vtr(data.frame(g = c(1, 1, 2, 2, 2), x = c(5, NA, 3, 3, 1)), f)
   r <- collect(arrange(mutate(group_by(tbl(f), g), r = dense_rank(x)), g))
-  expect_equal(r$r, c(dplyr::dense_rank(c(5, NA)), dplyr::dense_rank(c(3, 3, 1))))
+  expect_equal(r$r, c(dense_rank_ref(c(5, NA)), dense_rank_ref(c(3, 3, 1))))
 })

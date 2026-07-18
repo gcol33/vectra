@@ -51,6 +51,7 @@ test_that("if_else honours the missing argument", {
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))
   write_vtr(data.frame(x = c(1, NA, 3)), f)
+  # cond = c(FALSE, NA, TRUE); yes = 1, no = 0, missing = -99
   expect_equal(collect(mutate(tbl(f), z = if_else(x > 2, 1, 0, -99)))$z,
-               dplyr::if_else(c(1, NA, 3) > 2, 1, 0, -99))
+               c(0, -99, 1))
 })

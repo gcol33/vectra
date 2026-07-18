@@ -266,7 +266,7 @@ test_that("n_distinct counts NA by default and drops it with na.rm", {
   on.exit(unlink(f))
   write_vtr(data.frame(x = c(1, 2, NA, 2, NA)), f)
   expect_equal(collect(summarise(tbl(f), d = n_distinct(x)))$d,
-               dplyr::n_distinct(c(1, 2, NA, 2, NA)))                 # 3
+               length(unique(c(1, 2, NA, 2, NA))))                   # 3, NA counted
   expect_equal(collect(summarise(tbl(f), d = n_distinct(x, na.rm = TRUE)))$d,
-               dplyr::n_distinct(c(1, 2, NA, 2, NA), na.rm = TRUE))   # 2
+               length(unique(na.omit(c(1, 2, NA, 2, NA)))))          # 2, NA dropped
 })
