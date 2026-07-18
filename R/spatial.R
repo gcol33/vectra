@@ -2540,14 +2540,30 @@ zonal <- function(raster, zones, fun = "mean", band = 1L, zone_band = 1L,
 # whole output band. `write(ty, r0, r1, os)` takes an out_h x (W*nout) strip
 # (derivative k in columns [(k-1)*W+1, k*W]); `finish()` returns the opened
 # handle (streamed) or the list of attributed matrices (in memory).
+# Default nodata sentinel for an integer output dtype, so NA pixels round-trip
+# as NA (terra-style auto NA flag) instead of collapsing to 0. Float dtypes keep
+# NaN, which reads back as NA on its own, so they need no sentinel (NA_real_).
+.dtype_nodata <- function(dtype) {
+  switch(as.character(dtype),
+         i8  = -128,        u8  = 255,
+         i16 = -32768,      u16 = 65535,
+         i32 = -2147483648, u32 = 4294967295,
+         i64 = -2147483648, u64 = 4294967295,
+         NA_real_)
+}
+
 .raster_sink <- function(W, H, nout, gt, epsg, TS,
-                         path, dtype, band_names, comp_code) {
+                         path, dtype, band_names, comp_code, nodata = NA_real_) {
   writer <- NULL; acc <- NULL
   if (!is.null(path)) {
     path <- normalizePath(path, mustWork = FALSE)
+    # Integer dtypes have no NaN: choose a nodata sentinel so NA pixels survive.
+    nd <- nodata
+    if (is.na(nd) && !startsWith(as.character(dtype), "f"))
+      nd <- .dtype_nodata(dtype)
     writer <- .Call(C_vecr_writer_open, path,
                     c(W, H, as.integer(nout)), as.character(dtype),
-                    TS, as.numeric(gt), epsg, NA_real_, band_names, comp_code)
+                    TS, as.numeric(gt), epsg, as.numeric(nd), band_names, comp_code)
   } else {
     acc <- replicate(nout, matrix(NA_real_, H, W), simplify = FALSE)
   }

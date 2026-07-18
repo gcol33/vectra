@@ -100,16 +100,23 @@ const char *vecr_dtype_to_string(uint8_t dt) {
 }
 
 void vecr_cast_doubles_to_dtype(const double *src, int64_t n,
-                                uint8_t dt, void *dst) {
+                                uint8_t dt, int has_nodata, double nodata,
+                                void *dst) {
     if (dt == VECR_DT_F64) { memcpy(dst, src, (size_t)n * sizeof(double)); return; }
     if (dt == VECR_DT_F32) {
+        /* NaN survives the narrowing to f32 and reads back as NA, so a float
+         * raster needs no explicit nodata substitution. */
         float *p = (float *)dst;
         for (int64_t i = 0; i < n; ++i) p[i] = (float)src[i];
         return;
     }
+    /* Integer dtypes have no NaN. A NA/NaN pixel must be written as the file's
+     * nodata sentinel (recorded with VECR_FLAG_HAS_NODATA) so it reads back as
+     * NA; without a nodata it falls back to 0 as before. */
+    int64_t nd_iv = has_nodata ? (int64_t)llround(nodata) : 0;
     for (int64_t i = 0; i < n; ++i) {
         double v = src[i];
-        int64_t iv = isnan(v) ? 0 : (int64_t)llround(v);
+        int64_t iv = isnan(v) ? nd_iv : (int64_t)llround(v);
         switch (dt) {
         case VECR_DT_I8:  ((int8_t  *)dst)[i] = (int8_t) iv; break;
         case VECR_DT_U8:  ((uint8_t *)dst)[i] = (uint8_t)iv; break;
@@ -705,6 +712,14 @@ int vecr_writer_write_band(VecrWriter *w, int band_index, const void *pixels) {
 
 uint8_t vecr_writer_dtype(VecrWriter *w) {
     return w ? w->hdr.sample_dtype : 0;
+}
+
+int vecr_writer_has_nodata(VecrWriter *w) {
+    return (w && (w->hdr.flags & VECR_FLAG_HAS_NODATA)) ? 1 : 0;
+}
+
+double vecr_writer_nodata(VecrWriter *w) {
+    return w ? w->hdr.nodata : NAN;
 }
 
 int vecr_writer_finish(VecrWriter *w) {

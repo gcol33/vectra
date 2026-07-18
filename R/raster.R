@@ -110,6 +110,14 @@ vec_write_raster <- function(x, path,
                       balanced = 1L,
                       max      = 2L)
 
+  ## Integer dtypes have no NaN: when the data actually contains NA, choose a
+  ## nodata sentinel so those pixels round-trip as NA instead of collapsing to
+  ## 0. Only when NA is present, so data that legitimately uses the sentinel
+  ## value (e.g. 255 in a full-range u8 raster) is untouched. Float dtypes keep
+  ## NaN and need no sentinel.
+  if (is.na(nodata) && !startsWith(as.character(dtype), "f") && anyNA(x))
+    nodata <- .dtype_nodata(dtype)
+
   .Call(C_vec_write_raster,
         path,
         data_vec,

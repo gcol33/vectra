@@ -110,6 +110,14 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
                     col_str_ptrs[c][n_rows] = NULL;
                 continue;
             }
+            /* A text/blob value stored in a numeric column has no numeric
+               value (the typed readers would return a fake 0); surface it as
+               NA. The VEC_STRING branch handles the reverse (numeric cell in a
+               text column) via a NULL text pointer. */
+            if (ctype == SQLFMT_TEXT && sn->col_types[c] != VEC_STRING) {
+                col_nulls[c][n_rows] = 1;
+                continue;
+            }
             switch (sn->col_types[c]) {
             case VEC_INT64:
             case VEC_INT8:
@@ -126,6 +134,12 @@ static VecBatch *sql_read_batch(SqlScanNode *sn) {
                 break;
             case VEC_STRING: {
                 const char *txt = sqlfmt_reader_text(sn->reader, c);
+                if (txt == NULL) {
+                    /* non-text value (blob / numeric) in a text column -> NA */
+                    col_nulls[c][n_rows] = 1;
+                    col_str_ptrs[c][n_rows] = NULL;
+                    break;
+                }
                 int len = sqlfmt_reader_bytes(sn->reader, c);
                 char *copy = (char *)malloc((size_t)(len + 1));
                 memcpy(copy, txt, (size_t)len);

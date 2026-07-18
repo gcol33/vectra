@@ -341,8 +341,11 @@ static void csv_parse_cell(VecArray *col, int64_t i, const char *val) {
         if (strcmp(val, "TRUE") == 0 || strcmp(val, "true") == 0 ||
             strcmp(val, "True") == 0)
             col->buf.bln[i] = 1;
-        else
+        else if (strcmp(val, "FALSE") == 0 || strcmp(val, "false") == 0 ||
+                 strcmp(val, "False") == 0)
             col->buf.bln[i] = 0;
+        else
+            vec_array_set_null(col, i); /* not a bool token past guess_max -> NA */
         break;
     case VEC_STRING:
         /* Strings are accumulated in a second pass — handled by caller */
@@ -499,11 +502,13 @@ static void csv_scan_free(VecNode *self) {
 /*  Constructor                                                        */
 /* ------------------------------------------------------------------ */
 
-#define CSV_INFER_ROWS 1000
-
 CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
-                                  char delim) {
+                                  char delim, int64_t guess_max) {
     if (delim == '\0') delim = ',';
+    /* guess_max <= 0 means infer over the whole file (correct for columns whose
+       type only becomes apparent past the default window, at the cost of an
+       extra read pass). */
+    if (guess_max <= 0) guess_max = INT64_MAX;
     ByteReader *rd = byte_reader_open(path);
     if (!rd) vectra_error("cannot open CSV file: %s", path);
 
@@ -518,7 +523,17 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
 
     FieldVec header_fields;
     fv_init(&header_fields);
-    csv_split_fields(line.data, line.len, &header_fields, delim);
+    /* Strip a leading UTF-8 BOM (EF BB BF) so the first column name is clean.
+       Files saved as "CSV UTF-8" by Excel / PowerShell begin with it, and an
+       unstripped BOM corrupts every name reference to the first column. */
+    char   *hdr  = line.data;
+    int64_t hlen = line.len;
+    if (hlen >= 3 && (unsigned char)hdr[0] == 0xEF &&
+        (unsigned char)hdr[1] == 0xBB && (unsigned char)hdr[2] == 0xBF) {
+        hdr  += 3;
+        hlen -= 3;
+    }
+    csv_split_fields(hdr, hlen, &header_fields, delim);
     gbuf_free(&line);
 
     int n_cols = header_fields.n;
@@ -532,7 +547,7 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
     int64_t data_start = rd->tell_fn(rd);
 
     /* Infer types from first N rows */
-    VecType *col_types = csv_infer_types(rd, n_cols, CSV_INFER_ROWS, delim);
+    VecType *col_types = csv_infer_types(rd, n_cols, guess_max, delim);
 
     /* Seek back to data start for reading */
     rd->seek_fn(rd, data_start);

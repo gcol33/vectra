@@ -214,34 +214,51 @@ mutate.vectra_node <- function(.data, ...) {
     node <- create_window_node(node, split$win_specs)
   }
 
-  # Apply regular expressions (if any)
+  # Apply regular expressions (if any), with dplyr's left-to-right semantics:
+  # an expression may reference a column created earlier in the SAME mutate().
+  # All expressions inside one C_project_node evaluate against the input batch,
+  # so a reference to a just-created column is only visible once that column has
+  # been materialized by a prior project node. We therefore start a new project
+  # node whenever a dot references a name produced earlier in the current, not
+  # yet materialized, node. Independent columns stay in a single node (no extra
+  # passes); only genuinely dependent chains split.
   if (length(split$regular_dots) > 0) {
     schema <- .Call(C_node_schema, node$.node)
-    existing_names <- schema$name
+    avail  <- schema$name          # column names already materialized
+    pf     <- parent.frame()
+    cur_names <- character(0)       # outputs pending in the current node
+    cur_exprs <- list()
 
-    out_names <- character(0)
-    out_exprs <- list()
-
-    for (nm in existing_names) {
-      out_names <- c(out_names, nm)
-      out_exprs <- c(out_exprs, list(NULL))
+    flush <- function() {
+      if (length(cur_names) == 0) return(invisible(NULL))
+      out_names <- avail
+      out_exprs <- vector("list", length(avail))  # NULL = pass-through
+      for (k in seq_along(cur_names)) {
+        idx <- match(cur_names[k], out_names)
+        if (!is.na(idx)) {
+          out_exprs[[idx]] <- cur_exprs[[k]]
+        } else {
+          out_names <- c(out_names, cur_names[k])
+          out_exprs <- c(out_exprs, list(cur_exprs[[k]]))
+        }
+      }
+      new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
+      node <<- structure(list(.node = new_xptr, .path = node$.path,
+                              .groups = node$.groups), class = "vectra_node")
+      avail     <<- out_names
+      cur_names <<- character(0)
+      cur_exprs <<- list()
     }
 
     for (i in seq_along(split$regular_dots)) {
-      nm <- split$regular_names[i]
-      expr_ser <- serialize_expr(split$regular_dots[[i]], parent.frame(), existing_names)
-      idx <- match(nm, out_names)
-      if (!is.na(idx)) {
-        out_exprs[[idx]] <- expr_ser
-      } else {
-        out_names <- c(out_names, nm)
-        out_exprs <- c(out_exprs, list(expr_ser))
-      }
+      nm   <- split$regular_names[i]
+      refs <- all.vars(split$regular_dots[[i]])
+      if (any(refs %in% cur_names)) flush()  # depends on a column from this node
+      expr_ser <- serialize_expr(split$regular_dots[[i]], pf, avail)
+      cur_names <- c(cur_names, nm)
+      cur_exprs <- c(cur_exprs, list(expr_ser))
     }
-
-    new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
-    node <- structure(list(.node = new_xptr, .path = node$.path,
-                           .groups = node$.groups), class = "vectra_node")
+    flush()
   }
 
   # If window node added columns that should not have been pass-through

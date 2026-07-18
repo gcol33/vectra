@@ -18,8 +18,9 @@ typedef struct {
 /* Create a CSV scan node.
    path:       path to CSV file
    batch_size: rows per batch (default 65536)
-   delim:      field separator byte (e.g. ',' or '\t') */
+   delim:      field separator byte (e.g. ',' or '\t')
+   guess_max:  rows to scan for type inference; <= 0 means the whole file */
 CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
-                                  char delim);
+                                  char delim, int64_t guess_max);
 
 #endif /* VECTRA_CSV_SCAN_H */

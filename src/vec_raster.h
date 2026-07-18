@@ -186,7 +186,8 @@ const char *vecr_dtype_to_string(uint8_t dt);
  * sample is widened to double with NaN passthrough for float dtypes. `dst`
  * must hold `n` samples of the respective representation. */
 void vecr_cast_doubles_to_dtype(const double *src, int64_t n,
-                                uint8_t dt, void *dst);
+                                uint8_t dt, int has_nodata, double nodata,
+                                void *dst);
 void vecr_cast_dtype_to_doubles(const void *src, int64_t n,
                                 uint8_t dt, double *dst);
 
@@ -228,6 +229,8 @@ void vecr_writer_set_compression(VecrWriter *w, int level);
 
 /* The writer's sample dtype (VECR_DT_* code), as given to vecr_writer_open. */
 uint8_t vecr_writer_dtype(VecrWriter *w);
+int     vecr_writer_has_nodata(VecrWriter *w);
+double  vecr_writer_nodata(VecrWriter *w);
 
 /* ---------- Overviews --------------------------------------------------- */
 

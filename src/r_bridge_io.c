@@ -108,12 +108,15 @@ static VecNode *tiff_scan_adapter(const char *path, int64_t bs) {
     return (VecNode *)tiff_scan_node_create(path, bs);
 }
 
-SEXP C_csv_scan_node(SEXP path_sexp, SEXP batch_size_sexp, SEXP delim_sexp) {
+SEXP C_csv_scan_node(SEXP path_sexp, SEXP batch_size_sexp, SEXP delim_sexp,
+                     SEXP guess_max_sexp) {
     const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
     int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
     const char *delim_str = CHAR(STRING_ELT(delim_sexp, 0));
     char delim = delim_str[0] != '\0' ? delim_str[0] : ',';
-    CsvScanNode *sn = csv_scan_node_create(fpath, batch_size, delim);
+    double gm = Rf_asReal(guess_max_sexp);
+    int64_t guess_max = (!R_FINITE(gm) || gm <= 0) ? 0 : (int64_t)gm;
+    CsvScanNode *sn = csv_scan_node_create(fpath, batch_size, delim, guess_max);
     return wrap_node((VecNode *)sn);
 }
 

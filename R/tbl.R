@@ -27,7 +27,8 @@ tbl <- function(path) {
 #'
 #' Opens a delimited text file (CSV, TSV, or any single-character separator)
 #' for lazy, streaming query execution. Column types are inferred from the
-#' first 1000 rows. No data is read until [collect()] is called.
+#' first `guess_max` rows (default 1000). No data is read until [collect()] is
+#' called.
 #' Gzip-compressed files (`.csv.gz`, `.tsv.gz`) are supported transparently.
 #'
 #' The field separator is set by `delim`, so tab-separated files (GBIF
@@ -40,6 +41,11 @@ tbl <- function(path) {
 #' @param batch_size Number of rows per batch (default 65536).
 #' @param delim Single-character field separator (default `","`). Use `"\t"`
 #'   for tab-separated and `";"` for semicolon-separated files.
+#' @param guess_max Number of rows scanned to infer column types (default
+#'   1000). A value that only reveals a column's true type later in the file
+#'   (for example an integer column that turns out to hold a decimal past row
+#'   1000) is otherwise read as `NA`; pass a larger value, or `Inf` to scan the
+#'   whole file, at the cost of an extra read pass.
 #'
 #' @return A `vectra_node` object representing a lazy scan of the file.
 #'
@@ -57,15 +63,19 @@ tbl <- function(path) {
 #' unlink(g)
 #'
 #' @export
-tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",") {
+tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",",
+                    guess_max = 1000) {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
   if (!is.character(delim) || length(delim) != 1 || is.na(delim))
     stop("delim must be a single character string")
   if (nchar(delim, type = "bytes") != 1)
     stop("delim must be a single-byte character (e.g. \",\", \"\\t\", \";\")")
+  if (length(guess_max) != 1 || is.na(guess_max) || guess_max < 1)
+    stop("guess_max must be a single number >= 1 (use Inf for the whole file)")
   path <- normalizePath(path, mustWork = TRUE)
-  xptr <- .Call(C_csv_scan_node, path, as.double(batch_size), delim)
+  xptr <- .Call(C_csv_scan_node, path, as.double(batch_size), delim,
+                as.double(guess_max))
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 

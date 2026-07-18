@@ -407,7 +407,9 @@ SEXP C_vecr_writer_write_strip(SEXP ptr_sexp, SEXP band_sexp, SEXP ty_sexp,
     size_t esz = vecr_dtype_size(fdt);
     void *buf = malloc((size_t)strip_h * W * esz);
     if (!buf) { free(row); vectra_error("alloc failed for strip cast"); }
-    vecr_cast_doubles_to_dtype(row, (int64_t)strip_h * W, fdt, buf);
+    vecr_cast_doubles_to_dtype(row, (int64_t)strip_h * W, fdt,
+                               vecr_writer_has_nodata(w), vecr_writer_nodata(w),
+                               buf);
     free(row);
 
     int rc = vecr_writer_write_tile_row(w, band, ty, buf, strip_h);

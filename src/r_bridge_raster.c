@@ -145,7 +145,9 @@ SEXP C_vec_write_time_cube(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
         vecr_writer_set_time(w, tval);
         for (int b = 0; b < n_bands; ++b) {
             const double *slice = src + (int64_t)t * stride_time + (int64_t)b * stride_band;
-            cast_doubles_to_dtype(slice, per_slice, dt, band_buf);
+            cast_doubles_to_dtype(slice, per_slice, dt,
+                                  vecr_writer_has_nodata(w),
+                                  vecr_writer_nodata(w), band_buf);
             if (vecr_writer_write_band(w, b, band_buf) != 0) {
                 const char *m = vecr_writer_errmsg(w);
                 free(band_buf); vecr_writer_close(w);
@@ -311,7 +313,9 @@ SEXP C_vec_write_raster(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
 
     const double *src = REAL(data_sexp);
     for (int b = 0; b < n_bands; ++b) {
-        cast_doubles_to_dtype(src + b * band_n, band_n, dt, band_buf);
+        cast_doubles_to_dtype(src + b * band_n, band_n, dt,
+                              vecr_writer_has_nodata(w),
+                              vecr_writer_nodata(w), band_buf);
         if (vecr_writer_write_band(w, b, band_buf) != 0) {
             const char *msg = vecr_writer_errmsg(w);
             free(band_buf);
@@ -849,7 +853,8 @@ SEXP C_vec_write_pixel_cube(SEXP path_sexp, SEXP data_sexp, SEXP dims_sexp,
         free(band_names);
         vectra_error("alloc failed for cube buffer");
     }
-    cast_doubles_to_dtype(REAL(data_sexp), total, dt, buf);
+    cast_doubles_to_dtype(REAL(data_sexp), total, dt,
+                          !isnan(nodata), nodata, buf);
 
     /* Times -> int64. */
     int64_t *times = (int64_t *)malloc((size_t)n_time * sizeof(int64_t));
