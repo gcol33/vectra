@@ -108,15 +108,40 @@ static VecNode *tiff_scan_adapter(const char *path, int64_t bs) {
     return (VecNode *)tiff_scan_node_create(path, bs);
 }
 
+/* Map a col_types string ("character"/"double"/"integer"/"logical") to VecType. */
+static int csv_type_code(const char *s) {
+    if (strcmp(s, "character") == 0 || strcmp(s, "string") == 0) return VEC_STRING;
+    if (strcmp(s, "double") == 0 || strcmp(s, "numeric") == 0)   return VEC_DOUBLE;
+    if (strcmp(s, "integer") == 0 || strcmp(s, "int64") == 0 ||
+        strcmp(s, "int") == 0)                                    return VEC_INT64;
+    if (strcmp(s, "logical") == 0 || strcmp(s, "bool") == 0)     return VEC_BOOL;
+    vectra_error("col_types: unknown type '%s' (use character/double/integer/logical)", s);
+    return VEC_STRING; /* unreachable */
+}
+
 SEXP C_csv_scan_node(SEXP path_sexp, SEXP batch_size_sexp, SEXP delim_sexp,
-                     SEXP guess_max_sexp) {
+                     SEXP guess_max_sexp, SEXP ct_names_sexp, SEXP ct_types_sexp) {
     const char *fpath = CHAR(STRING_ELT(path_sexp, 0));
     int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
     const char *delim_str = CHAR(STRING_ELT(delim_sexp, 0));
     char delim = delim_str[0] != '\0' ? delim_str[0] : ',';
     double gm = Rf_asReal(guess_max_sexp);
     int64_t guess_max = (!R_FINITE(gm) || gm <= 0) ? 0 : (int64_t)gm;
-    CsvScanNode *sn = csv_scan_node_create(fpath, batch_size, delim, guess_max);
+
+    int n_ov = (ct_names_sexp == R_NilValue) ? 0 : (int)Rf_length(ct_names_sexp);
+    const char **ov_names = NULL;
+    int *ov_types = NULL;
+    if (n_ov > 0) {
+        ov_names = (const char **)R_alloc((size_t)n_ov, sizeof(char *));
+        ov_types = (int *)R_alloc((size_t)n_ov, sizeof(int));
+        for (int j = 0; j < n_ov; j++) {
+            ov_names[j] = CHAR(STRING_ELT(ct_names_sexp, j));
+            ov_types[j] = csv_type_code(CHAR(STRING_ELT(ct_types_sexp, j)));
+        }
+    }
+
+    CsvScanNode *sn = csv_scan_node_create(fpath, batch_size, delim, guess_max,
+                                           ov_names, ov_types, n_ov);
     return wrap_node((VecNode *)sn);
 }
 

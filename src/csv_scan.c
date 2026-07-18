@@ -503,7 +503,9 @@ static void csv_scan_free(VecNode *self) {
 /* ------------------------------------------------------------------ */
 
 CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
-                                  char delim, int64_t guess_max) {
+                                  char delim, int64_t guess_max,
+                                  const char *const *ov_names,
+                                  const int *ov_types, int n_ov) {
     if (delim == '\0') delim = ',';
     /* guess_max <= 0 means infer over the whole file (correct for columns whose
        type only becomes apparent past the default window, at the cost of an
@@ -548,6 +550,22 @@ CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
 
     /* Infer types from first N rows */
     VecType *col_types = csv_infer_types(rd, n_cols, guess_max, delim);
+
+    /* Apply explicit per-column type overrides (e.g. force a zero-padded ID
+       column to character so inference does not numericize it). Unknown names
+       are an error so a typo is not silently ignored. */
+    for (int j = 0; j < n_ov; j++) {
+        int found = -1;
+        for (int c = 0; c < n_cols; c++)
+            if (strcmp(header_fields.items[c], ov_names[j]) == 0) { found = c; break; }
+        if (found < 0) {
+            free(col_types);
+            fv_free(&header_fields);
+            rd->close_fn(rd);
+            vectra_error("col_types: column '%s' not found in CSV header", ov_names[j]);
+        }
+        col_types[found] = (VecType)ov_types[j];
+    }
 
     /* Seek back to data start for reading */
     rd->seek_fn(rd, data_start);

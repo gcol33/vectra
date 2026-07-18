@@ -21,6 +21,8 @@ typedef struct {
    delim:      field separator byte (e.g. ',' or '\t')
    guess_max:  rows to scan for type inference; <= 0 means the whole file */
 CsvScanNode *csv_scan_node_create(const char *path, int64_t batch_size,
-                                  char delim, int64_t guess_max);
+                                  char delim, int64_t guess_max,
+                                  const char *const *ov_names,
+                                  const int *ov_types, int n_ov);
 
 #endif /* VECTRA_CSV_SCAN_H */

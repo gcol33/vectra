@@ -46,6 +46,11 @@ tbl <- function(path) {
 #'   (for example an integer column that turns out to hold a decimal past row
 #'   1000) is otherwise read as `NA`; pass a larger value, or `Inf` to scan the
 #'   whole file, at the cost of an extra read pass.
+#' @param col_types Optional named character vector forcing the type of specific
+#'   columns, overriding inference. Names are column names; values are one of
+#'   `"character"`, `"double"`, `"integer"`, or `"logical"`. Use this to keep a
+#'   zero-padded identifier column (ZIP codes, accession IDs) as text instead of
+#'   letting it be read as a number, e.g. `col_types = c(zip = "character")`.
 #'
 #' @return A `vectra_node` object representing a lazy scan of the file.
 #'
@@ -64,7 +69,7 @@ tbl <- function(path) {
 #'
 #' @export
 tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",",
-                    guess_max = 1000) {
+                    guess_max = 1000, col_types = NULL) {
   if (!is.character(path) || length(path) != 1)
     stop("path must be a single character string")
   if (!is.character(delim) || length(delim) != 1 || is.na(delim))
@@ -73,9 +78,17 @@ tbl_csv <- function(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",",
     stop("delim must be a single-byte character (e.g. \",\", \"\\t\", \";\")")
   if (length(guess_max) != 1 || is.na(guess_max) || guess_max < 1)
     stop("guess_max must be a single number >= 1 (use Inf for the whole file)")
+  ct_names <- NULL; ct_types <- NULL
+  if (!is.null(col_types)) {
+    if (!is.character(col_types) || is.null(names(col_types)) ||
+        any(names(col_types) == ""))
+      stop("col_types must be a named character vector, e.g. c(zip = \"character\")")
+    ct_names <- names(col_types)
+    ct_types <- unname(col_types)
+  }
   path <- normalizePath(path, mustWork = TRUE)
   xptr <- .Call(C_csv_scan_node, path, as.double(batch_size), delim,
-                as.double(guess_max))
+                as.double(guess_max), ct_names, ct_types)
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 

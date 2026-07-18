@@ -4,7 +4,13 @@
 \alias{tbl_csv}
 \title{Create a lazy table reference from a delimited text file}
 \usage{
-tbl_csv(path, batch_size = .DEFAULT_BATCH_SIZE, delim = ",", guess_max = 1000)
+tbl_csv(
+  path,
+  batch_size = .DEFAULT_BATCH_SIZE,
+  delim = ",",
+  guess_max = 1000,
+  col_types = NULL
+)
 }
 \arguments{
 \item{path}{Path to a delimited text file, optionally gzip-compressed.}
@@ -19,6 +25,12 @@ for tab-separated and \code{";"} for semicolon-separated files.}
 (for example an integer column that turns out to hold a decimal past row
 1000) is otherwise read as \code{NA}; pass a larger value, or \code{Inf} to scan the
 whole file, at the cost of an extra read pass.}
+
+\item{col_types}{Optional named character vector forcing the type of specific
+columns, overriding inference. Names are column names; values are one of
+\code{"character"}, \code{"double"}, \code{"integer"}, or \code{"logical"}. Use this to keep a
+zero-padded identifier column (ZIP codes, accession IDs) as text instead of
+letting it be read as a number, e.g. \code{col_types = c(zip = "character")}.}
 }
 \value{
 A \code{vectra_node} object representing a lazy scan of the file.
