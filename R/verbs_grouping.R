@@ -382,12 +382,15 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
 # Is `expr` a bare aggregate call (top-level function is an aggregate)? Handles
 # namespace qualification (vectra::mean). A compound expression such as
 # mean(x) + 1 or a / b is not a bare aggregate and takes the post-agg path.
+# A namespace-qualified top-level call (vectra::foo(x)) is always treated as an
+# aggregation attempt so an unknown name reports the clean "unknown aggregation
+# function" error from parse_agg_expr rather than the scalar post-path.
 .summ_is_agg_call <- function(expr) {
   if (!is.call(expr)) return(FALSE)
   fc <- expr[[1L]]
   if (is.call(fc) && length(fc) == 3L && is.name(fc[[1L]]) &&
       as.character(fc[[1L]]) %in% c("::", ":::"))
-    fc <- fc[[3L]]
+    return(TRUE)
   is.name(fc) && as.character(fc) %in% .summ_valid_aggs
 }
 

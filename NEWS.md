@@ -28,6 +28,14 @@
 
 ### Crashes / memory safety
 
+* A namespace-qualified function head (`pkg::fn(...)` / `pkg:::fn(...)`) no
+  longer crashes the expression serializer with "the condition has length > 1"
+  under R >= 4.2. `serialize_expr` (the shared `mutate` / `filter` / post-`summarise`
+  serializer) unwraps `::` / `:::` to the bare name, and a namespace-qualified
+  top-level `summarise()` call now routes to the aggregation parser, so an
+  unknown one reports `unknown aggregation function: <name>` instead of the
+  cryptic length error.
+
 * Hash join no longer duplicates rows or loops forever on a many-to-many key
   whose build-chain length lines up with the internal 65536-row emit cap: the
   resumable probe conflated "chain exhausted" with the "not resuming" sentinel

@@ -694,6 +694,13 @@ serialize_expr <- function(expr, env = parent.frame(), cols = NULL) {
     }
   }
 
+  # Unwrap namespace-qualified heads: pkg::fn(...) / pkg:::fn(...) -> fn(...)
+  head <- expr[[1]]
+  if (is.call(head) && length(head) == 3L && is.name(head[[1L]]) &&
+      as.character(head[[1L]]) %in% c("::", ":::")) {
+    expr[[1]] <- head[[3L]]
+  }
+
   fn <- as.character(expr[[1]])
 
   # Parentheses — pass through
