@@ -416,6 +416,10 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema) {
         /* v2: composite index */
         idx->n_cols = read_u16_f(fp);
         idx->ci     = read_u8_f(fp);
+        if (idx->n_cols < 1) {
+            fclose(fp); vtri_close(idx);
+            vectra_error("corrupt .vtri: composite index has no columns");
+        }
         idx->col_indices = (uint16_t *)malloc((size_t)idx->n_cols * sizeof(uint16_t));
         idx->col_names   = (char **)calloc((size_t)idx->n_cols, sizeof(char *));
         for (int c = 0; c < idx->n_cols; c++) {
@@ -440,10 +444,30 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema) {
     int64_t ne = idx->n_entries;
     int64_t ns = idx->n_slots;
 
-    idx->entry_hash = (uint64_t *)malloc((size_t)ne * sizeof(uint64_t));
-    idx->entry_rg   = (uint32_t *)malloc((size_t)ne * sizeof(uint32_t));
+    /* Validate the declared sizes against the actual file before allocating, so
+       a crafted/corrupt header cannot overflow the size arithmetic, request an
+       enormous allocation, or drive the fill loops past EOF. The arrays that
+       follow occupy 20*ne bytes (hash8 + rg4 + next8 per entry) plus 8*ns bytes
+       (one head per slot); n_slots must be >= 1 for the probe mask to be a valid
+       index. The bound is written division-first so 20*ne never overflows. */
+    long hdr_end = ftell(fp);
+    if (hdr_end < 0 || fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp); vtri_close(idx);
+        vectra_error("corrupt .vtri: cannot size index file");
+    }
+    long fsize = ftell(fp);
+    fseek(fp, hdr_end, SEEK_SET);
+    int64_t remaining = (int64_t)fsize - (int64_t)hdr_end;
+    if (ne < 0 || ns < 1 || remaining < 0 ||
+        ns > remaining / 8 || ne > (remaining - 8 * ns) / 20) {
+        fclose(fp); vtri_close(idx);
+        vectra_error("corrupt .vtri: entry/slot counts exceed file size");
+    }
+
+    idx->entry_hash = (uint64_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(uint64_t));
+    idx->entry_rg   = (uint32_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(uint32_t));
     idx->heads       = (int64_t *)malloc((size_t)ns * sizeof(int64_t));
-    idx->entry_next  = (int64_t *)malloc((size_t)ne * sizeof(int64_t));
+    idx->entry_next  = (int64_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(int64_t));
 
     if (!idx->entry_hash || !idx->entry_rg || !idx->heads || !idx->entry_next) {
         fclose(fp);
@@ -492,11 +516,17 @@ static uint8_t *probe_by_hash(const VtrIndex *idx, uint64_t h,
     uint8_t *bitmap = (uint8_t *)calloc((size_t)n_rowgroups, 1);
     if (!bitmap) return NULL;
 
+    /* Defensive: n_slots >= 1 and every chain index in [0, n_entries) is
+       guaranteed by vtri_open's validation, but bound them here too so a probe
+       can never walk out of range or loop forever on a crafted chain. */
+    if (idx->n_slots <= 0 || idx->n_entries <= 0) return bitmap;
+
     int64_t mask = idx->n_slots - 1;
     int64_t slot = (int64_t)(h & (uint64_t)mask);
     int64_t e = idx->heads[slot];
 
-    while (e >= 0) {
+    int64_t steps = 0;
+    while (e >= 0 && e < idx->n_entries && steps++ < idx->n_entries) {
         if (idx->entry_hash[e] == h) {
             uint32_t rg = idx->entry_rg[e];
             if (rg < n_rowgroups)

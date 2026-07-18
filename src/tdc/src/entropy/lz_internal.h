@@ -130,6 +130,44 @@ static inline const uint8_t *lz_offset_read(const uint8_t *p, uint32_t *off) {
     return p;
 }
 
+/* ---- Bounded reads for decoding untrusted input --------------------------
+ * The readers above trust the stream. When decoding a possibly-corrupt block
+ * the decoder passes `end` (the end of the sequence region) so a crafted
+ * length/varint cannot walk the cursor past the buffer. Each returns NULL on
+ * overrun; the shift guard also caps a malicious multi-byte LEB128. */
+static inline const uint8_t *lz_leb128_read_bounded(const uint8_t *p,
+                                                    const uint8_t *end,
+                                                    uint32_t *out) {
+    uint32_t val = 0u, shift = 0u;
+    uint8_t b;
+    do {
+        if (p >= end || shift >= 32u) return NULL;
+        b = *p++;
+        val |= ((uint32_t)(b & 0x7Fu)) << shift;
+        shift += 7u;
+    } while (b & 0x80u);
+    *out = val;
+    return p;
+}
+
+static inline const uint8_t *lz_offset_read_bounded(const uint8_t *p,
+                                                    const uint8_t *end,
+                                                    uint32_t *off) {
+    if (end - p < 2) return NULL;
+    uint16_t v;
+    memcpy(&v, p, 2);
+    p += 2;
+    if (v < 0xFFFFu) {
+        *off = (uint32_t)v + 1u;
+        return p;
+    }
+    uint32_t ext;
+    p = lz_leb128_read_bounded(p, end, &ext);
+    if (!p) return NULL;
+    *off = ext + 65536u;
+    return p;
+}
+
 /* ----- Sequence size computation ----------------------------------------- *
  *
  * Bytes charged to the packed sequence header for a given literal-run

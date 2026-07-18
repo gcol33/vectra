@@ -327,18 +327,22 @@ static tdc_status dict1d_validate_side_header(const uint8_t *side_meta,
     memcpy(&dict_count, side_meta + 0, 4u);
     memcpy(&dict_total, side_meta + 4, 4u);
 
-    size_t want_side = (size_t)8u
-                     + (size_t)(dict_count + 1u) * 4u
-                     + (size_t)dict_total;
-    if (side_size != want_side) return TDC_E_CORRUPT;
+    /* 64-bit so (dict_count + 1) * 4 cannot wrap to 0 when dict_count is
+     * UINT32_MAX; an oversized count then fails this equality instead of
+     * zeroing the table size and leaving the loop below unterminated. */
+    uint64_t want_side = (uint64_t)8u
+                       + ((uint64_t)dict_count + 1u) * 4u
+                       + (uint64_t)dict_total;
+    if ((uint64_t)side_size != want_side) return TDC_E_CORRUPT;
 
     const uint8_t *off_p = side_meta + 8u;
 
     /* Verify the offsets table is internally consistent and matches the
      * declared total. Catches torn/corrupt records before we dereference
-     * out-of-range offsets in the inner loop. */
+     * out-of-range offsets in the inner loop. The counter is 64-bit so
+     * d <= dict_count cannot wrap near UINT32_MAX. */
     uint32_t prev_off = 0u;
-    for (uint32_t d = 0; d <= dict_count; ++d) {
+    for (uint64_t d = 0; d <= (uint64_t)dict_count; ++d) {
         uint32_t cur;
         memcpy(&cur, off_p + (size_t)d * 4u, 4u);
         if (cur < prev_off)   return TDC_E_CORRUPT;

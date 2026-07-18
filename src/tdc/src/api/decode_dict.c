@@ -66,16 +66,23 @@ static tdc_status dict_capture_hook(tdc_block      *dst,
     memcpy(&dict_count, side_meta + 0, 4u);
     memcpy(&dict_total, side_meta + 4, 4u);
 
-    size_t offs_bytes = (size_t)(dict_count + 1u) * 4u;
-    if (side_size != (size_t)DICT_SIDE_HEADER + offs_bytes + (size_t)dict_total)
+    /* Compute the offset-table size in 64-bit: (dict_count + 1) * 4 wraps to 0
+     * in 32-bit when dict_count == UINT32_MAX, which would zero offs_bytes and
+     * let a crafted header pass the size check with an unterminated loop below.
+     * In 64-bit an oversized dict_count instead fails the side_size equality. */
+    uint64_t offs_bytes64 = ((uint64_t)dict_count + 1u) * 4u;
+    if ((uint64_t)side_size !=
+        (uint64_t)DICT_SIDE_HEADER + offs_bytes64 + (uint64_t)dict_total)
         return TDC_E_CORRUPT;
+    size_t offs_bytes = (size_t)offs_bytes64;
 
     const uint8_t *offs_p = side_meta + DICT_SIDE_HEADER;
     const uint8_t *data_p = offs_p + offs_bytes;
 
-    /* Offsets must be non-decreasing and terminate at dict_total. */
+    /* Offsets must be non-decreasing and terminate at dict_total. The counter is
+     * 64-bit so d <= dict_count cannot wrap when dict_count is near UINT32_MAX. */
     uint32_t prev = 0u;
-    for (uint32_t d = 0; d <= dict_count; ++d) {
+    for (uint64_t d = 0; d <= (uint64_t)dict_count; ++d) {
         uint32_t o;
         memcpy(&o, offs_p + (size_t)d * 4u, 4u);
         if (o < prev) return TDC_E_CORRUPT;

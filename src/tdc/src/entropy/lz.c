@@ -758,7 +758,7 @@ static tdc_status lz_encode_core(const uint8_t *src, uint32_t src_size,
  */
 static inline void lz_decode_fast(
     uint8_t *dst, const uint8_t *lit_data,
-    const uint8_t *seq_ptr, uint32_t n_seq,
+    const uint8_t *seq_ptr, const uint8_t *seq_end, uint32_t n_seq,
     uint32_t uncompressed_size, uint32_t literals_size,
     const uint8_t **seq_ptr_out, uint32_t *dp_out, uint32_t *lp_out,
     uint32_t *si_out)
@@ -770,6 +770,11 @@ static inline void lz_decode_fast(
         /* Save position before parsing (for rewind on bail). */
         const uint8_t *sp_save = sp;
 
+        /* Every sequence-byte read is bounded by seq_end so a crafted length or
+         * varint cannot walk `sp` past the sequence region; on any shortfall we
+         * rewind and hand off to the safe path, which reports corruption. */
+        if (LZ_UNLIKELY(sp >= seq_end)) break;
+
         /* Parse packed [LLLLMMMM] tag byte: high nibble = literal-run length
          * (or 15 = extended via chained-255 varint), low nibble =
          * match_len - 3 (or 15 = extended via LEB128). */
@@ -779,13 +784,17 @@ static inline void lz_decode_fast(
 
         if (lit_len == 15) {
             uint8_t extra;
-            do { extra = *sp++; lit_len += extra; } while (extra == 255);
+            do {
+                if (LZ_UNLIKELY(sp >= seq_end)) { sp = sp_save; goto fast_done; }
+                extra = *sp++; lit_len += extra;
+            } while (extra == 255);
         }
         if (match_len_m3 == 15) {
             uint32_t extra = 0;
             uint32_t shift = 0;
             uint8_t b;
             do {
+                if (LZ_UNLIKELY(sp >= seq_end || shift >= 32u)) { sp = sp_save; goto fast_done; }
                 b = *sp++;
                 extra |= ((uint32_t)(b & 0x7Fu)) << shift;
                 shift += 7;
@@ -795,7 +804,9 @@ static inline void lz_decode_fast(
         uint32_t mlen = match_len_m3 + LZ_MIN_MATCH;
 
         uint32_t off;
-        sp = lz_offset_read(sp, &off);
+        const uint8_t *sp_next = lz_offset_read_bounded(sp, seq_end, &off);
+        if (LZ_UNLIKELY(!sp_next)) { sp = sp_save; goto fast_done; }
+        sp = sp_next;
 
         /* Bail to safe path if this sequence would exceed bounds. The
          * TDC_WILDCOPY_SLACK margin covers the worst-case overshoot of
@@ -808,6 +819,13 @@ static inline void lz_decode_fast(
             break;
         }
         if (LZ_UNLIKELY(lp + lit_len > literals_size)) {
+            sp = sp_save;
+            break;
+        }
+        /* Invalid back-reference: the match would read before the start of the
+         * decoded output (off past the current position dp + lit_len). Bail to
+         * the safe path, which returns TDC_E_CORRUPT. */
+        if (LZ_UNLIKELY(off > dp + lit_len)) {
             sp = sp_save;
             break;
         }
@@ -838,6 +856,7 @@ static inline void lz_decode_fast(
         si++;
     }
 
+fast_done:
     *seq_ptr_out = sp;
     *dp_out = dp;
     *lp_out = lp;
@@ -849,7 +868,7 @@ static inline void lz_decode_fast(
  * the input). Returns TDC_E_CORRUPT on invalid back-references. */
 static tdc_status lz_decode_safe(
     uint8_t *dst, const uint8_t *lit_data,
-    const uint8_t *seq_ptr, uint32_t n_seq,
+    const uint8_t *seq_ptr, const uint8_t *seq_end, uint32_t n_seq,
     uint32_t uncompressed_size, uint32_t literals_size,
     uint32_t *dp_out, uint32_t *lp_out, uint32_t *si_out)
 {
@@ -857,19 +876,25 @@ static tdc_status lz_decode_safe(
     const uint8_t *sp = seq_ptr;
 
     while (si < n_seq && dp < uncompressed_size) {
+        /* Bounds-check every sequence-byte read against seq_end. */
+        if (sp >= seq_end) return TDC_E_CORRUPT;
         uint8_t tag = *sp++;
         uint32_t lit_len = tag >> 4;
         uint32_t match_len_m3 = tag & 0x0F;
 
         if (lit_len == 15) {
             uint8_t extra;
-            do { extra = *sp++; lit_len += extra; } while (extra == 255);
+            do {
+                if (sp >= seq_end) return TDC_E_CORRUPT;
+                extra = *sp++; lit_len += extra;
+            } while (extra == 255);
         }
         if (match_len_m3 == 15) {
             uint32_t extra = 0;
             uint32_t shift = 0;
             uint8_t b;
             do {
+                if (sp >= seq_end || shift >= 32u) return TDC_E_CORRUPT;
                 b = *sp++;
                 extra |= ((uint32_t)(b & 0x7Fu)) << shift;
                 shift += 7;
@@ -879,7 +904,8 @@ static tdc_status lz_decode_safe(
         uint32_t mlen = match_len_m3 + LZ_MIN_MATCH;
 
         uint32_t off;
-        sp = lz_offset_read(sp, &off);
+        sp = lz_offset_read_bounded(sp, seq_end, &off);
+        if (!sp) return TDC_E_CORRUPT;
 
         /* Copy literals (clamped) */
         if (lit_len > 0) {
@@ -959,16 +985,20 @@ static tdc_status lz_decode_core(uint8_t *dst, uint32_t uncompressed_size,
     uint32_t si = 0, dp = 0, lp = 0;
     const uint8_t *seq_ptr = seq_start;
 
+    /* The sequence region is [seq_start, lit_data); pass lit_data as seq_end so
+     * both decoders bound every sequence-byte read. */
+    const uint8_t *seq_end = lit_data;
+
     /* Fast path for the bulk of the data. */
     if (n_seq > 0) {
-        lz_decode_fast(dst, lit_data, seq_ptr, n_seq,
+        lz_decode_fast(dst, lit_data, seq_ptr, seq_end, n_seq,
                         uncompressed_size, literals_size,
                         &seq_ptr, &dp, &lp, &si);
     }
 
     /* Safe tail: bounds-checked, handles remaining sequences + trailing
      * literals. Also runs in full when n_seq == 0 (literal-only fallback). */
-    tdc_status st = lz_decode_safe(dst, lit_data, seq_ptr, n_seq,
+    tdc_status st = lz_decode_safe(dst, lit_data, seq_ptr, seq_end, n_seq,
                                     uncompressed_size, literals_size,
                                     &dp, &lp, &si);
     if (st != TDC_OK) return st;
