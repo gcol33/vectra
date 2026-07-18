@@ -203,9 +203,9 @@ static VecArray *seq_eval_transform(const VecExpr *expr, const VecBatch *batch) 
                 valid = 0;
             } else {
                 start1 = vec_array_get_int(start_a, i);
-                if (start_a->type == VEC_DOUBLE) start1 = (int64_t)start_a->buf.dbl[i];
+                if (start_a->type == VEC_DOUBLE) start1 = vec_d2i_saturate(start_a->buf.dbl[i]);
                 width = vec_array_get_int(width_a, i);
-                if (width_a->type == VEC_DOUBLE) width = (int64_t)width_a->buf.dbl[i];
+                if (width_a->type == VEC_DOUBLE) width = vec_d2i_saturate(width_a->buf.dbl[i]);
             }
         }
         if (!valid) { vec_array_set_null(out, i); continue; }
@@ -250,7 +250,7 @@ static VecArray *seq_eval_transform(const VecExpr *expr, const VecBatch *batch) 
         }
         case 's': {  /* subseq */
             int64_t start1 = vec_array_get_int(start_a, i);
-            if (start_a->type == VEC_DOUBLE) start1 = (int64_t)start_a->buf.dbl[i];
+            if (start_a->type == VEC_DOUBLE) start1 = vec_d2i_saturate(start_a->buf.dbl[i]);
             int64_t st = start1 - 1; if (st < 0) st = 0; if (st > L) st = L;
             int64_t olen = out->buf.str.offsets[i + 1] - out->buf.str.offsets[i];
             if (olen > 0) memcpy(dst, src + st, (size_t)olen);

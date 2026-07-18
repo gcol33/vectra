@@ -89,4 +89,15 @@ void vec_validity_copy_bits(uint8_t *dst, int64_t dst_off,
    If sel is NULL, copies all rows 0..n-1 (where n = src->length). */
 VecArray vec_array_gather(const VecArray *src, const int32_t *sel, int32_t sel_n);
 
+/* Convert a double to int64 without undefined behaviour on NaN or an
+   out-of-range magnitude (a raw (int64_t) cast of those is UB / a UBSan trap).
+   Saturates to the int64 range; callers that use the result as a string/sequence
+   index then clamp to the actual length, so a saturated bound is harmless. */
+static inline int64_t vec_d2i_saturate(double d) {
+    if (d != d) return 0;                        /* NaN */
+    if (d <= (double)INT64_MIN) return INT64_MIN;
+    if (d >= (double)INT64_MAX) return INT64_MAX;
+    return (int64_t)d;
+}
+
 #endif /* VECTRA_ARRAY_H */

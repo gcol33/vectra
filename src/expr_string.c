@@ -8,6 +8,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <regex.h>
+#include <math.h>
 #include "vec_omp.h"
 
 /* Case-insensitive byte compare: 1 if a[0..n) equals b[0..n) ignoring ASCII
@@ -139,10 +140,10 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 continue;
             int64_t slen = s->buf.str.offsets[i + 1] - s->buf.str.offsets[i];
             int64_t st = (start_a->type == VEC_DOUBLE)
-                         ? (int64_t)start_a->buf.dbl[i]
+                         ? vec_d2i_saturate(start_a->buf.dbl[i])
                          : start_a->buf.i64[i];
             int64_t sp = (stop_a->type == VEC_DOUBLE)
-                         ? (int64_t)stop_a->buf.dbl[i]
+                         ? vec_d2i_saturate(stop_a->buf.dbl[i])
                          : stop_a->buf.i64[i];
             st = st - 1; /* R is 1-based */
             if (st < 0) st = 0;
@@ -169,10 +170,10 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             int64_t so = s->buf.str.offsets[i];
             int64_t slen = s->buf.str.offsets[i + 1] - so;
             int64_t st = (start_a->type == VEC_DOUBLE)
-                         ? (int64_t)start_a->buf.dbl[i]
+                         ? vec_d2i_saturate(start_a->buf.dbl[i])
                          : start_a->buf.i64[i];
             int64_t sp = (stop_a->type == VEC_DOUBLE)
-                         ? (int64_t)stop_a->buf.dbl[i]
+                         ? vec_d2i_saturate(stop_a->buf.dbl[i])
                          : stop_a->buf.i64[i];
             st = st - 1;
             if (st < 0) st = 0;
