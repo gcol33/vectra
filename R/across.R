@@ -48,6 +48,22 @@ expand_across <- function(dots, schema_names, env, proxy = NULL) {
   result_exprs
 }
 
+# Substitute the purrr lambda pronoun (.x, or the bare .) with a column symbol
+# throughout an expression tree, so a formula like ~ mean(.x, na.rm = TRUE)
+# becomes mean(<col>, na.rm = TRUE).
+.subst_across_dot <- function(e, sym) {
+  if (is.name(e)) {
+    nm <- as.character(e)
+    if (nm == ".x" || nm == ".") return(sym)
+    return(e)
+  }
+  if (is.call(e)) {
+    for (i in seq_along(e)) e[[i]] <- .subst_across_dot(e[[i]], sym)
+    return(e)
+  }
+  e
+}
+
 # Resolve a function to its name string (e.g., sum -> "sum")
 resolve_fn_str <- function(fn) {
   # Check if it's a primitive or builtin
@@ -109,17 +125,15 @@ do_expand_across <- function(expr, schema_names, env, proxy = NULL) {
   # Evaluate fns
   fns <- eval(fns_expr, env)
 
-  # Handle different fn formats
-  if (is.function(fns)) {
+  # Handle different fn formats. Formulas are kept as formulas (not coerced to
+  # functions) so the purrr-style lambda body (~ .x + 1, ~ mean(.x, na.rm=TRUE))
+  # can be inlined by substituting .x / . with the column, which the expression
+  # serializer understands. Plain functions resolve to a name-string call.
+  if (is.function(fns) || rlang::is_formula(fns)) {
     fn_list <- list(fns)
     fn_names <- NULL
-  } else if (rlang::is_formula(fns)) {
-    fn_list <- list(rlang::as_function(fns))
-    fn_names <- NULL
   } else if (is.list(fns)) {
-    fn_list <- lapply(fns, function(f) {
-      if (rlang::is_formula(f)) rlang::as_function(f) else f
-    })
+    fn_list <- fns
     fn_names <- names(fns)
   } else {
     stop("across .fns must be a function, formula, or named list")
@@ -149,12 +163,16 @@ do_expand_across <- function(expr, schema_names, env, proxy = NULL) {
         out_name <- col
       }
 
-      # Build the call expression fn(col_name, <extra args>), forwarding the
-      # across `...` (e.g. na.rm = TRUE) to each function.
+      # Build the call expression for this (fn, col). A formula lambda inlines
+      # its body with .x / . replaced by the column symbol; a plain function
+      # becomes fn(col, <extra args>) with the across `...` forwarded.
       fn_obj <- fn_list[[fi]]
-      fn_str <- resolve_fn_str(fn_obj)
-
-      call_expr <- as.call(c(list(as.name(fn_str), as.name(col)), extra_args))
+      if (rlang::is_formula(fn_obj)) {
+        call_expr <- .subst_across_dot(rlang::f_rhs(fn_obj), as.name(col))
+      } else {
+        fn_str <- resolve_fn_str(fn_obj)
+        call_expr <- as.call(c(list(as.name(fn_str), as.name(col)), extra_args))
+      }
       result[[out_name]] <- call_expr
     }
   }

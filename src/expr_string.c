@@ -10,6 +10,16 @@
 #include <regex.h>
 #include "vec_omp.h"
 
+/* Case-insensitive byte compare: 1 if a[0..n) equals b[0..n) ignoring ASCII
+   case. Used for fixed (non-regex) matching with ignore.case = TRUE. */
+static inline int mem_ci_eq(const char *a, const char *b, size_t n) {
+    for (size_t k = 0; k < n; k++) {
+        if (tolower((unsigned char)a[k]) != tolower((unsigned char)b[k]))
+            return 0;
+    }
+    return 1;
+}
+
 /* Expand regex backreferences (\1..\9) in replacement string.
    Writes expanded replacement to dst, returns bytes written. */
 static inline int64_t backref_write(char *dst, const char *rep, int64_t rlen,
@@ -192,17 +202,19 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_BOOL, n);
 
+        int re_flags = REG_EXTENDED | REG_NOSUB;
+        if (expr->ignore_case) re_flags |= REG_ICASE;
         if (!expr->fixed) {
             /* Regex mode — parallel with per-thread compiled regex */
             regex_t re_check;
-            if (regcomp(&re_check, pattern, REG_EXTENDED | REG_NOSUB) != 0)
+            if (regcomp(&re_check, pattern, re_flags) != 0)
                 vectra_error("grepl: invalid regex pattern: %s", pattern);
             regfree(&re_check);
             volatile int oom = 0;
             #pragma omp parallel if(n > 1000)
             {
                 regex_t re_local;
-                regcomp(&re_local, pattern, REG_EXTENDED | REG_NOSUB);
+                regcomp(&re_local, pattern, re_flags);
                 int64_t tl_cap = 256;
                 char *tl_buf = (char *)malloc((size_t)tl_cap);
                 if (!tl_buf) {
@@ -244,8 +256,11 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 int found = 0;
                 if (pat_len <= slen) {
                     for (int64_t j = 0; j <= slen - pat_len; j++) {
-                        if (memcmp(s->buf.str.data + so + j, pattern, (size_t)pat_len) == 0)
-                            { found = 1; break; }
+                        const char *hay = s->buf.str.data + so + j;
+                        int eq = expr->ignore_case
+                                     ? (mem_ci_eq(hay, pattern, (size_t)pat_len))
+                                     : (memcmp(hay, pattern, (size_t)pat_len) == 0);
+                        if (eq) { found = 1; break; }
                     }
                 }
                 out->buf.bln[i] = (uint8_t)found;
@@ -527,7 +542,9 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             /* Regex mode: compile regex, two-pass replacement with backreference support */
             #define MAX_GROUPS 10
             regex_t re;
-            if (regcomp(&re, pat, REG_EXTENDED) != 0)
+            int re_flags = REG_EXTENDED;
+            if (expr->ignore_case) re_flags |= REG_ICASE;
+            if (regcomp(&re, pat, re_flags) != 0)
                 vectra_error("gsub/sub: invalid regex: %s", pat);
 
             /* Pass 1: compute output lengths (reusable buffer) */
@@ -618,7 +635,10 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             int64_t out_len = 0, j = 0;
             int replaced = 0;
             while (j <= slen - plen) {
-                if (memcmp(s->buf.str.data + so + j, pat, (size_t)plen) == 0 && !(only_first && replaced)) {
+                const char *hay = s->buf.str.data + so + j;
+                int eq = expr->ignore_case ? mem_ci_eq(hay, pat, (size_t)plen)
+                                           : (memcmp(hay, pat, (size_t)plen) == 0);
+                if (eq && !(only_first && replaced)) {
                     out_len += rlen;
                     j += plen;
                     replaced = 1;
@@ -648,7 +668,10 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             int64_t j = 0;
             int replaced = 0;
             while (j <= slen - plen) {
-                if (memcmp(s->buf.str.data + so + j, pat, (size_t)plen) == 0 && !(only_first && replaced)) {
+                const char *hay = s->buf.str.data + so + j;
+                int eq = expr->ignore_case ? mem_ci_eq(hay, pat, (size_t)plen)
+                                           : (memcmp(hay, pat, (size_t)plen) == 0);
+                if (eq && !(only_first && replaced)) {
                     if (rlen > 0) memcpy(out->buf.str.data + off, rep, (size_t)rlen);
                     off += rlen;
                     j += plen;

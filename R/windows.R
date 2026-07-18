@@ -4,7 +4,7 @@
 # Supported: lag(), lead(), row_number(), cumsum(), cummean(), cummin(), cummax()
 
 # Known window function names
-.win_fns <- c("lag", "lead", "row_number", "rank", "dense_rank",
+.win_fns <- c("lag", "lead", "row_number", "rank", "min_rank", "dense_rank",
               "cumsum", "cummean", "cummin", "cummax",
               "ntile", "percent_rank", "cume_dist",
               "roll_sum", "roll_mean", "roll_min", "roll_max", "roll_n")
@@ -52,7 +52,9 @@ parse_window_spec <- function(expr, output_name) {
                 offset = 1L, default = NULL, desc = FALSE))
   }
 
-  if (fn == "rank") {
+  if (fn == "rank" || fn == "min_rank") {
+    # dplyr's min_rank() is rank with ties.method = "min", which is exactly
+    # this engine's rank window.
     pa <- .parse_order_arg(expr[[2]])
     return(list(name = output_name, kind = "rank", col = pa$col,
                 offset = 1L, default = NULL, desc = pa$desc))
@@ -177,4 +179,76 @@ create_window_node <- function(.data, win_specs) {
   new_xptr <- .Call(C_window_node, .data$.node, key_names, win_specs)
   structure(list(.node = new_xptr, .path = .data$.path,
                  .groups = .data$.groups), class = "vectra_node")
+}
+
+# Argument position(s) of a window call that name a column (call element index,
+# where [[1]] is the function). A compound expression there is hoisted into a
+# temp column so e.g. cumsum(x + y) or rank(desc(a * b)) works like dplyr.
+.win_col_argpos <- function(fn) {
+  switch(fn,
+         row_number   = 2L,
+         rank = , min_rank = , dense_rank = ,
+         percent_rank = , cume_dist = ,
+         cumsum = , cummean = , cummin = , cummax = ,
+         lag = , lead = 2L,
+         roll_sum = , roll_mean = , roll_min = , roll_max = c(2L, 3L),
+         roll_n       = 2L,
+         integer(0))            # ntile has no column argument to hoist
+}
+
+# Hoist compound column arguments of window calls into temp columns. Returns the
+# rewritten dots (window calls now reference temp symbols), `pre` (named exprs to
+# materialize before the window node), and `drop` (temp names to remove after).
+.hoist_window_args <- function(dots) {
+  pre <- list(); drop <- character(0); k <- 0L
+  out <- dots
+  for (i in seq_along(dots)) {
+    e <- dots[[i]]
+    if (!is_window_call(e)) next
+    fn <- as.character(e[[1]])
+    for (pos in .win_col_argpos(fn)) {
+      if (length(e) < pos) next
+      a <- e[[pos]]
+      if (is.name(a) || is.atomic(a) || is.null(a)) next   # bare col / constant
+      is_desc <- is.call(a) && identical(as.character(a[[1]]), "desc")
+      if (is_desc && (is.name(a[[2]]) || is.atomic(a[[2]]))) next  # desc(col)
+      k <- k + 1L
+      tnm <- paste0(".__win_arg", k, "__")
+      if (is_desc) {
+        pre[[tnm]] <- a[[2]]
+        e[[pos]] <- call("desc", as.name(tnm))
+      } else {
+        pre[[tnm]] <- a
+        e[[pos]] <- as.name(tnm)
+      }
+      drop <- c(drop, tnm)
+    }
+    out[[i]] <- e
+  }
+  list(dots = out, pre = pre, drop = unique(drop))
+}
+
+# Materialize a named list of expressions as new columns on `node` (one project
+# node, each evaluated against the current input schema).
+.window_materialize <- function(node, exprs, env) {
+  schema <- .Call(C_node_schema, node$.node)
+  out_names <- schema$name
+  out_exprs <- vector("list", length(out_names))
+  for (nm in names(exprs)) {
+    out_names <- c(out_names, nm)
+    out_exprs <- c(out_exprs, list(serialize_expr(exprs[[nm]], env, schema$name)))
+  }
+  new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
+  structure(list(.node = new_xptr, .path = node$.path,
+                 .groups = node$.groups), class = "vectra_node")
+}
+
+# Drop named columns from `node` via a pass-through projection of the survivors.
+.window_drop <- function(node, drop) {
+  schema <- .Call(C_node_schema, node$.node)
+  keep <- setdiff(schema$name, drop)
+  new_xptr <- .Call(C_project_node, node$.node, keep,
+                    vector("list", length(keep)))
+  structure(list(.node = new_xptr, .path = node$.path,
+                 .groups = node$.groups), class = "vectra_node")
 }

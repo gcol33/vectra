@@ -332,8 +332,26 @@ slice_head <- function(.data, n = 1L) {
 slice_head.vectra_node <- function(.data, n = 1L) {
   if (!is.numeric(n) || length(n) != 1 || is.na(n) || n < 1 || n != floor(n))
     stop(sprintf("n must be a positive integer, got %s", deparse(n)))
-  new_xptr <- .Call(C_limit_node, .data$.node, as.double(n))
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  if (is.null(.data$.groups) || length(.data$.groups) == 0) {
+    new_xptr <- .Call(C_limit_node, .data$.node, as.double(n))
+    return(structure(list(.node = new_xptr, .path = .data$.path),
+                     class = "vectra_node"))
+  }
+  # Grouped: first n rows per group in arrival order, via a per-group
+  # row_number window filtered to rn <= n (streaming, bounded per group).
+  schema <- .Call(C_node_schema, .data$.node)
+  orig_names <- schema$name
+  rank_col <- ".__vtr_sliceh_rn"
+  spec <- list(list(name = rank_col, kind = "row_number", col = NULL,
+                    offset = 1L, default = NULL, desc = FALSE))
+  win <- create_window_node(.data, spec)
+  pred <- combine_predicates(list(bquote(.(as.name(rank_col)) <= .(n))),
+                             environment(), c(orig_names, rank_col))
+  filt <- .Call(C_filter_node, win$.node, pred)
+  proj <- .Call(C_project_node, filt, orig_names,
+                vector("list", length(orig_names)))
+  structure(list(.node = proj, .path = .data$.path,
+                 .groups = .data$.groups), class = "vectra_node")
 }
 
 #' @rdname slice_head
@@ -346,11 +364,22 @@ slice_tail <- function(.data, n = 1L) {
 slice_tail.vectra_node <- function(.data, n = 1L) {
   if (!is.numeric(n) || length(n) != 1 || is.na(n) || n < 1 || n != floor(n))
     stop(sprintf("n must be a positive integer, got %s", deparse(n)))
-  # Must materialize to know total rows, then take last n
+  # Must materialize to know total rows, then take last n. (Consistent with the
+  # ungrouped path, which also collects.)
+  groups <- .data$.groups
   df <- collect(.data)
   nr <- nrow(df)
-  if (n >= nr) return(df)
-  df[(nr - n + 1):nr, , drop = FALSE]
+  if (is.null(groups) || length(groups) == 0) {
+    if (n >= nr) return(df)
+    return(df[(nr - n + 1):nr, , drop = FALSE])
+  }
+  # Grouped: last n rows of each group, in original row order.
+  if (nr == 0) return(df)
+  gkey <- do.call(paste, c(df[groups], sep = "\r"))
+  idx <- seq_len(nr)
+  keep <- unlist(lapply(split(idx, gkey), function(ix) utils::tail(ix, n)),
+                 use.names = FALSE)
+  df[sort(keep), , drop = FALSE]
 }
 
 # Group-aware slice: keep the n rows with the smallest (desc = FALSE) or largest
@@ -489,13 +518,18 @@ slice <- function(.data, ...) {
 #' @export
 slice.vectra_node <- function(.data, ...) {
   indices <- c(...)
-  df <- collect(.data)
-  if (all(indices > 0)) {
-    indices <- indices[indices <= nrow(df)]
-    df[indices, , drop = FALSE]
-  } else if (all(indices < 0)) {
-    df[indices, , drop = FALSE]
-  } else {
+  if (!(all(indices > 0) || all(indices < 0)))
     stop("slice indices must be all positive or all negative")
+  groups <- .data$.groups
+  df <- collect(.data)
+  # Positional pick within a set of row indices (per group, or the whole frame).
+  pick <- function(ix) {
+    if (all(indices > 0)) ix[indices[indices <= length(ix)]] else ix[indices]
   }
+  if (is.null(groups) || length(groups) == 0)
+    return(df[pick(seq_len(nrow(df))), , drop = FALSE])
+  # Grouped: apply the positions within each group, as dplyr does.
+  gkey <- do.call(paste, c(df[groups], sep = "\r"))
+  keep <- unlist(lapply(split(seq_len(nrow(df)), gkey), pick), use.names = FALSE)
+  df[sort(keep), , drop = FALSE]
 }

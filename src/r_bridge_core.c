@@ -503,6 +503,8 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->operand = parse_expr(list_get(lst, "operand"), schema);
         SEXP fixed_sexp = list_get(lst, "fixed");
         e->fixed = (fixed_sexp != R_NilValue) ? Rf_asLogical(fixed_sexp) : 1;
+        SEXP ic_sexp = list_get(lst, "ignore_case");
+        e->ignore_case = (ic_sexp != R_NilValue) ? Rf_asLogical(ic_sexp) : 0;
         e->result_type = VEC_BOOL;
         return e;
     }
@@ -722,6 +724,8 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->operand = parse_expr(list_get(lst, "operand"), schema);
         SEXP fixed_sexp = list_get(lst, "fixed");
         e->fixed = (fixed_sexp != R_NilValue) ? Rf_asLogical(fixed_sexp) : 1;
+        SEXP ic_sexp = list_get(lst, "ignore_case");
+        e->ignore_case = (ic_sexp != R_NilValue) ? Rf_asLogical(ic_sexp) : 0;
         e->result_type = VEC_STRING;
         return e;
     }

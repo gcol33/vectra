@@ -241,6 +241,10 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
     stop(sprintf("name must be NULL or a single string, got %s of length %d", class(name)[1], length(name)))
   grp_exprs <- eval(substitute(alist(...)))
   grp_names <- vapply(grp_exprs, as.character, character(1))
+  # count() on grouped data groups by the existing group_by() keys plus the
+  # count columns, as dplyr does (group_by(g) |> count(b) counts per g, b).
+  existing <- if (!is.null(x$.groups)) x$.groups else character(0)
+  grp_names <- unique(c(existing, grp_names))
   cnt_name <- if (!is.null(name)) name else "n"
   wt_expr <- substitute(wt)
 
@@ -254,8 +258,9 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
   if (is.null(wt_expr) || identical(wt_expr, quote(NULL))) {
     agg_specs <- list(list(name = cnt_name, kind = "n", col = NULL, na_rm = FALSE))
   } else {
+    # dplyr sums weights with na.rm = TRUE.
     wt_name <- as.character(wt_expr)
-    agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = FALSE))
+    agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = TRUE))
   }
 
   new_xptr <- .group_agg_node(node$.node, grp_names, agg_specs)
@@ -285,8 +290,9 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
   if (is.null(wt_expr) || identical(wt_expr, quote(NULL))) {
     agg_specs <- list(list(name = cnt_name, kind = "n", col = NULL, na_rm = FALSE))
   } else {
+    # dplyr sums weights with na.rm = TRUE.
     wt_name <- as.character(wt_expr)
-    agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = FALSE))
+    agg_specs <- list(list(name = cnt_name, kind = "sum", col = wt_name, na_rm = TRUE))
   }
 
   new_xptr <- .group_agg_node(x$.node, key_names, agg_specs)

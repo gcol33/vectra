@@ -127,6 +127,9 @@ struct VecExpr {
     /* EXPR_GREPL / EXPR_GSUB / EXPR_SUB: 1 = fixed match (default), 0 = regex */
     int fixed;
 
+    /* EXPR_GREPL / EXPR_GSUB / EXPR_SUB: 1 = case-insensitive match */
+    int ignore_case;
+
     /* EXPR_GEOM: which libgeos op (see expr_geom.c). The geometry argument is
        `operand`; a binary op's second geometry or a parameterized transform's
        scalar argument is `right`. */

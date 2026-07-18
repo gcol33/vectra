@@ -205,13 +205,22 @@ mutate.vectra_node <- function(.data, ...) {
   if (is.null(dot_names) || any(dot_names == ""))
     stop("all mutate expressions must be named")
 
+  # Hoist compound window arguments (e.g. cumsum(x + y), rank(desc(a * b))) into
+  # temp columns materialized before the window node, then dropped after.
+  hoist <- .hoist_window_args(dots)
+  dots <- hoist$dots
+
   # Split into window functions and regular expressions
   split <- split_window_exprs(dots)
   node <- .data
 
   # Apply window functions first (if any)
   if (length(split$win_specs) > 0) {
+    if (length(hoist$pre) > 0)
+      node <- .window_materialize(node, hoist$pre, parent.frame())
     node <- create_window_node(node, split$win_specs)
+    if (length(hoist$drop) > 0)
+      node <- .window_drop(node, hoist$drop)
   }
 
   # Apply regular expressions (if any), with dplyr's left-to-right semantics:

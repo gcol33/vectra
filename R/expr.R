@@ -125,15 +125,22 @@
     if (!is.character(pattern))
       stop("grepl: pattern must be a string literal")
     fixed <- FALSE  # base R default: pattern is a regex unless fixed = TRUE
+    ignore_case <- FALSE
     nms <- names(expr)
     if (!is.null(nms)) {
       fi <- match("fixed", nms)
       if (!is.na(fi)) fixed <- isTRUE(eval(expr[[fi]], env))
+      ci <- match("ignore.case", nms)
+      if (!is.na(ci)) ignore_case <- isTRUE(eval(expr[[ci]], env))
+      if (!is.na(match("perl", nms)) && isTRUE(eval(expr[[match("perl", nms)]], env)))
+        stop("grepl(perl = TRUE) is not supported; the engine uses POSIX ",
+             "extended regular expressions")
     }
     return(list(kind = "grepl",
                 pattern = as.character(pattern),
                 operand = serialize_expr(x, env, cols),
-                fixed = fixed))
+                fixed = fixed,
+                ignore_case = ignore_case))
   }
 
   if (fn %in% c("tolower", "toupper", "trimws")) {
@@ -187,16 +194,23 @@
     if (!is.character(pattern)) stop(paste0(fn, ": pattern must be a string literal"))
     if (!is.character(replacement)) stop(paste0(fn, ": replacement must be a string literal"))
     fixed <- FALSE  # base R default: pattern is a regex unless fixed = TRUE
+    ignore_case <- FALSE
     nms <- names(expr)
     if (!is.null(nms)) {
       fi <- match("fixed", nms)
       if (!is.na(fi)) fixed <- isTRUE(eval(expr[[fi]], env))
+      ci <- match("ignore.case", nms)
+      if (!is.na(ci)) ignore_case <- isTRUE(eval(expr[[ci]], env))
+      if (!is.na(match("perl", nms)) && isTRUE(eval(expr[[match("perl", nms)]], env)))
+        stop(fn, "(perl = TRUE) is not supported; the engine uses POSIX ",
+             "extended regular expressions")
     }
     return(list(kind = fn,
                 pattern = as.character(pattern),
                 replacement = as.character(replacement),
                 operand = serialize_expr(x, env, cols),
-                fixed = fixed))
+                fixed = fixed,
+                ignore_case = ignore_case))
   }
 
   if (fn == "str_extract") {
