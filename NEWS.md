@@ -1,3 +1,60 @@
+# vectra 0.11.5
+
+## Bug fixes
+
+* Windowed rolling `roll_min()` / `roll_max()` no longer corrupt the heap on a
+  long partition with a short time window (the monotonic-deque index could run
+  past its buffer).
+
+* `mutate()` with a unary math function (`sqrt()`, `abs()`, `log()`,
+  `round()`, ...) on a `double` column no longer leaks memory on every batch,
+  which could exhaust memory during a large streamed `collect()`.
+
+* Row-group pruning is more accurate: a `filter()` with a fractional threshold
+  on a sorted integer column (`filter(x < 2.9)`), an interior all-`NaN` row
+  group, and a quantized column no longer drop rows that actually match.
+
+* Date/time: `year()`, `month()`, `floor_time()`, and friends now use the
+  column's stored `Date` / `POSIXct` class to decide days-vs-seconds instead of
+  guessing by magnitude (a near-epoch `POSIXct` was misread), and compute
+  calendar fields with portable arithmetic that is correct for pre-1970 dates
+  on Windows. `as.Date()` returns `NA` for an invalid date (`"2021-02-30"`)
+  instead of a normalized one.
+
+* GeoTIFF reading now inverts the horizontal predictor (tag 317), so
+  DEFLATE-compressed files written with `PREDICTOR=2` (a GDAL/terra default)
+  decode correctly instead of as differenced garbage.
+
+* Window functions match dplyr: `ntile()` front-loads the remainder,
+  `row_number(desc(x))` keeps ties in first-arrival order, and a logical column
+  feeds `cumsum()` / rank windows correctly.
+
+* `min()` / `max()` propagate `NaN` regardless of position; `any()` / `all()`
+  treat `NaN` as `NA`; `NaN` join keys match each other; `x %in% set` always
+  returns a logical (an `NA` operand is `FALSE`, or `TRUE` if the set contains
+  `NA`).
+
+* `fuzzy_join()` errors on a non-string key/blocking column instead of
+  crashing; a join on more than 16 key columns is rejected rather than
+  overrunning internal buffers.
+
+* `right_join()` suffixes a non-key column present on both sides (`.x` / `.y`)
+  instead of emitting two columns with the same name.
+
+* A column with no declared type in a SQLite table (BLOB affinity) reads its
+  numeric cells as text instead of dropping the whole column to `NA`; the reader
+  bounds-checks on-disk offsets so a corrupt database cannot over-read. The
+  GeoTIFF and SQLite readers reject crafted files with overflowing sizes.
+
+* `int64` values above 2^53 warn about precision loss on the common
+  `collect()` path (previously only a rarer path warned).
+
+## New features
+
+* `tbl_csv()` gains a `col_types` argument to force specific column types
+  (`c(zip = "character")`), so a zero-padded identifier column is not
+  numericized by type inference.
+
 # vectra 0.11.4
 
 ## Behaviour changes
