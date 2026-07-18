@@ -15,7 +15,8 @@ typedef struct {
     Vtr1TdcFile   *file;
     int           *col_mask;       /* which columns to read */
     uint32_t       next_rg;        /* next row group to read */
-    uint32_t       last_rg;        /* exclusive upper bound (0 = use n_rowgroups) */
+    uint32_t       last_rg;        /* exclusive upper bound when last_rg_set */
+    int            last_rg_set;    /* 1 = last_rg is authoritative (0 is a valid bound) */
     int            rg_range_set;   /* 1 = binary search narrowed the range */
     VecExpr       *predicate;      /* pushed-down filter predicate (NULL = none) */
     int            pred_borrowed;  /* 1 = don't free predicate (owned by filter node) */

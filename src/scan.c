@@ -699,6 +699,7 @@ static void try_binary_search(ScanNode *sn) {
         if (first < last && (first > 0 || last < n_rgs)) {
             sn->next_rg = first;
             sn->last_rg = last;
+            sn->last_rg_set = 1;
             /* Compute rg_row_base for the starting position */
             sn->rg_row_base = 0;
             for (uint32_t rg = 0; rg < first; rg++)
@@ -722,6 +723,7 @@ static void try_binary_search(ScanNode *sn) {
     if (first_rg > 0 || last_rg < n_rgs) {
         sn->next_rg = first_rg;
         sn->last_rg = last_rg;
+        sn->last_rg_set = 1;   /* last_rg == 0 (prune everything) is authoritative */
         /* Compute rg_row_base for the starting position */
         sn->rg_row_base = 0;
         for (uint32_t rg = 0; rg < first_rg; rg++)
@@ -737,8 +739,8 @@ static VecBatch *scan_next_batch(VecNode *self) {
         try_binary_search(sn);
     }
 
-    uint32_t rg_limit = sn->last_rg ? sn->last_rg
-                                     : vtr1_tdc_n_rowgroups(sn->file);
+    uint32_t rg_limit = sn->last_rg_set ? sn->last_rg
+                                        : vtr1_tdc_n_rowgroups(sn->file);
 
     while (sn->next_rg < rg_limit) {
         /* Track the physical row base for tombstone checking */

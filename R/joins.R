@@ -175,7 +175,13 @@ right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
   y_names <- y_schema$name
   y_key_set <- keys$right
 
-  # Desired: all x columns, then y non-key columns
+  # Desired: all x columns, then y non-key columns. A non-key column present on
+  # both sides is suffixed in the output (like dplyr) -- using the bare name
+  # would emit two columns with the same name.
+  x_nonkey <- setdiff(x_names, keys$left)
+  y_nonkey <- setdiff(y_names, y_key_set)
+  collide  <- intersect(x_nonkey, y_nonkey)
+
   desired <- character(0)
   expr_lists <- list()
 
@@ -192,14 +198,11 @@ right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
         expr_lists <- c(expr_lists, list(NULL))
       }
     } else {
-      # Non-key x column: exists in current output (possibly suffixed)
-      match_name <- xn
-      if (!match_name %in% cur_names) {
-        # Try with suffix
-        match_name <- paste0(xn, suffix[1])
-      }
-      desired <- c(desired, xn)
-      if (match_name != xn) {
+      # Non-key x column: suffixed in the current output iff it collides with y.
+      out_name <- if (xn %in% collide) paste0(xn, suffix[1]) else xn
+      match_name <- if (out_name %in% cur_names) out_name else xn
+      desired <- c(desired, out_name)
+      if (match_name != out_name) {
         expr_lists <- c(expr_lists, list(list(kind = "col_ref", name = match_name)))
       } else {
         expr_lists <- c(expr_lists, list(NULL))
@@ -209,12 +212,10 @@ right_join.vectra_node <- function(x, y, by = NULL, suffix = c(".x", ".y"),
   # y non-key columns
   for (yn in y_names) {
     if (yn %in% y_key_set) next
-    match_name <- yn
-    if (!match_name %in% cur_names) {
-      match_name <- paste0(yn, suffix[2])
-    }
-    desired <- c(desired, yn)
-    if (match_name != yn) {
+    out_name <- if (yn %in% collide) paste0(yn, suffix[2]) else yn
+    match_name <- if (out_name %in% cur_names) out_name else yn
+    desired <- c(desired, out_name)
+    if (match_name != out_name) {
       expr_lists <- c(expr_lists, list(list(kind = "col_ref", name = match_name)))
     } else {
       expr_lists <- c(expr_lists, list(NULL))

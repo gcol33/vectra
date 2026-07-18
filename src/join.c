@@ -13,6 +13,7 @@
 #include "vtr1_tdc.h"
 #include "vtr_codec.h"
 #include "error.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,9 +118,13 @@ static int join_keys_equal(const VecArray *probe_cols, const int *probe_key_idx,
         case VEC_INT8:
             if (pa->buf.i8[probe_row] != ba->buf.i8[build_row]) return 0;
             break;
-        case VEC_DOUBLE:
-            if (pa->buf.dbl[probe_row] != ba->buf.dbl[build_row]) return 0;
+        case VEC_DOUBLE: {
+            double pd = pa->buf.dbl[probe_row], bd = ba->buf.dbl[build_row];
+            /* NaN keys match each other (as in group_by/distinct and the merge
+               path); plain != would reject NaN==NaN and miss the join. */
+            if (pd != bd && !(pd != pd && bd != bd)) return 0;
             break;
+        }
         case VEC_BOOL:
             if (pa->buf.bln[probe_row] != ba->buf.bln[build_row]) return 0;
             break;
@@ -964,7 +969,11 @@ static inline uint64_t hash_i64(int64_t val) {
 }
 
 static inline uint64_t hash_dbl(double val) {
-    if (val == 0.0) val = 0.0; /* normalize -0 */
+    /* Match hash.c vec_hash_value: normalize -0 to +0 and every NaN payload to
+       one canonical NaN, so a NaN probe key hashes to the same bucket as the
+       canonicalized build key and can actually meet it in join_keys_equal. */
+    if (val == 0.0) val = 0.0;
+    else if (val != val) val = (double)NAN;
     uint64_t h = FNV_OFFSET;
     const uint8_t *p = (const uint8_t *)&val;
     for (int k = 0; k < 8; k++) { h ^= p[k]; h *= FNV_PRIME; }
@@ -1634,6 +1643,11 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
                            JoinKind kind, int n_keys, JoinKey *keys,
                            const char *suffix_x, const char *suffix_y,
                            int64_t mem_budget, const char *temp_dir) {
+    /* Several spill-path locals (common[16], rkey[16], lkey[16], ckeys[16]) and
+       the probe-key coercion loop are fixed at 16; a join on more keys would
+       overrun them. Reject up front rather than corrupt the stack. */
+    if (n_keys > 16)
+        vectra_error("join supports at most 16 key columns (got %d)", n_keys);
     JoinNode *jn = (JoinNode *)calloc(1, sizeof(JoinNode));
     if (!jn) vectra_error("alloc failed for JoinNode");
     jn->left = left;

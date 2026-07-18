@@ -167,3 +167,51 @@ test_that("untyped SQLite columns (BLOB affinity) render numbers instead of all-
   expect_false(all(is.na(r$x)))
   expect_equal(r$x, c("42", "100"))
 })
+
+test_that("right_join suffixes colliding non-key columns like dplyr", {
+  fx <- tempfile(fileext = ".vtr"); fy <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fx, fy)))
+  write_vtr(data.frame(id = 1:3, val = c(10, 20, 30)), fx)
+  write_vtr(data.frame(id = 2:4, val = c(200, 300, 400)), fy)
+  r <- right_join(tbl(fx), tbl(fy), by = "id") |> collect()
+  expect_equal(names(r), c("id", "val.x", "val.y"))
+  r <- r[order(r$id), ]
+  expect_equal(r$val.x, c(20, 30, NA))
+  expect_equal(r$val.y, c(200, 300, 400))
+})
+
+test_that("min/max propagate NaN order-independently", {
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(g = c("a", "a", "b", "b"),
+                       x = c(1, NaN, NaN, 2)), f)
+  r <- tbl(f) |> group_by(g) |> summarise(mn = min(x), mx = max(x)) |> collect()
+  r <- r[order(r$g), ]
+  expect_true(is.na(r$mn[1]) && is.na(r$mx[1]))   # group a: {1, NaN}
+  expect_true(is.na(r$mn[2]) && is.na(r$mx[2]))   # group b: {NaN, 2}
+  # na.rm drops the NaN
+  r2 <- tbl(f) |> group_by(g) |> summarise(mn = min(x, na.rm = TRUE)) |> collect()
+  r2 <- r2[order(r2$g), ]
+  expect_equal(r2$mn, c(1, 2))
+})
+
+test_that("NaN double join keys match each other (consistent with grouping)", {
+  fx <- tempfile(fileext = ".vtr"); fy <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fx, fy)))
+  write_vtr(data.frame(k = c(1, NaN, 3), vx = c("a", "b", "c")), fx)
+  write_vtr(data.frame(k = c(NaN, 3), vy = c("B", "C")), fy)
+  r <- inner_join(tbl(fx), tbl(fy), by = "k") |> collect()
+  # NaN row of x meets NaN row of y; 3 meets 3
+  expect_equal(sort(r$vx), c("b", "c"))
+})
+
+test_that("join with more than 16 key columns is rejected", {
+  cols <- setNames(as.data.frame(matrix(1L, nrow = 2, ncol = 17)),
+                   paste0("k", 1:17))
+  fx <- tempfile(fileext = ".vtr"); fy <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(fx, fy)))
+  write_vtr(cols, fx); write_vtr(cols, fy)
+  expect_error(
+    inner_join(tbl(fx), tbl(fy), by = paste0("k", 1:17)) |> collect(),
+    "at most 16 key"
+  )
+})

@@ -342,6 +342,7 @@ SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
     SEXP bbox = PROTECT(allocMatrix(REALSXP, n, 4));
     double *bb = REAL(bbox);
     for (int i = 0; i < n; i++) { bb[i] = bb[i+n] = bb[i+2*n] = bb[i+3*n] = NA_REAL; }
+    volatile int parse_oom = 0;  /* set by a worker on malloc failure, raised below */
 
 #ifdef _OPENMP
     {   /* clamp to the team cap so R CMD check's two-core limit reaches the
@@ -389,6 +390,7 @@ SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
             if (buf != NULL) {
                 cbuf[i] = (unsigned char *) malloc(len);
                 if (cbuf[i] != NULL) { memcpy(cbuf[i], buf, len); clen[i] = len; }
+                else parse_oom = 1;  /* do not silently drop the feature */
                 GEOSFree_r(ctx, buf);
             }
             GEOSGeom_destroy_r(ctx, g);
@@ -396,6 +398,12 @@ SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
         GEOSWKBReader_destroy_r(ctx, reader);
         GEOSWKBWriter_destroy_r(ctx, writer);
         GEOS_finish_r(ctx);
+    }
+
+    if (parse_oom) {
+        for (int i = 0; i < n; i++) free(cbuf[i]);
+        R_Free(clen); R_Free(cbuf);
+        Rf_error("overlay: out of memory cleaning input geometry");  /* R unwinds PROTECTs */
     }
 
     /* serial: move cleaned WKB into an R list, freeing each C buffer as we go */

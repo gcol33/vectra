@@ -129,9 +129,15 @@ static int tiff_type_size(int dtype) {
     }
 }
 
+/* A tag element count past this is certainly a corrupt/hostile file: it also
+   caps count*item_size and count*8 well inside int64/size_t, so neither the
+   byte total nor the output malloc can overflow. */
+#define TIFF_MAX_TAG_COUNT ((int64_t)1 << 28)
+
 static int64_t *read_tag_ints(TiffIO *io, int dtype, int64_t count,
                                const uint8_t *value_or_offset,
                                int entry_val_bytes) {
+    if (count < 0 || count > TIFF_MAX_TAG_COUNT) return NULL;
     int item_size = tiff_type_size(dtype);
     int64_t total = count * item_size;
     int64_t *out = (int64_t *)malloc((size_t)count * sizeof(int64_t));
@@ -185,6 +191,7 @@ static int64_t *read_tag_ints(TiffIO *io, int dtype, int64_t count,
 static double *read_tag_doubles(TiffIO *io, int dtype, int64_t count,
                                  const uint8_t *value_or_offset,
                                  int entry_val_bytes) {
+    if (count < 0 || count > TIFF_MAX_TAG_COUNT) return NULL;
     int item_size = tiff_type_size(dtype);
     int64_t total = count * item_size;
     double *out = (double *)malloc((size_t)count * sizeof(double));

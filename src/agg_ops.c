@@ -232,6 +232,10 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         }
         if (acc->input_type == VEC_DOUBLE) {
             double v = col->buf.dbl[row];
+            /* NaN has no ordering: v < min is always false, so without this a NaN
+               is silently skipped unless it is the first value (order-dependent).
+               R propagates it: a NaN in the group makes min NaN (na.rm drops it). */
+            if (isnan(v)) { if (!acc->na_rm) acc->has_na[group_id] = 1; break; }
             if (!acc->has_value[group_id] || v < acc->min_dbl[group_id]) {
                 acc->min_dbl[group_id] = v;
                 acc->has_value[group_id] = 1;
@@ -251,6 +255,7 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         }
         if (acc->input_type == VEC_DOUBLE) {
             double v = col->buf.dbl[row];
+            if (isnan(v)) { if (!acc->na_rm) acc->has_na[group_id] = 1; break; }
             if (!acc->has_value[group_id] || v > acc->max_dbl[group_id]) {
                 acc->max_dbl[group_id] = v;
                 acc->has_value[group_id] = 1;
@@ -321,7 +326,11 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         if (acc->input_type == VEC_BOOL) {
             if (col->buf.bln[row]) acc->has_value[group_id] = 1;
         } else if (acc->input_type == VEC_DOUBLE) {
-            if (col->buf.dbl[row] != 0.0) acc->has_value[group_id] = 1;
+            double v = col->buf.dbl[row];
+            /* NaN coerces to NA in a logical context (R): feed it as NA into the
+               three-valued any/all rather than counting it as a definite TRUE. */
+            if (isnan(v)) { if (!acc->na_rm) acc->has_na[group_id] = 1; }
+            else if (v != 0.0) acc->has_value[group_id] = 1;
         } else if (acc->input_type == VEC_INT64) {
             if (agg_get_i64(col, row) != 0) acc->has_value[group_id] = 1;
         }
@@ -334,7 +343,9 @@ void agg_accum_feed(AggAccum *acc, int64_t group_id,
         if (acc->input_type == VEC_BOOL) {
             if (!col->buf.bln[row]) acc->has_value[group_id] = 0;
         } else if (acc->input_type == VEC_DOUBLE) {
-            if (col->buf.dbl[row] == 0.0) acc->has_value[group_id] = 0;
+            double v = col->buf.dbl[row];
+            if (isnan(v)) { if (!acc->na_rm) acc->has_na[group_id] = 1; }
+            else if (v == 0.0) acc->has_value[group_id] = 0;
         } else if (acc->input_type == VEC_INT64) {
             if (agg_get_i64(col, row) == 0) acc->has_value[group_id] = 0;
         }
