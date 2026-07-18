@@ -33,3 +33,9 @@ file. Each level is computed by 2x downsampling the previous level
 with the chosen kernel. Reading via \code{vec_read_window(level = L)}
 picks tiles at level L; the file's \code{n_levels} is updated in place.
 }
+\details{
+Unlike the streamed raster verbs, this decodes every band of the base
+raster into memory at once to build the pyramid, so peak memory is on the
+order of the full base raster (all bands). Build overviews before a raster
+grows past what fits in RAM, or on a per-band basis for very large stacks.
+}

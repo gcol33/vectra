@@ -714,7 +714,9 @@ polygonize <- function(x, band = 1L, dissolve = TRUE, na_rm = TRUE,
 #' @param band Band to contour (1-based). Default 1.
 #' @param merge If `TRUE` (default) join each level's segments into continuous
 #'   lines with [sf::st_line_merge()]; if `FALSE` return the raw per-cell
-#'   segments.
+#'   segments. Merging collects the full segment set into memory (usually small
+#'   relative to the raster, but proportional to the grid for a surface that
+#'   oscillates finely around a level); `merge = FALSE` stays streamed.
 #' @param crs Coordinate reference system recorded on the node. Defaults to the
 #'   raster's EPSG, else unknown.
 #' @param flush_rows Rows buffered before a spill flush. `NULL`

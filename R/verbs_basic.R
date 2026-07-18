@@ -194,47 +194,37 @@ mutate <- function(.data, ...) {
   UseMethod("mutate")
 }
 
-#' @export
-mutate.vectra_node <- function(.data, ...) {
-  dots <- eval(substitute(alist(...)))
-  # Expand across() calls
-  schema <- .Call(C_node_schema, .data$.node)
-  proxy <- schema_proxy(schema)
-  dots <- expand_across(dots, schema$name, parent.frame(), proxy)
-  dot_names <- names(dots)
-  if (is.null(dot_names) || any(dot_names == ""))
-    stop("all mutate expressions must be named")
-
+# Apply a set of already-captured, across-expanded mutate expressions to a node
+# with dplyr's left-to-right semantics, evaluating each against `env`. Shared by
+# mutate() and transmute(). Returns the resulting node (all input columns pass
+# through; transmute drops the extras afterward).
+.apply_mutate_dots <- function(node, dots, env) {
   # Hoist compound window arguments (e.g. cumsum(x + y), rank(desc(a * b))) into
   # temp columns materialized before the window node, then dropped after.
   hoist <- .hoist_window_args(dots)
   dots <- hoist$dots
 
-  # Split into window functions and regular expressions
   split <- split_window_exprs(dots)
-  node <- .data
 
-  # Apply window functions first (if any)
+  # Apply window functions first (if any).
   if (length(split$win_specs) > 0) {
     if (length(hoist$pre) > 0)
-      node <- .window_materialize(node, hoist$pre, parent.frame())
+      node <- .window_materialize(node, hoist$pre, env)
     node <- create_window_node(node, split$win_specs)
     if (length(hoist$drop) > 0)
       node <- .window_drop(node, hoist$drop)
   }
 
-  # Apply regular expressions (if any), with dplyr's left-to-right semantics:
-  # an expression may reference a column created earlier in the SAME mutate().
-  # All expressions inside one C_project_node evaluate against the input batch,
-  # so a reference to a just-created column is only visible once that column has
-  # been materialized by a prior project node. We therefore start a new project
-  # node whenever a dot references a name produced earlier in the current, not
-  # yet materialized, node. Independent columns stay in a single node (no extra
-  # passes); only genuinely dependent chains split.
+  # Apply regular expressions with dplyr's left-to-right semantics: an
+  # expression may reference a column created earlier in the SAME call. All
+  # expressions inside one C_project_node evaluate against the input batch, so a
+  # reference to a just-created column is only visible once that column has been
+  # materialized by a prior project node. We start a new project node whenever a
+  # dot references a name produced earlier in the current, not yet materialized,
+  # node. Independent columns stay in a single node; only dependent chains split.
   if (length(split$regular_dots) > 0) {
     schema <- .Call(C_node_schema, node$.node)
     avail  <- schema$name          # column names already materialized
-    pf     <- parent.frame()
     cur_names <- character(0)       # outputs pending in the current node
     cur_exprs <- list()
 
@@ -263,14 +253,26 @@ mutate.vectra_node <- function(.data, ...) {
       nm   <- split$regular_names[i]
       refs <- all.vars(split$regular_dots[[i]])
       if (any(refs %in% cur_names)) flush()  # depends on a column from this node
-      expr_ser <- serialize_expr(split$regular_dots[[i]], pf, avail)
+      expr_ser <- serialize_expr(split$regular_dots[[i]], env, avail)
       cur_names <- c(cur_names, nm)
       cur_exprs <- c(cur_exprs, list(expr_ser))
     }
     flush()
   }
 
-  # If window node added columns that should not have been pass-through
-  # but no regular exprs, just return the window node
   node
+}
+
+#' @export
+mutate.vectra_node <- function(.data, ...) {
+  dots <- eval(substitute(alist(...)))
+  # Expand across() calls
+  schema <- .Call(C_node_schema, .data$.node)
+  proxy <- schema_proxy(schema)
+  dots <- expand_across(dots, schema$name, parent.frame(), proxy)
+  dot_names <- names(dots)
+  if (is.null(dot_names) || any(dot_names == ""))
+    stop("all mutate expressions must be named")
+
+  .apply_mutate_dots(.data, dots, parent.frame())
 }

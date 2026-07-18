@@ -16,7 +16,9 @@ raster.}
 
 \item{merge}{If \code{TRUE} (default) join each level's segments into continuous
 lines with \code{\link[sf:st_line_merge]{sf::st_line_merge()}}; if \code{FALSE} return the raw per-cell
-segments.}
+segments. Merging collects the full segment set into memory (usually small
+relative to the raster, but proportional to the grid for a surface that
+oscillates finely around a level); \code{merge = FALSE} stays streamed.}
 
 \item{crs}{Coordinate reference system recorded on the node. Defaults to the
 raster's EPSG, else unknown.}

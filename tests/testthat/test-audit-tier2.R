@@ -91,3 +91,23 @@ test_that("ungrouped slice_head / slice_tail / slice unchanged", {
   expect_equal(slice_tail(tbl(f), n = 2)$x, c(4, 5))
   expect_equal(slice(tbl(f), -1)$x, c(2, 3, 4, 5))
 })
+
+# ---- transmute() sequencing + group keys -------------------------------------
+
+test_that("transmute supports same-call references and keeps group keys", {
+  f <- vtr(data.frame(g = c("a", "a", "b"), x = c(1, 2, 3), y = c(10, 20, 30)))
+  on.exit(unlink(f))
+  r <- collect(transmute(group_by(tbl(f), g), a = x + 1, b = a * 2))
+  expect_equal(r$a, c(2, 3, 4))
+  expect_equal(r$b, c(4, 6, 8))
+  expect_true(all(c("g", "a", "b") %in% names(r)))
+  expect_false(any(c("x", "y") %in% names(r)))          # non-kept cols dropped
+})
+
+# ---- round() half-to-even (base R semantics) ---------------------------------
+
+test_that("round() rounds half to even like base R", {
+  f <- vtr(data.frame(v = c(0.5, 1.5, 2.5, 3.5, -2.5))); on.exit(unlink(f))
+  expect_equal(collect(mutate(tbl(f), z = round(v)))$z, round(c(0.5, 1.5, 2.5, 3.5, -2.5)))
+  expect_equal(collect(mutate(tbl(f), z = round(v)))$z, c(0, 2, 2, 4, -2))
+})

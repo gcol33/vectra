@@ -233,6 +233,11 @@ vec_extract_points <- function(r, x, y) {
 #' with the chosen kernel. Reading via `vec_read_window(level = L)`
 #' picks tiles at level L; the file's `n_levels` is updated in place.
 #'
+#' Unlike the streamed raster verbs, this decodes every band of the base
+#' raster into memory at once to build the pyramid, so peak memory is on the
+#' order of the full base raster (all bands). Build overviews before a raster
+#' grows past what fits in RAM, or on a per-band basis for very large stacks.
+#'
 #' @param path Path to a `.vec` raster file. The file is modified in place.
 #' @param levels Total levels including level 0 (so `levels = 5` adds
 #'   four overviews: levels 1..4). Must be in `[2, 16]`.

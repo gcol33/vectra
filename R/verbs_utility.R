@@ -146,15 +146,19 @@ transmute.vectra_node <- function(.data, ...) {
   if (is.null(dot_names) || any(dot_names == ""))
     stop("all transmute expressions must be named")
 
-  out_names <- character(length(dots))
-  out_exprs <- vector("list", length(dots))
-  for (i in seq_along(dots)) {
-    out_names[i] <- dot_names[i]
-    out_exprs[[i]] <- serialize_expr(dots[[i]], parent.frame(), schema$name)
-  }
+  # transmute = mutate then keep only the created columns, so it inherits
+  # mutate's left-to-right sequencing (transmute(a = x + 1, b = a * 2)).
+  node <- .apply_mutate_dots(.data, dots, parent.frame())
 
-  new_xptr <- .Call(C_project_node, .data$.node, out_names, out_exprs)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  # Keep the grouping columns (first, as dplyr does) plus the transmuted
+  # columns, dropping every other pass-through column.
+  groups <- if (!is.null(.data$.groups)) .data$.groups else character(0)
+  keep <- unique(c(groups, dot_names))
+  present <- .Call(C_node_schema, node$.node)$name
+  keep <- keep[keep %in% present]
+  new_xptr <- .Call(C_project_node, node$.node, keep, vector("list", length(keep)))
+  structure(list(.node = new_xptr, .path = .data$.path,
+                 .groups = .data$.groups), class = "vectra_node")
 }
 
 #' Keep distinct/unique rows

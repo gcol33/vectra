@@ -220,7 +220,7 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch) {
             case 'e': out->buf.dbl[i] = exp(v); break;
             case 'f': out->buf.dbl[i] = floor(v); break;
             case 'c': out->buf.dbl[i] = ceil(v); break;
-            case 'r': out->buf.dbl[i] = round(v); break;
+            case 'r': out->buf.dbl[i] = rint(v); break; /* round half to even, like R */
             case '2': out->buf.dbl[i] = log2(v); break;
             case 't': out->buf.dbl[i] = log10(v); break;
             case 'g': out->buf.dbl[i] = (v > 0) ? 1.0 : (v < 0) ? -1.0 : 0.0; break;
