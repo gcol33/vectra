@@ -1,4 +1,68 @@
-# vectra 0.11.3
+# vectra 0.11.4
+
+## Behaviour changes
+
+* `left_join()` / `inner_join()` / `right_join()` / `full_join()` /
+  `semi_join()` / `anti_join()` gain an explicit `na_matches` argument
+  (`"na"`, the default, matches `NA` to `NA` as in dplyr; `"never"` uses SQL
+  NULL semantics).
+
+* `grepl()`, `gsub()`, and `sub()` now treat the pattern as a regular
+  expression by default (`fixed = FALSE`), matching base R. Pass `fixed = TRUE`
+  for literal matching. They also honour `ignore.case = TRUE`; `perl = TRUE` is
+  rejected with a clear error (the engine uses POSIX extended regexps).
+
+* `round()` now rounds halves to even (`round(2.5)` is `2`), matching base R.
+
+## Bug fixes
+
+* SQLite: reading a `BLOB` column, or a `TEXT` value larger than 64 KB, no
+  longer reads past the reader's buffer (a crash on ordinary input); a non-text
+  value in a text column reads as `NA`. Writing a row larger than a page (for
+  example a long text value) no longer overflows the page buffer -- the writer
+  now emits SQLite overflow pages, so large cells round-trip. Database files
+  larger than 2 GB are seeked with 64-bit offsets on Windows. A text/blob value
+  in a numeric column reads as `NA` rather than a fake `0`.
+
+* CSV: a leading UTF-8 byte-order mark is stripped from the header, so the first
+  column name is no longer corrupted (common in "CSV UTF-8" exports). A value
+  that disagrees with the inferred column type past the inference window becomes
+  `NA` rather than silently `FALSE` for logical columns. New `guess_max`
+  argument to `tbl_csv()` (default 1000; `Inf` scans the whole file) for columns
+  whose type only becomes apparent later in the file.
+
+* `mutate()` and `transmute()` evaluate expressions left to right, so an
+  expression may reference a column created earlier in the same call
+  (`mutate(a = x + 1, b = a * 2)`). `transmute()` also keeps the grouping
+  columns.
+
+* Integer-dtype raster output (`focal()`, `terrain()`, `warp()`, `mask()`,
+  `proximity()`, `vec_write_raster()`, ...) round-trips `NA` instead of writing
+  it as a valid `0`, by recording a per-dtype nodata sentinel when the data
+  contains `NA`.
+
+* `across()` accepts purrr-style formula lambdas (`~ .x + 1`,
+  `~ mean(.x, na.rm = TRUE)`).
+
+* Window functions accept `min_rank()` and a compound argument
+  (`cumsum(x + y)`, `rank(desc(a * b))`).
+
+* `count()` groups by the existing `group_by()` keys plus the counted columns,
+  and `count(wt = )` / `tally(wt = )` sum weights with `na.rm = TRUE`, matching
+  dplyr.
+
+* `slice_head()`, `slice_tail()`, and `slice()` are group-aware on grouped
+  input.
+
+* Corrupt or truncated `.vtr` / `.vtri` files are rejected cleanly instead of
+  over-reading, over-writing, or looping: the `.vtri` reader validates its entry
+  and slot counts against the file size and bounds its probe chains, and the
+  bundled tdc decoder bounds its LZ sequence cursor and back-references and
+  computes the dictionary offset-table size in 64-bit.
+
+* `focal()` reports a clean error instead of a null-pointer dereference if a
+  per-thread scratch allocation fails.
+
 
 ## Bug fixes
 
