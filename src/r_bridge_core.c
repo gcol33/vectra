@@ -597,13 +597,17 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
                 vectra_error("%%in%%: a string column can only be matched against "
                              "a character set (and vice versa)");
             e->set_type = VEC_STRING;
-            e->n_set = raw_n;
             e->set_str = (char **)malloc((size_t)(raw_n > 0 ? raw_n : 1) * sizeof(char *));
+            int64_t k = 0;
             for (int64_t i = 0; i < raw_n; i++) {
-                const char *s = CHAR(STRING_ELT(set_sexp, i));
-                e->set_str[i] = (char *)malloc(strlen(s) + 1);
-                strcpy(e->set_str[i], s);
+                SEXP elt = STRING_ELT(set_sexp, i);
+                if (elt == NA_STRING) { e->set_has_na = 1; continue; }  /* not a literal "NA" */
+                const char *s = CHAR(elt);
+                e->set_str[k] = (char *)malloc(strlen(s) + 1);
+                strcpy(e->set_str[k], s);
+                k++;
             }
+            e->n_set = k;
         } else if (ot == VEC_DOUBLE || TYPEOF(set_sexp) == REALSXP) {
             e->set_type = VEC_DOUBLE;
             e->set_dbl = (double *)malloc((size_t)(raw_n > 0 ? raw_n : 1) * sizeof(double));
@@ -612,12 +616,12 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
                 double v;
                 if (TYPEOF(set_sexp) == REALSXP) {
                     v = REAL(set_sexp)[i];
-                    if (R_IsNA(v)) continue;      /* keep NaN, drop true NA */
+                    if (R_IsNA(v)) { e->set_has_na = 1; continue; }  /* keep NaN, drop true NA */
                 } else if (TYPEOF(set_sexp) == INTSXP) {
-                    if (INTEGER(set_sexp)[i] == NA_INTEGER) continue;
+                    if (INTEGER(set_sexp)[i] == NA_INTEGER) { e->set_has_na = 1; continue; }
                     v = (double)INTEGER(set_sexp)[i];
                 } else { /* LGLSXP */
-                    if (LOGICAL(set_sexp)[i] == NA_LOGICAL) continue;
+                    if (LOGICAL(set_sexp)[i] == NA_LOGICAL) { e->set_has_na = 1; continue; }
                     v = (double)LOGICAL(set_sexp)[i];
                 }
                 e->set_dbl[k++] = v;
@@ -629,10 +633,10 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
             int64_t k = 0;
             for (int64_t i = 0; i < raw_n; i++) {
                 if (TYPEOF(set_sexp) == INTSXP) {
-                    if (INTEGER(set_sexp)[i] == NA_INTEGER) continue;
+                    if (INTEGER(set_sexp)[i] == NA_INTEGER) { e->set_has_na = 1; continue; }
                     e->set_i64[k++] = (int64_t)INTEGER(set_sexp)[i];
                 } else if (TYPEOF(set_sexp) == LGLSXP) {
-                    if (LOGICAL(set_sexp)[i] == NA_LOGICAL) continue;
+                    if (LOGICAL(set_sexp)[i] == NA_LOGICAL) { e->set_has_na = 1; continue; }
                     e->set_i64[k++] = (int64_t)LOGICAL(set_sexp)[i];
                 } else {
                     vectra_error("%%in%%: unsupported set type for a numeric column");

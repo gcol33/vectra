@@ -358,7 +358,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                     ht_hashes[slot] = h; ht_used[slot] = 1; ht_idx[slot] = j;
                 }
                 for (int64_t i = 0; i < n; i++) {
-                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_valid(out, i); out->buf.bln[i] = (uint8_t)expr->set_has_na; continue; }
                     vec_array_set_valid(out, i);
                     int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
                     int64_t slen2 = eo2 - so2;
@@ -381,7 +381,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 free(ht_hashes); free(ht_used); free(ht_idx);
             } else {
                 for (int64_t i = 0; i < n; i++) {
-                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_valid(out, i); out->buf.bln[i] = (uint8_t)expr->set_has_na; continue; }
                     vec_array_set_valid(out, i);
                     int64_t so2 = o->buf.str.offsets[i], eo2 = o->buf.str.offsets[i + 1];
                     int64_t slen2 = eo2 - so2;
@@ -427,7 +427,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                     ht_hashes[slot] = h; ht_used[slot] = 1; ht_idx[slot] = j;
                 }
                 for (int64_t i = 0; i < n; i++) {
-                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_valid(out, i); out->buf.bln[i] = (uint8_t)expr->set_has_na; continue; }
                     vec_array_set_valid(out, i);
                     uint64_t kb = in_key_from_operand(o, i, st);
                     uint64_t h = in_key_hash(kb);
@@ -442,7 +442,7 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 free(ht_hashes); free(ht_used); free(ht_idx);
             } else {
                 for (int64_t i = 0; i < n; i++) {
-                    if (!vec_array_is_valid(o, i)) { vec_array_set_null(out, i); continue; }
+                    if (!vec_array_is_valid(o, i)) { vec_array_set_valid(out, i); out->buf.bln[i] = (uint8_t)expr->set_has_na; continue; }
                     vec_array_set_valid(out, i);
                     uint64_t kb = in_key_from_operand(o, i, st);
                     int found = 0;

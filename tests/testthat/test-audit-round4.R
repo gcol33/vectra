@@ -215,3 +215,21 @@ test_that("join with more than 16 key columns is rejected", {
     "at most 16 key"
   )
 })
+
+test_that("%in% returns a logical (never NA) and matches NA via an NA in the set", {
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(x = c(1, 2, NA, 3), id = 1:4), f)
+  r <- tbl(f) |> mutate(a = x %in% c(1, 3),
+                        b = x %in% c(1, NA)) |> collect()
+  r <- r[order(r$id), ]
+  expect_equal(r$a, c(1, 2, NA, 3) %in% c(1, 3))     # NA operand -> FALSE
+  expect_equal(r$b, c(1, 2, NA, 3) %in% c(1, NA))    # NA operand -> TRUE
+  # strings
+  fs <- tempfile(fileext = ".vtr"); on.exit(unlink(fs), add = TRUE)
+  write_vtr(data.frame(s = c("a", "b", NA, "c"), id = 1:4), fs)
+  rs <- tbl(fs) |> mutate(a = s %in% c("a", "c"),
+                          b = s %in% c("a", NA)) |> collect()
+  rs <- rs[order(rs$id), ]
+  expect_equal(rs$a, c("a", "b", NA, "c") %in% c("a", "c"))
+  expect_equal(rs$b, c("a", "b", NA, "c") %in% c("a", NA))
+})

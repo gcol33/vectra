@@ -97,6 +97,7 @@ struct VecExpr {
     /* EXPR_IN */
     int64_t  n_set;
     VecType  set_type;   /* comparison type: VEC_DOUBLE, VEC_INT64, or VEC_STRING */
+    int      set_has_na; /* 1 = the set contained NA (so NA %in% set is TRUE) */
     double  *set_dbl;
     int64_t *set_i64;
     char   **set_str;
