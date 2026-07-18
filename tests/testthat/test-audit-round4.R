@@ -111,12 +111,13 @@ test_that("GeoTIFF with DEFLATE + horizontal predictor (2) decodes correctly", {
 test_that("ntile front-loads the remainder like dplyr", {
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(data.frame(x = 1:10, id = 1:10), f)
+  # dplyr::ntile(1:10, n) front-loads the remainder into the first groups
   expect_equal((tbl(f) |> arrange(x) |> mutate(nt = ntile(3)) |> collect())$nt,
-               dplyr::ntile(1:10, 3))
+               c(1, 1, 1, 1, 2, 2, 2, 3, 3, 3))
   expect_equal((tbl(f) |> arrange(x) |> mutate(nt = ntile(4)) |> collect())$nt,
-               dplyr::ntile(1:10, 4))
+               c(1, 1, 1, 2, 2, 2, 3, 3, 4, 4))
   expect_equal((tbl(f) |> arrange(x) |> mutate(nt = ntile(7)) |> collect())$nt,
-               dplyr::ntile(1:10, 7))
+               c(1, 1, 2, 2, 3, 3, 4, 5, 6, 7))
 })
 
 test_that("row_number(desc(x)) keeps ties in first-arrival order (grouped)", {
@@ -125,7 +126,8 @@ test_that("row_number(desc(x)) keeps ties in first-arrival order (grouped)", {
   write_vtr(data.frame(x = x, g = rep("a", 5), id = seq_along(x)), f)
   r <- tbl(f) |> group_by(g) |> mutate(rn = row_number(desc(x))) |> collect()
   r <- r[order(r$id), ]
-  expect_equal(r$rn, dplyr::row_number(dplyr::desc(x)))
+  # dplyr::row_number(dplyr::desc(x)): rank descending, ties by first arrival
+  expect_equal(r$rn, c(1L, 2L, 3L, 5L, 4L))
 })
 
 test_that("logical columns feed numeric/rank windows correctly", {
@@ -243,10 +245,9 @@ test_that("hash join bounds the many-to-many output across batches", {
 
   r <- inner_join(tbl(fp), tbl(fb), by = "k") |> collect()
   expect_equal(nrow(r), K * M)
-  d <- dplyr::inner_join(data.frame(k = rep(1L, M), vp = seq_len(M)),
-                         data.frame(k = rep(1L, K), vb = seq_len(K)), by = "k",
-                         relationship = "many-to-many")
-  expect_equal(sort(r$vp * 10000L + r$vb), sort(d$vp * 10000L + d$vb))
+  # single shared key => full cross product of (vp, vb)
+  expected <- as.vector(outer(seq_len(M) * 10000L, seq_len(K), `+`))
+  expect_equal(sort(r$vp * 10000L + r$vb), sort(expected))
 
   # emitted in bounded chunks, not one giant batch
   n_chunks <- 0L; max_rows <- 0L
@@ -284,10 +285,9 @@ test_that("BNL fallback (spilled hot key) also bounds the many-to-many output", 
 
   r <- inner_join(tbl(fp), tbl(fb), by = "k") |> collect()
   expect_equal(nrow(r), K * M)
-  d <- dplyr::inner_join(data.frame(k = rep(7L, M), vp = seq_len(M)),
-                         data.frame(k = rep(7L, K), vb = seq_len(K)), by = "k",
-                         relationship = "many-to-many")
-  expect_equal(sort(r$vp * 10000L + r$vb), sort(d$vp * 10000L + d$vb))
+  # single shared key => full cross product of (vp, vb)
+  expected <- as.vector(outer(seq_len(M) * 10000L, seq_len(K), `+`))
+  expect_equal(sort(r$vp * 10000L + r$vb), sort(expected))
 
   max_rows <- 0L
   total <- collect_chunked(inner_join(tbl(fp), tbl(fb), by = "k"),
