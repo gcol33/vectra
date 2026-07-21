@@ -50,6 +50,18 @@ void vec_builder_check_append(const VecArrayBuilder *b, const VecArray *arr);
    this contains no longjmp-capable call, so it is safe inside an OpenMP region. */
 void vec_builder_append_array_nocheck(VecArrayBuilder *b, const VecArray *arr);
 
+/* Append rows [start, start + n) of arr. The bulk path for re-chunking a
+   column into different row-group boundaries: one memcpy of the values plus
+   a word-level validity copy, rather than n vec_builder_append_one calls.
+   vec_builder_append_array is this over the whole array. */
+void vec_builder_append_range(VecArrayBuilder *b, const VecArray *arr,
+                              int64_t start, int64_t n);
+
+/* Like vec_builder_append_range but skips input validation; same contract as
+   vec_builder_append_array_nocheck (safe inside an OpenMP region). */
+void vec_builder_append_range_nocheck(VecArrayBuilder *b, const VecArray *arr,
+                                      int64_t start, int64_t n);
+
 /* Append a single value from arr at row index */
 void vec_builder_append_one(VecArrayBuilder *b, const VecArray *arr, int64_t row);
 

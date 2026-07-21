@@ -1,0 +1,64 @@
+#include "vtr_fileops.h"
+#include <stdio.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+int64_t vtr_file_size(FILE *fp) {
+    if (!fp) return -1;
+#if defined(_WIN32)
+    __int64 cur = _ftelli64(fp);
+    if (cur < 0) return -1;
+    if (_fseeki64(fp, 0, SEEK_END) != 0) return -1;
+    __int64 end = _ftelli64(fp);
+    if (_fseeki64(fp, cur, SEEK_SET) != 0) return -1;
+    return (int64_t)end;
+#else
+    off_t cur = ftello(fp);
+    if (cur < 0) return -1;
+    if (fseeko(fp, 0, SEEK_END) != 0) return -1;
+    off_t end = ftello(fp);
+    if (fseeko(fp, cur, SEEK_SET) != 0) return -1;
+    return (int64_t)end;
+#endif
+}
+
+int vtr_file_truncate(FILE *fp, int64_t length) {
+    if (!fp || length < 0) return -1;
+#if defined(_WIN32)
+    return _chsize_s(_fileno(fp), (__int64)length) == 0 ? 0 : -1;
+#else
+    return ftruncate(fileno(fp), (off_t)length) == 0 ? 0 : -1;
+#endif
+}
+
+#ifdef _WIN32
+
+int vtr_atomic_replace(const char *tmp_path, const char *path) {
+    /* Cumulative wait ~1 s across 7 tries, which comfortably covers the
+       typical R GC/mmap-release window after a preceding tbl() read. */
+    const DWORD backoffs_ms[] = {0, 25, 50, 100, 150, 250, 400};
+    const size_t n_tries = sizeof(backoffs_ms) / sizeof(backoffs_ms[0]);
+
+    for (size_t i = 0; i < n_tries; i++) {
+        if (backoffs_ms[i]) Sleep(backoffs_ms[i]);
+        if (MoveFileExA(tmp_path, path, MOVEFILE_REPLACE_EXISTING))
+            return 0;
+        DWORD err = GetLastError();
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED)
+            return -1;
+    }
+    return -1;
+}
+
+#else
+
+int vtr_atomic_replace(const char *tmp_path, const char *path) {
+    return rename(tmp_path, path);
+}
+
+#endif

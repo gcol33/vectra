@@ -151,15 +151,7 @@ SEXP C_write_vtr(SEXP df, SEXP path, SEXP batch_size, SEXP compress_sexp,
     const char *fpath = CHAR(STRING_ELT(path, 0));
     int bs = Rf_asInteger(batch_size);
 
-    int comp_level = 1; /* default: fast */
-    if (compress_sexp != R_NilValue && TYPEOF(compress_sexp) == STRSXP &&
-        Rf_length(compress_sexp) > 0) {
-        const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
-        if (strcmp(cstr, "fast") == 0) comp_level = 1;
-        else if (strcmp(cstr, "small") == 0) comp_level = 2;
-        else if (strcmp(cstr, "none") == 0) comp_level = 0;
-        else vectra_error("unknown compress level '%s' (expected \"fast\", \"small\", or \"none\")", cstr);
-    }
+    int comp_level = parse_compress_level(compress_sexp);
 
     int n_cols = Rf_length(df);
     SEXP first_col = VECTOR_ELT(df, 0);

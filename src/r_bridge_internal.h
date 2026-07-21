@@ -29,7 +29,8 @@ VecExpr    *parse_expr(SEXP lst, const VecSchema *schema);
 /* --- r_bridge_core.c: tempdir helper --- */
 const char *get_r_tempdir(void);
 
-/* --- r_bridge_io.c: quantize + spatial spec parsers --- */
+/* --- r_bridge_io.c: compress level + quantize + spatial spec parsers --- */
+int parse_compress_level(SEXP compress_sexp);
 VtrQuantizeSpec *parse_quantize(SEXP quantize_sexp, SEXP col_names, int n_cols);
 VtrSpatialSpec *parse_spatial(SEXP spatial_sexp, SEXP col_names, int n_cols);
 

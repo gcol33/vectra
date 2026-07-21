@@ -60,6 +60,45 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
  * header n_blocks/index_offset/index_size) and free w. */
 void vtr1_close_tdc_writer(Vtr1TdcWriter *w);
 
+/* ---------- widener (append columns in place) ----------------------------- */
+
+/*
+ * Appends columns to an existing container WITHOUT reading or rewriting the
+ * data already in it. tdc writes the new blocks, a replacement schema, and
+ * a rebuilt row-group index past the existing trailer, then patches the
+ * 64-byte header last, so the cost tracks the appended columns rather than
+ * the file's size and an interrupted append leaves the container readable
+ * as it was.
+ *
+ * The container is stamped as widened, which older readers refuse rather
+ * than misread; the superseded index stays behind as a gap in the blocks
+ * region, so a widened container is random-access only. Existing row-group
+ * boundaries and block offsets are unchanged, so any `.vtri` sidecar index
+ * over the original columns stays valid.
+ */
+
+typedef struct Vtr1TdcWidener Vtr1TdcWidener;
+
+/* Open `path` for widening. `widened_schema` is the full resulting schema:
+ * every existing column, in its existing order, then the `n_new_cols`
+ * appended ones. Aborts via vectra_error on I/O or validation failure. */
+Vtr1TdcWidener *vtr1_open_tdc_widener(const char *path,
+                                      const VecSchema *widened_schema,
+                                      int n_new_cols);
+
+/* Append this row group's slice of the new columns. `batch` holds exactly
+ * the n_new_cols appended columns, in schema order, and its row count MUST
+ * equal row group rg_idx's existing row count. */
+void vtr1_widen_rowgroup_tdc(Vtr1TdcWidener *w, uint32_t rg_idx,
+                             const VecBatch *batch, int comp_level);
+
+/* Finalize (schema + index + header patch) and free. */
+void vtr1_close_tdc_widener(Vtr1TdcWidener *w);
+
+/* Free without committing: the container is left exactly as it was found
+ * and the bytes written so far are truncated away. */
+void vtr1_abort_tdc_widener(Vtr1TdcWidener *w);
+
 /* ---------- reader -------------------------------------------------------- */
 
 typedef struct Vtr1TdcFile Vtr1TdcFile;

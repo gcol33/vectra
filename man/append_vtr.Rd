@@ -2,14 +2,25 @@
 % Please edit documentation in R/write.R
 \name{append_vtr}
 \alias{append_vtr}
-\title{Append rows to an existing .vtr file}
+\title{Append rows or columns to an existing .vtr file}
 \usage{
-append_vtr(x, path, ...)
+append_vtr(
+  x,
+  path,
+  along = c("rows", "cols"),
+  compress = c("fast", "small", "none"),
+  ...
+)
 }
 \arguments{
 \item{x}{A \code{vectra_node} (lazy query) or a \code{data.frame}.}
 
 \item{path}{File path of an existing \code{.vtr} file to append to.}
+
+\item{along}{\code{"rows"} to add rows (default), \code{"cols"} to add columns.}
+
+\item{compress}{Compression for the appended columns: \code{"fast"},
+\code{"small"}, or \code{"none"}. \code{along = "cols"} only.}
 
 \item{...}{Additional arguments passed to methods.}
 }
@@ -17,23 +28,55 @@ append_vtr(x, path, ...)
 Invisible \code{NULL}.
 }
 \description{
-Appends one or more new row groups to the end of an existing \code{.vtr} file
-without touching or recompressing existing row groups. The schema of \code{x}
-must exactly match the schema of the target file (same column names and
-types, in the same order).
+Grows an existing \code{.vtr} store in place. \code{along = "rows"} (the default)
+adds row groups to the end; \code{along = "cols"} attaches new columns to the
+rows already there.
 }
-\details{
-The operation is not fully atomic: if the process is interrupted after
-new row groups are written but before the header is patched, the file
-will be in a corrupted state. Use \code{write_vtr()} for safety-critical
-write-once workloads.
+\section{Appending rows}{
+The schema of \code{x} must exactly match the schema of the target file (same
+column names and types, in the same order). Existing row groups are
+restreamed through a fresh writer, so a row append costs a pass over the
+file.
 }
+
+\section{Appending columns}{
+\code{x} supplies whole new columns for the rows already in the store: it must
+have exactly as many rows as the store holds, and column names that do
+not collide with the existing ones. The existing columns are never read
+or rewritten -- the new columns are encoded and attached on their own --
+so the cost tracks what is being added rather than the size of the store.
+
+That is what lets a table too wide to hold in memory be built a block of
+columns at a time: write the first block with \code{\link[=write_vtr]{write_vtr()}}, then append
+each later block as it is produced, with a peak of one block rather than
+the whole table. Row order is preserved, and the rows of \code{x} are matched
+to the store's rows by position.
+
+Existing row-group boundaries and column data are untouched, so any
+\code{.vtri} index built with \code{\link[=create_index]{create_index()}} over the original columns stays
+valid across a column append.
+
+A column append rewrites the file header last, and everything before that
+is written past the end of the existing data, so an interruption leaves
+the store readable exactly as it was. A row append has no such property:
+interrupted after the new row groups are written but before the header is
+patched, the file is left corrupted. Use \code{\link[=write_vtr]{write_vtr()}} for
+safety-critical write-once workloads.
+}
+
 \examples{
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars[1:10, ], f)
 append_vtr(mtcars[11:20, ], f)
 result <- tbl(f) |> collect()
 stopifnot(nrow(result) == 20L)
+
+# Attach two more columns to those same 20 rows
+extra <- data.frame(kpl = result$mpg * 0.425,
+                    heavy = result$wt > 3)
+append_vtr(extra, f, along = "cols")
+wide <- tbl(f) |> collect()
+stopifnot(nrow(wide) == 20L, "kpl" \%in\% names(wide))
 unlink(f)
 
 }

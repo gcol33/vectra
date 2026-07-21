@@ -1,4 +1,4 @@
-/*
+﻿/*
  * src/api/stream_decode.c
  *
  * Streaming decoder: schema + row-group index.
@@ -7,23 +7,41 @@
  * returns NULL from tdc_stream_decoder_schema() and row-group index
  * queries degrade to sequential-only reads when index_offset is 0.
  *
- * Container layout:
+ * Container layout, version 1 (TDC_CONTAINER_VERSION):
  *
  *   [64-byte header]                (schema_size recorded in header)
  *   [schema_size bytes of schema]   (column descriptors; absent if 0)
  *   [block records ...]             (self-describing)
  *   [trailing row-group index]      (at index_offset, if present)
  *
+ * Container layout, version 2 (TDC_CONTAINER_VERSION_WIDENED) — produced
+ * only by tdc_stream_encoder_open_widen, which appends columns to an
+ * existing container without rewriting its body:
+ *
+ *   [64-byte header]                (schema_offset / blocks_start set)
+ *   [stale v1 schema bytes]         (dead; superseded, kept so the block
+ *                                    offsets recorded in the index stay valid)
+ *   [original block records ...]
+ *   [stale trailing index]          (dead; see below)
+ *   [appended column blocks ...]
+ *   [widened schema]                (at header.u.het.schema_offset)
+ *   [rebuilt trailing row-group index]
+ *
+ * A widened container therefore has a gap in its blocks region (the stale
+ * index the widen pass wrote past rather than over, so that a crash before
+ * the header patch leaves the pre-widen container intact). Blocks are
+ * located solely by the index, so random access is unaffected; sequential
+ * walking is not meaningful and peek_block refuses it explicitly rather
+ * than silently truncating at the gap.
+ *
  * Schema wire format:
  *   u16 n_columns
  *   per column: u16 name_len, name_len bytes UTF-8, u8 dtype,
  *               u16 ann_len, ann_len bytes UTF-8
  *
- * Row-group index wire format:
- *   u64 n_rowgroups
- *   per row group:
- *       u64 offset, u64 n_rows, u16 n_cols, u16 _pad, u32 _reserved
- *       per column: u64 block_offset, u64 block_total
+ * The row-group index wire format lives in ../format/rowgroup_internal.h;
+ * this file parses it through tdc_rowgroup_index_parse and never hand-rolls
+ * the layout.
  */
 
 #ifdef _MSC_VER
@@ -35,6 +53,7 @@
 #include "tdc/format.h"
 #include "tdc/types.h"
 #include "../format/stats_internal.h"
+#include "../format/rowgroup_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -56,15 +75,11 @@ struct tdc_stream_decoder {
     char                *schema_strings;   /* owned: all names + annotations */
     int                  has_schema;
 
-    /* Row-group index (owned; NULL if not seekable or no index). */
-    tdc_rowgroup_entry  *rg_entries;
-    uint64_t             rg_count;
+    /* Row-group index (owned; empty if not seekable or no index). Each
+     * group carries its own optional stats block, so there is no parallel
+     * stats array to keep in step. */
+    tdc_rowgroup_index   rg;
     int                  has_rg_index;
-
-    /* Per-rowgroup stats. Parallel array of rg_count slots; slot i is
-     * NULL when rg i has no stats, otherwise an n_cols-sized owned array.
-     * Only populated when TDC_CONTAINER_FLAG_HAS_STATS is set. */
-    tdc_column_stats   **rg_stats;
 
     /* File offset where blocks begin (after header + schema). */
     uint64_t    blocks_start;
@@ -151,17 +166,14 @@ static uint16_t read_u16_le(const uint8_t *p) {
     return v;
 }
 
-static uint32_t read_u32_le(const uint8_t *p) {
-    uint32_t v;
-    memcpy(&v, p, 4);
-    return v;
-}
+/* The row-group index is parsed by ../format/rowgroup.c, so the only
+ * width this file reads directly is the u16 the schema section uses. */
 
-static uint64_t read_u64_le(const uint8_t *p) {
-    uint64_t v;
-    memcpy(&v, p, 8);
-    return v;
-}
+/* Peek at the block sitting at the current stream position, bypassing the
+ * public entry point's sequential-walk guard. Defined below; used by
+ * seek_rowgroup, which positions the stream through the index. */
+static tdc_status peek_block_here(tdc_stream_decoder *dec,
+                                  tdc_block_record   *rec);
 
 /* ----- Schema parsing ---------------------------------------------------- */
 
@@ -266,143 +278,6 @@ static tdc_status parse_schema(struct tdc_stream_decoder *d,
     return TDC_OK;
 }
 
-/* ----- Row-group index parsing ------------------------------------------- */
-
-/*
- * Row-group index wire format (at index_offset):
- *   u64 n_rowgroups
- *   per row group:
- *       u64 offset
- *       u64 n_rows
- *       u16 n_cols
- *       u16 _pad
- *       u32 stats_size      (bytes of trailing stats block; 0 = none)
- *       per column:
- *           u64 block_offset
- *           u64 block_total
- *       [stats block of stats_size bytes, if non-zero]
- *
- * The stats block, when present, is exactly n_cols * TDC_STATS_ENTRY_SIZE
- * bytes (see src/format/stats.c).
- */
-
-#define RG_HEADER_SIZE 24  /* offset(8) + n_rows(8) + n_cols(2) + pad(2) + stats_size(4) */
-#define RG_COL_SIZE    16  /* block_offset(8) + block_total(8) */
-
-static tdc_status parse_rowgroup_index(struct tdc_stream_decoder *d,
-                                       const uint8_t *buf,
-                                       size_t buf_size) {
-    if (buf_size < 8) return TDC_E_CORRUPT;
-
-    uint64_t n_rg = read_u64_le(buf);
-    if (n_rg == 0) return TDC_OK;
-
-    int has_stats_flag =
-        (d->header.flags & TDC_CONTAINER_FLAG_HAS_STATS) != 0;
-
-    /* Validate that the buffer is large enough. We need to parse
-     * incrementally because n_cols varies per row group. */
-    size_t pos = 8;
-
-    /* First pass: validate sizes. */
-    for (uint64_t i = 0; i < n_rg; i++) {
-        if (pos + RG_HEADER_SIZE > buf_size) return TDC_E_CORRUPT;
-        uint16_t nc       = read_u16_le(buf + pos + 16);
-        uint32_t stats_sz = read_u32_le(buf + pos + 20);
-        /* A non-zero stats_size must match exactly n_cols * entry_size
-         * and may only appear when the container flag was set. */
-        if (stats_sz != 0) {
-            if (!has_stats_flag) return TDC_E_CORRUPT;
-            if (stats_sz != (uint32_t)nc * TDC_STATS_ENTRY_SIZE)
-                return TDC_E_CORRUPT;
-        }
-        pos += RG_HEADER_SIZE
-             + (size_t)nc * RG_COL_SIZE
-             + (size_t)stats_sz;
-        if (pos > buf_size) return TDC_E_CORRUPT;
-    }
-
-    /* Allocate the entry array and (if needed) the stats array. */
-    tdc_rowgroup_entry *entries = (tdc_rowgroup_entry *)v2_alloc(
-        d, NULL, (size_t)n_rg * sizeof(tdc_rowgroup_entry));
-    if (!entries) return TDC_E_NOMEM;
-    memset(entries, 0, (size_t)n_rg * sizeof(tdc_rowgroup_entry));
-
-    tdc_column_stats **stats_arr = NULL;
-    if (has_stats_flag) {
-        stats_arr = (tdc_column_stats **)v2_alloc(
-            d, NULL, (size_t)n_rg * sizeof(tdc_column_stats *));
-        if (!stats_arr) {
-            v2_free(d, entries);
-            return TDC_E_NOMEM;
-        }
-        memset(stats_arr, 0, (size_t)n_rg * sizeof(tdc_column_stats *));
-    }
-
-    /* Second pass: fill entries. Allocate per-entry column arrays. */
-    pos = 8;
-    for (uint64_t i = 0; i < n_rg; i++) {
-        entries[i].offset = read_u64_le(buf + pos);
-        entries[i].n_rows = read_u64_le(buf + pos + 8);
-        entries[i].n_cols = read_u16_le(buf + pos + 16);
-        uint32_t stats_sz = read_u32_le(buf + pos + 20);
-        pos += RG_HEADER_SIZE;
-
-        uint16_t nc = entries[i].n_cols;
-        if (nc > 0) {
-            tdc_rg_col_entry *ce = (tdc_rg_col_entry *)v2_alloc(
-                d, NULL, (size_t)nc * sizeof(tdc_rg_col_entry));
-            if (!ce) goto nomem;
-            for (uint16_t c = 0; c < nc; c++) {
-                ce[c].block_offset = read_u64_le(buf + pos);
-                ce[c].block_total  = read_u64_le(buf + pos + 8);
-                pos += RG_COL_SIZE;
-            }
-            entries[i].columns = ce;
-        } else {
-            entries[i].columns = NULL;
-        }
-
-        if (stats_sz > 0) {
-            tdc_column_stats *s = (tdc_column_stats *)v2_alloc(
-                d, NULL, (size_t)nc * sizeof(tdc_column_stats));
-            if (!s) goto nomem;
-            tdc_status pst = tdc_stats_parse(buf + pos, stats_sz, nc, s);
-            if (pst != TDC_OK) {
-                v2_free(d, s);
-                for (uint64_t j = 0; j <= i; j++)
-                    v2_free(d, entries[j].columns);
-                if (stats_arr) {
-                    for (uint64_t j = 0; j < i; j++) v2_free(d, stats_arr[j]);
-                    v2_free(d, stats_arr);
-                }
-                v2_free(d, entries);
-                return pst;
-            }
-            /* stats_arr is non-NULL here: stats_sz > 0 implies
-             * has_stats_flag (enforced in the first pass). */
-            stats_arr[i] = s;
-            pos += stats_sz;
-        }
-    }
-
-    d->rg_entries   = entries;
-    d->rg_stats     = stats_arr;
-    d->rg_count     = n_rg;
-    d->has_rg_index = 1;
-
-    return TDC_OK;
-
-nomem:
-    for (uint64_t j = 0; j < n_rg; j++) v2_free(d, entries[j].columns);
-    if (stats_arr) {
-        for (uint64_t j = 0; j < n_rg; j++) v2_free(d, stats_arr[j]);
-        v2_free(d, stats_arr);
-    }
-    v2_free(d, entries);
-    return TDC_E_NOMEM;
-}
-
 /* ----- Free helpers for owned sub-allocations ---------------------------- */
 
 static void free_schema(struct tdc_stream_decoder *d) {
@@ -416,21 +291,7 @@ static void free_schema(struct tdc_stream_decoder *d) {
 }
 
 static void free_rg_index(struct tdc_stream_decoder *d) {
-    if (d->rg_entries) {
-        for (uint64_t i = 0; i < d->rg_count; i++) {
-            v2_free(d, d->rg_entries[i].columns);
-        }
-        v2_free(d, d->rg_entries);
-        d->rg_entries = NULL;
-    }
-    if (d->rg_stats) {
-        for (uint64_t i = 0; i < d->rg_count; i++) {
-            v2_free(d, d->rg_stats[i]);
-        }
-        v2_free(d, d->rg_stats);
-        d->rg_stats = NULL;
-    }
-    d->rg_count = 0;
+    tdc_rowgroup_index_free(&d->rg, d->realloc_fn, d->alloc_user);
     d->has_rg_index = 0;
 }
 
@@ -469,12 +330,29 @@ tdc_status tdc_stream_decoder_open(const tdc_stream_decoder_config *cfg,
         v2_free(d, d);
         return TDC_E_CORRUPT;
     }
-    if (d->header.version != TDC_CONTAINER_VERSION) {
+    if (d->header.version != TDC_CONTAINER_VERSION &&
+        d->header.version != TDC_CONTAINER_VERSION_WIDENED) {
         v2_free(d, d);
         return TDC_E_VERSION;
     }
 
-    uint64_t pos = TDC_CONTAINER_HEADER_SIZE;
+    /* A widened container relocates its schema to the tail and records
+     * where the blocks region starts, because the original schema slot at
+     * offset 64 cannot grow in place. Reading it needs a seek, so a widened
+     * container cannot be opened forward-only. */
+    const int widened =
+        (d->header.version == TDC_CONTAINER_VERSION_WIDENED);
+    if (widened) {
+        if (!cfg->io.seek_fn) { v2_free(d, d); return TDC_E_INVAL; }
+        if (d->header.u.het.schema_offset == 0 ||
+            d->header.u.het.blocks_start  == 0) {
+            v2_free(d, d);
+            return TDC_E_CORRUPT;
+        }
+    }
+
+    uint64_t pos = widened ? d->header.u.het.blocks_start
+                           : TDC_CONTAINER_HEADER_SIZE;
 
     /* ---- Step 2: Parse schema section if schema_size > 0. ---- */
 
@@ -485,6 +363,19 @@ tdc_status tdc_stream_decoder_open(const tdc_stream_decoder_config *cfg,
         if (!schema_buf) {
             v2_free(d, d);
             return TDC_E_NOMEM;
+        }
+
+        /* v1: the schema follows the header. v2: it lives at the recorded
+         * offset, so seek to it and leave the stream at blocks_start. */
+        if (widened) {
+            st = cfg->io.seek_fn(cfg->io.ctx,
+                                 (int64_t)d->header.u.het.schema_offset,
+                                 TDC_SEEK_SET);
+            if (st != TDC_OK) {
+                v2_free(d, schema_buf);
+                v2_free(d, d);
+                return st;
+            }
         }
 
         st = v2_io_read_exact(&d->io, schema_buf, schema_size);
@@ -501,7 +392,9 @@ tdc_status tdc_stream_decoder_open(const tdc_stream_decoder_config *cfg,
             return st;
         }
 
-        pos += schema_size;
+        /* v2 already positioned `pos` at blocks_start; only v1 grows it by
+         * the schema it just consumed. */
+        if (!widened) pos += schema_size;
     }
 
     d->blocks_start = pos;
@@ -538,13 +431,17 @@ tdc_status tdc_stream_decoder_open(const tdc_stream_decoder_config *cfg,
             return st;
         }
 
-        st = parse_rowgroup_index(d, idx_buf, idx_bytes);
+        st = tdc_rowgroup_index_parse(
+            idx_buf, idx_bytes,
+            (d->header.flags & TDC_CONTAINER_FLAG_HAS_STATS) != 0,
+            d->realloc_fn, d->alloc_user, &d->rg);
         v2_free(d, idx_buf);
         if (st != TDC_OK) {
             free_schema(d);
             v2_free(d, d);
             return st;
         }
+        d->has_rg_index = (d->rg.n_rowgroups > 0);
 
         /* Seek back to first block position. */
         st = cfg->io.seek_fn(cfg->io.ctx,
@@ -582,29 +479,27 @@ int tdc_stream_decoder_has_rowgroup_index(
 uint64_t tdc_stream_decoder_rowgroup_count(
     const tdc_stream_decoder *dec) {
     if (!dec) return 0;
-    return dec->has_rg_index ? dec->rg_count : 0;
+    return dec->has_rg_index ? dec->rg.n_rowgroups : 0;
 }
 
 const tdc_rowgroup_entry *tdc_stream_decoder_get_rowgroup(
     const tdc_stream_decoder *dec, uint64_t rg_index) {
     if (!dec || !dec->has_rg_index) return NULL;
-    if (rg_index >= dec->rg_count) return NULL;
-    return &dec->rg_entries[rg_index];
+    if (rg_index >= dec->rg.n_rowgroups) return NULL;
+    return &dec->rg.groups[rg_index].entry;
 }
 
 const tdc_column_stats *tdc_stream_decoder_get_stats(
     const tdc_stream_decoder *dec,
     uint64_t                  rg_index,
     uint16_t                  col_index) {
-    if (!dec || !dec->has_rg_index) return NULL;
-    if (!dec->rg_stats)             return NULL;
-    if (rg_index >= dec->rg_count)  return NULL;
+    if (!dec || !dec->has_rg_index)      return NULL;
+    if (rg_index >= dec->rg.n_rowgroups) return NULL;
 
-    const tdc_column_stats *rg_row = dec->rg_stats[rg_index];
-    if (!rg_row) return NULL;
-
-    if (col_index >= dec->rg_entries[rg_index].n_cols) return NULL;
-    return &rg_row[col_index];
+    const tdc_rg_group *g = &dec->rg.groups[rg_index];
+    if (!g->has_stats) return NULL;
+    if (col_index >= g->entry.n_cols) return NULL;
+    return &g->stats[col_index];
 }
 
 tdc_status tdc_stream_decoder_seek_rowgroup(tdc_stream_decoder *dec,
@@ -614,9 +509,9 @@ tdc_status tdc_stream_decoder_seek_rowgroup(tdc_stream_decoder *dec,
     if (!dec || !rec) return TDC_E_INVAL;
     if (!dec->has_rg_index) return TDC_E_INVAL;
     if (!dec->io.seek_fn) return TDC_E_INVAL;
-    if (rg_index >= dec->rg_count) return TDC_E_INVAL;
+    if (rg_index >= dec->rg.n_rowgroups) return TDC_E_INVAL;
 
-    const tdc_rowgroup_entry *rg = &dec->rg_entries[rg_index];
+    const tdc_rowgroup_entry *rg = &dec->rg.groups[rg_index].entry;
     if (col_index >= rg->n_cols) return TDC_E_INVAL;
 
     /* Cancel any outstanding peek and reset the sequential block
@@ -634,14 +529,19 @@ tdc_status tdc_stream_decoder_seek_rowgroup(tdc_stream_decoder *dec,
 
     dec->read_pos = target;
 
-    /* Peek the block header at the new position. */
-    return tdc_stream_decoder_peek_block(dec, rec);
+    /* Peek the block header at the new position. Goes straight to the
+     * shared helper: the position came from the index, so the sequential
+     * guard in the public peek does not apply. */
+    return peek_block_here(dec, rec);
 }
 
 /* ----- Block-level operations (same protocol as v1) ---------------------- */
 
-tdc_status tdc_stream_decoder_peek_block(tdc_stream_decoder *dec,
-                                            tdc_block_record      *rec) {
+/* Peek at wherever the stream currently sits. Shared by the public
+ * sequential peek and by seek_rowgroup, which has already positioned the
+ * stream on a block located through the index. */
+static tdc_status peek_block_here(tdc_stream_decoder *dec,
+                                  tdc_block_record   *rec) {
     if (!dec || !rec) return TDC_E_INVAL;
     if (dec->peeked) return TDC_E_INVAL;
 
@@ -692,6 +592,22 @@ tdc_status tdc_stream_decoder_peek_block(tdc_stream_decoder *dec,
 
     *rec = hdr;
     return TDC_OK;
+}
+
+tdc_status tdc_stream_decoder_peek_block(tdc_stream_decoder *dec,
+                                         tdc_block_record   *rec) {
+    if (!dec || !rec) return TDC_E_INVAL;
+
+    /* A widened container's blocks region is not contiguous: the widen
+     * pass appended the new column blocks past the stale trailing index
+     * rather than over it, so a forward walk would hit those dead bytes,
+     * read a magic mismatch, and report a clean end-of-blocks partway
+     * through. Refuse the walk instead of silently truncating it -- every
+     * block is still reachable through seek_rowgroup. */
+    if (dec->header.version == TDC_CONTAINER_VERSION_WIDENED)
+        return TDC_E_INVAL;
+
+    return peek_block_here(dec, rec);
 }
 
 tdc_status tdc_stream_decoder_read_block(tdc_stream_decoder *dec,

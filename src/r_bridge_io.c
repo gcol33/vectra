@@ -192,6 +192,22 @@ SEXP C_write_tiff(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
     return write_node_dispatch(node_xptr, path_sexp, tiff_writer, &use_deflate);
 }
 
+/* Map the R-level `compress` string to a VTR_COMPRESS_* level.
+   NULL / absent / non-character means the default, "fast". */
+int parse_compress_level(SEXP compress_sexp) {
+    if (compress_sexp == R_NilValue || TYPEOF(compress_sexp) != STRSXP ||
+        Rf_length(compress_sexp) == 0)
+        return VTR_COMPRESS_FAST;
+
+    const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
+    if (strcmp(cstr, "fast")  == 0) return VTR_COMPRESS_FAST;
+    if (strcmp(cstr, "small") == 0) return VTR_COMPRESS_SMALL;
+    if (strcmp(cstr, "none")  == 0) return VTR_COMPRESS_NONE;
+    vectra_error("unknown compress level '%s' "
+                 "(expected \"fast\", \"small\", or \"none\")", cstr);
+    return VTR_COMPRESS_FAST; /* not reached */
+}
+
 /* Parse a quantize R list into a VtrQuantizeSpec array.
    quantize_sexp: named list, e.g. list(temp = c(scale=1000, type="int16"))
    col_names: STRSXP of column names (from schema or data.frame)
@@ -425,15 +441,7 @@ SEXP C_write_vtr_node(SEXP node_xptr, SEXP path_sexp, SEXP batch_size_sexp,
                       SEXP compress_sexp, SEXP col_types_sexp,
                       SEXP quantize_sexp, SEXP spatial_sexp) {
     (void)col_types_sexp; /* col_types narrowing not yet supported for node writes */
-    int comp_level = 1; /* default: fast */
-    if (compress_sexp != R_NilValue && TYPEOF(compress_sexp) == STRSXP &&
-        Rf_length(compress_sexp) > 0) {
-        const char *cstr = CHAR(STRING_ELT(compress_sexp, 0));
-        if (strcmp(cstr, "fast") == 0) comp_level = 1;
-        else if (strcmp(cstr, "small") == 0) comp_level = 2;
-        else if (strcmp(cstr, "none") == 0) comp_level = 0;
-        else vectra_error("unknown compress level '%s' (expected \"fast\", \"small\", or \"none\")", cstr);
-    }
+    int comp_level = parse_compress_level(compress_sexp);
 
     /* Parse quantize + spatial specs */
     VecNode *node = unwrap_node(node_xptr);

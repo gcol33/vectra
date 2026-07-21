@@ -208,8 +208,100 @@ tdc_status tdc_stream_encoder_set_rowgroup_stats(tdc_stream_encoder     *enc,
  */
 tdc_status tdc_stream_encoder_close(tdc_stream_encoder **enc);
 
+/*
+ * Discard an encoder without finalizing: frees all internal state and
+ * writes nothing -- no index, no schema, no header patch. Sets *enc to
+ * NULL; safe on a NULL *enc.
+ *
+ * For a widening encoder this is what makes a failed widen harmless: the
+ * blocks it already wrote sit past the container's trailing index and are
+ * referenced only by the header patch that now never happens, so the
+ * container is left exactly as it was found. (The caller may truncate the
+ * file back to its previous length to reclaim those bytes.)
+ *
+ * On an encoder from tdc_stream_encoder_open the header was already written
+ * at open, so aborting leaves a container with n_blocks = 0 and no index.
+ */
+tdc_status tdc_stream_encoder_abort(tdc_stream_encoder **enc);
+
 /* Number of blocks written so far. */
 uint64_t tdc_stream_encoder_block_count(const tdc_stream_encoder *enc);
+
+/* ----- Widening an existing container ------------------------------------ */
+
+/*
+ * Configuration for opening an existing container to APPEND COLUMNS.
+ * io must supply write_fn, read_fn and seek_fn: the existing header and
+ * row-group index are read back, and the new bytes are written past them.
+ */
+typedef struct {
+    tdc_io io;
+
+    /*
+     * The full replacement schema: every column already in the container,
+     * in its existing order, followed by the appended ones. Read only
+     * during open. Column entries are positional in both the schema and
+     * each row group's column array, so appended columns must come last.
+     */
+    const tdc_schema *schema;
+
+    void *(*realloc_fn)(void *user, void *ptr, size_t new_size);
+    void   *alloc_user;
+} tdc_stream_encoder_widen_config;
+
+/*
+ * Open an existing heterogeneous container to append columns to it,
+ * WITHOUT reading or rewriting the data already in the file.
+ *
+ * Cost is proportional to the appended columns plus the rebuilt schema and
+ * index, not to the container's size: existing block records are never
+ * read, decoded, or moved.
+ *
+ * The container must carry TDC_CONTAINER_FLAG_HETEROGENEOUS and a trailing
+ * row-group index. Both container versions can be widened, and the result
+ * is always stamped TDC_CONTAINER_VERSION_WIDENED, because widening
+ * relocates the schema to the tail (the section at offset 64 sits directly
+ * before the first block and cannot grow in place).
+ *
+ * Crash safety: everything is written past the existing trailing index,
+ * and the 64-byte header is patched last. If the process dies before that
+ * patch, the file still reads as the container did before the widen. The
+ * trade is that the superseded index remains as a gap in the blocks
+ * region, so a widened container is random-access only -- see
+ * tdc_stream_decoder_peek_block.
+ *
+ * Use tdc_stream_encoder_widen_block to write the appended columns, then
+ * tdc_stream_encoder_close to emit the schema, the rebuilt index, and the
+ * patched header. Closing without writing any block is valid and rewrites
+ * the container with the given schema.
+ */
+tdc_status tdc_stream_encoder_open_widen(
+    const tdc_stream_encoder_widen_config *cfg,
+    tdc_stream_encoder **enc);
+
+/*
+ * Encode one block and append it as a NEW TRAILING COLUMN of an existing
+ * row group. Valid only on an encoder from tdc_stream_encoder_open_widen.
+ *
+ * rg_index selects the row group; the block becomes its column
+ * n_cols (0-based), matching the tail-append of the widened schema. The
+ * block's element count must equal that row group's n_rows -- this
+ * function cannot verify that, as a block carries a shape rather than a
+ * row count, so the caller owns the invariant.
+ *
+ * `stats` may be NULL. When supplied and the row group carried no stats,
+ * a stats block is created with the pre-existing columns marked
+ * has_stats = 0; their statistics are not invented, since computing them
+ * would require reading the data this operation is designed not to touch.
+ *
+ * Columns may be appended to row groups in any order, and more than one
+ * column may be appended to the same row group; each call adds exactly one.
+ */
+tdc_status tdc_stream_encoder_widen_block(tdc_stream_encoder     *enc,
+                                          uint64_t                rg_index,
+                                          const tdc_block        *src,
+                                          const tdc_codec_spec   *spec,
+                                          const tdc_column_stats *stats);
 
 /* ----- Decoder ---------------------------------------------------------- */
 

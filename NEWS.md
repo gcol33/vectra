@@ -1,3 +1,42 @@
+# vectra 0.11.7
+
+## New features
+
+* `append_vtr(x, path, along = "cols")` attaches whole new columns to the rows
+  already in a `.vtr` store. The existing columns are never read or rewritten:
+  the new columns are encoded and attached on their own, so the cost tracks
+  what is being added rather than the size of the store.
+
+  This is what lets a table too wide to hold in memory be built a block of
+  columns at a time -- write the first block with `write_vtr()`, then append
+  each later block as it is produced, with a peak of one block instead of the
+  whole table. `x` must have exactly as many rows as the store holds, and
+  column names that do not collide with the existing ones; its rows are
+  matched to the store's rows by position.
+
+  Existing row-group boundaries and column data are untouched, so a `.vtri`
+  index built with `create_index()` over the original columns stays valid
+  across a column append. Unlike a row append, a column append writes
+  everything past the end of the existing data and patches the file header
+  last, so an interruption -- or a rejected append, such as a row-count
+  mismatch -- leaves the store readable exactly as it was.
+
+  `along = "rows"` remains the default and is unchanged (#8).
+
+## Internals
+
+* The vendored tdc container gained a widening encoder
+  (`tdc_stream_encoder_open_widen`), which is what makes the above possible.
+  Block records were already located solely by the trailing index, so new
+  blocks can be appended anywhere in the file; the schema section, pinned
+  immediately before the first block, could not grow in place, so a widened
+  container relocates its schema to the tail and is stamped with a new
+  container version. `.vtr` files that are never widened are byte-identical
+  to before, and remain readable by any reader that could read them.
+
+  A widened container is random-access only, which is how vectra reads every
+  `.vtr` anyway.
+
 # vectra 0.11.6
 
 ## New features

@@ -2,10 +2,9 @@
 #   deleted = keys in A (old) that are absent from B (new)
 #   added   = rows of B whose key is absent from A
 # The key is treated as a primary key, so keys are unique within each file (the
-# old/new snapshot contract). These pin the semantics and serve as the
-# correctness oracle for the planned bounded (external sort-merge) rewrite of
-# C_diff_vtr, which currently holds all distinct A keys resident (see ?diff_vtr
-# and the tracked issue). Order is not part of the contract, so comparisons sort.
+# old/new snapshot contract). These pin the semantics of the bounded sweep-merge
+# C_diff_vtr, which streams both files through the external sort and holds no
+# resident key set. Order is not part of the contract, so comparisons sort.
 
 test_that("diff_vtr matches a brute-force key-set diff (integer keys, random)", {
   for (seed in 1:20) {

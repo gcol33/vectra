@@ -69,6 +69,241 @@ test_that("append_vtr preserves multiple row groups", {
   expect_equal(result$x, as.double(1:110))
 })
 
+test_that("append_vtr rejects a column-count mismatch", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(a = 1:3, b = 1:3), f)
+  expect_error(append_vtr(data.frame(a = 4:6), f), "count mismatch")
+})
+
+test_that("append_vtr rejects a column-type mismatch", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(a = 1:3), f)
+  expect_error(append_vtr(data.frame(a = c("x", "y", "z")), f),
+               "type mismatch")
+})
+
+# ── append_vtr(along = "cols") ────────────────────────────────────────────────
+
+# Helper: the bytes of a .vtr below the 64-byte container header. A column
+# append must leave every one of them exactly where it found them -- that is
+# the property that makes the operation cost the appended columns rather
+# than the size of the store.
+vtr_body <- function(path) {
+  n <- file.size(path)
+  raw_all <- readBin(path, "raw", n = n)
+  raw_all[65:n]
+}
+
+test_that("append_vtr(along = 'cols') attaches columns without touching existing bytes", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  set.seed(42)
+  n <- 500L
+  base <- data.frame(id = 1:n,
+                     v = runif(n),
+                     s = sample(letters, n, TRUE),
+                     stringsAsFactors = FALSE)
+  write_vtr(base, f, batch_size = 64L)   # 8 row groups
+
+  body_before <- vtr_body(f)
+
+  extra <- data.frame(w = rnorm(n),
+                      lab = paste0("r", seq_len(n)),
+                      flag = rep(c(TRUE, FALSE), length.out = n),
+                      stringsAsFactors = FALSE)
+  append_vtr(extra, f, along = "cols")
+
+  # The original body is a strict prefix of the widened one.
+  body_after <- vtr_body(f)
+  expect_gt(length(body_after), length(body_before))
+  expect_identical(body_after[seq_along(body_before)], body_before)
+
+  got <- tbl(f) |> collect()
+  expect_identical(names(got), c("id", "v", "s", "w", "lab", "flag"))
+  expect_equal(nrow(got), n)
+  # Pre-existing columns are byte-for-byte the same data.
+  expect_equal(got$id, as.double(1:n))
+  expect_equal(got$v, base$v)
+  expect_identical(got$s, base$s)
+  # Appended columns land against the right rows.
+  expect_equal(got$w, extra$w)
+  expect_identical(got$lab, extra$lab)
+  expect_identical(got$flag, extra$flag)
+})
+
+test_that("append_vtr(along = 'cols') round-trips NAs in every appended type", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  base <- data.frame(id = 1:6)
+  write_vtr(base, f, batch_size = 4L)   # boundary falls mid-column
+
+  extra <- data.frame(
+    d = c(1.5, NA, 3.5, NA, 5.5, 6.5),
+    i = c(1L, 2L, NA, 4L, 5L, NA),
+    s = c("a", NA, "c", "d", NA, "f"),
+    b = c(TRUE, NA, FALSE, TRUE, NA, FALSE),
+    stringsAsFactors = FALSE
+  )
+  append_vtr(extra, f, along = "cols")
+
+  got <- tbl(f) |> collect()
+  expect_equal(got$d, extra$d)
+  expect_equal(got$i, as.double(extra$i))
+  expect_identical(got$s, extra$s)
+  expect_identical(got$b, extra$b)
+})
+
+test_that("append_vtr(along = 'cols') works when row groups do not divide the input batches", {
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g)))
+
+  n <- 250L
+  write_vtr(data.frame(id = 1:n), f, batch_size = 37L)  # ragged final group
+  # Source the new column from a lazy node whose own batching (100) lines up
+  # with neither 37 nor the total.
+  write_vtr(data.frame(w = as.double(n:1)), g, batch_size = 100L)
+
+  append_vtr(tbl(g), f, along = "cols")
+
+  got <- tbl(f) |> collect()
+  expect_equal(got$id, as.double(1:n))
+  expect_equal(got$w, as.double(n:1))
+})
+
+test_that("append_vtr(along = 'cols') can be repeated", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  n <- 40L
+  write_vtr(data.frame(id = 1:n), f, batch_size = 16L)
+  for (k in 1:4) {
+    col <- data.frame(x = as.double(seq_len(n) * k))
+    names(col) <- paste0("v", k)
+    append_vtr(col, f, along = "cols")
+  }
+
+  got <- tbl(f) |> collect()
+  expect_identical(names(got), c("id", "v1", "v2", "v3", "v4"))
+  for (k in 1:4)
+    expect_equal(got[[paste0("v", k)]], as.double(seq_len(n) * k))
+})
+
+test_that("append_vtr(along = 'cols') honours compress and keeps the data identical", {
+  n <- 300L
+  base <- data.frame(id = 1:n)
+  extra <- data.frame(w = as.double(seq_len(n) %% 7))
+
+  out <- lapply(c("fast", "small", "none"), function(cmp) {
+    f <- tempfile(fileext = ".vtr")
+    on.exit(unlink(f), add = TRUE)
+    write_vtr(base, f, batch_size = 50L)
+    append_vtr(extra, f, along = "cols", compress = cmp)
+    tbl(f) |> collect()
+  })
+  for (got in out) {
+    expect_equal(got$id, as.double(1:n))
+    expect_equal(got$w, extra$w)
+  }
+})
+
+test_that("append_vtr(along = 'cols') rejects a row-count mismatch and leaves the store intact", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  n <- 100L
+  write_vtr(data.frame(id = 1:n, v = as.double(1:n)), f, batch_size = 32L)
+  before <- tbl(f) |> collect()
+  body_before <- vtr_body(f)
+
+  # Too few rows.
+  expect_error(append_vtr(data.frame(w = 1:10), f, along = "cols"),
+               "row count mismatch")
+  expect_identical(tbl(f) |> collect(), before)
+
+  # Too many rows.
+  expect_error(append_vtr(data.frame(w = 1:(n + 25L)), f, along = "cols"),
+               "row count mismatch")
+  expect_identical(tbl(f) |> collect(), before)
+
+  # An aborted append truncates what it wrote, so repeated failures cannot
+  # grow the file.
+  expect_identical(vtr_body(f), body_before)
+})
+
+test_that("append_vtr(along = 'cols') rejects colliding and duplicated names", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  write_vtr(data.frame(id = 1:5, v = as.double(1:5)), f)
+  before <- tbl(f) |> collect()
+
+  expect_error(append_vtr(data.frame(v = as.double(6:10)), f, along = "cols"),
+               "already exists")
+  expect_identical(tbl(f) |> collect(), before)
+
+  df <- data.frame(a = 1:5, b = 1:5)
+  names(df) <- c("a", "a")
+  expect_error(append_vtr(df, f, along = "cols"), "duplicate|already exists")
+  expect_identical(tbl(f) |> collect(), before)
+})
+
+test_that("a widened store still supports the verbs, indexes, and further appends", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".vtri"))))
+
+  n <- 200L
+  write_vtr(data.frame(id = 1:n, grp = rep(1:4, length.out = n)), f,
+            batch_size = 40L)
+  append_vtr(data.frame(w = as.double(seq_len(n) * 3)), f, along = "cols")
+
+  # Filter/select over a widened store, including on an appended column.
+  expect_equal(nrow(tbl(f) |> filter(id > 195) |> collect()), 5L)
+  expect_equal((tbl(f) |> filter(w == 30) |> collect())$id, 10)
+
+  # Grouped aggregation reaching an appended column.
+  agg <- tbl(f) |> group_by(grp) |> summarise(total = sum(w)) |> collect()
+  expect_equal(nrow(agg), 4L)
+
+  # An index built after widening prunes correctly.
+  create_index(f, "id")
+  expect_true(has_index(f, "id"))
+  expect_equal((tbl(f) |> filter(id == 77) |> collect())$w, 231)
+
+  # Row append onto a widened store: schema is the widened one.
+  append_vtr(data.frame(id = n + 1L, grp = 1L, w = 999), f)
+  got <- tbl(f) |> collect()
+  expect_equal(nrow(got), n + 1L)
+  expect_equal(got$w[n + 1L], 999)
+
+  # And the widened store can be rewritten wholesale.
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(g), add = TRUE)
+  tbl(f) |> write_vtr(g)
+  expect_identical(tbl(g) |> collect(), got)
+})
+
+test_that("append_vtr(along = 'cols') widens a zero-row store", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  write_vtr(data.frame(id = integer(0)), f)
+  append_vtr(data.frame(w = double(0)), f, along = "cols")
+
+  got <- tbl(f) |> collect()
+  expect_identical(names(got), c("id", "w"))
+  expect_equal(nrow(got), 0L)
+
+  # A zero-row store still holds its columns to a row count, so a non-empty
+  # append is a mismatch like any other.
+  expect_error(append_vtr(data.frame(z = 1:3), f, along = "cols"),
+               "row count mismatch")
+})
+
 # ── delete_vtr ────────────────────────────────────────────────────────────────
 
 test_that("delete_vtr removes specified rows", {

@@ -113,60 +113,78 @@ void vec_builder_append_array(VecArrayBuilder *b, const VecArray *arr) {
 }
 
 void vec_builder_append_array_nocheck(VecArrayBuilder *b, const VecArray *arr) {
-    if (arr->length == 0) return;
-    ensure_capacity(b, arr->length);
+    vec_builder_append_range_nocheck(b, arr, 0, arr->length);
+}
+
+void vec_builder_append_range(VecArrayBuilder *b, const VecArray *arr,
+                              int64_t start, int64_t n) {
+    if (n <= 0) return;
+    builder_check_input(b, arr);
+    if (start < 0 || start + n > arr->length)
+        vectra_error("builder append range [%lld, %lld) out of bounds "
+                     "for a column of %lld rows",
+                     (long long)start, (long long)(start + n),
+                     (long long)arr->length);
+    vec_builder_append_range_nocheck(b, arr, start, n);
+}
+
+void vec_builder_append_range_nocheck(VecArrayBuilder *b, const VecArray *arr,
+                                      int64_t start, int64_t n) {
+    if (n <= 0) return;
+    ensure_capacity(b, n);
 
     /* Copy validity bits — bulk word-level operation */
     if (vec_array_all_valid(arr))
-        vec_validity_set_bits(b->validity, b->length, arr->length);
+        vec_validity_set_bits(b->validity, b->length, n);
     else
         vec_validity_copy_bits(b->validity, b->length,
-                               arr->validity, 0, arr->length);
+                               arr->validity, start, n);
 
     switch (b->type) {
     case VEC_INT64:
-        memcpy(b->buf.i64 + b->length, arr->buf.i64,
-               (size_t)arr->length * sizeof(int64_t));
+        memcpy(b->buf.i64 + b->length, arr->buf.i64 + start,
+               (size_t)n * sizeof(int64_t));
         break;
     case VEC_INT32:
-        memcpy(b->buf.i32 + b->length, arr->buf.i32,
-               (size_t)arr->length * sizeof(int32_t));
+        memcpy(b->buf.i32 + b->length, arr->buf.i32 + start,
+               (size_t)n * sizeof(int32_t));
         break;
     case VEC_INT16:
-        memcpy(b->buf.i16 + b->length, arr->buf.i16,
-               (size_t)arr->length * sizeof(int16_t));
+        memcpy(b->buf.i16 + b->length, arr->buf.i16 + start,
+               (size_t)n * sizeof(int16_t));
         break;
     case VEC_INT8:
-        memcpy(b->buf.i8 + b->length, arr->buf.i8,
-               (size_t)arr->length * sizeof(int8_t));
+        memcpy(b->buf.i8 + b->length, arr->buf.i8 + start,
+               (size_t)n * sizeof(int8_t));
         break;
     case VEC_DOUBLE:
-        memcpy(b->buf.dbl + b->length, arr->buf.dbl,
-               (size_t)arr->length * sizeof(double));
+        memcpy(b->buf.dbl + b->length, arr->buf.dbl + start,
+               (size_t)n * sizeof(double));
         break;
     case VEC_BOOL:
-        memcpy(b->buf.bln + b->length, arr->buf.bln,
-               (size_t)arr->length);
+        memcpy(b->buf.bln + b->length, arr->buf.bln + start,
+               (size_t)n);
         break;
     case VEC_STRING: {
         int64_t base_offset = b->str_data_len;
+        int64_t src_start   = arr->buf.str.offsets[start];
         /* Copy string data */
-        int64_t sdata_len = arr->buf.str.offsets[arr->length] - arr->buf.str.offsets[0];
+        int64_t sdata_len = arr->buf.str.offsets[start + n] - src_start;
         ensure_str_data(b, sdata_len);
         if (sdata_len > 0)
             memcpy(b->str_data + b->str_data_len,
-                   arr->buf.str.data + arr->buf.str.offsets[0], (size_t)sdata_len);
+                   arr->buf.str.data + src_start, (size_t)sdata_len);
         /* Copy offsets (rebased) */
-        for (int64_t i = 0; i < arr->length; i++) {
+        for (int64_t i = 0; i < n; i++) {
             b->str_offsets[b->length + i] =
-                base_offset + (arr->buf.str.offsets[i] - arr->buf.str.offsets[0]);
+                base_offset + (arr->buf.str.offsets[start + i] - src_start);
         }
-        b->str_offsets[b->length + arr->length] = base_offset + sdata_len;
+        b->str_offsets[b->length + n] = base_offset + sdata_len;
         b->str_data_len += sdata_len;
         break;
     }
     }
-    b->length += arr->length;
+    b->length += n;
 }
 
 void vec_builder_append_one(VecArrayBuilder *b, const VecArray *arr, int64_t row) {

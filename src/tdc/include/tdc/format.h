@@ -52,6 +52,24 @@ extern "C" {
 #define TDC_BLOCK_MAGIC       0x424B4C42u   /* 'BLKB' little-endian */
 
 #define TDC_CONTAINER_VERSION 1
+
+/*
+ * Version stamped on a container whose schema has been RELOCATED to the
+ * tail, which is how a heterogeneous container gains columns without its
+ * body being rewritten (tdc_stream_encoder_open_widen).
+ *
+ * The schema section of a v1 container sits at offset 64, immediately
+ * before the first block record, so it cannot grow in place. A widen pass
+ * therefore appends the new column blocks and a full replacement schema
+ * past the end of the existing data and points the header at them.
+ *
+ * This is a deliberate one-way version bump: a v1-only reader must REFUSE
+ * a widened container rather than read the stale schema still sitting at
+ * offset 64. Containers that are never widened stay v1 and are unchanged
+ * byte-for-byte.
+ */
+#define TDC_CONTAINER_VERSION_WIDENED 2
+
 #define TDC_BLOCK_VERSION     2
 
 /* ----- Container header --------------------------------------------------- */
@@ -80,10 +98,26 @@ extern "C" {
  *       33     1  global_layout    (tdc_layout, 0 if heterogeneous)
  *       34     1  global_rank      (0..3, 0 if heterogeneous)
  *       35     1  _reserved0
- *       36     4  schema_size      (bytes of serialized schema section
- *                                   immediately after this header; 0 = none)
- *       40    24  global_dim[3]    (int64; zeros if heterogeneous)
+ *       36     4  schema_size      (bytes of the serialized schema section;
+ *                                   0 = none)
+ *       40    24  u                (union, discriminated by the
+ *                                   HETEROGENEOUS flag -- see below)
  *       --   ---  total = 64 bytes
+ *
+ * The last 24 bytes mean different things for the two container kinds,
+ * and the two meanings can never coexist:
+ *
+ *   homogeneous   (HETEROGENEOUS clear): u.global_dim[3], the global shape.
+ *   heterogeneous (HETEROGENEOUS set):   u.het, which is all-zero for a v1
+ *                                        container (the shape fields are
+ *                                        required zero there) and carries
+ *                                        the relocated-schema pointers for
+ *                                        a v2 (widened) container.
+ *
+ * u.het.schema_offset is the absolute file offset of the schema section
+ * and u.het.blocks_start the absolute offset of the first block record.
+ * Both are 0 in a v1 container, where they are implied: the schema sits at
+ * TDC_CONTAINER_HEADER_SIZE and the blocks at header + schema_size.
  */
 
 #define TDC_CONTAINER_HEADER_SIZE 64
@@ -105,7 +139,17 @@ typedef struct {
     uint8_t  global_rank;
     uint8_t  _reserved0;
     uint32_t schema_size;
-    int64_t  global_dim[TDC_MAX_RANK];
+    union {
+        /* Homogeneous containers: the global shape. */
+        int64_t global_dim[TDC_MAX_RANK];
+        /* Heterogeneous containers: where the schema and the blocks live.
+         * Both zero unless the container has been widened (v2). */
+        struct {
+            uint64_t schema_offset;
+            uint64_t blocks_start;
+            uint64_t _reserved1;
+        } het;
+    } u;
 } tdc_container_header;
 
 /* ----- Per-block record header -------------------------------------------- */

@@ -385,20 +385,49 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
   invisible(NULL)
 }
 
-#' Append rows to an existing .vtr file
+#' Append rows or columns to an existing .vtr file
 #'
-#' Appends one or more new row groups to the end of an existing `.vtr` file
-#' without touching or recompressing existing row groups. The schema of `x`
-#' must exactly match the schema of the target file (same column names and
-#' types, in the same order).
+#' Grows an existing `.vtr` store in place. `along = "rows"` (the default)
+#' adds row groups to the end; `along = "cols"` attaches new columns to the
+#' rows already there.
 #'
-#' The operation is not fully atomic: if the process is interrupted after
-#' new row groups are written but before the header is patched, the file
-#' will be in a corrupted state. Use `write_vtr()` for safety-critical
-#' write-once workloads.
+#' # Appending rows
+#'
+#' The schema of `x` must exactly match the schema of the target file (same
+#' column names and types, in the same order). Existing row groups are
+#' restreamed through a fresh writer, so a row append costs a pass over the
+#' file.
+#'
+#' # Appending columns
+#'
+#' `x` supplies whole new columns for the rows already in the store: it must
+#' have exactly as many rows as the store holds, and column names that do
+#' not collide with the existing ones. The existing columns are never read
+#' or rewritten -- the new columns are encoded and attached on their own --
+#' so the cost tracks what is being added rather than the size of the store.
+#'
+#' That is what lets a table too wide to hold in memory be built a block of
+#' columns at a time: write the first block with [write_vtr()], then append
+#' each later block as it is produced, with a peak of one block rather than
+#' the whole table. Row order is preserved, and the rows of `x` are matched
+#' to the store's rows by position.
+#'
+#' Existing row-group boundaries and column data are untouched, so any
+#' `.vtri` index built with [create_index()] over the original columns stays
+#' valid across a column append.
+#'
+#' A column append rewrites the file header last, and everything before that
+#' is written past the end of the existing data, so an interruption leaves
+#' the store readable exactly as it was. A row append has no such property:
+#' interrupted after the new row groups are written but before the header is
+#' patched, the file is left corrupted. Use [write_vtr()] for
+#' safety-critical write-once workloads.
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path of an existing `.vtr` file to append to.
+#' @param along `"rows"` to add rows (default), `"cols"` to add columns.
+#' @param compress Compression for the appended columns: `"fast"`,
+#'   `"small"`, or `"none"`. `along = "cols"` only.
 #' @param ... Additional arguments passed to methods.
 #'
 #' @return Invisible `NULL`.
@@ -409,26 +438,43 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
 #' append_vtr(mtcars[11:20, ], f)
 #' result <- tbl(f) |> collect()
 #' stopifnot(nrow(result) == 20L)
+#'
+#' # Attach two more columns to those same 20 rows
+#' extra <- data.frame(kpl = result$mpg * 0.425,
+#'                     heavy = result$wt > 3)
+#' append_vtr(extra, f, along = "cols")
+#' wide <- tbl(f) |> collect()
+#' stopifnot(nrow(wide) == 20L, "kpl" %in% names(wide))
 #' unlink(f)
 #'
 #' @export
-append_vtr <- function(x, path, ...) {
+append_vtr <- function(x, path, along = c("rows", "cols"),
+                       compress = c("fast", "small", "none"), ...) {
   UseMethod("append_vtr")
 }
 
 #' @export
-append_vtr.vectra_node <- function(x, path, ...) {
+append_vtr.vectra_node <- function(x, path, along = c("rows", "cols"),
+                                   compress = c("fast", "small", "none"), ...) {
   check_scalar_string(path)
+  along <- match.arg(along)
   path <- normalizePath(path, mustWork = TRUE)
   # Force GC so any lingering tbl()-owned file handles on `path` are closed
-  # before we stream-rewrite the file. On Windows the rename at the end of
-  # C_append_vtr otherwise fails with a sharing violation.
+  # before we write to it. On Windows the rename at the end of C_append_vtr,
+  # and the r+b open in the column path, otherwise fail with a sharing
+  # violation.
   gc(verbose = FALSE)
-  .Call(C_append_vtr, x$.node, path)
+  if (along == "cols") {
+    .Call(C_append_cols_vtr, x$.node, path, .check_compress(compress))
+  } else {
+    .Call(C_append_vtr, x$.node, path)
+  }
   invisible(NULL)
 }
 
 #' @export
-append_vtr.data.frame <- function(x, path, ...) {
-  append_vtr.vectra_node(df_to_node(x), path, ...)
+append_vtr.data.frame <- function(x, path, along = c("rows", "cols"),
+                                  compress = c("fast", "small", "none"), ...) {
+  append_vtr.vectra_node(df_to_node(x), path, along = along,
+                         compress = compress, ...)
 }

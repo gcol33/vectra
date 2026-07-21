@@ -5,6 +5,7 @@
 #include <Rinternals.h>
 #include "r_bridge.h"
 #include "vtr_append.h"
+#include "vtr_append_cols.h"
 #include "vec_omp.h"
 
 /* block.c R bridge functions */
@@ -154,6 +155,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_tiff_read_crs",          (DL_FUNC) &C_tiff_read_crs,          1},
     {"C_write_vtr_node", (DL_FUNC) &C_write_vtr_node, 7},
     {"C_append_vtr",     (DL_FUNC) &C_append_vtr,     2},
+    {"C_append_cols_vtr", (DL_FUNC) &C_append_cols_vtr, 3},
     {"C_delete_vtr",     (DL_FUNC) &C_delete_vtr,      2},
     {"C_diff_vtr",       (DL_FUNC) &C_diff_vtr,        4},
     {"C_fuzzy_join_node", (DL_FUNC) &C_fuzzy_join_node, 11},

@@ -5,7 +5,7 @@
 #include "optimize.h"
 #include "error.h"
 #include "r_bridge.h"
-#include "vtr_atomic_rename.h"
+#include "vtr_fileops.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

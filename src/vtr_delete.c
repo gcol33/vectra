@@ -1,6 +1,6 @@
 #include "vtr_delete.h"
 #include "error.h"
-#include "vtr_atomic_rename.h"
+#include "vtr_fileops.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
