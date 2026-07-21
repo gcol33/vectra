@@ -44,8 +44,26 @@ for sub in api core entropy format layout model symbols transform; do
 done
 
 # Stamp the snapshot with the source commit so we know what we vendored.
+#
+# A dirty source tree is stamped "<hash>-dirty" and warned about, loudly.
+# The CI workflows check tdc out at its pushed HEAD and re-vendor from
+# there, so anything vendored from uncommitted work exists only on this
+# machine: the build goes green locally and then fails to link on CI. A
+# bare hash here would be claiming a provenance the bytes do not have.
 if command -v git >/dev/null 2>&1 && [ -d "$TDC/.git" ]; then
-  ( cd "$TDC" && git rev-parse HEAD ) > "$DEST/VENDORED_FROM" 2>/dev/null || true
+  head=`cd "$TDC" && git rev-parse HEAD 2>/dev/null` || head=""
+  if [ -n "$head" ]; then
+    if [ -n "`cd "$TDC" && git status --porcelain 2>/dev/null`" ]; then
+      echo "$head-dirty" > "$DEST/VENDORED_FROM"
+      echo "vendor_tdc.sh: WARNING - $TDC has uncommitted changes." >&2
+      echo "  The vendored snapshot does NOT match any tdc commit. CI" >&2
+      echo "  re-vendors from tdc's pushed HEAD, so it will build" >&2
+      echo "  something different from what you just built locally." >&2
+      echo "  Commit and push tdc, then re-run this script." >&2
+    else
+      echo "$head" > "$DEST/VENDORED_FROM"
+    fi
+  fi
 fi
 
 # Count vendored files
