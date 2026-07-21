@@ -1867,6 +1867,11 @@ static VecBatch *window_next_batch(VecNode *self) {
     return result;
 }
 
+/* A window appends columns to the rows it reads; the count is the child's. */
+static int64_t window_static_rows(const VecNode *self) {
+    return vec_node_static_rows(((const WindowNode *)self)->child);
+}
+
 static void window_free(VecNode *self) {
     WindowNode *wn = (WindowNode *)self;
     if (wn->hold_batch) vec_batch_free(wn->hold_batch);
@@ -2143,6 +2148,7 @@ VecNode *window_node_create(VecNode *child,
     wn->base.next_batch = window_next_batch;
     wn->base.kind = "WindowNode";
     wn->base.free_node = window_free;
+    wn->base.static_rows = window_static_rows;
     wn->base.row_count_hint = src->row_count_hint;
 
     if (!use_sort)

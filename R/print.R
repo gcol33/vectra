@@ -44,10 +44,11 @@ glimpse.vectra_node <- function(x, width = 5L, ...) {
   schema <- .Call(C_node_schema, x$.node)
   n_cols <- length(schema$name)
 
-  type_map <- c("0" = "int64", "1" = "double", "2" = "bool", "3" = "string")
-  types <- type_map[as.character(schema$type)]
+  types <- schema$type
 
-  cat(sprintf("vectra lazy table [? x %d]\n", n_cols))
+  n_rows <- .Call(C_node_static_rows, x$.node)
+  rows_label <- if (is.na(n_rows)) "?" else format(n_rows, scientific = FALSE)
+  cat(sprintf("vectra lazy table [%s x %d]\n", rows_label, n_cols))
 
   # Fetch preview rows
   preview <- head(x, width)

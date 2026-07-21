@@ -474,6 +474,19 @@ SEXP C_node_next_batch(SEXP node_xptr) {
     return vec_collect_next(node);
 }
 
+/* --- C_node_static_rows ---
+   Row count of a plan's output when it can be read off metadata, NA when the
+   query would have to run to know it. Backs dim()/nrow(). Purely a metadata
+   read: it never pulls a batch and never optimizes the tree, so unlike every
+   terminal operation it leaves the plan intact and reusable. Returned as a
+   double so a count past the reach of an R integer stays exact. */
+
+SEXP C_node_static_rows(SEXP node_xptr) {
+    VecNode *node = unwrap_node(node_xptr);
+    int64_t n = vec_node_static_rows(node);
+    return Rf_ScalarReal(n < 0 ? NA_REAL : (double)n);
+}
+
 /* --- C_node_schema --- */
 
 SEXP C_node_schema(SEXP node_xptr) {

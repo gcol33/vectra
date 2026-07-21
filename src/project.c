@@ -276,6 +276,11 @@ static VecBatch *project_next_batch(VecNode *self) {
     }
 }
 
+/* Projection rewrites columns, never rows. */
+static int64_t project_static_rows(const VecNode *self) {
+    return vec_node_static_rows(((const ProjectNode *)self)->child);
+}
+
 static void project_free(VecNode *self) {
     ProjectNode *pn = (ProjectNode *)self;
     pn->child->free_node(pn->child);
@@ -321,6 +326,7 @@ ProjectNode *project_node_create(VecNode *child, int n_entries,
 
     pn->base.next_batch = project_next_batch;
     pn->base.free_node = project_free;
+    pn->base.static_rows = project_static_rows;
     pn->base.kind = "ProjectNode";
     pn->base.row_count_hint = child->row_count_hint;
 

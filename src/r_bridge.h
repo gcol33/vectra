@@ -14,6 +14,7 @@ SEXP C_node_take(SEXP node_xptr);
 SEXP C_node_optimize(SEXP node_xptr);
 SEXP C_node_next_batch(SEXP node_xptr);
 SEXP C_node_schema(SEXP node_xptr);
+SEXP C_node_static_rows(SEXP node_xptr);
 SEXP C_node_plan(SEXP node_xptr);
 SEXP C_filter_node(SEXP node_xptr, SEXP expr_list);
 SEXP C_project_node(SEXP node_xptr, SEXP names, SEXP expr_lists);

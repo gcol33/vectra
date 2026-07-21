@@ -32,6 +32,20 @@ static VecBatch *concat_next_batch(VecNode *self) {
     return NULL;
 }
 
+/* Concatenation emits every child in turn, so the counts add - but only while
+   no child has been drained yet, and only if every child can be counted. */
+static int64_t concat_static_rows(const VecNode *self) {
+    const ConcatNode *cn = (const ConcatNode *)self;
+    if (cn->current != 0) return -1;
+    int64_t total = 0;
+    for (int i = 0; i < cn->n_children; i++) {
+        int64_t n = vec_node_static_rows(cn->children[i]);
+        if (n < 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
 static void concat_free(VecNode *self) {
     ConcatNode *cn = (ConcatNode *)self;
     for (int i = 0; i < cn->n_children; i++)
@@ -64,6 +78,7 @@ ConcatNode *concat_node_create(int n_children, VecNode **children) {
     }
     cn->base.next_batch = concat_next_batch;
     cn->base.free_node = concat_free;
+    cn->base.static_rows = concat_static_rows;
     cn->base.kind = "ConcatNode";
 
     return cn;

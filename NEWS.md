@@ -2,6 +2,25 @@
 
 ## New features
 
+* `nrow()`, `ncol()`, and `dim()` work on a lazy query, via a `dim()` method
+  for `vectra_node`. Both counts come from plan metadata, so the query is
+  neither run nor consumed: a `.vtr` table reports the row count held in its
+  row-group index (less any rows `delete_vtr()` has tombstoned), and the
+  row-preserving verbs carry it through -- `select()`, `mutate()`, `rename()`,
+  `arrange()`, `relocate()`, window functions, `head()`, `slice_head()`,
+  `slice_min()`/`slice_max()`, and `bind_rows()` over counted inputs.
+
+  Verbs whose output length depends on the data -- `filter()`, the joins,
+  `summarise()`, `distinct()` -- report `NA` rows, as do CSV, SQLite, and TIFF
+  sources, which carry no stored row count. Counting those means a full pass
+  over data that may be larger than RAM, so `nrow()` reports what it knows
+  rather than starting one; `count() |> collect()` gives the exact number.
+
+  Previously `nrow()` fell through to `base::nrow()`, which returned `NULL`
+  because a node had no `dim()`. A `NULL` row count passed to `sprintf()`
+  produces `character(0)`, which `cat()` prints as nothing at all, so a loop
+  reporting row counts printed blank lines instead of failing.
+
 * `append_vtr(x, path, along = "cols")` attaches whole new columns to the rows
   already in a `.vtr` store. The existing columns are never read or rewritten:
   the new columns are encoded and attached on their own, so the cost tracks
@@ -23,7 +42,21 @@
 
   `along = "rows"` remains the default and is unchanged (#8).
 
+## Bug fixes
+
+* `glimpse()` names each column's type again. It mapped the schema's type
+  codes through a numeric lookup table, but the schema bridge reports type
+  names, so every column printed as `<NA>`. It also prints the row count in
+  its header when the count is known, in place of the former `?`.
+
 ## Internals
+
+* Plan nodes gained an optional `static_rows` hook: the exact number of rows
+  the node will emit, read off metadata without pulling a batch. It is what
+  `dim()` reads. A node kind that does not implement it reports "unknown", so
+  a node added later is over-cautious rather than wrong, and a scan opts out
+  whenever pruning, a pushed-down predicate, or a narrowed row-group range
+  means the stored row count is only an upper bound.
 
 * The vendored tdc container gained a widening encoder
   (`tdc_stream_encoder_open_widen`), which is what makes the above possible.

@@ -417,6 +417,17 @@ static void topn_free(VecNode *self) {
     free(tn);
 }
 
+/* Top-n keeps whichever is smaller, the cap or the child: every row competes
+   for a slot (NA in the order column sorts last but is still kept), so none
+   is dropped for any other reason. */
+static int64_t topn_static_rows(const VecNode *self) {
+    const TopNNode *tn = (const TopNNode *)self;
+    if (tn->done) return -1;
+    int64_t child_rows = vec_node_static_rows(tn->child);
+    if (child_rows < 0) return -1;
+    return child_rows < tn->limit ? child_rows : tn->limit;
+}
+
 TopNNode *topn_node_create(VecNode *child, int n_keys, SortKey *keys,
                             int64_t limit) {
     TopNNode *tn = (TopNNode *)calloc(1, sizeof(TopNNode));
@@ -430,6 +441,7 @@ TopNNode *topn_node_create(VecNode *child, int n_keys, SortKey *keys,
     tn->base.output_schema = vec_schema_copy(&child->output_schema);
     tn->base.next_batch = topn_next_batch;
     tn->base.free_node = topn_free;
+    tn->base.static_rows = topn_static_rows;
     tn->base.kind = "TopNNode";
 
     return tn;

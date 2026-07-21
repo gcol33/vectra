@@ -1090,6 +1090,11 @@ int64_t sort_node_total_rows(const SortNode *sn) {
     return sn->total_rows;
 }
 
+/* Sorting reorders rows, never adds or drops them. */
+static int64_t sort_static_rows(const VecNode *self) {
+    return vec_node_static_rows(((const SortNode *)self)->child);
+}
+
 SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
                            const char *temp_dir, int64_t mem_budget) {
     SortNode *sn = (SortNode *)calloc(1, sizeof(SortNode));
@@ -1110,6 +1115,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->base.output_schema = vec_schema_copy(&child->output_schema);
     sn->base.next_batch    = sort_next_batch;
     sn->base.free_node     = sort_free;
+    sn->base.static_rows   = sort_static_rows;
     sn->base.kind          = "SortNode";
     sn->base.row_count_hint = child->row_count_hint;
 

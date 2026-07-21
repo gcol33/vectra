@@ -21,6 +21,11 @@ static VecBatch *dropcol_next_batch(VecNode *self) {
     return b;
 }
 
+/* Dropping a column leaves every row in place. */
+static int64_t dropcol_static_rows(const VecNode *self) {
+    return vec_node_static_rows(((const DropColNode *)self)->child);
+}
+
 static void dropcol_free(VecNode *self) {
     DropColNode *d = (DropColNode *)self;
     d->child->free_node(d->child);
@@ -54,6 +59,7 @@ DropColNode *dropcol_node_create(VecNode *child, int drop_idx) {
 
     d->base.next_batch = dropcol_next_batch;
     d->base.free_node = dropcol_free;
+    d->base.static_rows = dropcol_static_rows;
     d->base.kind = "DropColNode";
     d->base.row_count_hint = child->row_count_hint;
     return d;

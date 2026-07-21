@@ -787,6 +787,30 @@ static VecBatch *scan_next_batch(VecNode *self) {
     return NULL;
 }
 
+/* Rows this scan will emit, from the row-group index alone. Anything that
+   makes the scan emit a subset of the stored rows has to run to be counted:
+   a pushed-down predicate, index or zone-map pruning, a binary-search-narrowed
+   row-group range, or a scan already part-way through its row groups.
+   Deletions are the one exception - the tombstone names exactly which stored
+   rows are gone, so they subtract, as long as every index it names is in
+   range (a stale .del must not produce a negative count). */
+static int64_t scan_static_rows(const VecNode *self) {
+    const ScanNode *sn = (const ScanNode *)self;
+    if (sn->predicate || sn->rg_bitmap || sn->rg_range_set ||
+        sn->last_rg_set || sn->next_rg != 0)
+        return -1;
+
+    int64_t total = sn->base.row_count_hint;   /* sum over row groups */
+    if (total < 0) return -1;
+
+    const TombstoneSet *ts = sn->tombstone;
+    if (ts && ts->n > 0) {
+        if (ts->rows[0] < 0 || ts->rows[ts->n - 1] >= total) return -1;
+        total -= ts->n;
+    }
+    return total;
+}
+
 static void scan_free(VecNode *self) {
     ScanNode *sn = (ScanNode *)self;
     if (sn->predicate && !sn->pred_borrowed)
@@ -876,6 +900,7 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
 
     sn->base.next_batch = scan_next_batch;
     sn->base.free_node = scan_free;
+    sn->base.static_rows = scan_static_rows;
     sn->base.kind = "ScanNode";
 
     /* Compute total row count hint from row group metadata */

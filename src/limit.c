@@ -45,6 +45,17 @@ static VecBatch *limit_next_batch(VecNode *self) {
     return out;
 }
 
+/* A limit emits whichever is smaller, the cap or the child. A node already
+   part-way through its stream would report the untouched count, so it opts
+   out once it has emitted anything. */
+static int64_t limit_static_rows(const VecNode *self) {
+    const LimitNode *ln = (const LimitNode *)self;
+    if (ln->rows_emitted != 0) return -1;
+    int64_t child_rows = vec_node_static_rows(ln->child);
+    if (child_rows < 0) return -1;
+    return child_rows < ln->max_rows ? child_rows : ln->max_rows;
+}
+
 static void limit_free(VecNode *self) {
     LimitNode *ln = (LimitNode *)self;
     ln->child->free_node(ln->child);
@@ -62,6 +73,7 @@ LimitNode *limit_node_create(VecNode *child, int64_t max_rows) {
     ln->base.output_schema = vec_schema_copy(&child->output_schema);
     ln->base.next_batch = limit_next_batch;
     ln->base.free_node = limit_free;
+    ln->base.static_rows = limit_static_rows;
     ln->base.kind = "LimitNode";
 
     return ln;

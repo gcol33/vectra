@@ -198,12 +198,28 @@ typedef struct VecNode VecNode;
 typedef VecBatch* (*NextBatchFn)(VecNode *self);
 typedef void      (*FreeFn)(VecNode *self);
 
+/* Exact number of rows this node will emit, read off metadata without pulling
+   a single batch; -1 when the query would have to run to know. Optional: a
+   node that leaves it NULL reports "unknown", so a node kind that never
+   implements it is over-cautious rather than wrong. Row-preserving nodes
+   implement it by delegating to their child.
+
+   Distinct from row_count_hint, which is an upper bound (a scan reports every
+   stored row even when pruning or a predicate will drop some) and therefore
+   cannot answer nrow(). */
+typedef int64_t   (*StaticRowsFn)(const VecNode *self);
+
 struct VecNode {
     NextBatchFn   next_batch;
     FreeFn        free_node;
+    StaticRowsFn  static_rows;    /* NULL = row count not derivable */
     VecSchema     output_schema;
     const char   *kind;       /* node type name for explain() */
-    int64_t       row_count_hint; /* estimated total rows, -1 = unknown */
+    int64_t       row_count_hint; /* upper-bound estimate for preallocation;
+                                     <= 0 = unknown */
 };
+
+/* static_rows dispatch: the row count, or -1 when the node cannot supply it. */
+int64_t vec_node_static_rows(const VecNode *node);
 
 #endif /* VECTRA_TYPES_H */

@@ -128,6 +128,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_node_optimize",   (DL_FUNC) &C_node_optimize,   1},
     {"C_node_next_batch", (DL_FUNC) &C_node_next_batch, 1},
     {"C_node_schema",  (DL_FUNC) &C_node_schema,   1},
+    {"C_node_static_rows", (DL_FUNC) &C_node_static_rows, 1},
     {"C_node_plan",    (DL_FUNC) &C_node_plan,     1},
     {"C_filter_node",  (DL_FUNC) &C_filter_node,   2},
     {"C_project_node",   (DL_FUNC) &C_project_node,  3},

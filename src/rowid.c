@@ -34,6 +34,11 @@ static VecBatch *rowid_next_batch(VecNode *self) {
     return b;
 }
 
+/* Appending the row id leaves every row in place. */
+static int64_t rowid_static_rows(const VecNode *self) {
+    return vec_node_static_rows(((const RowIdNode *)self)->child);
+}
+
 static void rowid_free(VecNode *self) {
     RowIdNode *r = (RowIdNode *)self;
     r->child->free_node(r->child);
@@ -68,6 +73,7 @@ RowIdNode *rowid_node_create(VecNode *child, const char *name) {
 
     r->base.next_batch = rowid_next_batch;
     r->base.free_node = rowid_free;
+    r->base.static_rows = rowid_static_rows;
     r->base.kind = "RowIdNode";
     r->base.row_count_hint = child->row_count_hint;
     return r;
