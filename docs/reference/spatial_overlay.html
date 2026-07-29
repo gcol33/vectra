@@ -34,7 +34,7 @@ group_by(piece_id) |&amp;gt; slice_min(year)."><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -102,6 +102,7 @@ feature rather than dissolved. Resolve the duplicates with a grouped
 <span>  grid <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  precision <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  dedup <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  exact <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  flush_rows <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  mem_limit <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  threads <span class="op">=</span> <span class="cn">NULL</span>,</span>
@@ -189,9 +190,25 @@ redundant noding when many records are stacked over one site (common in
 WDPA-style data). <code>TRUE</code> by default; set <code>FALSE</code> to overlay every record.</p></dd>
 
 
+<dt id="arg-exact">exact<a class="anchor" aria-label="anchor" href="#arg-exact"></a></dt>
+<dd><p>How a piece is credited to the inputs that cover it. Each piece is
+a face of the arrangement of all input boundaries, so it lies wholly inside or
+outside every input up to snap-rounding slivers along the boundary. With
+<code>FALSE</code> (the default) the whole face is credited to each input whose interior
+contains the face's representative point, and the piece geometry is the face;
+per-input covered area is then exact up to about the noding precision times the
+face perimeter. With <code>TRUE</code> each face is intersected with every partially
+covering input and credited that intersection area, giving areas exact to the
+snapping grid at the cost of extra geometry work and thin boundary slivers as
+separate pieces.</p></dd>
+
+
 <dt id="arg-flush-rows">flush_rows<a class="anchor" aria-label="anchor" href="#arg-flush-rows"></a></dt>
-<dd><p>Exploded rows buffered before a spill flush. Defaults to
-<code>getOption("vectra.spatial_flush", 5e5)</code>.</p></dd>
+<dd><p>Exploded rows buffered before a spill flush. <code>NULL</code>
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of <code><a href="vectra_mem.html">vectra_mem()</a></code>, set with
+<code>options(vectra.memory = )</code>); an explicit value caps each buffer at that
+many rows.</p></dd>
 
 
 <dt id="arg-mem-limit">mem_limit<a class="anchor" aria-label="anchor" href="#arg-mem-limit"></a></dt>
@@ -200,9 +217,9 @@ per-tile size (<code>tile_bytes = mem_limit / (threads * 24)</code>). It is a th
 knob with an interior optimum, not "bigger is faster": too small replicates
 features across many tiles, too large nodes too much linework per tile (a
 superlinear cost), and a budget of tens of GB runs slower than the default on
-a dense layer. Lower it for tighter memory. Defaults via
-<code>getOption("vectra.overlay_mem_limit", ...)</code> to a value that scales with
-<code>threads</code> to hold the per-tile size near its measured optimum.</p></dd>
+a dense layer. Lower it for tighter memory. <code>NULL</code> (the default) scales with
+<code>threads</code> to hold the per-tile size near its measured optimum, capped by the
+session budget <code><a href="vectra_mem.html">vectra_mem()</a></code> (<code>options(vectra.memory = )</code>).</p></dd>
 
 
 <dt id="arg-threads">threads<a class="anchor" aria-label="anchor" href="#arg-threads"></a></dt>

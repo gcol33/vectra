@@ -41,3 +41,11 @@ vec_build_overviews(
 ## Value
 
 Invisible `NULL`.
+
+## Details
+
+Unlike the streamed raster verbs, this decodes every band of the base
+raster into memory at once to build the pyramid, so peak memory is on
+the order of the full base raster (all bands). Build overviews before a
+raster grows past what fits in RAM, or on a per-band basis for very
+large stacks.

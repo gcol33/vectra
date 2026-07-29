@@ -827,7 +827,7 @@ write_vtr(data.frame(
 left_join(tbl(na_left), tbl(na_right), by = "id") |> collect()
 #>   id  x   y
 #> 1  1 10 100
-#> 2 NA 20  NA
+#> 2 NA 20 200
 #> 3  3 30  NA
 ```
 

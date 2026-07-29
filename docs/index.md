@@ -127,6 +127,68 @@ alongside [`nchar()`](https://rdrr.io/r/base/nchar.html),
 [`gsub()`](https://rdrr.io/r/base/grep.html) and the rest of the string
 toolkit.
 
+## Spatial data, out of core
+
+Same idea, applied to geometry: read and write layers larger than
+memory, running the GIS operations you would otherwise do in sf.
+Geometry rides through as WKB in an ordinary column, so the spatial
+verbs stream one batch at a time like the rest. Tag a billion-point
+stream with the polygon each point falls in, holding the polygons plus
+one batch in memory:
+
+``` r
+
+library(sf)
+
+tbl("gps_pings.vtr") |>
+  spatial_join(zones_sf, join = st_intersects) |>
+  count(zone_id) |>
+  collect()
+```
+
+`st_*` geometry functions evaluate inside
+[`filter()`](https://gillescolling.com/vectra/reference/filter.md) and
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+computed in C on the GEOS library straight off the geometry column:
+
+``` r
+
+tbl("parcels.vtr") |>
+  filter(st_area(geometry) > 1e6) |>
+  mutate(centroid = st_centroid(geometry)) |>
+  collect_sf()
+```
+
+Raster operations stream strip by strip over the tiled `.vec` format, so
+a grid larger than memory passes through
+[`zonal()`](https://gillescolling.com/vectra/reference/zonal.md),
+[`focal()`](https://gillescolling.com/vectra/reference/focal.md),
+[`terrain()`](https://gillescolling.com/vectra/reference/terrain.md),
+[`warp()`](https://gillescolling.com/vectra/reference/warp.md), and map
+algebra one tile-row at a time:
+
+``` r
+
+r <- vec_open_raster("dem.vec")
+terrain(r, c("slope", "aspect", "hillshade"))     # Horn's method over haloed strips
+zonal(r, watersheds_sf, fun = c("mean", "sd"))    # per-zone, one strip resident
+```
+
+The toolbox reaches further: vector-raster bridges
+([`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md),
+[`polygonize()`](https://gillescolling.com/vectra/reference/polygonize.md),
+[`contours()`](https://gillescolling.com/vectra/reference/contours.md)),
+planar overlay and coverage cleaning
+([`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md),
+[`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md),
+[`spatial_eliminate()`](https://gillescolling.com/vectra/reference/spatial_eliminate.md)),
+and routing on a line network
+([`spatial_network()`](https://gillescolling.com/vectra/reference/spatial_network.md),
+[`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md),
+[`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)).
+Geometry stays with GEOS through libgeos; `sf` is needed only for vector
+format I/O and reprojection.
+
 ## Star schemas instead of flat-table column creep
 
 Register dimension tables once, then pull columns from any of them;
@@ -268,6 +330,8 @@ pak::pak("gcol33/vectra")
 
 ## Documentation
 
+Engine:
+
 - [Getting
   Started](https://gillescolling.com/vectra/articles/quickstart.html)
 - [Engine
@@ -282,6 +346,21 @@ pak::pak("gcol33/vectra")
   Optimization](https://gillescolling.com/vectra/articles/indexing.html)
 - [Working with Large
   Data](https://gillescolling.com/vectra/articles/large-data.html)
+- [Offloading and Out-of-core
+  Fits](https://gillescolling.com/vectra/articles/offload.html)
+
+Spatial:
+
+- [Out-of-core
+  GIS](https://gillescolling.com/vectra/articles/spatial.html)
+- [Streaming Spatial
+  Operations](https://gillescolling.com/vectra/articles/streaming-spatial.html)
+- [Geometry Functions in
+  Expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html)
+- [Coverage and
+  Topology](https://gillescolling.com/vectra/articles/coverage-topology.html)
+- [Network
+  Analysis](https://gillescolling.com/vectra/articles/networks.html)
 - [Species Distribution
   Models](https://gillescolling.com/vectra/articles/sdm.html)
 

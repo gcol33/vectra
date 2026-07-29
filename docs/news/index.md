@@ -1,5 +1,1101 @@
 # Changelog
 
+## vectra 0.11.7
+
+### New features
+
+- [`nrow()`](https://rdrr.io/r/base/nrow.html),
+  [`ncol()`](https://rdrr.io/r/base/nrow.html), and
+  [`dim()`](https://rdrr.io/r/base/dim.html) work on a lazy query, via a
+  [`dim()`](https://rdrr.io/r/base/dim.html) method for `vectra_node`.
+  Both counts come from plan metadata, so the query is neither run nor
+  consumed: a `.vtr` table reports the row count held in its row-group
+  index (less any rows
+  [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md)
+  has tombstoned), and the row-preserving verbs carry it through –
+  [`select()`](https://gillescolling.com/vectra/reference/select.md),
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  [`rename()`](https://gillescolling.com/vectra/reference/rename.md),
+  [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md),
+  [`relocate()`](https://gillescolling.com/vectra/reference/relocate.md),
+  window functions, [`head()`](https://rdrr.io/r/utils/head.html),
+  [`slice_head()`](https://gillescolling.com/vectra/reference/slice_head.md),
+  [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)/[`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md),
+  and
+  [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md)
+  over counted inputs.
+
+  Verbs whose output length depends on the data –
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+  the joins,
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md),
+  [`distinct()`](https://gillescolling.com/vectra/reference/distinct.md)
+  – report `NA` rows, as do CSV, SQLite, and TIFF sources, which carry
+  no stored row count. Counting those means a full pass over data that
+  may be larger than RAM, so
+  [`nrow()`](https://rdrr.io/r/base/nrow.html) reports what it knows
+  rather than starting one; `count() |> collect()` gives the exact
+  number.
+
+  Previously [`nrow()`](https://rdrr.io/r/base/nrow.html) fell through
+  to [`base::nrow()`](https://rdrr.io/r/base/nrow.html), which returned
+  `NULL` because a node had no
+  [`dim()`](https://rdrr.io/r/base/dim.html). A `NULL` row count passed
+  to [`sprintf()`](https://rdrr.io/r/base/sprintf.html) produces
+  `character(0)`, which [`cat()`](https://rdrr.io/r/base/cat.html)
+  prints as nothing at all, so a loop reporting row counts printed blank
+  lines instead of failing.
+
+- `append_vtr(x, path, along = "cols")` attaches whole new columns to
+  the rows already in a `.vtr` store. The existing columns are never
+  read or rewritten: the new columns are encoded and attached on their
+  own, so the cost tracks what is being added rather than the size of
+  the store.
+
+  This is what lets a table too wide to hold in memory be built a block
+  of columns at a time – write the first block with
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md),
+  then append each later block as it is produced, with a peak of one
+  block instead of the whole table. `x` must have exactly as many rows
+  as the store holds, and column names that do not collide with the
+  existing ones; its rows are matched to the store’s rows by position.
+
+  Existing row-group boundaries and column data are untouched, so a
+  `.vtri` index built with
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  over the original columns stays valid across a column append. Unlike a
+  row append, a column append writes everything past the end of the
+  existing data and patches the file header last, so an interruption –
+  or a rejected append, such as a row-count mismatch – leaves the store
+  readable exactly as it was.
+
+  `along = "rows"` remains the default and is unchanged
+  ([\#8](https://github.com/gcol33/vectra/issues/8)).
+
+### Bug fixes
+
+- [`glimpse()`](https://gillescolling.com/vectra/reference/glimpse.md)
+  names each column’s type again. It mapped the schema’s type codes
+  through a numeric lookup table, but the schema bridge reports type
+  names, so every column printed as `<NA>`. It also prints the row count
+  in its header when the count is known, in place of the former `?`.
+
+### Internals
+
+- Plan nodes gained an optional `static_rows` hook: the exact number of
+  rows the node will emit, read off metadata without pulling a batch. It
+  is what [`dim()`](https://rdrr.io/r/base/dim.html) reads. A node kind
+  that does not implement it reports “unknown”, so a node added later is
+  over-cautious rather than wrong, and a scan opts out whenever pruning,
+  a pushed-down predicate, or a narrowed row-group range means the
+  stored row count is only an upper bound.
+
+- The vendored tdc container gained a widening encoder
+  (`tdc_stream_encoder_open_widen`), which is what makes the above
+  possible. Block records were already located solely by the trailing
+  index, so new blocks can be appended anywhere in the file; the schema
+  section, pinned immediately before the first block, could not grow in
+  place, so a widened container relocates its schema to the tail and is
+  stamped with a new container version. `.vtr` files that are never
+  widened are byte-identical to before, and remain readable by any
+  reader that could read them.
+
+  A widened container is random-access only, which is how vectra reads
+  every `.vtr` anyway.
+
+## vectra 0.11.6
+
+### New features
+
+- [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
+  now streams both files through the external sort and merges them in a
+  single bounded pass, instead of holding every distinct key of the old
+  file resident. Peak memory follows the sort’s spill budget
+  ([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)),
+  so a diff whose key cardinality exceeds RAM no longer blows up.
+
+- `first()` / `last()` work on string columns (previously numeric-only).
+
+- [`lag()`](https://rdrr.io/r/stats/lag.html) / `lead()` preserve a
+  string column (previously silently returned a column of zeros);
+  integer / double columns are unchanged.
+
+- `rank(ties.method = "average")` computes base R’s average rank. Bare
+  [`rank()`](https://rdrr.io/r/base/rank.html) keeps its established
+  min-rank behaviour (dplyr `min_rank()`).
+
+- `n()` works inside
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  returning the partition (or group) size repeated per row, in addition
+  to its existing use as a
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  aggregate.
+
+- [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  accepts expressions over aggregates
+  (`summarise(rate = sum(hits) / sum(at_bats))`) and evaluates its
+  arguments sequentially, so a later output can reference an earlier one
+  (`summarise(m = mean(x), z = x_dev / m)`), matching dplyr.
+
+### Bug fixes (audit pass)
+
+#### Crashes / memory safety
+
+- A namespace-qualified function head (`pkg::fn(...)` / `pkg:::fn(...)`)
+  no longer crashes the expression serializer with “the condition has
+  length \> 1” under R \>= 4.2. `serialize_expr` (the shared `mutate` /
+  `filter` / post-`summarise` serializer) unwraps `::` / `:::` to the
+  bare name, and a namespace-qualified top-level
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  call now routes to the aggregation parser, so an unknown one reports
+  `unknown aggregation function: <name>` instead of the cryptic length
+  error.
+
+- Hash join no longer duplicates rows or loops forever on a many-to-many
+  key whose build-chain length lines up with the internal 65536-row emit
+  cap: the resumable probe conflated “chain exhausted” with the “not
+  resuming” sentinel at the cap boundary. Both the hash and
+  block-nested-loop probe paths are fixed.
+
+- Reading a crafted GeoTIFF no longer corrupts the heap:
+  `read_tag_ascii` now bounds the tag element count like its sibling tag
+  readers (a negative BigTIFF count reached a `memcpy` with a huge
+  size).
+
+- Opening a crafted SQLite database no longer reads past a page buffer:
+  the header `page_size` is validated (power of two in \[512, 65536\]),
+  the reserved region is bounded, and a page’s declared cell count must
+  fit the page.
+
+- [`pmin()`](https://rdrr.io/r/base/Extremes.html) /
+  [`pmax()`](https://rdrr.io/r/base/Extremes.html), the date/time
+  helpers, and the unary math functions (`round`, `abs`, `sqrt`,
+  `floor`, …) no longer read past a `logical` operand’s buffer (the
+  operand was type-punned through the double buffer unless it was
+  already `int64`).
+
+- Reading a crafted GeoTIFF’s GeoKey directory no longer over-reads the
+  heap: the key count and citation offset/length are bounded without an
+  intermediate multiply/add that overflowed `int64`, and a BigTIFF IFD
+  with an implausible entry count is rejected instead of spinning.
+
+- Opening a crafted `.vecr` raster no longer overflows the index
+  allocation: the declared tile count is bounded against the file size
+  before allocating.
+
+- [`substr()`](https://rdrr.io/r/base/substr.html) with a huge negative
+  `start` no longer triggers signed-overflow UB.
+
+- The parallel column copy in
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+  no longer risks a `longjmp` out of an OpenMP region: the builder input
+  validation is hoisted to the serial master before the parallel append.
+
+#### Larger-than-RAM bounds
+
+- GeoTIFF export
+  ([`vec_to_tiff()`](https://gillescolling.com/vectra/reference/vec_to_tiff.md))
+  streams the raster in row strips instead of materializing every band
+  as doubles in RAM.
+
+- A grouped
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  / [`count()`](https://gillescolling.com/vectra/reference/count.md) on
+  a high-cardinality key streams its output in bounded batches instead
+  of one batch sized to the number of groups.
+
+- A very large TIFF (\> 2 GB, BigTIFF) now seeks with a 64-bit offset on
+  Windows.
+
+#### Correctness
+
+- `arrange(desc(x))` places `NA` last (dplyr `na.last = TRUE`)
+  consistently on both the in-memory and the spilled path; sort NA
+  placement is now a per-key option so window value sorts (`cume_dist`,
+  rank) keep treating `NA` as the largest value.
+
+- [`as.character()`](https://rdrr.io/r/base/character.html) /
+  [`paste()`](https://rdrr.io/r/base/paste.html) of a `double` keep full
+  precision (15 significant digits) instead of truncating to 6.
+
+- [`paste()`](https://rdrr.io/r/base/paste.html) /
+  [`paste0()`](https://rdrr.io/r/base/paste.html) stringify `NA` to
+  `"NA"` (base R) instead of returning `NA`.
+
+- [`as.character()`](https://rdrr.io/r/base/character.html) /
+  [`paste()`](https://rdrr.io/r/base/paste.html) of a computed `NaN` /
+  `Inf` / `-Inf` format as R does (`"NaN"` / `"Inf"` / `"-Inf"`), not
+  the platform’s lowercase `%g` output.
+
+- [`as.integer()`](https://rdrr.io/r/base/integer.html) /
+  [`as.numeric()`](https://rdrr.io/r/base/numeric.html) /
+  [`as.logical()`](https://rdrr.io/r/base/logical.html) support the
+  `double`, string, and logical source types base R does
+  (e.g. `as.integer(2.7)` is `2`).
+
+- Grouped `first()` / `last()` return the literal first / last element
+  of the group instead of `NA` when the group contains any `NA`.
+
+- Overview `bilinear` / `gauss` resampling no longer shifts pixels half
+  a cell to the north-west.
+
+#### dplyr compatibility
+
+- `.by` (and `.keep`) are honored in
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+  and
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  instead of being turned into a stray column / predicate.
+
+- `arrange(-x)`, `if_any()` / `if_all()`,
+  [`across()`](https://gillescolling.com/vectra/reference/across.md)
+  with anonymous lambdas (`\(x) ...`) and `{.fn}` in `.names`, the
+  `.data[[var]]` pronoun, and
+  [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md)
+  list splicing with a character `.id` now work.
+
+- [`select()`](https://gillescolling.com/vectra/reference/select.md) and
+  [`across()`](https://gillescolling.com/vectra/reference/across.md)
+  resolve tidyselect helpers that reference an external variable
+  (`all_of(v)`, `any_of(cols)`) in the caller’s environment.
+
+- `if_any()` / `if_all()` accept an anonymous `\(x) ...` lambda, not
+  only a `~ .x` formula.
+
+- [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
+  sorts by an expression (`arrange(x + y)`, `arrange(desc(x * 2))`), and
+  a window function may reference a column created earlier in the same
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)
+  (evaluation now follows dplyr’s left-to-right order).
+
+- [`median()`](https://rdrr.io/r/stats/median.html) / `n_distinct()`
+  accept an expression or the `.data[[var]]` pronoun (materialized like
+  [`mean()`](https://rdrr.io/r/base/mean.html) /
+  [`sum()`](https://rdrr.io/r/base/sum.html) already were).
+
+- [`across()`](https://gillescolling.com/vectra/reference/across.md)
+  errors on a duplicate output name instead of silently dropping a
+  result;
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  rejects `.keep` / `.preserve`.
+
+#### Robustness
+
+- A GEOS constant-geometry expression (`st_distance(geom, const)`) warms
+  the shared geometry’s envelope before the parallel loop, removing a
+  data race.
+
+- [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  warns when a component of mutually-overlapping features cannot be
+  tiled within the memory budget, instead of silently exceeding it.
+
+- Reading a CSV warns (once, naming the column) when a value past the
+  type-inference window does not match the inferred type and is read as
+  `NA`.
+
+## vectra 0.11.5
+
+### Bug fixes
+
+- Windowed rolling
+  [`roll_min()`](https://gillescolling.com/vectra/reference/rolling.md)
+  /
+  [`roll_max()`](https://gillescolling.com/vectra/reference/rolling.md)
+  no longer corrupt the heap on a long partition with a short time
+  window (the monotonic-deque index could run past its buffer).
+
+- [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)
+  with a unary math function
+  ([`sqrt()`](https://rdrr.io/r/base/MathFun.html),
+  [`abs()`](https://rdrr.io/r/base/MathFun.html),
+  [`log()`](https://rdrr.io/r/base/Log.html),
+  [`round()`](https://rdrr.io/r/base/Round.html), …) on a `double`
+  column no longer leaks memory on every batch, which could exhaust
+  memory during a large streamed
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md).
+
+- Row-group pruning is more accurate: a
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md)
+  with a fractional threshold on a sorted integer column
+  (`filter(x < 2.9)`), an interior all-`NaN` row group, and a quantized
+  column no longer drop rows that actually match.
+
+- Date/time: `year()`, `month()`,
+  [`floor_time()`](https://gillescolling.com/vectra/reference/floor_time.md),
+  and friends now use the column’s stored `Date` / `POSIXct` class to
+  decide days-vs-seconds instead of guessing by magnitude (a near-epoch
+  `POSIXct` was misread), and compute calendar fields with portable
+  arithmetic that is correct for pre-1970 dates on Windows.
+  [`as.Date()`](https://rdrr.io/r/base/as.Date.html) returns `NA` for an
+  invalid date (`"2021-02-30"`) instead of a normalized one.
+
+- GeoTIFF reading now inverts the horizontal predictor (tag 317), so
+  DEFLATE-compressed files written with `PREDICTOR=2` (a GDAL/terra
+  default) decode correctly instead of as differenced garbage.
+
+- Window functions match dplyr: `ntile()` front-loads the remainder,
+  `row_number(desc(x))` keeps ties in first-arrival order, and a logical
+  column feeds [`cumsum()`](https://rdrr.io/r/base/cumsum.html) / rank
+  windows correctly.
+
+- [`min()`](https://rdrr.io/r/base/Extremes.html) /
+  [`max()`](https://rdrr.io/r/base/Extremes.html) propagate `NaN`
+  regardless of position; [`any()`](https://rdrr.io/r/base/any.html) /
+  [`all()`](https://rdrr.io/r/base/all.html) treat `NaN` as `NA`; `NaN`
+  join keys match each other; `x %in% set` always returns a logical (an
+  `NA` operand is `FALSE`, or `TRUE` if the set contains `NA`).
+
+- Hash joins now emit many-to-many output in bounded chunks: a hot key
+  matched by a large probe batch no longer materializes the whole cross
+  product in one resident batch (the probe resumes mid-chain across
+  batches, on both the in-memory and spilled block-nested-loop paths).
+
+- [`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)
+  errors on a non-string key/blocking column instead of crashing; a join
+  on more than 16 key columns is rejected rather than overrunning
+  internal buffers.
+
+- [`right_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  suffixes a non-key column present on both sides (`.x` / `.y`) instead
+  of emitting two columns with the same name.
+
+- A column with no declared type in a SQLite table (BLOB affinity) reads
+  its numeric cells as text instead of dropping the whole column to
+  `NA`; the reader bounds-checks on-disk offsets so a corrupt database
+  cannot over-read. The GeoTIFF and SQLite readers reject crafted files
+  with overflowing sizes.
+
+- `int64` values above 2^53 warn about precision loss on the common
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+  path (previously only a rarer path warned).
+
+### New features
+
+- [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md)
+  gains a `col_types` argument to force specific column types
+  (`c(zip = "character")`), so a zero-padded identifier column is not
+  numericized by type inference.
+
+## vectra 0.11.4
+
+### Behaviour changes
+
+- [`left_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  /
+  [`inner_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  /
+  [`right_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  /
+  [`full_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  /
+  [`semi_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  /
+  [`anti_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  gain an explicit `na_matches` argument (`"na"`, the default, matches
+  `NA` to `NA` as in dplyr; `"never"` uses SQL NULL semantics).
+
+- [`grepl()`](https://rdrr.io/r/base/grep.html),
+  [`gsub()`](https://rdrr.io/r/base/grep.html), and
+  [`sub()`](https://rdrr.io/r/base/grep.html) now treat the pattern as a
+  regular expression by default (`fixed = FALSE`), matching base R. Pass
+  `fixed = TRUE` for literal matching. They also honour
+  `ignore.case = TRUE`; `perl = TRUE` is rejected with a clear error
+  (the engine uses POSIX extended regexps).
+
+- [`round()`](https://rdrr.io/r/base/Round.html) now rounds halves to
+  even (`round(2.5)` is `2`), matching base R.
+
+### Bug fixes
+
+- SQLite: reading a `BLOB` column, or a `TEXT` value larger than 64 KB,
+  no longer reads past the reader’s buffer (a crash on ordinary input);
+  a non-text value in a text column reads as `NA`. Writing a row larger
+  than a page (for example a long text value) no longer overflows the
+  page buffer – the writer now emits SQLite overflow pages, so large
+  cells round-trip. Database files larger than 2 GB are seeked with
+  64-bit offsets on Windows. A text/blob value in a numeric column reads
+  as `NA` rather than a fake `0`.
+
+- CSV: a leading UTF-8 byte-order mark is stripped from the header, so
+  the first column name is no longer corrupted (common in “CSV UTF-8”
+  exports). A value that disagrees with the inferred column type past
+  the inference window becomes `NA` rather than silently `FALSE` for
+  logical columns. New `guess_max` argument to
+  [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md)
+  (default 1000; `Inf` scans the whole file) for columns whose type only
+  becomes apparent later in the file.
+
+- [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) and
+  [`transmute()`](https://gillescolling.com/vectra/reference/transmute.md)
+  evaluate expressions left to right, so an expression may reference a
+  column created earlier in the same call
+  (`mutate(a = x + 1, b = a * 2)`).
+  [`transmute()`](https://gillescolling.com/vectra/reference/transmute.md)
+  also keeps the grouping columns.
+
+- Integer-dtype raster output
+  ([`focal()`](https://gillescolling.com/vectra/reference/focal.md),
+  [`terrain()`](https://gillescolling.com/vectra/reference/terrain.md),
+  [`warp()`](https://gillescolling.com/vectra/reference/warp.md),
+  [`mask()`](https://gillescolling.com/vectra/reference/mask.md),
+  [`proximity()`](https://gillescolling.com/vectra/reference/proximity.md),
+  [`vec_write_raster()`](https://gillescolling.com/vectra/reference/vec_write_raster.md),
+  …) round-trips `NA` instead of writing it as a valid `0`, by recording
+  a per-dtype nodata sentinel when the data contains `NA`.
+
+- [`across()`](https://gillescolling.com/vectra/reference/across.md)
+  accepts purrr-style formula lambdas (`~ .x + 1`,
+  `~ mean(.x, na.rm = TRUE)`).
+
+- Window functions accept `min_rank()` and a compound argument
+  (`cumsum(x + y)`, `rank(desc(a * b))`).
+
+- [`count()`](https://gillescolling.com/vectra/reference/count.md)
+  groups by the existing
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md)
+  keys plus the counted columns, and `count(wt = )` / `tally(wt = )` sum
+  weights with `na.rm = TRUE`, matching dplyr.
+
+- [`slice_head()`](https://gillescolling.com/vectra/reference/slice_head.md),
+  [`slice_tail()`](https://gillescolling.com/vectra/reference/slice_head.md),
+  and [`slice()`](https://gillescolling.com/vectra/reference/slice.md)
+  are group-aware on grouped input.
+
+- Corrupt or truncated `.vtr` / `.vtri` files are rejected cleanly
+  instead of over-reading, over-writing, or looping: the `.vtri` reader
+  validates its entry and slot counts against the file size and bounds
+  its probe chains, and the bundled tdc decoder bounds its LZ sequence
+  cursor and back-references and computes the dictionary offset-table
+  size in 64-bit.
+
+- [`focal()`](https://gillescolling.com/vectra/reference/focal.md)
+  reports a clean error instead of a null-pointer dereference if a
+  per-thread scratch allocation fails.
+
+### Bug fixes
+
+- [`collect_chunked()`](https://gillescolling.com/vectra/reference/collect_chunked.md)
+  and
+  [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)
+  now consume their input node, matching every other terminal
+  ([`collect()`](https://gillescolling.com/vectra/reference/collect.md),
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)).
+  The streaming batch cursor previously drained the plan without
+  invalidating the handle, so collecting the same node again re-drove an
+  already-drained spill plan and returned wrong or empty data instead of
+  raising the documented “already consumed” error.
+
+- The holistic aggregates
+  ([`median()`](https://rdrr.io/r/stats/median.html), `n_distinct()`)
+  and [`kmer()`](https://gillescolling.com/vectra/reference/kmer.md) now
+  bound the fan-in of their external record merge. The shared record
+  sort-merge opened every spilled run at once, so a genuinely
+  larger-than-RAM aggregate could grow its resident read buffers with
+  the run count and exhaust the process file-handle table. It now
+  reduces the runs to a bounded fan-in over multiple passes first, as
+  the row sort behind
+  [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)/grouped
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  already did, keeping peak memory and open handles bounded regardless
+  of input size.
+
+- `propagate()` no longer stops at a fixed 20 levels of hierarchy. A
+  parent-child chain deeper than 20 within a batch left the deepest rows
+  `NA`; propagation now runs to convergence, so an arbitrarily deep
+  hierarchy resolves fully.
+
+- `resolve()` and `propagate()` coerce their foreign-key and primary-key
+  columns to a common type before matching. A key pair stored in
+  different numeric types (for example a `double` foreign key against an
+  integer primary key) could silently fail to match; they are now
+  compared like with like.
+
+- `lookup(.report = TRUE)`, the default, no longer materializes the
+  whole fact table. It collected the entire fact table into memory
+  purely to count its rows for a diagnostic message; the count and the
+  unmatched-key preview now stream in bounded memory.
+
+## vectra 0.11.2
+
+### Bug fixes
+
+- The gzip (`.gz`) reader now streams. It previously read the whole
+  compressed file into memory and inflated it whole into a second
+  buffer, so the readable size was capped at available RAM, and its size
+  query used a 32-bit `ftell`, so a `.gz` past 2 GB compressed failed to
+  open at all on Windows. It now feeds the raw deflate stream through
+  miniz’s `tinfl` coroutine into a 32 KB wrapping window (which doubles
+  as the LZ dictionary) and serves bytes from that window, with 64-bit
+  file offsets throughout; peak memory is the window plus one input
+  block, independent of file size. A `.gz` whose inflated size exceeds
+  RAM (and a compressed size past 2 GB) now reads fine. Enables
+  [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md)
+  on multi-GB compressed streams.
+
+- The gzip reader now follows concatenated gzip members, so a
+  multi-member `.gz` (as produced by `bgzip` and `cat a.gz b.gz`) reads
+  whole instead of stopping at the first member. The header is parsed
+  field by field with no fixed size cap. This affects
+  [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md),
+  [`tbl_fasta()`](https://gillescolling.com/vectra/reference/tbl_fasta.md),
+  [`tbl_fastq()`](https://gillescolling.com/vectra/reference/tbl_fastq.md),
+  and
+  [`tbl_bed()`](https://gillescolling.com/vectra/reference/tbl_bed.md)
+  on any `.gz` input.
+
+- A truncated or corrupt `.gz` now fails loudly. The scanners
+  distinguish a hard decode error from a clean end of stream, so a
+  partial compressed file raises an error instead of silently returning
+  a short read.
+
+## vectra 0.11.1
+
+CRAN release: 2026-07-10
+
+### Bug fixes
+
+- A query is now consumed by exactly one terminal operation.
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+  and
+  [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  join `write_*()` in invalidating the node once its pull cursor is
+  drained, so a second terminal op on the same node (for example
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md)-ing
+  a pipeline to inspect it and then
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)-ing
+  the same object) raises a clear “already consumed” error instead of
+  re-driving an exhausted plan. Previously the second pass returned
+  empty or, on a multi-spill plan, silently reinterpreted a string
+  column’s bytes as doubles
+  ([\#5](https://github.com/gcol33/vectra/issues/5)).
+
+- [`offload()`](https://gillescolling.com/vectra/reference/offload.md)
+  shards are re-collectable: a shard rebuilds a fresh scan on each
+  access, so a partition stays an iterable list of shards under the
+  consume-once rule.
+
+- `vec_builder_*` now errors on a type-mismatched or dictionary-deferred
+  array instead of reinterpreting raw bytes, matching the guard the
+  writer already applied at its own boundary.
+
+## vectra 0.11.0
+
+### Delimited-file reader gains a `delim` argument
+
+- [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md)
+  takes a `delim` argument (default `","`), so tab- and
+  semicolon-separated files read natively without a transcode step.
+  `delim = "\t"` streams a GBIF occurrence export (SIMPLE_CSV) straight
+  through; `delim = ";"` reads the semicolon exports common in European
+  data. Quoting stays RFC 4180 for any delimiter, so a quoted field may
+  still contain the delimiter, newlines, and doubled quotes.
+
+### Feature-space nearest-neighbour tools
+
+- New
+  [`feature_knn()`](https://gillescolling.com/vectra/reference/feature_knn.md):
+  nearest-neighbour search in *predictor* space rather than on
+  coordinates. For each streamed query row it returns the mean distance
+  to the nearest `k` (or nearest `percentage`%) of a resident reference
+  cloud, with a Euclidean or Mahalanobis metric. The query side streams
+  one batch at a time so the projection side can exceed memory; the
+  reference cloud is materialized once, whitened for the chosen metric,
+  and scanned in parallel (a bounded max-heap keeps peak memory at O(k)
+  per thread). This is the environmental-novelty counterpart to the
+  coordinate-based
+  [`spatial_knn()`](https://gillescolling.com/vectra/reference/spatial_knn.md).
+- New
+  [`rast_feature_distance()`](https://gillescolling.com/vectra/reference/rast_feature_distance.md):
+  the same distance computed out-of-core over a projection raster. The
+  reference raster is read once and indexed; the projection raster
+  streams one tile-row strip at a time and the distance surface is
+  written aligned to its grid. This is the streaming distance surface
+  behind an environmental-novelty / transferability diagnostic such as
+  MOP (Owens et al. 2013); the strict non-analogous-conditions layers
+  compose from a per-band range reduce plus
+  [`rast_calc()`](https://gillescolling.com/vectra/reference/rast_calc.md).
+- The Species Distribution Models vignette gains a transferability /
+  novelty section covering both.
+
+### Bounded memory across the remaining streaming paths
+
+- The streaming operations that still grew resident state with the input
+  size or with key skew are now bounded. Interval joins run as a serial
+  sweep-merge over externally sorted sides; k-mer counting streams
+  through an external sort-merge (`rec_spill`) instead of a hash table
+  that grew with the input; grouped top-1 (`slice_min`/`slice_max`,
+  `n = 1`) keeps one champion per open group via a `(key, row-id)` sort;
+  fuzzy joins stream the probe side and spill the build side when it
+  overflows the budget; and ungrouped windows with mixed orderings
+  decompose into a chain of single-spec streaming nodes rather than
+  materializing the table. A shared `rec_spill` external merge and a
+  shared `key_snap` group-boundary detector back these paths, so there
+  is one implementation of each rather than several.
+
+## vectra 0.10.8
+
+### Bounded-memory joins under key skew
+
+- Hash joins now keep a bounded memory peak regardless of how skewed the
+  join keys are. When the materialized build side exceeds the memory
+  budget
+  ([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)),
+  both sides grace-hash spill into 64 run-file partitions and join one
+  partition at a time. A partition that is itself still over budget is
+  re-partitioned by its sub-join with a depth-salted hash (a murmur3
+  finalizer, not a bare XOR, so colliding keys actually redistribute
+  across levels rather than landing in the same bucket again). A
+  partition that a single dominant key value makes un-splittable –
+  hashing cannot separate identical keys at any depth – drops at the
+  third level to a block-nested-loop: the build side is read in
+  budget-sized blocks and the probe side is re-scanned once per block.
+  Peak memory is one build block plus one probe batch plus a
+  one-bit-per-row matched bitset, so no join retains an unbounded
+  resident partition. Applies to all five kinds (inner, left, right,
+  full, semi, anti). Partition files are opened lazily on first row, so
+  a hot key no longer creates 63 empty spill files per level.
+
+### Fixes
+
+- An empty build partition no longer corrupts the heap on a
+  [`full_join()`](https://gillescolling.com/vectra/reference/left_join.md).
+  The hash-table constructor floors its slot allocation to one row; the
+  true build count is now recorded separately, so the finalize pass over
+  a build-empty partition reads zero rows instead of a nonexistent
+  row 0. Surfaced by the one-sided partitions the recursive spill
+  routinely produces.
+- The sorted-input merge-join path is now consistent with the hash path
+  in three cases it previously disagreed on: a match group beginning at
+  build row 0 no longer spins forever (the group cursor used a
+  positive-only sentinel that conflated position 0 with “inactive”); an
+  unmatched build row under
+  [`full_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+  is emitted exactly once rather than doubled by the finalize pass; and
+  an `NA` key never matches (both-`NA` at an equal-compare point is
+  treated as unmatched, as in the hash path).
+
+## vectra 0.10.7
+
+### Fixes
+
+- The overlay engine again builds without OpenMP (e.g. the default macOS
+  CRAN toolchain). The serial fallback in `C_overlay_run` called
+  `process_tile()` with one argument short of its signature, so the
+  no-OpenMP branch failed to compile; it now passes the point-in-polygon
+  flag like the parallel branch.
+- Encoding a string column of duplicate empty strings no longer triggers
+  undefined behavior. The DICT_1D dictionary encoder compared a
+  hash-table cache candidate with `memcmp(str, s, len)`; when every
+  string is empty the heap data pointer is `NULL` and `len` is 0, so
+  `memcmp(NULL, NULL, 0)` tripped the UBSan nonnull check on CRAN’s
+  ASAN/UBSAN runner. The comparison is now short-circuited on
+  `len == 0`, where the already-checked length equality makes the
+  strings equal. Output is unchanged. Fixed in vendored tdc
+  (`gcol33/tdc`).
+- An audit swept the rest of this undefined-behavior class (a `NULL`
+  pointer with length 0 passed to `memcmp`/`memcpy`) across the engine
+  and vendored tdc. Two more sites are fixed: a blocked
+  [`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)
+  whose probe block column is all empty strings compared block keys with
+  `memcmp(build, NULL, 0)`, and tdc’s string min/max stats copied a
+  zero-length prefix from a `NULL` all-empty-string heap. Both are now
+  length-guarded; results are unchanged.
+
+## vectra 0.10.6
+
+### Bounded-memory top-N and fuzzy join
+
+- [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)/`slice_max(..., with_ties = FALSE)`
+  no longer materialize their input. The streaming top-N node keeps at
+  most `k` rows in a size-`k` max-heap (fixed-width values overwritten
+  in place, strings held as per-slot owned copies freed on eviction); a
+  non-winning row costs one comparison and no copy, so peak memory is
+  `min(k, n)` rows rather than the whole child. NA in the order column
+  now always sorts last, independent of direction, matching dplyr and
+  the `with_ties = TRUE` path – an earlier version treated NA as the
+  maximum under
+  [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md).
+- [`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)
+  now streams the probe side instead of materializing both inputs and
+  the whole cross-product of matches. The build side is materialized
+  once and, with a blocking column, indexed by exact block key; the
+  probe side streams one batch at a time, and each batch’s matches are
+  computed, ordered, and emitted in chunks before the next batch is
+  pulled. Peak memory is the build side plus one probe batch plus that
+  batch’s matches, and the `(probe, distance)` output order is preserved
+  without a global sort. These were the last two operators that buffered
+  their whole input, so every verb is now bounded-memory.
+
+## vectra 0.10.5
+
+### Spill-safe window functions
+
+- Ordered ungrouped windows that need the whole table sorted
+  ([`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`,
+  `percent_rank()`, `cume_dist()`, `row_number(col)`, `roll_*()`,
+  [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`, `ntile()`) now
+  stream, closing the last window case that materialized the whole
+  table. A single spill-safe global sort is inserted below the window,
+  then one forward pass computes each spec from bounded running state,
+  so peak memory is one batch plus the sort’s own spill buffer rather
+  than the whole table. Two ordering tricks keep the awkward cases
+  single-pass: `cume_dist()` sorts descending so `count(<= v)` is known
+  when each value group opens, and `lead()` is computed as
+  [`lag()`](https://rdrr.io/r/stats/lag.html) on the row-id-reversed
+  stream. When one
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)
+  mixes specs that need conflicting sort orders (for example `rank(x)`
+  and `rank(desc(x))` together), the node falls back to the in-memory
+  path; splitting them into separate
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)
+  calls keeps each streaming.
+
+## vectra 0.10.4
+
+### Spill-safe window functions
+
+- Grouped window functions
+  ([`group_by()`](https://gillescolling.com/vectra/reference/group_by.md)
+  followed by
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)
+  with `row_number()`, [`rank()`](https://rdrr.io/r/base/rank.html),
+  [`lag()`](https://rdrr.io/r/stats/lag.html),
+  [`cumsum()`](https://rdrr.io/r/base/cumsum.html),
+  [`roll_sum()`](https://gillescolling.com/vectra/reference/rolling.md),
+  and the rest) no longer materialize the whole table in memory. The
+  window node now sorts on the group keys (external, spill-safe),
+  processes one group at a time, and restores the original row order, so
+  peak memory is a single group rather than the full input – the same
+  bound `group_by() |> summarise()` already had. Results are unchanged:
+  rows come back in original order, and cumulative windows still run in
+  arrival order within each group.
+
+- Ungrouped cumulative windows (`mutate(cs = cumsum(x))` and the rest of
+  the `cumsum`/`cummean`/`cummin`/`cummax`/`row_number()` family, with
+  no
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md))
+  now stream one batch at a time with O(1) running state, so a running
+  aggregate over a larger-than-RAM table holds only one batch. Ordered
+  ungrouped windows that need the whole table sorted
+  ([`rank()`](https://rdrr.io/r/base/rank.html), `dense_rank()`,
+  `percent_rank()`, `cume_dist()`, `row_number(col)`, `roll_*()`,
+  [`lag()`](https://rdrr.io/r/stats/lag.html), `lead()`, `ntile()`) keep
+  the in-memory path.
+
+## vectra 0.10.3
+
+### Bug fixes
+
+- The parallel `.vtr` reader no longer risks an intermittent crash when
+  a read fails mid-collect. Row groups are decoded on OpenMP worker
+  threads; on an I/O or decode failure (a truncated or removed file, a
+  short read, a corrupt block) the reader used to raise the error
+  directly from a worker thread, where the R error mechanism’s longjmp
+  corrupts the master thread’s stack. The reader now allocates every
+  batch on the master thread and only fills them from disk in parallel,
+  capturing the first failure and re-raising it once the parallel region
+  joins, so a failed read is a clean, catchable R error.
+
+### BED streaming scan backend
+
+- [`tbl_bed()`](https://gillescolling.com/vectra/reference/tbl_bed.md)
+  streams a BED (Browser Extensible Data) file of genomic features as a
+  lazy table, one feature per row, with the standard BED columns in
+  order (`chrom`, `start`, `end`, `name`, `score`, `strand`,
+  `thickStart`, `thickEnd`, `itemRgb`, `blockCount`, `blockSizes`,
+  `blockStarts`; extra fields past the twelfth as `V13`, `V14`, …). The
+  column count is fixed by the first feature line and every later line
+  must match. Fields are whitespace-delimited (tab or space); blank,
+  `#`, `track`, and `browser` lines are skipped; gzip (`.bed.gz`) input
+  is read transparently, and the scan reports its feature count on
+  completion (`quiet = TRUE` suppresses it).
+- Coordinates are read faithfully: `start` is 0-based and `end`
+  half-open, both returned exactly as stored. Paired with the existing
+  [`interval_join()`](https://gillescolling.com/vectra/reference/interval_join.md),
+  this makes vectra a streaming genome-interval overlap engine. For
+  base-overlap semantics matching bedtools and
+  [`GenomicRanges::findOverlaps()`](https://rdrr.io/pkg/IRanges/man/findOverlaps-methods.html),
+  use `interval_join(..., closed = FALSE)`, which requires a strictly
+  positive overlap and so does not pair abutting features.
+  Recovery-tested against `findOverlaps` and on explicit half-open
+  boundary (off-by-one) cases.
+- A malformed feature line is a loud error, not a silent drop: an
+  inconsistent field count, a non-integer `start`/`end`, or fewer than
+  three fields stops the scan. Optional integer fields (`score`,
+  `thickStart`, `thickEnd`, `blockCount`) accept `.` or `NA` as missing.
+
+## vectra 0.10.2
+
+### `kmer()` k-mer spectrum node
+
+- `kmer(x, seq, k, by = , canonical = )` counts every k-mer of a
+  nucleotide column, grouped by zero or more key columns, returning one
+  row per distinct (group, k-mer) with a `kmer` string and an integer
+  `count`. It is the set-wise companion to the per-row `seq_*` family: a
+  blocking step like
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md),
+  but only the k-mer table is held, not the input, so a spectrum over a
+  larger-than-RAM read set stays bounded. Each k-mer is packed into 2
+  bits per base and counted in a native open-addressing hash (k in
+  `1:32`); a window containing any non-`ACGT` base is skipped, matching
+  dedicated k-mer counters. `canonical = TRUE` collapses a k-mer with
+  its reverse complement. Recovery-tested against a hand-rolled
+  tabulation (ungrouped, by-group, canonical, non-ACGT skipping,
+  streaming invariance).
+
+- Internal: the group-key store (`KeyArena`) shared by
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  and [`kmer()`](https://gillescolling.com/vectra/reference/kmer.md),
+  and the 2-bit base encoding shared by `seq_*` and
+  [`kmer()`](https://gillescolling.com/vectra/reference/kmer.md), are
+  now single-sourced (`key_arena`, `seq_util`).
+
+### Fixes
+
+- Reading a `.vtr` no longer holds an OS file handle open for the scan
+  node’s whole lifetime. The reader loads the row-group index into
+  memory at open and reopens the file per read (as the parallel reader
+  already did), so an idle scan node – one created or already collected
+  but not yet garbage-collected – keeps no descriptor. A tight
+  `tbl(f) |> collect()` loop previously leaked one handle per iteration
+  until the OS refused further opens and `vtr1_open_tdc` failed
+  (crashing when the failure landed mid-decode); it now runs unbounded.
+- A data.frame lifted into a lazy node
+  ([`tbl_xlsx()`](https://gillescolling.com/vectra/reference/tbl_xlsx.md),
+  and the data.frame inputs to
+  [`write_csv()`](https://gillescolling.com/vectra/reference/write_csv.md)
+  /
+  [`write_sqlite()`](https://gillescolling.com/vectra/reference/write_sqlite.md)
+  /
+  [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md))
+  now owns its temporary `.vtr` for the node’s lifetime and unlinks it
+  when the node is freed, instead of deleting it when the creating call
+  returned.
+
+## vectra 0.10.1
+
+### FASTA / FASTQ streaming scan backends
+
+- [`tbl_fasta()`](https://gillescolling.com/vectra/reference/tbl_fasta.md)
+  and
+  [`tbl_fastq()`](https://gillescolling.com/vectra/reference/tbl_fastq.md)
+  stream a biological-sequence file as a lazy table, one record per row:
+  `id`, `desc`, `seq` for FASTA and an additional `qual` for FASTQ. `id`
+  is the first whitespace-delimited token of the header and `desc` is
+  the remainder (an empty string when absent). Records stream one batch
+  at a time, so a read set larger than RAM never fully materializes, and
+  the `seq_*` expression family works directly on the `seq` column. Gzip
+  input (`.fasta.gz`, `.fq.gz`, …) is read transparently through the
+  same vendored miniz path CSV uses. A record cut short — a header where
+  a `>`/`@` is expected, a FASTQ record missing a line, or a quality
+  string whose length does not match its sequence — is a loud error
+  rather than a silent drop, and the scan reports how many records it
+  read on completion (`quiet = TRUE` suppresses it). Recovery-tested
+  against `Biostrings` and `ShortRead`.
+
+- The byte reader that backs the streaming text scans (plain and gzip)
+  is now a shared `byte_reader` used by both the CSV and FASTA/FASTQ
+  backends.
+
+## vectra 0.10.0
+
+### `seq_*` biological-sequence expressions
+
+- A family of `seq_*` functions now works directly inside
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+  and
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  over a sequence held in an ordinary string column, computed per row in
+  C and parallelized across rows: `seq_length`, `seq_gc`, `seq_revcomp`,
+  `seq_complement`, `seq_reverse`, `seq_transcribe` (DNA\<-\>RNA),
+  `seq_translate` (standard genetic code), `seq_subseq`, and `seq_dist`
+  (Levenshtein / Damerau-Levenshtein / Hamming edit distance to a
+  reference column or constant). A missing or unparseable cell yields
+  `NA`, the same contract as the `st_*` geometry and embedding-distance
+  families. Complement handles the IUPAC ambiguity codes. See
+  [`?seq_expressions`](https://gillescolling.com/vectra/reference/seq_expressions.md).
+
+## vectra 0.9.12
+
+### `compress = "small"` parallelizes the candidate sweep
+
+- The try-all-pick-smallest encoder now trial-encodes a column’s
+  candidate specs across threads: each thread encodes a disjoint slice
+  of candidates into its own scratch buffer and the smallest record is
+  reduced. Large row groups (the ones where the sweep dominates encode
+  time) compress markedly faster on multi-core machines. The chosen spec
+  is independent of thread count — ties break to the lowest candidate
+  index — so `"small"` files are byte-identical regardless of how many
+  cores encode them, and never larger than `"fast"`. The sweep stays
+  serial for small blocks and inside an existing parallel region.
+
+### All-null row groups are pruned during scan
+
+- A filter comparison against a column whose values are all `NA` in a
+  row group (`x > 5`, `x == "a"`, `x != 5`, …) is `NA` for every row,
+  which the filter drops. The scan now recognizes this from the row
+  group’s null count and skips the whole group without reading it, even
+  for numeric columns that carry no min/max (an all-`NA` column has
+  none). Results are unchanged; the pruning only avoids reading groups
+  that could not have produced a row.
+
+## vectra 0.9.11
+
+### `compress = "small"` now does adaptive per-column encoding
+
+- `write_vtr(..., compress = "small")` previously behaved identically to
+  `"fast"`. It now performs try-all-pick-smallest: each column is
+  trial-encoded under a set of candidate tdc specs — alternative models
+  (delta, second-order and FCM/DFCM float predictors, numeric and string
+  dictionaries, sparse-zero) crossed with stronger entropy coders
+  (optimal-parse LZ, split-stream LZ, FSE, 4-stream Huffman, per-lane) —
+  and the smallest block record is kept. The `"fast"` encoding is always
+  a candidate, so `"small"` files are never larger than `"fast"` (about
+  16-40% smaller on mixed data). Encode is slower in proportion to the
+  number of candidates; decode and the on-disk format are unchanged.
+- `compress = "none"` now works on string columns (previously errored).
+
+### Faster `collect()` on dictionary-encoded string columns
+
+- [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+  on a string column now interns each unique value once and fills the
+  result by index, instead of hashing every row. The direct-read path
+  decodes the on-disk dictionary block into (unique values + per-row
+  indices) via the new `tdc_decode_block_dict` primitive and carries it
+  through a `VecArray` dictionary side-channel to the fill. On 5M rows
+  of wide, heavily- duplicated strings the collect drops from ~0.34s to
+  ~0.03s. Results are unchanged; NA, empty, and UTF-8 values round-trip
+  identically.
+
+### Fixes
+
+- Fixed two correctness bugs in the tdc codec that surfaced through the
+  new `"small"` encoder: sparse-zero blocks and single-element all-zero
+  columns could fail to decode. Both are covered by new regression
+  tests.
+
+## vectra 0.9.10
+
+### One memory knob for the whole engine
+
+- A single ceiling, `options(vectra.memory = "8GB")`, now governs every
+  part of the engine that buffers before spilling. It is resolved by the
+  new exported
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+  (accepts a byte count or a `"512MB"` / `"8GB"` string). The
+  auto-detected default is half of system RAM, floored at 1 GB; an
+  explicit value is honored as given. Row-group size (`batch_size`) is a
+  separate cache-locality control and is unaffected.
+- The external sort’s spill threshold, the self-overlay working-set cap,
+  and the streaming spatial flush / partition-routing buffers all derive
+  their budget from
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+  instead of separate constants. The per-subsystem options
+  `vectra.spatial_flush`, `vectra.partition_budget`,
+  `vectra.overlay_mem_limit`, and `vectra.overlay_parse_chunk` are
+  removed; per-call `flush_rows` (an explicit row cap) remains the
+  override on the streaming spatial verbs and
+  [`offload()`](https://gillescolling.com/vectra/reference/offload.md).
+
+### Joins spill to disk instead of running out of memory
+
+- When a join’s build (right) side outgrows
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+  the engine switches to a grace-hash join: both sides are
+  hash-partitioned by key into run-files and joined one partition at a
+  time, so peak memory stays bounded. The result is identical to the
+  in-memory join for every kind (inner, left, right, full, semi, anti),
+  including composite keys and many-to-many matches.
+
+## vectra 0.9.9
+
+### Faster `spatial_overlay()`
+
+- Each distinct input geometry is decoded from its stored WKB once per
+  overlay batch and shared, read-only, across every tile it falls in. A
+  feature that spans many tiles was previously decoded again in each of
+  them; on a dense world protected-area union a single large feature can
+  recur in thousands of tiles, which made WKB decoding the largest
+  single cost of the overlay. The per-tile clipping, noding, and
+  attribution are unchanged, so the result is identical.
+- A piece is a face of the arrangement of all input boundaries, so it
+  lies wholly inside or outside every input up to snap-rounding slivers
+  along the boundary.
+  [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  now credits each whole face to the inputs whose interior contains the
+  face’s representative point, and the piece geometry is that face. This
+  replaces intersecting every face with each partially covering input,
+  the largest remaining cost once decoding is shared; per-input covered
+  area stays within about the noding precision times the face perimeter
+  of the exact value (well inside the 1e-4 coverage tolerance), and thin
+  boundary slivers no longer appear as separate pieces. Pass
+  `exact = TRUE` to restore the previous behaviour, where each face is
+  intersected with every covering input and credited that exact area.
+- Together these take the end-to-end ~470k-feature world protected-area
+  union from about 15 minutes to about 5, with the coverage invariant
+  still holding exactly (0 offenders), on a 32-thread desktop.
+
+## vectra 0.9.8
+
+CRAN release: 2026-07-01
+
+### New features
+
+- Embedding columns.
+  [`as_embedding()`](https://gillescolling.com/vectra/reference/as_embedding.md)
+  packs numeric vectors into a hex float32 blob held in an ordinary
+  character column. The distance functions
+  [`cosine()`](https://gillescolling.com/vectra/reference/embedding_distance.md)
+  (cosine distance),
+  [`l2()`](https://gillescolling.com/vectra/reference/embedding_distance.md)
+  (Euclidean distance), and
+  [`dot()`](https://gillescolling.com/vectra/reference/embedding_distance.md)
+  (inner product) decode the blob inside the engine and run inside
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) /
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+  parallelized over rows. Pair them with
+  [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  /
+  [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
+  for nearest-neighbour search.
+- Time-series resampling.
+  [`resample()`](https://gillescolling.com/vectra/reference/resample.md)
+  buckets a `Date` / `POSIXct` column to a calendar grid and aggregates
+  within each bucket, the time-series form of
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md) +
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md).
+  [`floor_time()`](https://gillescolling.com/vectra/reference/floor_time.md)
+  exposes the bucket key on its own for use inside
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) /
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md).
+- Time-based rolling aggregates inside
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md):
+  [`roll_sum()`](https://gillescolling.com/vectra/reference/rolling.md),
+  [`roll_mean()`](https://gillescolling.com/vectra/reference/rolling.md),
+  [`roll_min()`](https://gillescolling.com/vectra/reference/rolling.md),
+  [`roll_max()`](https://gillescolling.com/vectra/reference/rolling.md),
+  and
+  [`roll_n()`](https://gillescolling.com/vectra/reference/rolling.md)
+  over a trailing datetime window `(time - every, time]`, respecting an
+  upstream
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md).
+- [`interval_join()`](https://gillescolling.com/vectra/reference/interval_join.md)
+  joins two tables on range overlap: a row of `x` matches a row of `y`
+  when their `[start, end]` intervals overlap. Supports an optional
+  equality key, inner or left output, and open or closed interval ends.
+
+### Bug fixes
+
+- [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+  no longer triggers an UndefinedBehaviorSanitizer report when the
+  written data frame has a zero-row double column (CRAN M1 sanitizer
+  check). The bulk-copy fast path in `df_to_batch()` called `memcpy()`
+  over the column unconditionally; for an empty column `REAL()` yields a
+  degenerate pointer that clang’s alignment sanitizer flagged. The copy
+  is now skipped when there are no rows.
+
 ## vectra 0.9.7
 
 CRAN release: 2026-06-29

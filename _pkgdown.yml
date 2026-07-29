@@ -58,6 +58,9 @@ reference:
   - tbl_sqlite
   - tbl_tiff
   - tbl_xlsx
+  - tbl_fasta
+  - tbl_fastq
+  - tbl_bed
 - title: Data sinks
   desc: Write query results or data.frames to disk
   contents:
@@ -93,6 +96,17 @@ reference:
   - count
   - reframe
   - across
+- title: Time series
+  desc: Snap datetimes to a calendar grid and aggregate over time windows
+  contents:
+  - floor_time
+  - resample
+  - rolling
+- title: Biological sequences
+  desc: k-mer spectra and per-row sequence functions
+  contents:
+  - kmer
+  - seq_expressions
 - title: Joins
   contents:
   - left_join
@@ -103,6 +117,7 @@ reference:
   - anti_join
   - cross_join
   - fuzzy_join
+  - interval_join
 - title: Star schema
   desc: Define linked dimension tables and look up columns without explicit joins
   contents:
@@ -143,7 +158,9 @@ reference:
   - explain
   - collect
   - glimpse
+  - dim.vectra_node
   - print.vectra_node
+  - vectra_mem
 - title: Raster data cubes
   desc: Read and write .vec rasters and time cubes out of core
   contents:
@@ -218,3 +235,10 @@ reference:
   contents:
   - spatial_knn
   - spatial_locate
+- title: Feature space
+  desc: Embedding columns and nearest neighbours in predictor space
+  contents:
+  - as_embedding
+  - embedding_distance
+  - feature_knn
+  - rast_feature_distance

@@ -28,7 +28,7 @@ single-pass world of collect_chunked() to out-of-core fits."><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -88,7 +88,8 @@ single-pass world of <code><a href="collect_chunked.html">collect_chunked()</a><
 <span>  n <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  method <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"auto"</span>, <span class="st">"level"</span>, <span class="st">"range"</span>, <span class="st">"hash"</span><span class="op">)</span>,</span>
 <span>  path <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  compress <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fast"</span>, <span class="st">"small"</span>, <span class="st">"none"</span><span class="op">)</span></span>
+<span>  compress <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fast"</span>, <span class="st">"small"</span>, <span class="st">"none"</span><span class="op">)</span>,</span>
+<span>  flush_rows <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -126,6 +127,14 @@ the returned node is garbage-collected.</p></dd>
 <dt id="arg-compress">compress<a class="anchor" aria-label="anchor" href="#arg-compress"></a></dt>
 <dd><p>Compression for spill files, passed to <code><a href="write_vtr.html">write_vtr()</a></code>:
 <code>"fast"</code> (default), <code>"small"</code>, or <code>"none"</code>.</p></dd>
+
+
+<dt id="arg-flush-rows">flush_rows<a class="anchor" aria-label="anchor" href="#arg-flush-rows"></a></dt>
+<dd><p>Row cap on each shard buffer during partition routing.
+<code>NULL</code> (the default) instead flushes once the buffered bytes cross the
+streaming memory budget (a fraction of <code><a href="vectra_mem.html">vectra_mem()</a></code>, set with
+<code>options(vectra.memory = )</code>); an explicit value caps each buffer at that
+many rows.</p></dd>
 
 </dl></div>
     <div class="section level2">

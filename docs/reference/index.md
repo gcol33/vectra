@@ -7,13 +7,19 @@ Open files for lazy query execution
 - [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) : Create
   a lazy table reference from a .vtr file
 - [`tbl_csv()`](https://gillescolling.com/vectra/reference/tbl_csv.md) :
-  Create a lazy table reference from a CSV file
+  Create a lazy table reference from a delimited text file
 - [`tbl_sqlite()`](https://gillescolling.com/vectra/reference/tbl_sqlite.md)
   : Create a lazy table reference from a SQLite database
 - [`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md)
   : Create a lazy table reference from a GeoTIFF raster
 - [`tbl_xlsx()`](https://gillescolling.com/vectra/reference/tbl_xlsx.md)
   : Create a lazy table reference from an Excel (.xlsx) file
+- [`tbl_fasta()`](https://gillescolling.com/vectra/reference/tbl_fasta.md)
+  : Create a lazy table reference from a FASTA file
+- [`tbl_fastq()`](https://gillescolling.com/vectra/reference/tbl_fastq.md)
+  : Create a lazy table reference from a FASTQ file
+- [`tbl_bed()`](https://gillescolling.com/vectra/reference/tbl_bed.md) :
+  Create a lazy table reference from a BED file
 
 ## Data sinks
 
@@ -81,6 +87,31 @@ Transform, filter, and reshape
 - [`across()`](https://gillescolling.com/vectra/reference/across.md) :
   Apply a function across multiple columns
 
+## Time series
+
+Snap datetimes to a calendar grid and aggregate over time windows
+
+- [`floor_time()`](https://gillescolling.com/vectra/reference/floor_time.md)
+  : Floor a datetime column to a calendar grid
+- [`resample()`](https://gillescolling.com/vectra/reference/resample.md)
+  : Resample a time series to a calendar grid
+- [`roll_sum()`](https://gillescolling.com/vectra/reference/rolling.md)
+  [`roll_mean()`](https://gillescolling.com/vectra/reference/rolling.md)
+  [`roll_min()`](https://gillescolling.com/vectra/reference/rolling.md)
+  [`roll_max()`](https://gillescolling.com/vectra/reference/rolling.md)
+  [`roll_n()`](https://gillescolling.com/vectra/reference/rolling.md) :
+  Time-based rolling aggregates
+
+## Biological sequences
+
+k-mer spectra and per-row sequence functions
+
+- [`kmer()`](https://gillescolling.com/vectra/reference/kmer.md) : k-mer
+  spectrum of a sequence column
+- [`seq_expressions`](https://gillescolling.com/vectra/reference/seq_expressions.md)
+  : Biological-sequence functions inside mutate(), filter(), and
+  summarise()
+
 ## Joins
 
 - [`left_join()`](https://gillescolling.com/vectra/reference/left_join.md)
@@ -94,6 +125,8 @@ Transform, filter, and reshape
   : Cross join two vectra tables
 - [`fuzzy_join()`](https://gillescolling.com/vectra/reference/fuzzy_join.md)
   : Fuzzy join two vectra tables by string distance
+- [`interval_join()`](https://gillescolling.com/vectra/reference/interval_join.md)
+  : Interval (range overlap) join of two vectra tables
 
 ## Star schema
 
@@ -148,7 +181,7 @@ Spill a query to disk and stream it back, for out-of-core fits
 Incremental updates to .vtr files
 
 - [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
-  : Append rows to an existing .vtr file
+  : Append rows or columns to an existing .vtr file
 - [`delete_vtr()`](https://gillescolling.com/vectra/reference/delete_vtr.md)
   : Logically delete rows from a .vtr file
 - [`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
@@ -166,8 +199,12 @@ Incremental updates to .vtr files
   Execute a lazy query and return a data.frame
 - [`glimpse()`](https://gillescolling.com/vectra/reference/glimpse.md) :
   Get a glimpse of a vectra table
+- [`dim(`*`<vectra_node>`*`)`](https://gillescolling.com/vectra/reference/dim.vectra_node.md)
+  : Dimensions of a lazy query
 - [`print(`*`<vectra_node>`*`)`](https://gillescolling.com/vectra/reference/print.vectra_node.md)
   : Print a vectra query node
+- [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+  : Resolve the vectra memory budget
 
 ## Raster data cubes
 
@@ -311,3 +348,18 @@ Nearest neighbours and linear referencing
   : k nearest neighbours of a streamed layer, with distances
 - [`spatial_locate()`](https://gillescolling.com/vectra/reference/spatial_locate.md)
   : Locate streamed points along a resident line layer
+
+## Feature space
+
+Embedding columns and nearest neighbours in predictor space
+
+- [`as_embedding()`](https://gillescolling.com/vectra/reference/as_embedding.md)
+  : Encode vectors as an embedding column
+- [`cosine()`](https://gillescolling.com/vectra/reference/embedding_distance.md)
+  [`l2()`](https://gillescolling.com/vectra/reference/embedding_distance.md)
+  [`dot()`](https://gillescolling.com/vectra/reference/embedding_distance.md)
+  : Embedding distance functions
+- [`feature_knn()`](https://gillescolling.com/vectra/reference/feature_knn.md)
+  : Nearest neighbours of a streamed layer in predictor space
+- [`rast_feature_distance()`](https://gillescolling.com/vectra/reference/rast_feature_distance.md)
+  : Predictor-space nearest-neighbour distance surface over a raster

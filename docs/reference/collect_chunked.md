@@ -20,6 +20,12 @@ collect_chunked(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 # S3 method for class 'vectra_node'
 collect_chunked(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 
+# S3 method for class 'vectra_offload'
+collect_chunked(x, f, .init = NULL, combine = NULL, commutative = FALSE)
+
+# S3 method for class 'vectra_shard'
+collect_chunked(x, f, .init = NULL, combine = NULL, commutative = FALSE)
+
 # S3 method for class 'vectra_partition'
 collect_chunked(x, f, .init = NULL, combine = NULL, commutative = FALSE)
 ```

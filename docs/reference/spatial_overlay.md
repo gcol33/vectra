@@ -27,6 +27,7 @@ spatial_overlay(
   grid = NULL,
   precision = NULL,
   dedup = TRUE,
+  exact = FALSE,
   flush_rows = NULL,
   mem_limit = NULL,
   threads = NULL,
@@ -118,10 +119,28 @@ spatial_overlay(
   one site (common in WDPA-style data). `TRUE` by default; set `FALSE`
   to overlay every record.
 
+- exact:
+
+  How a piece is credited to the inputs that cover it. Each piece is a
+  face of the arrangement of all input boundaries, so it lies wholly
+  inside or outside every input up to snap-rounding slivers along the
+  boundary. With `FALSE` (the default) the whole face is credited to
+  each input whose interior contains the face's representative point,
+  and the piece geometry is the face; per-input covered area is then
+  exact up to about the noding precision times the face perimeter. With
+  `TRUE` each face is intersected with every partially covering input
+  and credited that intersection area, giving areas exact to the
+  snapping grid at the cost of extra geometry work and thin boundary
+  slivers as separate pieces.
+
 - flush_rows:
 
-  Exploded rows buffered before a spill flush. Defaults to
-  `getOption("vectra.spatial_flush", 5e5)`.
+  Exploded rows buffered before a spill flush. `NULL` (the default)
+  instead flushes once a spill buffer's size crosses the streaming
+  memory budget (a fraction of
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+  set with `options(vectra.memory = )`); an explicit value caps each
+  buffer at that many rows.
 
 - mem_limit:
 
@@ -131,9 +150,10 @@ spatial_overlay(
   replicates features across many tiles, too large nodes too much
   linework per tile (a superlinear cost), and a budget of tens of GB
   runs slower than the default on a dense layer. Lower it for tighter
-  memory. Defaults via `getOption("vectra.overlay_mem_limit", ...)` to a
-  value that scales with `threads` to hold the per-tile size near its
-  measured optimum.
+  memory. `NULL` (the default) scales with `threads` to hold the
+  per-tile size near its measured optimum, capped by the session budget
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+  (`options(vectra.memory = )`).
 
 - threads:
 

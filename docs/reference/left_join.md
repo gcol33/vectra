@@ -5,17 +5,45 @@ Join two vectra tables
 ## Usage
 
 ``` r
-left_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+left_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-inner_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+inner_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-right_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+right_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-full_join(x, y, by = NULL, suffix = c(".x", ".y"), ...)
+full_join(
+  x,
+  y,
+  by = NULL,
+  suffix = c(".x", ".y"),
+  na_matches = c("na", "never"),
+  ...
+)
 
-semi_join(x, y, by = NULL, ...)
+semi_join(x, y, by = NULL, na_matches = c("na", "never"), ...)
 
-anti_join(x, y, by = NULL, ...)
+anti_join(x, y, by = NULL, na_matches = c("na", "never"), ...)
 ```
 
 ## Arguments
@@ -38,6 +66,11 @@ anti_join(x, y, by = NULL, ...)
   A character vector of length 2 for disambiguating non-key columns with
   the same name (default `c(".x", ".y")`).
 
+- na_matches:
+
+  How to match `NA` keys: `"na"` (default, as in dplyr) treats `NA` as
+  matching `NA`; `"never"` uses SQL semantics where `NA` never matches.
+
 - ...:
 
   Ignored.
@@ -52,9 +85,10 @@ All joins use a build-right, probe-left hash join. The entire right-side
 table is materialized into a hash table; left-side batches stream
 through. Memory cost is proportional to the right-side table size.
 
-NA keys never match (SQL NULL semantics). Key types are auto-coerced
-following the `bool < int64 < double` hierarchy. Joining string against
-numeric keys is an error.
+By default `NA` keys match `NA` (dplyr's `na_matches = "na"`); pass
+`na_matches = "never"` for SQL NULL semantics. Key types are
+auto-coerced following the `bool < int64 < double` hierarchy. Joining
+string against numeric keys is an error.
 
 ## Examples
 

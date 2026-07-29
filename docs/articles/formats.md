@@ -68,10 +68,13 @@ count are in the file header; the actual values stay on disk until
 
 `.vtr` is vectra’s native binary columnar format. It stores data in row
 groups, where each row group contains all columns for a slice of rows.
-The current version (v4) applies a two-stage encoding stack per column
-per row group: first a logical encoding (dictionary for low-cardinality
-strings, delta for monotonic integers, or plain pass-through), then
-byte-level compression via Zstandard when it actually shrinks the data.
+Each column of each row group is compressed independently through
+vectra’s native `tdc` codec, a three-phase pipeline: a logical model
+(dictionary for strings, delta for monotonic integers, or plain
+pass-through), an optional transform chain (zigzag, byte-shuffle to
+cluster like-significance bytes), then a byte-level entropy coder
+(native LZ77 by default). No external compression library is linked; the
+codec is self-contained.
 
 This layout gives the scan node several optimization paths that other
 formats cannot support. Zone-map statistics (min/max per column per row
@@ -164,11 +167,38 @@ The `batch_size` parameter controls how many rows the CSV scanner reads
 per internal batch. The default (65536) works well for most files.
 Smaller values reduce peak memory at the cost of more read calls.
 
+The field separator is set by `delim`, so tab- and semicolon-separated
+files read natively with no transcode step. GBIF occurrence exports are
+tab-delimited, and many European CSV exports use a semicolon; both
+stream directly.
+
+``` r
+
+tsv <- tempfile(fileext = ".tsv")
+write.table(mtcars, tsv, sep = "\t", row.names = FALSE, quote = FALSE)
+
+tbl_csv(tsv, delim = "\t") |>
+  filter(cyl == 6) |>
+  select(mpg, cyl, hp) |>
+  collect()
+#>    mpg cyl  hp
+#> 1 21.0   6 110
+#> 2 21.0   6 110
+#> 3 21.4   6 110
+#> 4 18.1   6 105
+#> 5 19.2   6 123
+#> 6 17.8   6 123
+#> 7 19.7   6 175
+```
+
+Quoting follows RFC 4180 for any delimiter: a field wrapped in double
+quotes may contain the delimiter, newlines, and doubled quotes, so a tab
+inside a quoted field in a `delim = "\t"` file stays part of that field.
+
 [`write_csv()`](https://gillescolling.com/vectra/reference/write_csv.md)
 streams from any node. It writes a standard comma-separated file with a
 header row. There is no gzip output option; if we need compressed
-output, we convert to `.vtr` instead, which applies Zstandard
-automatically.
+output, we convert to `.vtr` instead, which compresses automatically.
 
 ``` r
 
@@ -596,18 +626,18 @@ depends on the workload: `.vtr` for repeated analytical queries, CSV for
 interchange, SQLite for multi-tool access, Excel for one-off imports,
 GeoTIFF for raster data.
 
-| Feature               | .vtr         | CSV         | SQLite   | Excel  | GeoTIFF       |
-|:----------------------|:-------------|:------------|:---------|:-------|:--------------|
-| Streaming read        | yes          | yes         | yes      | no     | yes           |
-| Streaming write       | yes          | yes         | yes      | –      | yes           |
-| Predicate pushdown    | yes          | no          | no       | no     | no            |
-| Column pruning        | yes          | no          | no       | no     | no            |
-| Zone-map skip         | yes          | no          | no       | no     | no            |
-| Hash index support    | yes          | no          | no       | no     | no            |
-| Compression           | zstd         | gzip (read) | –        | –      | deflate       |
-| Size on disk          | small        | large       | medium   | medium | variable      |
-| Random access         | by row group | no          | by rowid | no     | by raster row |
-| External tool support | vectra only  | universal   | wide     | wide   | GIS tools     |
+| Feature | .vtr | CSV | SQLite | Excel | GeoTIFF |
+|:---|:---|:---|:---|:---|:---|
+| Streaming read | yes | yes | yes | no | yes |
+| Streaming write | yes | yes | yes | – | yes |
+| Predicate pushdown | yes | no | no | no | no |
+| Column pruning | yes | no | no | no | no |
+| Zone-map skip | yes | no | no | no | no |
+| Hash index support | yes | no | no | no | no |
+| Compression | tdc (dict/delta + LZ) | gzip (read) | – | – | deflate |
+| Size on disk | small | large | medium | medium | variable |
+| Random access | by row group | no | by rowid | no | by raster row |
+| External tool support | vectra only | universal | wide | wide | GIS tools |
 
 `.vtr` wins on query performance because it is the only format where the
 scanner can skip data before reading it. Zone maps, column pruning, and

@@ -24,6 +24,7 @@
 <url><loc>https://gillescolling.com/vectra/reference/across.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/append_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/arrange.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/as_embedding.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/bind_rows.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/block_fuzzy_lookup.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/block_lookup.html</loc></url>
@@ -38,9 +39,13 @@
 <url><loc>https://gillescolling.com/vectra/reference/delete_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/desc.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/diff_vtr.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/dim.vectra_node.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/distinct.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/embedding_distance.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/explain.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/feature_knn.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/filter.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/floor_time.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/focal.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/fuzzy_join.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/geom_expressions.html</loc></url>
@@ -51,6 +56,8 @@
 <url><loc>https://gillescolling.com/vectra/reference/has_index.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/head.vectra_node.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/index.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/interval_join.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/kmer.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/left_join.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/link.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/lookup.html</loc></url>
@@ -65,10 +72,14 @@
 <url><loc>https://gillescolling.com/vectra/reference/pull.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/rasterize.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/rast_calc.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/rast_feature_distance.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/reframe.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/relocate.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/rename.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/resample.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/rolling.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/select.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/seq_expressions.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/slice.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/slice_head.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/spatial_centerline.html</loc></url>
@@ -97,7 +108,10 @@
 <url><loc>https://gillescolling.com/vectra/reference/st_write.vectra_node.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/summarise.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tbl_bed.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_csv.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tbl_fasta.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tbl_fastq.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_sqlite.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_tiff.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_xlsx.html</loc></url>
@@ -108,6 +122,7 @@
 <url><loc>https://gillescolling.com/vectra/reference/tiff_metadata.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/transmute.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/ungroup.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/vectra_mem.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/vec_build_overviews.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/vec_close_raster.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/vec_extract_points.html</loc></url>

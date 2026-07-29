@@ -214,7 +214,7 @@ p
 #>   c                  2000 rows
 #> <offload grade: partition by 'g' (level)>
 #>   passes over data : 1 spill + 1 routing pass
-#>   peak memory      : O(routing budget = 1e+06 rows), or O(one shard) when collected
+#>   peak memory      : O(streaming memory budget), or O(one shard) when collected
 #>   I/O cost         : O(n)
 #>   note             : localizes coupling so each shard fits in RAM
 ```

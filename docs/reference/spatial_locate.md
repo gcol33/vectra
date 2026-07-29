@@ -90,8 +90,12 @@ spatial_locate(
 - flush_rows:
 
   Transformed rows buffered before a spill flush. Larger values mean
-  fewer, bigger temporary files. Defaults to
-  `getOption("vectra.spatial_flush", 5e5)`.
+  fewer, bigger temporary files. `NULL` (the default) instead flushes
+  once a spill buffer's size crosses the streaming memory budget (a
+  fraction of
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+  set with `options(vectra.memory = )`); an explicit value caps each
+  buffer at that many rows.
 
 ## Value
 

@@ -31,7 +31,8 @@ comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`&`, `|`, `!`),
 [`is.na()`](https://rdrr.io/r/base/NA.html), and string functions
 ([`nchar()`](https://rdrr.io/r/base/nchar.html),
 [`substr()`](https://rdrr.io/r/base/substr.html),
-[`grepl()`](https://rdrr.io/r/base/grep.html) with fixed patterns).
+[`grepl()`](https://rdrr.io/r/base/grep.html); patterns are regex by
+default, as in base R, or literal with `fixed = TRUE`).
 
 NA comparisons return NA (SQL semantics). Use
 [`is.na()`](https://rdrr.io/r/base/NA.html) to filter NAs explicitly.

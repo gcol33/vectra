@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="active nav-item dropdown">
+<li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-06-29</h4>
+            <h4 data-toc-skip class="date">2026-07-29</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/large-data.Rmd" class="external-link"><code>vignettes/large-data.Rmd</code></a></small>
       <div class="d-none name"><code>large-data.Rmd</code></div>
@@ -549,10 +549,12 @@ truly new rows to an archive:</p>
 <code class="sourceCode R"><span><span class="va">archive_diff</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">obs</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">100</span>, <span class="op">]</span>, <span class="va">archive_diff</span><span class="op">)</span></span>
 <span></span>
-<span><span class="va">changes</span><span class="op">$</span><span class="va">added</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">archive_diff</span><span class="op">)</span></span>
+<span><span class="co"># A node runs once, so re-derive the additions for this pass rather than</span></span>
+<span><span class="co"># reusing the node already collected above.</span></span>
+<span><span class="fu"><a href="../reference/diff_vtr.html">diff_vtr</a></span><span class="op">(</span><span class="va">snap_v1</span>, <span class="va">snap_v2</span>, <span class="st">"obs_id"</span><span class="op">)</span><span class="op">$</span><span class="va">added</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">archive_diff</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">archive_diff</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
-<span><span class="co">#&gt; [1] 100</span></span></code></pre></div>
+<span><span class="co">#&gt; [1] 150</span></span></code></pre></div>
 <p>This is a common incremental-load pattern: diff today’s snapshot
 against yesterday’s, then append only the additions. Combined with
 <code><a href="../reference/delete_vtr.html">delete_vtr()</a></code> for removals, we can maintain an up-to-date

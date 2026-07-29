@@ -571,10 +571,12 @@ rows to an archive:
 archive_diff <- tempfile(fileext = ".vtr")
 write_vtr(obs[1:100, ], archive_diff)
 
-changes$added |> append_vtr(archive_diff)
+# A node runs once, so re-derive the additions for this pass rather than
+# reusing the node already collected above.
+diff_vtr(snap_v1, snap_v2, "obs_id")$added |> append_vtr(archive_diff)
 
 nrow(tbl(archive_diff) |> collect())
-#> [1] 100
+#> [1] 150
 ```
 
 This is a common incremental-load pattern: diff today’s snapshot against

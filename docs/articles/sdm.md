@@ -22,12 +22,21 @@ streams the data through
 [`biglm::bigglm()`](https://rdrr.io/pkg/biglm/man/bigglm.html) one chunk
 per iteration.
 
-Two operations sit outside vectra’s scope, and the rest of this article
-assumes they are handled before extraction:
+The rest of this article assumes two things are handled before
+extraction:
 
-- **Vector geometry.** vectra has no polygons, lines, or spatial joins.
-  Buffer a study region, intersect with a range map, or rasterize a
-  shapefile using `sf` or `terra` first.
+- **Vector geometry.** vectra streams the vector verbs
+  ([`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md),
+  [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md),
+  [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md),
+  [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md),
+  [`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md),
+  …) around `sf`, one batch at a time – see [Streaming spatial
+  operations](https://gillescolling.com/vectra/articles/streaming-spatial.md).
+  It carries no geometry type of its own, so the topology comes from
+  `sf` and GEOS. This article stays on the raster-sampling path and
+  assumes any range-map intersection or study-region buffer is prepared
+  before extraction.
 - **Reprojection.** vectra reads the coordinate reference system of a
   `GeoTIFF` with
   [`tiff_crs()`](https://gillescolling.com/vectra/reference/tiff_crs.md)
@@ -235,6 +244,63 @@ we did above, set explicit `Boundary.knots` on splines, and make sure
 every factor level appears in the stream. The formula then names
 prepared columns and each batch yields the same transform.
 
+## Transferability: is a projection environment novel?
+
+A model calibrated in one region and projected to another (a different
+area, or the same area under a future climate) is only trustworthy where
+the projection environment resembles the calibration environment.
+Mobility-oriented parity (MOP; Owens et al. 2013) measures that
+resemblance directly. For each projection site it reports the mean
+distance, in predictor space, to the nearest fraction of the calibration
+cloud: small where the site sits inside the training conditions, larger
+where it is environmentally novel and the model would be extrapolating.
+
+[`feature_knn()`](https://gillescolling.com/vectra/reference/feature_knn.md)
+computes that distance while streaming the projection side, so a
+continental projection grid never has to be held in memory. The
+calibration cloud is the resident reference; each projection batch is
+scored against it. The predictors here are already standardized, so a
+plain Euclidean distance is meaningful; `metric = "mahalanobis"` whitens
+by the calibration covariance when the predictors are correlated.
+
+``` r
+
+calib <- occ[, c("bio1", "bio12")]          # the standardized training cloud
+
+# Two sites inside the training conditions and one well outside them.
+proj <- data.frame(
+  bio1  = c(0.0, 0.5, 4.0),
+  bio12 = c(0.0, -0.5, -4.0)
+)
+pv <- tempfile(fileext = ".vtr")
+write_vtr(proj, pv)
+
+tbl(pv) |>
+  feature_knn(calib, percentage = 5) |>
+  collect()
+#>   bio1 bio12 knn_distance
+#> 1  0.0   0.0    0.1105930
+#> 2  0.5  -0.5    0.1318012
+#> 3  4.0  -4.0    3.0039278
+unlink(pv)
+```
+
+The third site, far from any training condition, is scored with a much
+larger distance than the two that sit within the cloud.
+
+When the projection is itself a stack of environmental rasters,
+[`rast_feature_distance()`](https://gillescolling.com/vectra/reference/rast_feature_distance.md)
+folds the same distance over the projection grid, reading the reference
+raster once and walking the projection one tile-row strip at a time, so
+the surface is written aligned to the grid and computed out-of-core. The
+strict-extrapolation half of a novelty diagnostic such as MOP, the count
+of predictors whose value falls outside the range each takes over the
+calibration cloud, is already native: it is a per-band `min`/`max`
+reduce over the calibration raster followed by a
+[`rast_calc()`](https://gillescolling.com/vectra/reference/rast_calc.md)
+expression on the projection raster, so the distance surface and the
+extrapolation count compose without a dedicated verb.
+
 ## Choosing a path
 
 Extract with
@@ -252,4 +318,9 @@ in every case. After that:
 - If the table itself exceeds memory and you need a full GLM, feed it to
   [`biglm::bigglm()`](https://rdrr.io/pkg/biglm/man/bigglm.html) through
   [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md).
-  \`\`\`
+- To judge whether a projection is within the calibrated conditions,
+  score it with
+  [`feature_knn()`](https://gillescolling.com/vectra/reference/feature_knn.md),
+  or
+  [`rast_feature_distance()`](https://gillescolling.com/vectra/reference/rast_feature_distance.md)
+  for a streaming raster novelty surface. \`\`\`

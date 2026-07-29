@@ -30,7 +30,7 @@ segments of each level are joined into continuous lines."><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -108,7 +108,9 @@ raster.</p></dd>
 <dt id="arg-merge">merge<a class="anchor" aria-label="anchor" href="#arg-merge"></a></dt>
 <dd><p>If <code>TRUE</code> (default) join each level's segments into continuous
 lines with <code><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">sf::st_line_merge()</a></code>; if <code>FALSE</code> return the raw per-cell
-segments.</p></dd>
+segments. Merging collects the full segment set into memory (usually small
+relative to the raster, but proportional to the grid for a surface that
+oscillates finely around a level); <code>merge = FALSE</code> stays streamed.</p></dd>
 
 
 <dt id="arg-crs">crs<a class="anchor" aria-label="anchor" href="#arg-crs"></a></dt>
@@ -117,8 +119,11 @@ raster's EPSG, else unknown.</p></dd>
 
 
 <dt id="arg-flush-rows">flush_rows<a class="anchor" aria-label="anchor" href="#arg-flush-rows"></a></dt>
-<dd><p>Rows buffered before a spill flush. Defaults to
-<code>getOption("vectra.spatial_flush", 5e5)</code>.</p></dd>
+<dd><p>Rows buffered before a spill flush. <code>NULL</code>
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of <code><a href="vectra_mem.html">vectra_mem()</a></code>, set with
+<code>options(vectra.memory = )</code>); an explicit value caps each buffer at that
+many rows.</p></dd>
 
 </dl></div>
     <div class="section level2">

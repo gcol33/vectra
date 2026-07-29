@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -84,7 +84,7 @@
           <code><a href="tbl_csv.html">tbl_csv()</a></code>
 
         </dt>
-        <dd>Create a lazy table reference from a CSV file</dd>
+        <dd>Create a lazy table reference from a delimited text file</dd>
 
         <dt>
 
@@ -106,6 +106,27 @@
 
         </dt>
         <dd>Create a lazy table reference from an Excel (.xlsx) file</dd>
+
+        <dt>
+
+          <code><a href="tbl_fasta.html">tbl_fasta()</a></code>
+
+        </dt>
+        <dd>Create a lazy table reference from a FASTA file</dd>
+
+        <dt>
+
+          <code><a href="tbl_fastq.html">tbl_fastq()</a></code>
+
+        </dt>
+        <dd>Create a lazy table reference from a FASTQ file</dd>
+
+        <dt>
+
+          <code><a href="tbl_bed.html">tbl_bed()</a></code>
+
+        </dt>
+        <dd>Create a lazy table reference from a BED file</dd>
       </dl></div><div class="section level2">
       <h2 id="data-sinks">Data sinks<a class="anchor" aria-label="anchor" href="#data-sinks"></a></h2>
 
@@ -302,6 +323,59 @@
         </dt>
         <dd>Apply a function across multiple columns</dd>
       </dl></div><div class="section level2">
+      <h2 id="time-series">Time series<a class="anchor" aria-label="anchor" href="#time-series"></a></h2>
+
+      <div class="section-desc"><p>Snap datetimes to a calendar grid and aggregate over time windows</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="floor_time.html">floor_time()</a></code>
+
+        </dt>
+        <dd>Floor a datetime column to a calendar grid</dd>
+
+        <dt>
+
+          <code><a href="resample.html">resample()</a></code>
+
+        </dt>
+        <dd>Resample a time series to a calendar grid</dd>
+
+        <dt>
+
+          <code><a href="rolling.html">roll_sum()</a></code> <code><a href="rolling.html">roll_mean()</a></code> <code><a href="rolling.html">roll_min()</a></code> <code><a href="rolling.html">roll_max()</a></code> <code><a href="rolling.html">roll_n()</a></code>
+
+        </dt>
+        <dd>Time-based rolling aggregates</dd>
+      </dl></div><div class="section level2">
+      <h2 id="biological-sequences">Biological sequences<a class="anchor" aria-label="anchor" href="#biological-sequences"></a></h2>
+
+      <div class="section-desc"><p>k-mer spectra and per-row sequence functions</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="kmer.html">kmer()</a></code>
+
+        </dt>
+        <dd>k-mer spectrum of a sequence column</dd>
+
+        <dt>
+
+          <code><a href="seq_expressions.html">seq_expressions</a></code>
+
+        </dt>
+        <dd>Biological-sequence functions inside mutate(), filter(), and summarise()</dd>
+      </dl></div><div class="section level2">
       <h2 id="joins">Joins<a class="anchor" aria-label="anchor" href="#joins"></a></h2>
 
 
@@ -331,6 +405,13 @@
 
         </dt>
         <dd>Fuzzy join two vectra tables by string distance</dd>
+
+        <dt>
+
+          <code><a href="interval_join.html">interval_join()</a></code>
+
+        </dt>
+        <dd>Interval (range overlap) join of two vectra tables</dd>
       </dl></div><div class="section level2">
       <h2 id="star-schema">Star schema<a class="anchor" aria-label="anchor" href="#star-schema"></a></h2>
 
@@ -468,7 +549,7 @@
           <code><a href="append_vtr.html">append_vtr()</a></code>
 
         </dt>
-        <dd>Append rows to an existing .vtr file</dd>
+        <dd>Append rows or columns to an existing .vtr file</dd>
 
         <dt>
 
@@ -530,10 +611,24 @@
 
         <dt>
 
+          <code><a href="dim.vectra_node.html">dim(<i>&lt;vectra_node&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Dimensions of a lazy query</dd>
+
+        <dt>
+
           <code><a href="print.vectra_node.html">print(<i>&lt;vectra_node&gt;</i>)</a></code>
 
         </dt>
         <dd>Print a vectra query node</dd>
+
+        <dt>
+
+          <code><a href="vectra_mem.html">vectra_mem()</a></code>
+
+        </dt>
+        <dd>Resolve the vectra memory budget</dd>
       </dl></div><div class="section level2">
       <h2 id="raster-data-cubes">Raster data cubes<a class="anchor" aria-label="anchor" href="#raster-data-cubes"></a></h2>
 
@@ -968,6 +1063,43 @@
 
         </dt>
         <dd>Locate streamed points along a resident line layer</dd>
+      </dl></div><div class="section level2">
+      <h2 id="feature-space">Feature space<a class="anchor" aria-label="anchor" href="#feature-space"></a></h2>
+
+      <div class="section-desc"><p>Embedding columns and nearest neighbours in predictor space</p></div>
+
+      <dl></dl></div><div class="section level2">
+
+
+
+
+      <dl><dt>
+
+          <code><a href="as_embedding.html">as_embedding()</a></code>
+
+        </dt>
+        <dd>Encode vectors as an embedding column</dd>
+
+        <dt>
+
+          <code><a href="embedding_distance.html">cosine()</a></code> <code><a href="embedding_distance.html">l2()</a></code> <code><a href="embedding_distance.html">dot()</a></code>
+
+        </dt>
+        <dd>Embedding distance functions</dd>
+
+        <dt>
+
+          <code><a href="feature_knn.html">feature_knn()</a></code>
+
+        </dt>
+        <dd>Nearest neighbours of a streamed layer in predictor space</dd>
+
+        <dt>
+
+          <code><a href="rast_feature_distance.html">rast_feature_distance()</a></code>
+
+        </dt>
+        <dd>Predictor-space nearest-neighbour distance surface over a raster</dd>
       </dl></div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

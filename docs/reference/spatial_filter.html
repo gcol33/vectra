@@ -34,7 +34,7 @@ coastline buffer, ...) stays resident."><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -149,8 +149,11 @@ CRS the upstream node carries, or unknown.</p></dd>
 
 <dt id="arg-flush-rows">flush_rows<a class="anchor" aria-label="anchor" href="#arg-flush-rows"></a></dt>
 <dd><p>Transformed rows buffered before a spill flush. Larger
-values mean fewer, bigger temporary files. Defaults to
-<code>getOption("vectra.spatial_flush", 5e5)</code>.</p></dd>
+values mean fewer, bigger temporary files. <code>NULL</code>
+(the default) instead flushes once a spill buffer's size crosses the
+streaming memory budget (a fraction of <code><a href="vectra_mem.html">vectra_mem()</a></code>, set with
+<code>options(vectra.memory = )</code>); an explicit value caps each buffer at that
+many rows.</p></dd>
 
 
 <dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>

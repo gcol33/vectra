@@ -17,7 +17,8 @@ offload(
   n = NULL,
   method = c("auto", "level", "range", "hash"),
   path = NULL,
-  compress = c("fast", "small", "none")
+  compress = c("fast", "small", "none"),
+  flush_rows = NULL
 )
 ```
 
@@ -55,6 +56,15 @@ offload(
   Compression for spill files, passed to
   [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md):
   `"fast"` (default), `"small"`, or `"none"`.
+
+- flush_rows:
+
+  Row cap on each shard buffer during partition routing. `NULL` (the
+  default) instead flushes once the buffered bytes cross the streaming
+  memory budget (a fraction of
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+  set with `options(vectra.memory = )`); an explicit value caps each
+  buffer at that many rows.
 
 ## Value
 

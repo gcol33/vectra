@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="active nav-item dropdown">
+<li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-06-29</h4>
+            <h4 data-toc-skip class="date">2026-07-29</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/sdm.Rmd" class="external-link"><code>vignettes/sdm.Rmd</code></a></small>
       <div class="d-none name"><code>sdm.Rmd</code></div>
@@ -115,14 +115,19 @@ small fraction of the file. And it consumes a query one batch at a time,
 so a model matrix that exceeds memory can still be fitted:
 <code><a href="../reference/chunk_feeder.html">chunk_feeder()</a></code> streams the data through
 <code><a href="https://rdrr.io/pkg/biglm/man/bigglm.html" class="external-link">biglm::bigglm()</a></code> one chunk per iteration.</p>
-<p>Two operations sit outside vectra’s scope, and the rest of this
-article assumes they are handled before extraction:</p>
+<p>The rest of this article assumes two things are handled before
+extraction:</p>
 <ul>
 <li>
-<strong>Vector geometry.</strong> vectra has no polygons, lines, or
-spatial joins. Buffer a study region, intersect with a range map, or
-rasterize a shapefile using <code>sf</code> or <code>terra</code>
-first.</li>
+<strong>Vector geometry.</strong> vectra streams the vector verbs
+(<code><a href="../reference/spatial_join.html">spatial_join()</a></code>, <code><a href="../reference/spatial_filter.html">spatial_filter()</a></code>,
+<code><a href="../reference/spatial_clip.html">spatial_clip()</a></code>, <code><a href="../reference/spatial_overlay.html">spatial_overlay()</a></code>,
+<code><a href="../reference/rasterize.html">rasterize()</a></code>, …) around <code>sf</code>, one batch at a time
+– see <a href="streaming-spatial.html">Streaming spatial operations</a>.
+It carries no geometry type of its own, so the topology comes from
+<code>sf</code> and GEOS. This article stays on the raster-sampling path
+and assumes any range-map intersection or study-region buffer is
+prepared before extraction.</li>
 <li>
 <strong>Reprojection.</strong> vectra reads the coordinate reference
 system of a <code>GeoTIFF</code> with <code><a href="../reference/tiff_crs.html">tiff_crs()</a></code> but does
@@ -306,6 +311,59 @@ batch yields the same transform.</p>
 </div>
 </div>
 <div class="section level2">
+<h2 id="transferability-is-a-projection-environment-novel">Transferability: is a projection environment novel?<a class="anchor" aria-label="anchor" href="#transferability-is-a-projection-environment-novel"></a>
+</h2>
+<p>A model calibrated in one region and projected to another (a
+different area, or the same area under a future climate) is only
+trustworthy where the projection environment resembles the calibration
+environment. Mobility-oriented parity (MOP; Owens et al. 2013) measures
+that resemblance directly. For each projection site it reports the mean
+distance, in predictor space, to the nearest fraction of the calibration
+cloud: small where the site sits inside the training conditions, larger
+where it is environmentally novel and the model would be
+extrapolating.</p>
+<p><code><a href="../reference/feature_knn.html">feature_knn()</a></code> computes that distance while streaming the
+projection side, so a continental projection grid never has to be held
+in memory. The calibration cloud is the resident reference; each
+projection batch is scored against it. The predictors here are already
+standardized, so a plain Euclidean distance is meaningful;
+<code>metric = "mahalanobis"</code> whitens by the calibration
+covariance when the predictors are correlated.</p>
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">calib</span> <span class="op">&lt;-</span> <span class="va">occ</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"bio1"</span>, <span class="st">"bio12"</span><span class="op">)</span><span class="op">]</span>          <span class="co"># the standardized training cloud</span></span>
+<span></span>
+<span><span class="co"># Two sites inside the training conditions and one well outside them.</span></span>
+<span><span class="va">proj</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
+<span>  bio1  <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0.0</span>, <span class="fl">0.5</span>, <span class="fl">4.0</span><span class="op">)</span>,</span>
+<span>  bio12 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0.0</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">4.0</span><span class="op">)</span></span>
+<span><span class="op">)</span></span>
+<span><span class="va">pv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">proj</span>, <span class="va">pv</span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">pv</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/feature_knn.html">feature_knn</a></span><span class="op">(</span><span class="va">calib</span>, percentage <span class="op">=</span> <span class="fl">5</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="co">#&gt;   bio1 bio12 knn_distance</span></span>
+<span><span class="co">#&gt; 1  0.0   0.0    0.1105930</span></span>
+<span><span class="co">#&gt; 2  0.5  -0.5    0.1318012</span></span>
+<span><span class="co">#&gt; 3  4.0  -4.0    3.0039278</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">pv</span><span class="op">)</span></span></code></pre></div>
+<p>The third site, far from any training condition, is scored with a
+much larger distance than the two that sit within the cloud.</p>
+<p>When the projection is itself a stack of environmental rasters,
+<code><a href="../reference/rast_feature_distance.html">rast_feature_distance()</a></code> folds the same distance over the
+projection grid, reading the reference raster once and walking the
+projection one tile-row strip at a time, so the surface is written
+aligned to the grid and computed out-of-core. The strict-extrapolation
+half of a novelty diagnostic such as MOP, the count of predictors whose
+value falls outside the range each takes over the calibration cloud, is
+already native: it is a per-band <code>min</code>/<code>max</code>
+reduce over the calibration raster followed by a
+<code><a href="../reference/rast_calc.html">rast_calc()</a></code> expression on the projection raster, so the
+distance surface and the extrapolation count compose without a dedicated
+verb.</p>
+</div>
+<div class="section level2">
 <h2 id="choosing-a-path">Choosing a path<a class="anchor" aria-label="anchor" href="#choosing-a-path"></a>
 </h2>
 <p>Extract with <code><a href="../reference/tiff_extract_points.html">tiff_extract_points()</a></code> in every case. After
@@ -317,8 +375,12 @@ function. This is the common case.</li>
 <li>If a single-pass summary is all you need (class balance, sufficient
 statistics, an online mean), use <code><a href="../reference/collect_chunked.html">collect_chunked()</a></code>.</li>
 <li>If the table itself exceeds memory and you need a full GLM, feed it
-to <code><a href="https://rdrr.io/pkg/biglm/man/bigglm.html" class="external-link">biglm::bigglm()</a></code> through <code><a href="../reference/chunk_feeder.html">chunk_feeder()</a></code>.
-```</li>
+to <code><a href="https://rdrr.io/pkg/biglm/man/bigglm.html" class="external-link">biglm::bigglm()</a></code> through
+<code><a href="../reference/chunk_feeder.html">chunk_feeder()</a></code>.</li>
+<li>To judge whether a projection is within the calibrated conditions,
+score it with <code><a href="../reference/feature_knn.html">feature_knn()</a></code>, or
+<code><a href="../reference/rast_feature_distance.html">rast_feature_distance()</a></code> for a streaming raster novelty
+surface. ```</li>
 </ul>
 </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

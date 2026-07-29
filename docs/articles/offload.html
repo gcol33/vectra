@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="active nav-item dropdown">
+<li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-06-29</h4>
+            <h4 data-toc-skip class="date">2026-07-29</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/offload.Rmd" class="external-link"><code>vignettes/offload.Rmd</code></a></small>
       <div class="d-none name"><code>offload.Rmd</code></div>
@@ -279,7 +279,7 @@ checked.</p>
 <span><span class="co">#&gt;   c                  2000 rows</span></span>
 <span><span class="co">#&gt; &lt;offload grade: partition by 'g' (level)&gt;</span></span>
 <span><span class="co">#&gt;   passes over data : 1 spill + 1 routing pass</span></span>
-<span><span class="co">#&gt;   peak memory      : O(routing budget = 1e+06 rows), or O(one shard) when collected</span></span>
+<span><span class="co">#&gt;   peak memory      : O(streaming memory budget), or O(one shard) when collected</span></span>
 <span><span class="co">#&gt;   I/O cost         : O(n)</span></span>
 <span><span class="co">#&gt;   note             : localizes coupling so each shard fits in RAM</span></span></code></pre></div>
 <p>Each shard is an ordinary node that fits in memory on its own, so a

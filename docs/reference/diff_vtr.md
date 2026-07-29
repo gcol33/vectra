@@ -47,6 +47,18 @@ diff. Rows with the same key that have changed values are not reported
 as modified — use `added` and `deleted` together to detect updates (a
 key that appears in both means a row was replaced).
 
+`key_col` is treated as a **primary key**: keys are assumed unique
+within each file, so if the same key appears on several rows of
+`new_path` only one is reported in `added`.
+
+Both files are streamed through the external sort (keyed by `key_col`)
+and merged in a single forward pass, so peak memory is bounded by the
+sort's spill budget
+([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md))
+rather than by the number of distinct keys. The added rows stream to a
+temp file; only the returned `deleted` key vector is materialised (its
+size is the number of deleted keys).
+
 ## Examples
 
 ``` r

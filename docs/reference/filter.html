@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -95,7 +95,8 @@
 copying data. Multiple conditions are combined with <code>&amp;</code>. Supported
 expression types: arithmetic (<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>%%</code>), comparison
 (<code>==</code>, <code>!=</code>, <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>), boolean (<code>&amp;</code>, <code>|</code>, <code>!</code>), <code><a href="https://rdrr.io/r/base/NA.html" class="external-link">is.na()</a></code>,
-and string functions (<code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>, <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code> with fixed patterns).</p>
+and string functions (<code><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar()</a></code>, <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code>, <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl()</a></code>; patterns are regex
+by default, as in base R, or literal with <code>fixed = TRUE</code>).</p>
 <p>NA comparisons return NA (SQL semantics). Use <code><a href="https://rdrr.io/r/base/NA.html" class="external-link">is.na()</a></code> to filter NAs
 explicitly.</p>
 <p>This is a streaming operation (constant memory per batch).</p>

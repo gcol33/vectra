@@ -35,7 +35,10 @@ contours(x, levels, band = 1L, merge = TRUE, crs = NA, flush_rows = NULL)
   If `TRUE` (default) join each level's segments into continuous lines
   with
   [`sf::st_line_merge()`](https://r-spatial.github.io/sf/reference/geos_unary.html);
-  if `FALSE` return the raw per-cell segments.
+  if `FALSE` return the raw per-cell segments. Merging collects the full
+  segment set into memory (usually small relative to the raster, but
+  proportional to the grid for a surface that oscillates finely around a
+  level); `merge = FALSE` stays streamed.
 
 - crs:
 
@@ -44,8 +47,12 @@ contours(x, levels, band = 1L, merge = TRUE, crs = NA, flush_rows = NULL)
 
 - flush_rows:
 
-  Rows buffered before a spill flush. Defaults to
-  `getOption("vectra.spatial_flush", 5e5)`.
+  Rows buffered before a spill flush. `NULL` (the default) instead
+  flushes once a spill buffer's size crosses the streaming memory budget
+  (a fraction of
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+  set with `options(vectra.memory = )`); an explicit value caps each
+  buffer at that many rows.
 
 ## Value
 

@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="active nav-item dropdown">
+<li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-06-29</h4>
+            <h4 data-toc-skip class="date">2026-07-29</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/quickstart.Rmd" class="external-link"><code>vignettes/quickstart.Rmd</code></a></small>
       <div class="d-none name"><code>quickstart.Rmd</code></div>
@@ -1241,7 +1241,24 @@ are computed independently.</p>
 <span><span class="co">#&gt; 7  14.3   8  2 0.2307692</span></span>
 <span><span class="co">#&gt; 8  24.4   4  2 0.4000000</span></span>
 <span><span class="co">#&gt; 9  22.8   4  3 0.2000000</span></span>
-<span><span class="co">#&gt; 10 19.2   6  5 0.3333333</span></span></code></pre></div>
+<span><span class="co">#&gt; 10 19.2   6  5 0.3333333</span></span>
+<span><span class="co">#&gt; 11 17.8   6  6 0.0000000</span></span>
+<span><span class="co">#&gt; 12 16.4   8  3 0.7692308</span></span>
+<span><span class="co">#&gt; 13 17.3   8  4 0.8461538</span></span>
+<span><span class="co">#&gt; 14 15.2   8  5 0.4615385</span></span>
+<span><span class="co">#&gt; 15 10.4   8  6 0.0000000</span></span>
+<span><span class="co">#&gt; 16 10.4   8  7 0.0000000</span></span>
+<span><span class="co">#&gt; 17 14.7   8  8 0.3076923</span></span>
+<span><span class="co">#&gt; 18 32.4   4  4 0.9000000</span></span>
+<span><span class="co">#&gt; 19 30.4   4  5 0.7000000</span></span>
+<span><span class="co">#&gt; 20 33.9   4  6 1.0000000</span></span>
+<span><span class="co">#&gt; 21 21.5   4  7 0.1000000</span></span>
+<span><span class="co">#&gt; 22 15.5   8  9 0.6153846</span></span>
+<span><span class="co">#&gt; 23 15.2   8 10 0.4615385</span></span>
+<span><span class="co">#&gt; 24 27.3   4  8 0.6000000</span></span>
+<span><span class="co">#&gt; 25 26.0   4  9 0.5000000</span></span>
+<span><span class="co">#&gt; 26 30.4   4 10 0.7000000</span></span>
+<span><span class="co">#&gt; 27 19.7   6  7 0.5000000</span></span></code></pre></div>
 <p>Each <code>cyl</code> group gets its own <code>row_number()</code>
 sequence starting from 1 and its own <code>percent_rank()</code>
 distribution. The grouped window node partitions the data by the group
@@ -1858,18 +1875,18 @@ sample of values without collecting the full result. It reads enough
 data to show one line per column.</p>
 <div class="sourceCode" id="cb69"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/glimpse.html">glimpse</a></span><span class="op">(</span><span class="op">)</span></span>
-<span><span class="co">#&gt; vectra lazy table [? x 11]</span></span>
-<span><span class="co">#&gt; $ mpg             &lt;NA&gt; 21.0, 21.0, 22.8, 21.4, 18.7</span></span>
-<span><span class="co">#&gt; $ cyl             &lt;NA&gt; 6, 6, 4, 6, 8</span></span>
-<span><span class="co">#&gt; $ disp            &lt;NA&gt; 160, 160, 108, 258, 360</span></span>
-<span><span class="co">#&gt; $ hp              &lt;NA&gt; 110, 110, 93, 110, 175</span></span>
-<span><span class="co">#&gt; $ drat            &lt;NA&gt; 3.90, 3.90, 3.85, 3.08, 3.15</span></span>
-<span><span class="co">#&gt; $ wt              &lt;NA&gt; 2.620, 2.875, 2.320, 3.215, 3.440</span></span>
-<span><span class="co">#&gt; $ qsec            &lt;NA&gt; 16.46, 17.02, 18.61, 19.44, 17.02</span></span>
-<span><span class="co">#&gt; $ vs              &lt;NA&gt; 0, 0, 1, 1, 0</span></span>
-<span><span class="co">#&gt; $ am              &lt;NA&gt; 1, 1, 1, 0, 0</span></span>
-<span><span class="co">#&gt; $ gear            &lt;NA&gt; 4, 4, 4, 3, 3</span></span>
-<span><span class="co">#&gt; $ carb            &lt;NA&gt; 4, 4, 1, 1, 2</span></span></code></pre></div>
+<span><span class="co">#&gt; vectra lazy table [32 x 11]</span></span>
+<span><span class="co">#&gt; $ mpg             &lt;double&gt; 21.0, 21.0, 22.8, 21.4, 18.7</span></span>
+<span><span class="co">#&gt; $ cyl             &lt;double&gt; 6, 6, 4, 6, 8</span></span>
+<span><span class="co">#&gt; $ disp            &lt;double&gt; 160, 160, 108, 258, 360</span></span>
+<span><span class="co">#&gt; $ hp              &lt;double&gt; 110, 110, 93, 110, 175</span></span>
+<span><span class="co">#&gt; $ drat            &lt;double&gt; 3.90, 3.90, 3.85, 3.08, 3.15</span></span>
+<span><span class="co">#&gt; $ wt              &lt;double&gt; 2.620, 2.875, 2.320, 3.215, 3.440</span></span>
+<span><span class="co">#&gt; $ qsec            &lt;double&gt; 16.46, 17.02, 18.61, 19.44, 17.02</span></span>
+<span><span class="co">#&gt; $ vs              &lt;double&gt; 0, 0, 1, 1, 0</span></span>
+<span><span class="co">#&gt; $ am              &lt;double&gt; 1, 1, 1, 0, 0</span></span>
+<span><span class="co">#&gt; $ gear            &lt;double&gt; 4, 4, 4, 3, 3</span></span>
+<span><span class="co">#&gt; $ carb            &lt;double&gt; 4, 4, 1, 1, 2</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="where-to-go-next">Where to go next<a class="anchor" aria-label="anchor" href="#where-to-go-next"></a>
