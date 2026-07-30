@@ -420,6 +420,7 @@
 * `focal()` reports a clean error instead of a null-pointer dereference if a
   per-thread scratch allocation fails.
 
+# vectra 0.11.3
 
 ## Bug fixes
 
