@@ -26,7 +26,7 @@ explain(q)              # inspect optimized plan without executing
 
 ## Sources (all return a `vectra_node`)
 
-- `tbl(path)` — `.vtr` file. Hash indexes (`.vtri` sidecars) are auto-loaded.
+- `tbl(path)` — `.vtr` file. A hash index (`.vtri` sidecar) is opened for the column a pushed-down equality predicate filters on.
 - `tbl_csv(path, batch_size = 65536)` — CSV / `.csv.gz`; types inferred from first 1000 rows.
 - `tbl_sqlite(path, table, batch_size = 65536)` — SQLite, no `DBI` dependency.
 - `tbl_xlsx(path, sheet = 1L, batch_size = 65536)` — requires `openxlsx2`; sheet is read fully into memory.
@@ -57,7 +57,7 @@ file path and will be rejected.
 
 ## Indexes and materialized blocks
 
-- `create_index(path, column, ci = FALSE)` writes a `.vtri` sidecar; pass a character vector for composite indexes. `has_index(path, column)` checks.
+- `create_index(path, column, ci = FALSE)` writes a `.vtri` sidecar; pass a character vector (in any order) for composite indexes. `has_index(path, column)` reports whether one exists and is usable against the store as it now stands. `append_vtr(along = "rows")` rebuilds the sidecars it invalidates; an index that stops matching its store is ignored rather than used to prune, so rebuild it with `create_index()` when `has_index()` turns `FALSE`. `explain()` names the index a scan will probe.
 - `materialize(node)` returns a `vectra_block` (in memory, reusable). Probe with `block_lookup(block, column, keys, ci = FALSE)` or `block_fuzzy_lookup(block, column, keys, method = c("dl","levenshtein","jw"), max_dist = 0.2, block_col = NULL, block_keys = NULL, n_threads = 4L)`.
 
 ## Out-of-core model fitting and per-group work
