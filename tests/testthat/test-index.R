@@ -104,6 +104,185 @@ test_that("create_index errors on non-existent column", {
   expect_error(create_index(f, "nonexistent"), "not found")
 })
 
+test_that("create_index errors on a column named twice", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  write_vtr(data.frame(x = 1:10, y = 1:10), f)
+  expect_error(create_index(f, c("x", "x")), "twice")
+})
+
+test_that("index size tracks distinct keys, not row count", {
+  # A single row group each time, so an index covers exactly the store's distinct
+  # keys. Holding one entry per row instead would make the size follow `reps`.
+  build <- function(n_keys, reps) {
+    f <- tempfile(fileext = ".vtr")
+    d <- data.frame(k = rep(sprintf("k%03d", seq_len(n_keys)), times = reps),
+                    v = seq_len(n_keys * reps), stringsAsFactors = FALSE)
+    write_vtr(d, f, batch_size = n_keys * reps)
+    create_index(f, "k")
+    on.exit(unlink(c(f, paste0(f, ".k.vtri"))), add = TRUE, after = FALSE)
+    file.size(paste0(f, ".k.vtri"))
+  }
+
+  # 4x the rows over the same keys: unchanged.
+  expect_equal(build(100L, 40L), build(100L, 10L))
+  # 4x the keys over the same rows: larger.
+  expect_gt(build(400L, 10L), build(100L, 40L))
+})
+
+test_that("an index left behind by a store rewrite is ignored, not probed", {
+  f <- tempfile(fileext = ".vtr")
+  ix <- paste0(f, ".k.vtri")
+  on.exit(unlink(c(f, ix)))
+
+  d1 <- data.frame(k = rep(c("a", "b"), each = 50), v = 1:100,
+                   stringsAsFactors = FALSE)
+  write_vtr(d1, f, batch_size = 25L)
+  create_index(f, "k")
+  saved <- readBin(ix, "raw", file.size(ix))
+
+  # Rewrite the store with different data, then put the old index back.
+  d2 <- data.frame(k = rep(c("a", "b", "c"), each = 50), v = 1:150,
+                   stringsAsFactors = FALSE)
+  write_vtr(d2, f, batch_size = 25L)
+  writeBin(saved, ix)
+
+  expect_false(has_index(f, "k"))
+  expect_equal(nrow(collect(filter(tbl(f), k == "a"))), 50L)
+  expect_equal(nrow(collect(filter(tbl(f), k == "c"))), 50L)
+})
+
+test_that("a row append rebuilds the index and stays complete", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".k.vtri"))))
+
+  write_vtr(data.frame(k = c("a", "b", "c"), v = 1:3, stringsAsFactors = FALSE), f)
+  create_index(f, "k")
+  append_vtr(data.frame(k = c("a", "d"), v = 4:5, stringsAsFactors = FALSE), f)
+
+  expect_true(has_index(f, "k"))
+  expect_equal(nrow(collect(tbl(f))), 5L)
+  expect_equal(nrow(collect(filter(tbl(f), k == "a"))), 2L)   # one old, one new
+  expect_equal(nrow(collect(filter(tbl(f), k == "d"))), 1L)   # only in the append
+})
+
+test_that("a column append leaves the index usable", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".k.vtri"))))
+
+  d <- data.frame(k = rep(c("a", "b"), each = 25), v = 1:50,
+                  stringsAsFactors = FALSE)
+  write_vtr(d, f, batch_size = 10L)
+  create_index(f, "k")
+  append_vtr(data.frame(w = seq_len(50) * 2), f, along = "cols")
+
+  expect_true(has_index(f, "k"))
+  r <- collect(filter(tbl(f), k == "b"))
+  expect_equal(nrow(r), 25L)
+  expect_true("w" %in% names(r))
+})
+
+test_that("each indexed column of a store is reachable", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, c(".ka.vtri", ".kb.vtri")))))
+
+  set.seed(4)
+  d <- data.frame(ka = sprintf("a%02d", rep(1:20, each = 25)),
+                  kb = sprintf("b%02d", rep(1:25, times = 20)),
+                  v = seq_len(500), stringsAsFactors = FALSE)
+  write_vtr(d, f, batch_size = 50L)
+  create_index(f, "ka")
+  create_index(f, "kb")
+
+  expect_true(has_index(f, "ka"))
+  expect_true(has_index(f, "kb"))
+  expect_match(paste(capture.output(explain(filter(tbl(f), ka == "a03"))),
+                     collapse = " "), "hash index (ka)", fixed = TRUE)
+  expect_match(paste(capture.output(explain(filter(tbl(f), kb == "b03"))),
+                     collapse = " "), "hash index (kb)", fixed = TRUE)
+  expect_equal(nrow(collect(filter(tbl(f), ka == "a03"))), 25L)
+  expect_equal(nrow(collect(filter(tbl(f), kb == "b03"))), 20L)
+})
+
+test_that("explain reports no index where none applies", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".k.vtri"))))
+
+  write_vtr(data.frame(k = letters, v = 1:26, stringsAsFactors = FALSE), f)
+  create_index(f, "k")
+
+  expect_false(grepl("hash index",
+                     paste(capture.output(explain(filter(tbl(f), v > 3))),
+                           collapse = " "), fixed = TRUE))
+  expect_false(grepl("hash index",
+                     paste(capture.output(explain(tbl(f))), collapse = " "),
+                     fixed = TRUE))
+})
+
+test_that("%in% is answered through the index", {
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, paste0(f, ".k.vtri"))))
+
+  d <- data.frame(k = rep(sprintf("k%02d", 1:20), each = 25), v = seq_len(500),
+                  stringsAsFactors = FALSE)
+  write_vtr(d, f, batch_size = 50L)
+  write_vtr(d, g, batch_size = 50L)
+  create_index(f, "k")
+
+  keys <- c("k03", "k11")
+  expect_equal(collect(filter(tbl(f), k %in% keys)),
+               collect(filter(tbl(g), k %in% keys)))
+  expect_equal(nrow(collect(filter(tbl(f), k %in% keys))), 50L)
+})
+
+test_that("composite index columns may be named in any order", {
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, paste0(f, ".ka_kb.vtri"))))
+
+  d <- data.frame(ka = rep(c("a", "b"), each = 50),
+                  kb = rep(c("x", "y"), times = 50),
+                  v = seq_len(100), stringsAsFactors = FALSE)
+  write_vtr(d, f, batch_size = 20L)
+  write_vtr(d, g, batch_size = 20L)
+  create_index(f, c("kb", "ka"))            # reverse of schema order
+
+  expect_true(has_index(f, c("kb", "ka")))
+  expect_true(has_index(f, c("ka", "kb")))
+  expect_match(paste(capture.output(explain(filter(tbl(f), ka == "a", kb == "x"))),
+                     collapse = " "), "hash index (ka + kb)", fixed = TRUE)
+  expect_equal(collect(filter(tbl(f), ka == "a", kb == "x")),
+               collect(filter(tbl(g), ka == "a", kb == "x")))
+})
+
+test_that("a superseded index format reads as absent but names its columns", {
+  f <- tempfile(fileext = ".vtr")
+  ix <- paste0(f, ".k.vtri")
+  on.exit(unlink(c(f, ix)))
+
+  write_vtr(data.frame(k = letters, v = 1:26, stringsAsFactors = FALSE), f)
+
+  con <- file(ix, "wb")                     # a v1 header: col_idx then ci
+  writeBin(charToRaw("VTRI"), con)
+  writeBin(1L, con, size = 2L)
+  writeBin(0L, con, size = 2L)
+  writeBin(as.raw(0), con)
+  close(con)
+
+  expect_false(has_index(f, "k"))
+  expect_equal(nrow(collect(filter(tbl(f), k == "m"))), 1L)
+
+  spec <- vectra:::.index_specs(f)
+  expect_length(spec, 1L)
+  expect_identical(spec[[1]]$columns, "k")
+
+  vectra:::.rebuild_indexes(f)
+  expect_true(has_index(f, "k"))
+  expect_equal(nrow(collect(filter(tbl(f), k == "m"))), 1L)
+})
+
 test_that("index survives re-creation after data change", {
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(c(f, paste0(f, ".name.vtri"))))

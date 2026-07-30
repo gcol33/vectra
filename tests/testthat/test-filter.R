@@ -353,3 +353,39 @@ test_that("all-null row groups are pruned for comparison predicates", {
   write_vtr(allna, fa, batch_size = m)
   expect_equal(nrow(tbl(fa) |> filter(v > 0) |> collect()), 0L)
 })
+
+test_that("a filter reaches a value computed in the calling environment", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  d <- data.frame(k = c("x", "y", "z"), v = c(10, 20, 30),
+                  stringsAsFactors = FALSE)
+  write_vtr(d, f)
+
+  keys <- c("y", "z")
+  cutoff <- list(hi = 15)
+  lookup <- data.frame(k = "z", stringsAsFactors = FALSE)
+
+  # An element of a vector, a list field, and a column of an unrelated
+  # data.frame: none names a column of the store, so each is a value from the
+  # caller rather than an engine operation.
+  expect_equal(collect(filter(tbl(f), k == keys[1]))$v, 20)
+  expect_equal(collect(filter(tbl(f), v > cutoff$hi))$k, c("y", "z"))
+  expect_equal(collect(filter(tbl(f), k == lookup$k[1]))$v, 30)
+  expect_equal(nrow(collect(filter(tbl(f), v >= max(c(20, 25))))), 1L)
+
+  # A store column of the same name as the outside object's field is still the
+  # store's column, not the outside value.
+  expect_equal(nrow(collect(filter(tbl(f), k == "x"))), 1L)
+
+  # An unsupported operation *on a column* is still reported as unsupported.
+  expect_error(collect(filter(tbl(f), notafunction(v) > 1)), "unsupported")
+})
+
+test_that("a filter value from the caller must be a scalar", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(v = 1:5), f)
+
+  pair <- c(2, 3)
+  expect_error(collect(filter(tbl(f), v == pair[c(1, 2)])), "scalar")
+})

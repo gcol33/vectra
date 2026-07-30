@@ -2,20 +2,22 @@
 % Please edit documentation in R/index.R
 \name{has_index}
 \alias{has_index}
-\title{Check if a hash index exists for a .vtr column}
+\title{Check whether a .vtr column has a usable hash index}
 \usage{
 has_index(path, column)
 }
 \arguments{
 \item{path}{Path to a \code{.vtr} file.}
 
-\item{column}{Character vector. Name(s) of column(s).}
+\item{column}{Character vector. Name(s) of column(s), in any order.}
 }
 \value{
-Logical scalar: \code{TRUE} if a \code{.vtri} index file exists.
+Logical scalar: \code{TRUE} if the index exists and can be used.
 }
 \description{
-Check if a hash index exists for a .vtr column
+\code{TRUE} when the \code{.vtri} sidecar is present, in the current format, and built
+against the store as it now stands. An index that no longer matches the store
+reads as \code{FALSE}, because queries ignore it; \code{\link[=create_index]{create_index()}} rebuilds it.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")

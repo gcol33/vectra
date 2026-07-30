@@ -41,6 +41,10 @@ int scan_node_is_parallel_safe(const VecNode *node);
 
 /* Accessors for parallel I/O integration */
 const char   *scan_node_get_path(const VecNode *node);
+
+/* Names the .vtri index this scan's predicate will probe, for explain().
+   Returns 1 and writes the indexed columns into buf, or 0 if none applies. */
+int scan_node_index_desc(const VecNode *node, char *buf, int bufsize);
 Vtr1TdcFile  *scan_node_get_file(const VecNode *node);
 const int    *scan_node_get_col_mask(const VecNode *node);
 

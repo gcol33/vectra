@@ -430,15 +430,50 @@ static void binary_search_rg_range(const Vtr1TdcFile *file, int col_idx,
     #undef RG_MAX_DBL
 }
 
-/* Try to use the hash index to build a row-group bitmap for equality predicates. */
-static void try_hash_index(ScanNode *sn) {
-    if (!sn->index || !sn->predicate) return;
+/* The store's shape, as an index records it at build time. An index whose stamp
+   disagrees describes row groups that have since moved. */
+static void scan_store_stamp(const ScanNode *sn, int64_t *n_rows,
+                             int64_t *n_rowgroups) {
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(sn->file);
+    int64_t total = 0;
+    for (uint32_t rg = 0; rg < n_rg; rg++)
+        total += vtr1_tdc_rowgroup_n_rows(sn->file, rg);
+    *n_rows = total;
+    *n_rowgroups = (int64_t)n_rg;
+}
 
-    /* Look for an equality predicate on the indexed column */
+/* Open the single-column .vtri sidecar for one column, if it is usable.
+   Opening is deferred to here rather than done when the scan is built, so a
+   query pays for the index it filters on and no others -- and so filtering on
+   the second indexed column of a store reaches that column's index. */
+static VtrIndex *scan_open_col_index(ScanNode *sn, const char *col_name,
+                                     int col_idx) {
+    if (!sn->vtr_path) return NULL;
+    char *vtri_path = vtri_make_path(sn->vtr_path, col_name);
+    if (!vtri_path) return NULL;
+    int64_t n_rows, n_rgs;
+    scan_store_stamp(sn, &n_rows, &n_rgs);
+    VtrIndex *idx = vtri_open(vtri_path, vtr1_tdc_schema(sn->file), n_rows, n_rgs);
+    free(vtri_path);
+    if (!idx) return NULL;
+    if (idx->n_cols != 1 || (int)idx->col_idx != col_idx) {
+        vtri_close(idx);
+        return NULL;
+    }
+    return idx;
+}
+
+/* The equality or %in% predicate an index could be probed with, if any. Shared
+   by the probe itself and by the plan description, so what explain() reports and
+   what the scan does cannot drift apart. */
+static void scan_index_preds(const ScanNode *sn, const VecExpr **out_eq,
+                             const VecExpr **out_in) {
+    *out_eq = NULL;
+    *out_in = NULL;
     const VecExpr *pred = sn->predicate;
-    const VecSchema *schema = vtr1_tdc_schema(sn->file);
+    if (!pred) return;
 
-    /* Walk through AND chain looking for indexed column */
+    /* Walk through AND chain looking for an equality predicate */
     const VecExpr *eq_pred = NULL;
     if (pred->kind == EXPR_CMP && pred->op == '=' && pred->op2 == '=') {
         eq_pred = pred;
@@ -451,7 +486,7 @@ static void try_hash_index(ScanNode *sn) {
             eq_pred = pred->right;
     }
 
-    /* Also look for %in% predicate on the indexed column */
+    /* Also look for a %in% predicate */
     const VecExpr *in_pred = NULL;
     if (!eq_pred) {
         if (pred->kind == EXPR_IN) {
@@ -464,11 +499,42 @@ static void try_hash_index(ScanNode *sn) {
         }
     }
 
+    *out_eq = eq_pred;
+    *out_in = in_pred;
+}
+
+/* The column whose single-column index this scan can probe, or -1. */
+static int scan_index_col(const ScanNode *sn) {
+    const VecExpr *eq_pred, *in_pred;
+    scan_index_preds(sn, &eq_pred, &in_pred);
+    const VecExpr *col_expr = NULL;
+    if (in_pred) {
+        col_expr = in_pred->operand;
+    } else if (eq_pred) {
+        if (eq_pred->left && eq_pred->left->kind == EXPR_COL_REF && eq_pred->right)
+            col_expr = eq_pred->left;
+        else if (eq_pred->right && eq_pred->right->kind == EXPR_COL_REF && eq_pred->left)
+            col_expr = eq_pred->right;
+    }
+    if (!col_expr || col_expr->kind != EXPR_COL_REF) return -1;
+    return vec_schema_find_col(vtr1_tdc_schema(sn->file), col_expr->col_name);
+}
+
+/* Try to use the hash index to build a row-group bitmap for equality predicates. */
+static void try_hash_index(ScanNode *sn) {
+    if (!sn->predicate) return;
+
+    const VecSchema *schema = vtr1_tdc_schema(sn->file);
+    const VecExpr *eq_pred, *in_pred;
+    scan_index_preds(sn, &eq_pred, &in_pred);
+
     /* Handle %in% with index: probe each set value, OR bitmaps */
     if (in_pred) {
         if (!in_pred->operand || in_pred->operand->kind != EXPR_COL_REF) return;
         int ci = vec_schema_find_col(schema, in_pred->operand->col_name);
-        if (ci < 0 || (uint16_t)ci != sn->index->col_idx) return;
+        if (ci < 0) return;
+        sn->index = scan_open_col_index(sn, schema->col_names[ci], ci);
+        if (!sn->index) return;
 
         uint32_t n_rgs = vtr1_tdc_n_rowgroups(sn->file);
         uint8_t *combined = (uint8_t *)calloc(n_rgs, 1);
@@ -509,9 +575,11 @@ static void try_hash_index(ScanNode *sn) {
     }
     if (!col_expr || !lit_expr) return;
 
-    /* Check if this is the indexed column */
+    /* Open this column's index, if it has one */
     int ci = vec_schema_find_col(schema, col_expr->col_name);
-    if (ci < 0 || (uint16_t)ci != sn->index->col_idx) return;
+    if (ci < 0) return;
+    sn->index = scan_open_col_index(sn, schema->col_names[ci], ci);
+    if (!sn->index) return;
 
     uint32_t n_rgs = vtr1_tdc_n_rowgroups(sn->file);
     uint8_t *bitmap = NULL;
@@ -549,32 +617,25 @@ static void try_hash_index(ScanNode *sn) {
         sn->rg_bitmap = bitmap;
 }
 
-/* Try composite index: collect all equality predicates from AND chain,
-   check if a composite .vtri exists, and probe it. */
-static void try_composite_index(ScanNode *sn) {
-    if (!sn->predicate || !sn->vtr_path) return;
-    if (sn->rg_bitmap) return; /* already resolved */
+#define MAX_COMPOSITE_COLS VTRI_MAX_COLS
 
+/* Every equality predicate in a flat AND chain -- (A & B), (A & (B & C)), ... --
+   sorted into schema column order, which is the order create_index() names and
+   hashes its columns in. Returns how many were found. */
+static int scan_eq_chain(const ScanNode *sn, const char **col_names,
+                        const VecExpr **lit_exprs, int *col_idxs) {
     const VecExpr *pred = sn->predicate;
     const VecSchema *schema = vtr1_tdc_schema(sn->file);
-
-    /* Collect equality predicates from AND chain.
-       We support flat AND chains: (A & B), (A & (B & C)), etc. */
-    #define MAX_COMPOSITE_COLS 8
-    const char *col_names[MAX_COMPOSITE_COLS];
-    const VecExpr *lit_exprs[MAX_COMPOSITE_COLS];
-    int col_idxs[MAX_COMPOSITE_COLS];
     int n_eq = 0;
 
-    /* Walk AND tree iteratively (left-leaning) */
     const VecExpr *stack[MAX_COMPOSITE_COLS * 2];
     int sp = 0;
     stack[sp++] = pred;
     while (sp > 0 && n_eq < MAX_COMPOSITE_COLS) {
         const VecExpr *p = stack[--sp];
         if (p->kind == EXPR_BOOL && p->op == '&') {
-            if (p->right) stack[sp++] = p->right;
-            if (p->left) stack[sp++] = p->left;
+            if (p->right && sp < MAX_COMPOSITE_COLS * 2) stack[sp++] = p->right;
+            if (p->left && sp < MAX_COMPOSITE_COLS * 2) stack[sp++] = p->left;
         } else if (p->kind == EXPR_CMP && p->op == '=' && p->op2 == '=') {
             const VecExpr *col_e = NULL, *lit_e = NULL;
             if (p->left && p->left->kind == EXPR_COL_REF && p->right) {
@@ -594,9 +655,6 @@ static void try_composite_index(ScanNode *sn) {
         }
     }
 
-    if (n_eq < 2) return; /* need at least 2 columns for composite */
-
-    /* Sort columns by schema index for consistent naming */
     for (int i = 0; i < n_eq - 1; i++)
         for (int j = i + 1; j < n_eq; j++)
             if (col_idxs[i] > col_idxs[j]) {
@@ -604,17 +662,44 @@ static void try_composite_index(ScanNode *sn) {
                 const char *tn = col_names[i]; col_names[i] = col_names[j]; col_names[j] = tn;
                 const VecExpr *te = lit_exprs[i]; lit_exprs[i] = lit_exprs[j]; lit_exprs[j] = te;
             }
+    return n_eq;
+}
 
-    /* Try to open composite .vtri */
+/* Open the composite .vtri covering exactly the columns of an AND chain, if
+   there is one. */
+static VtrIndex *scan_open_composite_index(ScanNode *sn, const char **col_names,
+                                           int n_eq) {
+    if (n_eq < 2 || !sn->vtr_path) return NULL;
     char *vtri_path = vtri_make_path_composite(sn->vtr_path, col_names, n_eq);
-    if (!vtri_path) return;
-
-    VtrIndex *cidx = vtri_open(vtri_path, schema);
+    if (!vtri_path) return NULL;
+    int64_t n_rows, n_rgs;
+    scan_store_stamp(sn, &n_rows, &n_rgs);
+    VtrIndex *idx = vtri_open(vtri_path, vtr1_tdc_schema(sn->file), n_rows, n_rgs);
     free(vtri_path);
-    if (!cidx) return;
+    if (idx && idx->n_cols != (uint16_t)n_eq) {
+        vtri_close(idx);
+        return NULL;
+    }
+    return idx;
+}
 
-    /* Verify the index columns match */
-    if (cidx->n_cols != (uint16_t)n_eq) { vtri_close(cidx); return; }
+/* Try composite index: collect all equality predicates from AND chain,
+   check if a composite .vtri exists, and probe it. */
+static void try_composite_index(ScanNode *sn) {
+    if (!sn->predicate || !sn->vtr_path) return;
+    if (sn->rg_bitmap) return; /* already resolved */
+
+    const VecSchema *schema = vtr1_tdc_schema(sn->file);
+
+    const char *col_names[MAX_COMPOSITE_COLS];
+    const VecExpr *lit_exprs[MAX_COMPOSITE_COLS];
+    int col_idxs[MAX_COMPOSITE_COLS];
+    int n_eq = scan_eq_chain(sn, col_names, lit_exprs, col_idxs);
+
+    if (n_eq < 2) return; /* need at least 2 columns for composite */
+
+    VtrIndex *cidx = scan_open_composite_index(sn, col_names, n_eq);
+    if (!cidx) return;
 
     /* Compute per-column hashes from literal values */
     uint64_t col_hashes[MAX_COMPOSITE_COLS];
@@ -625,7 +710,7 @@ static void try_composite_index(ScanNode *sn) {
             col_hashes[c] = cidx->ci
                 ? vtri_fnv1a_ci(le->lit_str, (int64_t)strlen(le->lit_str))
                 : vtri_fnv1a((const uint8_t *)le->lit_str, (int64_t)strlen(le->lit_str));
-        } else if (ct == VEC_INT64) {
+        } else if (vec_type_is_int(ct)) {
             int64_t key = le->kind == EXPR_LIT_INT64 ? le->lit_i64 : (int64_t)le->lit_dbl;
             col_hashes[c] = vtri_hash_int64(key);
         } else if (ct == VEC_DOUBLE) {
@@ -641,7 +726,6 @@ static void try_composite_index(ScanNode *sn) {
                                             vtr1_tdc_n_rowgroups(sn->file));
     vtri_close(cidx);
     if (bitmap) sn->rg_bitmap = bitmap;
-    #undef MAX_COMPOSITE_COLS
 }
 
 /* Try to narrow the row group scan range using binary search on sorted columns.
@@ -879,24 +963,9 @@ ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected) {
         free(sel_types);
     }
 
-    /* Check for .vtri sidecar index files */
+    /* A .vtri sidecar is opened on the first batch, for the column the
+       predicate filters on (try_hash_index). */
     sn->index = NULL;
-    {
-        const VecSchema *fs = vtr1_tdc_schema(sn->file);
-        for (int c = 0; c < fs->n_cols; c++) {
-            char *vtri_path = vtri_make_path(path, fs->col_names[c]);
-            if (vtri_path) {
-                VtrIndex *idx = vtri_open(vtri_path, fs);
-                free(vtri_path);
-                if (idx) {
-                    /* For now, load the first index found.
-                       TODO: support multiple indices per file. */
-                    sn->index = idx;
-                    break;
-                }
-            }
-        }
-    }
 
     sn->base.next_batch = scan_next_batch;
     sn->base.free_node = scan_free;
@@ -928,6 +997,50 @@ int scan_node_is_parallel_safe(const VecNode *node) {
 
 const char *scan_node_get_path(const VecNode *node) {
     return ((const ScanNode *)node)->vtr_path;
+}
+
+/* Describes the .vtri index this scan's predicate will be probed against, for
+   explain(): writes the indexed column names into buf ("id", or "a + b" for a
+   composite) and returns 1, or returns 0 when no index applies. Answers by
+   opening the same index the scan would, so it reports what will happen rather
+   than only that a sidecar file exists. */
+int scan_node_index_desc(const VecNode *node, char *buf, int bufsize) {
+    if (!buf || bufsize < 1) return 0;
+    buf[0] = '\0';
+    if (!node || !node->kind || strcmp(node->kind, "ScanNode") != 0) return 0;
+    ScanNode *sn = (ScanNode *)node;
+    if (!sn->predicate) return 0;
+    const VecSchema *schema = vtr1_tdc_schema(sn->file);
+
+    int ci = scan_index_col(sn);
+    if (ci >= 0) {
+        VtrIndex *idx = scan_open_col_index(sn, schema->col_names[ci], ci);
+        if (idx) {
+            vtri_close(idx);
+            snprintf(buf, (size_t)bufsize, "%s", schema->col_names[ci]);
+            return 1;
+        }
+    }
+
+    const char *col_names[MAX_COMPOSITE_COLS];
+    const VecExpr *lit_exprs[MAX_COMPOSITE_COLS];
+    int col_idxs[MAX_COMPOSITE_COLS];
+    int n_eq = scan_eq_chain(sn, col_names, lit_exprs, col_idxs);
+    VtrIndex *cidx = scan_open_composite_index(sn, col_names, n_eq);
+    if (!cidx) return 0;
+    vtri_close(cidx);
+
+    /* snprintf reports the length it would have written, so clamp rather than
+       letting pos run past the end of the buffer. */
+    int pos = 0;
+    for (int c = 0; c < n_eq && pos < bufsize - 1; c++) {
+        int n = snprintf(buf + pos, (size_t)(bufsize - pos), "%s%s",
+                         c ? " + " : "", col_names[c]);
+        if (n < 0) break;
+        pos += n;
+        if (pos > bufsize - 1) pos = bufsize - 1;
+    }
+    return 1;
 }
 
 Vtr1TdcFile *scan_node_get_file(const VecNode *node) {

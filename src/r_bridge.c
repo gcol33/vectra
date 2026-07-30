@@ -16,6 +16,7 @@
 
 #include "r_bridge.h"
 #include "r_bridge_internal.h"
+#include <stdarg.h>
 #include "types.h"
 #include "array.h"
 #include "batch.h"
@@ -577,6 +578,24 @@ static void node_get_children(VecNode *node, VecNode **children, int *n_children
     }
 }
 
+/* Append to a fixed-size annotation buffer. snprintf reports the length it would
+   have written, which can exceed the space left, so the position is clamped:
+   without that, a long annotation makes the next call write past the end of the
+   buffer with a negative size cast to size_t. A crowded annotation is truncated
+   instead. */
+static int annot_append(char *buf, int bufsize, int pos, const char *fmt, ...) {
+    if (bufsize <= 0) return 0;
+    if (pos < 0) pos = 0;
+    if (pos >= bufsize - 1) return bufsize - 1;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + pos, (size_t)(bufsize - pos), fmt, ap);
+    va_end(ap);
+    if (n < 0) return pos;
+    pos += n;
+    return pos > bufsize - 1 ? bufsize - 1 : pos;
+}
+
 /* Build annotation string for a node (writes to buf, returns length written) */
 static int node_annotation(VecNode *node, char *buf, int bufsize) {
     const char *kind = node->kind ? node->kind : "Unknown";
@@ -587,15 +606,16 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
         int read_cols = sn->base.output_schema.n_cols;
         int pos = 0;
         if (read_cols < file_cols)
-            pos += snprintf(buf + pos, (size_t)(bufsize - pos),
-                            "streaming, %d/%d cols (pruned)", read_cols, file_cols);
+            pos = annot_append(buf, bufsize, pos,
+                               "streaming, %d/%d cols (pruned)", read_cols, file_cols);
         else
-            pos += snprintf(buf + pos, (size_t)(bufsize - pos),
-                            "streaming, %d cols", read_cols);
+            pos = annot_append(buf, bufsize, pos, "streaming, %d cols", read_cols);
         if (sn->predicate)
-            pos += snprintf(buf + pos, (size_t)(bufsize - pos),
-                            ", predicate pushdown");
-        pos += snprintf(buf + pos, (size_t)(bufsize - pos), ", tdc stats");
+            pos = annot_append(buf, bufsize, pos, ", predicate pushdown");
+        pos = annot_append(buf, bufsize, pos, ", tdc stats");
+        char ixcols[96];
+        if (scan_node_index_desc(node, ixcols, (int)sizeof(ixcols)))
+            pos = annot_append(buf, bufsize, pos, ", hash index (%s)", ixcols);
         return pos;
     }
     if (strcmp(kind, "CsvScanNode") == 0) {

@@ -468,6 +468,9 @@ append_vtr.vectra_node <- function(x, path, along = c("rows", "cols"),
     .Call(C_append_cols_vtr, x$.node, path, .check_compress(compress))
   } else {
     .Call(C_append_vtr, x$.node, path)
+    # Every row group is rewritten, so each index now maps its keys to row groups
+    # that have moved: rebuild them against the store as it now stands.
+    .rebuild_indexes(path)
   }
   invisible(NULL)
 }

@@ -7,35 +7,59 @@
 /*
  * VtrIndex: persistent on-disk hash index (.vtri sidecar file).
  *
- * Maps key hashes → row group indices for O(1) equality lookups.
- * Built explicitly via create_index(), loaded automatically by ScanNode
- * when a .vtri file exists alongside the .vtr file.
+ * Maps key hashes -> row group indices, so an equality predicate can name the
+ * row groups that may hold a key without reading any column data. Built
+ * explicitly via create_index(); a ScanNode opens the sidecar for the column
+ * its predicate actually filters on.
  *
- * File format:
+ * One entry per (distinct key hash, row group), NOT one per row: an index over
+ * a column with few distinct values stays small no matter how many rows the
+ * store holds, which is what keeps both the file and the open cost off the
+ * store size. A row group repeats a key only once, so the entry count is
+ * sum over row groups of the distinct keys in that row group.
+ *
+ * The header stamps the row and row-group counts the index was built against.
+ * vtri_open() compares them with the store it is being opened for and reports
+ * no index when they disagree: a row append rewrites every row group, so an
+ * index built before it maps keys to row groups that have moved, and probing it
+ * would silently drop rows.
+ *
+ * File format (version 3; a single layout for one or many columns):
  *   "VTRI" magic (4 bytes)
- *   version: u16 (1)
- *   col_idx: u16 (indexed column in file schema)
+ *   version: u16 (3)
+ *   n_cols: u16 (number of indexed columns)
  *   ci: u8 (case-insensitive flag)
+ *   col_indices[n_cols]: u16 each (schema column indices, ascending)
+ *   src_n_rows: u64 (rows in the store at build time)
+ *   src_n_rowgroups: u32 (row groups in the store at build time)
  *   n_entries: u64
  *   n_slots: u64
  *   entry_hash[n_entries]: u64 each
  *   entry_rg[n_entries]: u32 each
  *   heads[n_slots]: i64 each (-1 = empty)
  *   entry_next[n_entries]: i64 each (-1 = end of chain)
+ *
+ * Versions 1 and 2 (one entry per row, no stamp) are superseded: vtri_open()
+ * reports no index for them, and vtri_read_spec() reads their column list so
+ * they can be rebuilt.
  */
 
+#define VTRI_MAX_COLS 8
+#define VTRI_VERSION  3
+
 typedef struct VtrIndex {
-    uint16_t  col_idx;      /* primary column index (v1) */
+    uint16_t  col_idx;      /* first indexed column (== col_indices[0]) */
     uint8_t   ci;
     int64_t   n_entries;
     int64_t   n_slots;
+    int64_t   src_n_rows;      /* rows in the store at build time */
+    int64_t   src_n_rowgroups; /* row groups in the store at build time */
     uint64_t *entry_hash;   /* [n_entries] */
     uint32_t *entry_rg;     /* [n_entries] — row group index */
     int64_t  *heads;        /* [n_slots] */
     int64_t  *entry_next;   /* [n_entries] */
-    char     *col_name;     /* column name (resolved from schema at load time; v1 compat) */
-    /* v2: composite index fields */
-    uint16_t  n_cols;       /* number of indexed columns (1 for v1) */
+    char     *col_name;     /* first column name (resolved from schema at load time) */
+    uint16_t  n_cols;       /* number of indexed columns */
     uint16_t *col_indices;  /* [n_cols] column indices */
     char    **col_names;    /* [n_cols] column names (resolved at load time) */
 } VtrIndex;
@@ -70,23 +94,41 @@ static inline uint64_t vtri_hash_double(double val) {
     return vtri_fnv1a((const uint8_t *)&val, 8);
 }
 
-/* Open a .vtri sidecar index file. Returns NULL if file doesn't exist. */
-VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema);
+/* Open a .vtri sidecar index file.
+
+   src_n_rows / src_n_rowgroups describe the store the index is about to be used
+   against; the index is reported as absent (NULL) when its stamp disagrees with
+   them, which is how an index left behind by a row append is kept from pruning.
+   Pass -1 for either to skip that check.
+
+   Returns NULL when the file does not exist, is not a .vtri, was written by a
+   superseded version, or does not match the store. */
+VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
+                    int64_t src_n_rows, int64_t src_n_rowgroups);
 
 /* Close and free an index. */
 void vtri_close(VtrIndex *idx);
 
-/* Build and write a .vtri index for a column in a .vtr file.
-   vtr_path: path to .vtr file
-   col_name: column to index
-   ci: case-insensitive flag */
-void vtri_build(const char *vtr_path, const char *col_name, int ci);
+/* Read only the column list of a .vtri file, for any version, so a superseded
+   index can be rebuilt from the columns it was built on. Writes at most
+   VTRI_MAX_COLS indices. Returns the number of columns, or 0 if the file cannot
+   be read as an index. */
+int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices, int *out_ci);
 
-/* Build a composite index on multiple columns (v2 format).
-   col_names: array of column name strings
-   n_cols: number of columns */
-void vtri_build_composite(const char *vtr_path, const char **col_names,
-                          int n_cols, int ci);
+/* Build and write a .vtri index over one or more columns of a .vtr file.
+   col_names: array of column name strings (any order; canonicalized to schema
+              order so the file name and the key hashing match what a probe does)
+   n_cols: number of columns (1..VTRI_MAX_COLS)
+   ci: case-insensitive flag */
+void vtri_build(const char *vtr_path, const char **col_names, int n_cols, int ci);
+
+/* Resolve index column names against a schema, sorted into schema order.
+   Writes n_cols entries to out_idx and out_names. Returns 1 on success, or 0
+   with *bad_name / *bad_reason describing the offending column (either may be
+   NULL if the caller does not want them). */
+int vtri_resolve_cols(const VecSchema *schema, const char **col_names,
+                      int n_cols, int *out_idx, const char **out_names,
+                      const char **bad_name, const char **bad_reason);
 
 /* Probe the index with a string key.
    Returns a row-group bitmap (caller frees).

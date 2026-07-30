@@ -1,11 +1,30 @@
 # Convert a scalar R value to a literal expression node
-.env_val_to_literal <- function(varname, val) {
+.env_val_to_literal <- function(label, val) {
   if (is.logical(val) && length(val) == 1) return(list(kind = "lit_logical", value = val))
   if (is.integer(val) && length(val) == 1) return(list(kind = "lit_integer", value = val))
   if (is.double(val) && length(val) == 1) return(list(kind = "lit_double", value = val))
   if (is.character(val) && length(val) == 1) return(list(kind = "lit_string", value = val))
-  stop(sprintf(".env$%s must be a scalar logical/integer/double/string, got %s of length %d",
-               varname, class(val)[1], length(val)))
+  stop(sprintf("%s must be a scalar logical/integer/double/string, got %s of length %d",
+               label, class(val)[1], length(val)))
+}
+
+# The names in an expression that could refer to a column. Walks the call tree
+# rather than using all.vars(), which reports the field name of `$` and `@` as a
+# variable: in `d$ka` the name `ka` selects a field of `d` and says nothing about
+# a column called ka.
+.expr_symbols <- function(expr) {
+  if (is.name(expr)) return(as.character(expr))
+  if (!is.call(expr)) return(character(0))
+  head <- expr[[1]]
+  if (is.name(head)) {
+    fn <- as.character(head)
+    if (fn %in% c("::", ":::")) return(character(0))
+    if (fn %in% c("$", "@") && length(expr) == 3L)
+      return(.expr_symbols(expr[[2]]))
+  }
+  parts <- as.list(expr)[-1L]
+  if (is.call(head)) parts <- c(list(head), parts)
+  unlist(lapply(parts, .expr_symbols), use.names = FALSE)
 }
 
 # NSE expression capture -> serialized list for C bridge
@@ -678,7 +697,7 @@ serialize_expr <- function(expr, env = parent.frame(), cols = NULL) {
         (identical(op, quote(`$`)) || identical(op, quote(`[[`)))) {
       varname <- if (identical(op, quote(`$`))) as.character(expr[[3]]) else eval(expr[[3]], env)
       val <- get(varname, envir = env)
-      return(.env_val_to_literal(varname, val))
+      return(.env_val_to_literal(paste0(".env$", varname), val))
     }
 
     # .data$col or .data[["col"]] / .data[[var]] -- the tidy-eval column pronoun.
@@ -717,6 +736,18 @@ serialize_expr <- function(expr, env = parent.frame(), cols = NULL) {
 
   handler <- .expr_dispatch[[fn]]
   if (!is.null(handler)) return(handler(fn, expr, env, cols))
+
+  # A call the engine has no operation for, naming no column, belongs to the
+  # calling environment: evaluate it there and carry the value as a literal, the
+  # same way a bare name is resolved above. This is what lets a filter reach a
+  # value that is computed rather than stored in a variable, as in
+  # `filter(x, id == keys[i])` or `filter(x, day > range$hi)`. A call that does
+  # name a column stays an error, so a typo or a genuinely unsupported column
+  # operation still reports itself as one.
+  if (is.null(cols) || !any(.expr_symbols(expr) %in% cols)) {
+    val <- tryCatch(eval(expr, env), error = function(e) NULL)
+    if (!is.null(val)) return(.env_val_to_literal(deparse1(expr), val))
+  }
 
   stop(sprintf("unsupported function in expression: %s", fn))
 }

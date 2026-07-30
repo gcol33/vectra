@@ -166,6 +166,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_block_fuzzy_lookup",  (DL_FUNC) &C_block_fuzzy_lookup,  8},
     {"C_create_index",      (DL_FUNC) &C_create_index,      3},
     {"C_has_index",         (DL_FUNC) &C_has_index,         2},
+    {"C_index_spec",        (DL_FUNC) &C_index_spec,        2},
     {"C_tdc_encode_column",   (DL_FUNC) &C_tdc_encode_column,   2},
     {"C_tdc_decode_column",   (DL_FUNC) &C_tdc_decode_column,   3},
     {"C_tdc_dict_roundtrip",  (DL_FUNC) &C_tdc_dict_roundtrip,  1},
