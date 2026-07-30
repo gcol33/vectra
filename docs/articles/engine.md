@@ -631,54 +631,67 @@ between versions.
 ## Hash indexes (.vtri)
 
 vectra supports persistent on-disk hash indexes stored as `.vtri`
-sidecar files alongside `.vtr` data files. These indexes enable O(1) row
-group pruning for equality predicates, turning full-table scans into
-targeted reads.
+sidecar files alongside `.vtr` data files. An index names the row groups
+that may hold a key, so an equality predicate reads those groups and
+skips the rest.
 
 ### Creating indexes
+
+Both functions take the path of the `.vtr` file:
 
 ``` r
 
 # Single-column index
-create_index(tbl("data.vtr"), "species")
+create_index("data.vtr", "species")
 
 # Case-insensitive index
-create_index(tbl("data.vtr"), "species", ci = TRUE)
+create_index("data.vtr", "species", ci = TRUE)
 
 # Composite (multi-column) index
-create_index(tbl("data.vtr"), c("country", "year"))
+create_index("data.vtr", c("country", "year"))
 
-# Check if an index exists
-has_index(tbl("data.vtr"), "species")
+# Check whether a usable index exists
+has_index("data.vtr", "species")
 ```
 
 [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
-reads the `.vtr` file, hashes every value in the indexed column(s) per
-row group, and writes a `.vtri` file. The file name encodes the indexed
-columns: `data.species.vtri` for a single-column index,
-`data.country_year.vtri` for a composite.
+reads the indexed column(s) of the `.vtr` file one row group at a time
+and writes a `.vtri` file holding one entry per distinct key per row
+group. The file name encodes the indexed columns: `data.species.vtri`
+for a single-column index, `data.country_year.vtri` for a composite.
+Composite columns are canonicalized to schema order, so they may be
+named in any order.
 
 ### Index format
 
 The `.vtri` format is a chained hash table mapping key hashes to row
-group indices:
+group indices. One layout covers both cases: a header with the indexed
+column indices, a case-insensitive flag, and the row and row-group
+counts of the store at build time, followed by the hash entries, their
+row group entries, a bucket heads array, and a next-pointer chain.
 
-- **v1** (single-column): stores one column index, a case-insensitive
-  flag, hash entries, row group entries, a slot heads array, and a
-  next-pointer chain. Hashing uses FNV-1a on the raw column bytes. For
-  case-insensitive indexes, the hash folds ASCII uppercase to lowercase
-  before hashing.
-- **v2** (composite): stores multiple column indices. The composite hash
-  combines per-column FNV-1a hashes via XOR and multiplication with the
-  FNV prime, producing a single 64-bit hash per row group entry.
+Hashing uses FNV-1a on the raw column bytes; a case-insensitive index
+folds ASCII uppercase to lowercase before hashing. A composite key
+combines the per-column FNV-1a hashes by XOR and multiplication with the
+FNV prime, giving one 64-bit hash per entry.
+
+The stored row and row-group counts are what make an index safe to leave
+on disk. `vtri_open()` compares them with the store being queried and
+reports no index when they disagree, so an index that no longer
+describes its store is ignored rather than used to prune row groups that
+have moved. Formats written before 0.11.8 lack the counts and read as
+absent;
+[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+rebuilds them.
 
 ### How the scan uses indexes
 
-When a `ScanNode` opens a `.vtr` file, it checks for `.vtri` sidecar
-files matching the columns referenced in the pushed-down predicate. For
-single-column indexes, it matches `==` predicates and `%in%` predicates.
-For composite indexes, it matches AND-combined equality predicates where
-every indexed column has an `== literal` clause.
+On its first batch, a `ScanNode` looks at its pushed-down predicate,
+picks the column an equality or `%in%` clause offers, and opens that
+column’s `.vtri` if there is one. For composite indexes it collects the
+AND-combined equality clauses and opens the sidecar covering exactly
+those columns. Opening is deferred to this point, so a query reads an
+index only for the column it filters on.
 
 On match, the scan probes the index to produce a row-group bitmap. For
 `%in%` predicates, the scan probes once per set element and ORs the
@@ -688,12 +701,16 @@ and zone-map checks.
 
 ### Performance characteristics
 
-Index probing is O(k) where k is the number of query keys (1 for `==`, n
-for `%in%`). Each probe is a hash computation plus a chain walk in the
-slot array. The index file is memory-mapped at open time, so repeated
-probes pay no I/O cost. For tables with many row groups and selective
-equality predicates, index pushdown can reduce I/O by orders of
-magnitude compared to zone-map pruning alone.
+A probe is a hash computation plus one chain walk, repeated per query
+key (once for `==`, n times for `%in%`). Opening the index reads the
+whole sidecar into memory once per
+[`tbl()`](https://gillescolling.com/vectra/reference/tbl.md), and that
+read is what the entry-per-distinct-key layout keeps small: an index
+over a column of few distinct values stays the same size as the store
+grows, so the cost of a lookup does not follow the size of the store.
+For tables with many row groups and selective equality predicates, index
+pushdown can reduce I/O by orders of magnitude compared to zone-map
+pruning alone.
 
 ## Materialized blocks
 

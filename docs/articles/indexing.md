@@ -216,18 +216,24 @@ check every row group’s string min/max bounds, which often span the
 entire alphabet. This is where hash indexes help.
 
 A hash index is a `.vtri` sidecar file that maps column values to the
-row groups that contain them. Internally, the `.vtri` file is a
-serialized open-addressing hash table using FNV-1a as the hash function.
-Each slot in the table stores a column value (or its hash) and a bitmap
-of row group IDs that contain that value. Open addressing means there
-are no linked lists or secondary structures: when a hash collision
-occurs, the engine probes forward through adjacent slots until it finds
-an empty one. At query time, “probing the index” means hashing the
-filter value, looking up the corresponding slot, walking past any
-collisions, and reading the row group bitmap directly. The whole
-operation is O(1) in the expected case, with a small constant factor
-that depends on how full the table is (the load factor stays below 70%
-to keep probe chains short).
+row groups that contain them. Internally the file is a serialized
+chained hash table using FNV-1a as the hash function: a bucket array, an
+entry array, and a next-index per entry linking the entries that share a
+bucket. Each entry pairs one distinct key hash with one row group
+holding it, so a key present in six row groups takes six entries, and a
+key repeated a million times inside one row group takes one. The bucket
+count is the next power of two above twice the entry count, which holds
+the load factor at or under 50% and keeps the chains short. At query
+time, “probing the index” means hashing the filter value, walking the
+chain for its bucket, and setting a bit for each row group the matching
+entries name. That bitmap is what the scan then uses to skip groups. The
+cost of a probe tracks the number of row groups holding the key; the
+number of rows in the file does not enter it.
+
+Because an entry covers a distinct key within a row group, the size of
+an index follows the number of distinct keys. A column of 200 site names
+indexes to the same file size whether the store holds a hundred thousand
+rows or a hundred million.
 
 This design favors high-cardinality columns. When a column has thousands
 of distinct values spread across hundreds of row groups, each value maps
@@ -285,7 +291,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site)] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -333,9 +339,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.12 s
+#> Without index: 0.13 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.4 s
+#> With index:    0.11 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -345,9 +351,9 @@ file with 1000 row groups where the target site appears in only 3 of
 them, the index turns a full scan into three targeted reads.
 
 The index file sits alongside the data file with the naming convention
-`<original>.column.vtri`. It is read automatically by
-[`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) whenever a
-filter predicate matches the indexed column.
+`<original>.column.vtri`. The scan opens it for the column its predicate
+filters on, so a store can carry an index on each of several columns and
+a query pays only for the one it uses.
 
 ## Composite indexes
 
@@ -375,7 +381,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site + year)] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -404,10 +410,14 @@ and `year` together, we need a single-column index on `site` in addition
 to the composite. A composite index on `(site, year)` does not
 accelerate a filter on just `site` or just `year`.
 
-The composite index is stored as a v2-format `.vtri` file. The naming
-convention encodes both columns: `<file>.site_year.vtri` (or similar).
-Like single-column indexes, composite indexes are detected and loaded
-automatically by the scan node when the predicate structure matches.
+A composite index uses the same `.vtri` layout as a single-column one,
+with several column indices in its header. The naming convention encodes
+both columns: `<file>.site_year.vtri` (or similar). The columns may be
+named to
+[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+in any order, since the file name and the compound hash are both built
+in schema order. The scan node loads a composite index when the
+predicate structure matches.
 
 The FNV-1a hash combining means that `(site = "A", year = 2020)` and
 `(site = "B", year = 2020)` produce different hashes even though they
@@ -464,7 +474,7 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> FilterNode [streaming] 
-#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site)] 
 #> 
 #> Output columns (5):
 #>   site <string>
@@ -506,7 +516,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.41 s
+#> With index, %in% filter: 0.13 s
 ```
 
 Without an index, the same query reads all row groups and filters in
@@ -713,7 +723,7 @@ tbl(f) |>
 #> ProjectNode [streaming] 
 #>   ProjectNode [streaming] 
 #>     FilterNode [streaming] 
-#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
+#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats, hash index (site)] 
 #> 
 #> Output columns (4):
 #>   site <string>
@@ -1009,20 +1019,16 @@ amortize their creation cost over many queries. As a rough heuristic, if
 the query will run fewer than 5 times, a full scan is likely cheaper in
 total wall time.
 
-Disk space is another consideration. Each `.vtri` file stores the full
-set of distinct values for the indexed column plus a bitmap per value.
-For a column with 100,000 distinct strings averaging 20 bytes, the index
-file will be a few megabytes. For a column with 10 million distinct
-values, the index can rival the size of the data file itself. Composite
-indexes are slightly larger because they store compound hashes.
+Disk space is another consideration. A `.vtri` file stores 20 bytes per
+(distinct key, row group) pair plus 8 bytes per bucket, and no key
+values, only their hashes. A column of 100,000 distinct strings spread
+over a few row groups each indexes to a few megabytes. A column whose
+values are nearly all distinct puts one entry per row into the index,
+which can rival the size of the data file. Zone maps and sorted-column
+binary search cover that case without a sidecar.
 [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
-confirms whether an index exists; checking the file size directly shows
-its cost.
-
-Each index is a sidecar file that must be maintained; if the `.vtr` file
-changes via
-[`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md),
-the index must be recreated to include the new row groups.
+reports whether a usable index exists; checking the file size directly
+shows its cost.
 
 **Row group sizing for zone maps.** Smaller row groups give zone maps
 finer-grained pruning boundaries. If the data is sorted on the primary
@@ -1070,37 +1076,70 @@ When data is sorted by `site`, each site occupies a contiguous range of
 row groups. Zone maps on string columns prune all row groups outside
 that range, and an index can pinpoint the exact groups.
 
-**Index maintenance.** Indexes are not updated automatically when data
-changes. After calling
-[`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
-to add new row groups, the existing index does not cover the appended
-data. The engine will still use the stale index for the row groups it
-knows about, but any rows in the appended groups are invisible to the
-index and will be found only by the fallback full-scan path. This means
-queries may silently miss recent data if the index is not rebuilt.
-
-The rebuild itself is fast:
-[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
-does a single sequential pass over the file, hashing each value and
-recording its row group membership. On a file with a few million rows,
-this takes well under a second. The practical workflow is to batch
-appends (accumulate a day’s or week’s worth of new data), then rebuild
-the index once. Rebuilding after every single append is unnecessary
-overhead for most pipelines.
-
-Recreate the index to include everything:
+**Index maintenance.** A row append rewrites every row group, which
+moves the rows a key sits in, so each of the store’s indexes is rebuilt
+as part of `append_vtr(along = "rows")`. The rebuild is a single
+sequential pass over the indexed column, hashing each value and
+recording its row group membership; on a file of a few million rows it
+takes well under a second, against the full restream the row append
+itself performs.
 
 ``` r
 
 append_vtr(eco[1:100, ], f)
 
-# Old index is now stale -- recreate it
-create_index(f, "site")
+# The index covers the appended rows too
+has_index(f, "site")
+#> [1] TRUE
+tbl(f) |>
+  filter(site == "site_042") |>
+  explain()
+#> vectra execution plan
+#> 
+#> FilterNode [streaming] 
+#>   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site)] 
+#> 
+#> Output columns (5):
+#>   site <string>
+#>   year <int64>
+#>   species <string>
+#>   value <double>
+#>   quality <string>
+#> 
+#> <offload grade: streaming scan>
+#>   passes over data : 1 per consumption (lazy)
+#>   peak memory      : O(one batch)
+#>   I/O cost         : O(n) per pass
+#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
-This is a deliberate design choice. Automatically updating the index on
-every append would add write-time overhead that most append workflows do
-not need. Batch your appends, then rebuild the index once.
+A column append (`along = "cols"`) leaves row group boundaries and
+existing column data untouched, so an index over the original columns
+stays valid and is not rebuilt.
+
+An index records the row and row-group counts of the store it was built
+against. A query that finds those changed reads the store and leaves the
+index alone. An index invalidated some other way, such as overwriting
+the file with
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md),
+therefore costs the acceleration and never the rows.
+[`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+reports `FALSE` in that state, which is the signal to call
+[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+again:
+
+``` r
+
+g <- tempfile(fileext = ".vtr")
+write_vtr(eco, g, batch_size = 5000)
+create_index(g, "site")
+
+write_vtr(eco[1:2000, ], g, batch_size = 5000)   # overwrite under the index
+has_index(g, "site")                             # FALSE: rebuild needed
+#> [1] FALSE
+nrow(collect(filter(tbl(g), site == "site_042")))  # still correct
+#> [1] 14
+```
 
 **Decision tree.** For a new `.vtr` file that will be queried
 repeatedly:
@@ -1135,7 +1174,7 @@ tbl(f) |>
 #> 
 #> ProjectNode [streaming] 
 #>   FilterNode [streaming] 
-#>     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
+#>     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats, hash index (site)] 
 #> 
 #> Output columns (3):
 #>   site <string>

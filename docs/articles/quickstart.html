@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.8</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -1742,16 +1742,15 @@ files. An index is stored as a <code>.vtri</code> sidecar file alongside
 the <code>.vtr</code> file (named
 <code>&lt;path&gt;.&lt;column&gt;.vtri</code> for single-column
 indexes). It maps key hashes to row group indices using FNV-1a hashing,
-enabling O(1) row group identification for
-<code>filter(col == value)</code> and
-<code>filter(col %in% values)</code>. When <code><a href="../reference/tbl.html">tbl()</a></code> opens a
-<code>.vtr</code> file, it automatically detects and loads any
-<code>.vtri</code> sidecar files present in the same directory. The scan
-node then consults the index before reading data, skipping row groups
-that cannot contain matching keys. This composes with zone-map pruning:
-the index narrows down candidate row groups, and zone-map statistics
-further eliminate row groups where the column’s min/max range excludes
-the filter value.</p>
+so <code>filter(col == value)</code> and
+<code>filter(col %in% values)</code> name the row groups that may hold a
+key without reading any column data. A scan opens the sidecar for the
+column its predicate filters on, then consults it before reading data
+and skips row groups that cannot contain matching keys. This composes
+with zone-map pruning: the index narrows down candidate row groups, and
+zone-map statistics further eliminate row groups where the column’s
+min/max range excludes the filter value. <code><a href="../reference/explain.html">explain()</a></code> reports
+the index a scan will probe.</p>
 <p>Create an index with <code><a href="../reference/create_index.html">create_index()</a></code>. Check for an
 existing index with <code><a href="../reference/has_index.html">has_index()</a></code>. Indexes persist on disk
 and survive R sessions.</p>

@@ -1,6 +1,10 @@
-# Check if a hash index exists for a .vtr column
+# Check whether a .vtr column has a usable hash index
 
-Check if a hash index exists for a .vtr column
+`TRUE` when the `.vtri` sidecar is present, in the current format, and
+built against the store as it now stands. An index that no longer
+matches the store reads as `FALSE`, because queries ignore it;
+[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+rebuilds it.
 
 ## Usage
 
@@ -16,11 +20,11 @@ has_index(path, column)
 
 - column:
 
-  Character vector. Name(s) of column(s).
+  Character vector. Name(s) of column(s), in any order.
 
 ## Value
 
-Logical scalar: `TRUE` if a `.vtri` index file exists.
+Logical scalar: `TRUE` if the index exists and can be used.
 
 ## Examples
 

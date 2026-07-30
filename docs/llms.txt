@@ -584,7 +584,7 @@ Incremental updates to .vtr files
 - [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
   : Create a hash index on a .vtr file column
 - [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
-  : Check if a hash index exists for a .vtr column
+  : Check whether a .vtr column has a usable hash index
 
 ## Diagnostics
 

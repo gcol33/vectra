@@ -1,5 +1,105 @@
 # Changelog
 
+## vectra 0.11.8
+
+### Bug fixes
+
+- A `.vtri` index left behind by `append_vtr(along = "rows")` no longer
+  drops rows from a filter on the indexed column. A row append rewrites
+  every row group, so the index mapped its keys to row groups that had
+  moved; probing it pruned groups that held matching rows, and the query
+  returned a subset with no error or warning. On a five-row store,
+  `filter(id == "a")` returned one of two matching rows and a key added
+  by the append returned none.
+
+  A row append now rebuilds each index the store carries. Independently
+  of that, an index records the row and row-group counts it was built
+  against, and a query that finds them disagreeing reads the store
+  rather than trusting the index – so an index invalidated some other
+  way costs the acceleration, never the rows.
+  [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  reports `FALSE` for such an index, having previously reported on no
+  more than the sidecar file existing.
+
+- [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  now makes `filter(col == value)` faster rather than slower
+  ([\#9](https://github.com/gcol33/vectra/issues/9)). The index held one
+  entry per row, which made it larger than the store it indexed – 131 MB
+  against a 49 MB store of 3.2M rows – and
+  [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) read all
+  of it eagerly. Lookup cost therefore tracked the size of the store,
+  which is what an index is for avoiding, and an indexed store was
+  slower than the same store without one.
+
+  An index now holds one entry per distinct key per row group. Over
+  8,000 keys in 3.2M rows the sidecar is 0.29 MB rather than 131 MB, and
+  fetching one key’s 400 rows takes 5 ms rather than 427 ms – flat in
+  the size of the store (5.2 ms at 3.2M rows against 4.7 ms at 200k,
+  previously a 10-15x rise), and 20x faster than the same query with no
+  index. Building an index is also no longer bounded by holding one
+  entry per row in memory.
+
+- A query filtering on the second indexed column of a store now reaches
+  that column’s index. A scan loaded the first index it found in schema
+  order and could probe no other, so any further index was read on every
+  [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) and never
+  used. Indexes are now opened for the column a predicate actually
+  filters on, which also means a query reads no index it has no use for.
+
+- [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  accepts the columns of a composite index in any order. Naming them in
+  other than schema order wrote a sidecar under a name the scan does not
+  look for, leaving the index unused while
+  [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  reported it present.
+
+- A composite index over a narrow integer column is now probed rather
+  than skipped.
+
+- A store carrying both a composite index and a single-column index on
+  one of its columns now uses the composite for a predicate the
+  composite covers. The single-column index was probed first and stopped
+  the composite being consulted, so the more selective index went unused
+  on exactly the queries it was built for.
+
+- The `indexing` and `engine` vignettes described the index internals
+  incorrectly: open addressing with a stored row-group bitmap per value
+  and a 70% load factor, where the format is a chained table at 50%, and
+  a claim that the sidecar is memory-mapped, which it is not.
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  was also shown being passed `tbl(path)` rather than a path, which
+  cannot work.
+
+- A filter reaches a value that is computed rather than held in a
+  variable: `filter(x, id == keys[i])`, `filter(x, day > range$hi)`, and
+  the like. A bare name was resolved in the calling environment, but any
+  larger expression that named no column was rejected as an unsupported
+  function. An expression that does name a column still reports an
+  unsupported operation as one.
+
+- A failed index write no longer replaces a working index with a
+  truncated file; the index is written to a temporary path and moved
+  into place.
+
+### New features
+
+- [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
+  reports the index a scan will probe, as `hash index (id)` or
+  `hash index (a + b)` for a composite. It answers by opening the index
+  the scan would open, so it distinguishes an index that will be used
+  from a sidecar file that merely exists.
+
+### Breaking changes
+
+- The `.vtri` index format has changed, and indexes written by 0.11.7
+  and earlier read as absent: queries and
+  [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  behave as though the store has no index. Call
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  again to rebuild – the new index is much smaller and is what makes an
+  indexed lookup faster than an unindexed one. The `.vtr` format itself
+  is unchanged.
+
 ## vectra 0.11.7
 
 ### New features

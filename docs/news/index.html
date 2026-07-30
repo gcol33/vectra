@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.8</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -63,6 +63,36 @@
       <small>Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.11.8" id="vectra-0118">vectra 0.11.8<a class="anchor" aria-label="anchor" href="#vectra-0118"></a></h2>
+<div class="section level3">
+<h3 id="bug-fixes-0-11-8">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-11-8"></a></h3>
+<ul><li>
+<p>A <code>.vtri</code> index left behind by <code>append_vtr(along = "rows")</code> no longer drops rows from a filter on the indexed column. A row append rewrites every row group, so the index mapped its keys to row groups that had moved; probing it pruned groups that held matching rows, and the query returned a subset with no error or warning. On a five-row store, <code>filter(id == "a")</code> returned one of two matching rows and a key added by the append returned none.</p>
+<p>A row append now rebuilds each index the store carries. Independently of that, an index records the row and row-group counts it was built against, and a query that finds them disagreeing reads the store rather than trusting the index – so an index invalidated some other way costs the acceleration, never the rows. <code><a href="../reference/has_index.html">has_index()</a></code> reports <code>FALSE</code> for such an index, having previously reported on no more than the sidecar file existing.</p>
+</li>
+<li>
+<p><code><a href="../reference/create_index.html">create_index()</a></code> now makes <code>filter(col == value)</code> faster rather than slower (<a href="https://github.com/gcol33/vectra/issues/9" class="external-link">#9</a>). The index held one entry per row, which made it larger than the store it indexed – 131 MB against a 49 MB store of 3.2M rows – and <code><a href="../reference/tbl.html">tbl()</a></code> read all of it eagerly. Lookup cost therefore tracked the size of the store, which is what an index is for avoiding, and an indexed store was slower than the same store without one.</p>
+<p>An index now holds one entry per distinct key per row group. Over 8,000 keys in 3.2M rows the sidecar is 0.29 MB rather than 131 MB, and fetching one key’s 400 rows takes 5 ms rather than 427 ms – flat in the size of the store (5.2 ms at 3.2M rows against 4.7 ms at 200k, previously a 10-15x rise), and 20x faster than the same query with no index. Building an index is also no longer bounded by holding one entry per row in memory.</p>
+</li>
+<li><p>A query filtering on the second indexed column of a store now reaches that column’s index. A scan loaded the first index it found in schema order and could probe no other, so any further index was read on every <code><a href="../reference/tbl.html">tbl()</a></code> and never used. Indexes are now opened for the column a predicate actually filters on, which also means a query reads no index it has no use for.</p></li>
+<li><p><code><a href="../reference/create_index.html">create_index()</a></code> accepts the columns of a composite index in any order. Naming them in other than schema order wrote a sidecar under a name the scan does not look for, leaving the index unused while <code><a href="../reference/has_index.html">has_index()</a></code> reported it present.</p></li>
+<li><p>A composite index over a narrow integer column is now probed rather than skipped.</p></li>
+<li><p>A store carrying both a composite index and a single-column index on one of its columns now uses the composite for a predicate the composite covers. The single-column index was probed first and stopped the composite being consulted, so the more selective index went unused on exactly the queries it was built for.</p></li>
+<li><p>The <code>indexing</code> and <code>engine</code> vignettes described the index internals incorrectly: open addressing with a stored row-group bitmap per value and a 70% load factor, where the format is a chained table at 50%, and a claim that the sidecar is memory-mapped, which it is not. <code><a href="../reference/create_index.html">create_index()</a></code> was also shown being passed <code>tbl(path)</code> rather than a path, which cannot work.</p></li>
+<li><p>A filter reaches a value that is computed rather than held in a variable: <code>filter(x, id == keys[i])</code>, <code>filter(x, day &gt; range$hi)</code>, and the like. A bare name was resolved in the calling environment, but any larger expression that named no column was rejected as an unsupported function. An expression that does name a column still reports an unsupported operation as one.</p></li>
+<li><p>A failed index write no longer replaces a working index with a truncated file; the index is written to a temporary path and moved into place.</p></li>
+</ul></div>
+<div class="section level3">
+<h3 id="new-features-0-11-8">New features<a class="anchor" aria-label="anchor" href="#new-features-0-11-8"></a></h3>
+<ul><li>
+<code><a href="../reference/explain.html">explain()</a></code> reports the index a scan will probe, as <code>hash index (id)</code> or <code>hash index (a + b)</code> for a composite. It answers by opening the index the scan would open, so it distinguishes an index that will be used from a sidecar file that merely exists.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="breaking-changes-0-11-8">Breaking changes<a class="anchor" aria-label="anchor" href="#breaking-changes-0-11-8"></a></h3>
+<ul><li>The <code>.vtri</code> index format has changed, and indexes written by 0.11.7 and earlier read as absent: queries and <code><a href="../reference/has_index.html">has_index()</a></code> behave as though the store has no index. Call <code><a href="../reference/create_index.html">create_index()</a></code> again to rebuild – the new index is much smaller and is what makes an indexed lookup faster than an unindexed one. The <code>.vtr</code> format itself is unchanged.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.11.7" id="vectra-0117">vectra 0.11.7<a class="anchor" aria-label="anchor" href="#vectra-0117"></a></h2>
 <div class="section level3">

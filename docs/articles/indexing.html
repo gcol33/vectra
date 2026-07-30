@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.7</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.8</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-07-29</h4>
+            <h4 data-toc-skip class="date">2026-07-30</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/indexing.Rmd" class="external-link"><code>vignettes/indexing.Rmd</code></a></small>
       <div class="d-none name"><code>indexing.Rmd</code></div>
@@ -286,18 +286,23 @@ string columns. If we filter for a specific site name, the engine must
 check every row group’s string min/max bounds, which often span the
 entire alphabet. This is where hash indexes help.</p>
 <p>A hash index is a <code>.vtri</code> sidecar file that maps column
-values to the row groups that contain them. Internally, the
-<code>.vtri</code> file is a serialized open-addressing hash table using
-FNV-1a as the hash function. Each slot in the table stores a column
-value (or its hash) and a bitmap of row group IDs that contain that
-value. Open addressing means there are no linked lists or secondary
-structures: when a hash collision occurs, the engine probes forward
-through adjacent slots until it finds an empty one. At query time,
-“probing the index” means hashing the filter value, looking up the
-corresponding slot, walking past any collisions, and reading the row
-group bitmap directly. The whole operation is O(1) in the expected case,
-with a small constant factor that depends on how full the table is (the
-load factor stays below 70% to keep probe chains short).</p>
+values to the row groups that contain them. Internally the file is a
+serialized chained hash table using FNV-1a as the hash function: a
+bucket array, an entry array, and a next-index per entry linking the
+entries that share a bucket. Each entry pairs one distinct key hash with
+one row group holding it, so a key present in six row groups takes six
+entries, and a key repeated a million times inside one row group takes
+one. The bucket count is the next power of two above twice the entry
+count, which holds the load factor at or under 50% and keeps the chains
+short. At query time, “probing the index” means hashing the filter
+value, walking the chain for its bucket, and setting a bit for each row
+group the matching entries name. That bitmap is what the scan then uses
+to skip groups. The cost of a probe tracks the number of row groups
+holding the key; the number of rows in the file does not enter it.</p>
+<p>Because an entry covers a distinct key within a row group, the size
+of an index follows the number of distinct keys. A column of 200 site
+names indexes to the same file size whether the store holds a hundred
+thousand rows or a hundred million.</p>
 <p>This design favors high-cardinality columns. When a column has
 thousands of distinct values spread across hundreds of row groups, each
 value maps to a small subset of groups, and the index eliminates most of
@@ -343,7 +348,7 @@ engine reads every row group and filters in-memory.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site)] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -387,18 +392,19 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Without index: 0.12 s</span></span>
+<span><span class="co">#&gt; Without index: 0.13 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.4 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.11 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a
 file with 1000 row groups where the target site appears in only 3 of
 them, the index turns a full scan into three targeted reads.</p>
 <p>The index file sits alongside the data file with the naming
-convention <code>&lt;original&gt;.column.vtri</code>. It is read
-automatically by <code><a href="../reference/tbl.html">tbl()</a></code> whenever a filter predicate matches
-the indexed column.</p>
+convention <code>&lt;original&gt;.column.vtri</code>. The scan opens it
+for the column its predicate filters on, so a store can carry an index
+on each of several columns and a query pays only for the one it
+uses.</p>
 </div>
 <div class="section level2">
 <h2 id="composite-indexes">Composite indexes<a class="anchor" aria-label="anchor" href="#composite-indexes"></a>
@@ -421,7 +427,7 @@ columns at once.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site + year)] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -447,11 +453,13 @@ sometimes on <code>site</code> and <code>year</code> together, we need a
 single-column index on <code>site</code> in addition to the composite. A
 composite index on <code>(site, year)</code> does not accelerate a
 filter on just <code>site</code> or just <code>year</code>.</p>
-<p>The composite index is stored as a v2-format <code>.vtri</code> file.
-The naming convention encodes both columns:
-<code>&lt;file&gt;.site_year.vtri</code> (or similar). Like
-single-column indexes, composite indexes are detected and loaded
-automatically by the scan node when the predicate structure matches.</p>
+<p>A composite index uses the same <code>.vtri</code> layout as a
+single-column one, with several column indices in its header. The naming
+convention encodes both columns:
+<code>&lt;file&gt;.site_year.vtri</code> (or similar). The columns may
+be named to <code><a href="../reference/create_index.html">create_index()</a></code> in any order, since the file
+name and the compound hash are both built in schema order. The scan node
+loads a composite index when the predicate structure matches.</p>
 <p>The FNV-1a hash combining means that
 <code>(site = "A", year = 2020)</code> and
 <code>(site = "B", year = 2020)</code> produce different hashes even
@@ -505,7 +513,7 @@ the union of matching row groups.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site)] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (5):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -542,7 +550,7 @@ site, or sample ID.</p>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index, %in% filter:"</span>, <span class="va">t_in_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index, %in% filter: 0.41 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index, %in% filter: 0.13 s</span></span></code></pre></div>
 <p>Without an index, the same query reads all row groups and filters in
 memory. The difference grows with file size.</p>
 </div>
@@ -728,7 +736,7 @@ understand what the engine will do.</p>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;     FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
+<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats, hash index (site)] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (4):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
@@ -978,17 +986,15 @@ runs once, we’ve spent the same I/O budget twice (once to build, once to
 query) for no net gain. Indexes amortize their creation cost over many
 queries. As a rough heuristic, if the query will run fewer than 5 times,
 a full scan is likely cheaper in total wall time.</p>
-<p>Disk space is another consideration. Each <code>.vtri</code> file
-stores the full set of distinct values for the indexed column plus a
-bitmap per value. For a column with 100,000 distinct strings averaging
-20 bytes, the index file will be a few megabytes. For a column with 10
-million distinct values, the index can rival the size of the data file
-itself. Composite indexes are slightly larger because they store
-compound hashes. <code><a href="../reference/has_index.html">has_index()</a></code> confirms whether an index
-exists; checking the file size directly shows its cost.</p>
-<p>Each index is a sidecar file that must be maintained; if the
-<code>.vtr</code> file changes via <code><a href="../reference/append_vtr.html">append_vtr()</a></code>, the index
-must be recreated to include the new row groups.</p>
+<p>Disk space is another consideration. A <code>.vtri</code> file stores
+20 bytes per (distinct key, row group) pair plus 8 bytes per bucket, and
+no key values, only their hashes. A column of 100,000 distinct strings
+spread over a few row groups each indexes to a few megabytes. A column
+whose values are nearly all distinct puts one entry per row into the
+index, which can rival the size of the data file. Zone maps and
+sorted-column binary search cover that case without a sidecar.
+<code><a href="../reference/has_index.html">has_index()</a></code> reports whether a usable index exists; checking
+the file size directly shows its cost.</p>
 <p><strong>Row group sizing for zone maps.</strong> Smaller row groups
 give zone maps finer-grained pruning boundaries. If the data is sorted
 on the primary filter column, 10k to 50k rows per group lets the engine
@@ -1031,29 +1037,59 @@ filter on one of these.</p>
 contiguous range of row groups. Zone maps on string columns prune all
 row groups outside that range, and an index can pinpoint the exact
 groups.</p>
-<p><strong>Index maintenance.</strong> Indexes are not updated
-automatically when data changes. After calling <code><a href="../reference/append_vtr.html">append_vtr()</a></code>
-to add new row groups, the existing index does not cover the appended
-data. The engine will still use the stale index for the row groups it
-knows about, but any rows in the appended groups are invisible to the
-index and will be found only by the fallback full-scan path. This means
-queries may silently miss recent data if the index is not rebuilt.</p>
-<p>The rebuild itself is fast: <code><a href="../reference/create_index.html">create_index()</a></code> does a single
-sequential pass over the file, hashing each value and recording its row
-group membership. On a file with a few million rows, this takes well
-under a second. The practical workflow is to batch appends (accumulate a
-day’s or week’s worth of new data), then rebuild the index once.
-Rebuilding after every single append is unnecessary overhead for most
-pipelines.</p>
-<p>Recreate the index to include everything:</p>
+<p><strong>Index maintenance.</strong> A row append rewrites every row
+group, which moves the rows a key sits in, so each of the store’s
+indexes is rebuilt as part of <code>append_vtr(along = "rows")</code>.
+The rebuild is a single sequential pass over the indexed column, hashing
+each value and recording its row group membership; on a file of a few
+million rows it takes well under a second, against the full restream the
+row append itself performs.</p>
 <div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">eco</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">100</span>, <span class="op">]</span>, <span class="va">f</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Old index is now stale -- recreate it</span></span>
-<span><span class="fu"><a href="../reference/create_index.html">create_index</a></span><span class="op">(</span><span class="va">f</span>, <span class="st">"site"</span><span class="op">)</span></span></code></pre></div>
-<p>This is a deliberate design choice. Automatically updating the index
-on every append would add write-time overhead that most append workflows
-do not need. Batch your appends, then rebuild the index once.</p>
+<span><span class="co"># The index covers the appended rows too</span></span>
+<span><span class="fu"><a href="../reference/has_index.html">has_index</a></span><span class="op">(</span><span class="va">f</span>, <span class="st">"site"</span><span class="op">)</span></span>
+<span><span class="co">#&gt; [1] TRUE</span></span>
+<span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">site</span> <span class="op">==</span> <span class="st">"site_042"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="../reference/explain.html">explain</a></span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="co">#&gt; vectra execution plan</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; FilterNode [streaming] </span></span>
+<span><span class="co">#&gt;   ScanNode [streaming, 5 cols, predicate pushdown, tdc stats, hash index (site)] </span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; Output columns (5):</span></span>
+<span><span class="co">#&gt;   site &lt;string&gt;</span></span>
+<span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
+<span><span class="co">#&gt;   species &lt;string&gt;</span></span>
+<span><span class="co">#&gt;   value &lt;double&gt;</span></span>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
+<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
+<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
+<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
+<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<p>A column append (<code>along = "cols"</code>) leaves row group
+boundaries and existing column data untouched, so an index over the
+original columns stays valid and is not rebuilt.</p>
+<p>An index records the row and row-group counts of the store it was
+built against. A query that finds those changed reads the store and
+leaves the index alone. An index invalidated some other way, such as
+overwriting the file with <code><a href="../reference/write_vtr.html">write_vtr()</a></code>, therefore costs the
+acceleration and never the rows. <code><a href="../reference/has_index.html">has_index()</a></code> reports
+<code>FALSE</code> in that state, which is the signal to call
+<code><a href="../reference/create_index.html">create_index()</a></code> again:</p>
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">g</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">eco</span>, <span class="va">g</span>, batch_size <span class="op">=</span> <span class="fl">5000</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/create_index.html">create_index</a></span><span class="op">(</span><span class="va">g</span>, <span class="st">"site"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">eco</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">2000</span>, <span class="op">]</span>, <span class="va">g</span>, batch_size <span class="op">=</span> <span class="fl">5000</span><span class="op">)</span>   <span class="co"># overwrite under the index</span></span>
+<span><span class="fu"><a href="../reference/has_index.html">has_index</a></span><span class="op">(</span><span class="va">g</span>, <span class="st">"site"</span><span class="op">)</span>                             <span class="co"># FALSE: rebuild needed</span></span>
+<span><span class="co">#&gt; [1] FALSE</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">g</span><span class="op">)</span>, <span class="va">site</span> <span class="op">==</span> <span class="st">"site_042"</span><span class="op">)</span><span class="op">)</span><span class="op">)</span>  <span class="co"># still correct</span></span>
+<span><span class="co">#&gt; [1] 14</span></span></code></pre></div>
 <p><strong>Decision tree.</strong> For a new <code>.vtr</code> file that
 will be queried repeatedly:</p>
 <ol style="list-style-type: decimal">
@@ -1074,7 +1110,7 @@ zone-map pruning (fewer row groups read), hash index pushdown
 (constant-time row group identification), and predicate pushdown
 (filtering inside the scan). The engine applies every applicable
 technique automatically. The only manual step is creating indexes.</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">site</span> <span class="op">==</span> <span class="st">"site_042"</span>, <span class="va">value</span> <span class="op">&gt;</span> <span class="fl">80</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">site</span>, <span class="va">year</span>, <span class="va">value</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1083,7 +1119,7 @@ technique automatically. The only manual step is creating indexes.</p>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ProjectNode [streaming] </span></span>
 <span><span class="co">#&gt;   FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats, hash index (site)] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>

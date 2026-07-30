@@ -1721,15 +1721,16 @@ considerations, see
 Hash indexes accelerate equality predicates on `.vtr` files. An index is
 stored as a `.vtri` sidecar file alongside the `.vtr` file (named
 `<path>.<column>.vtri` for single-column indexes). It maps key hashes to
-row group indices using FNV-1a hashing, enabling O(1) row group
-identification for `filter(col == value)` and `filter(col %in% values)`.
-When [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) opens
-a `.vtr` file, it automatically detects and loads any `.vtri` sidecar
-files present in the same directory. The scan node then consults the
-index before reading data, skipping row groups that cannot contain
-matching keys. This composes with zone-map pruning: the index narrows
-down candidate row groups, and zone-map statistics further eliminate row
-groups where the column’s min/max range excludes the filter value.
+row group indices using FNV-1a hashing, so `filter(col == value)` and
+`filter(col %in% values)` name the row groups that may hold a key
+without reading any column data. A scan opens the sidecar for the column
+its predicate filters on, then consults it before reading data and skips
+row groups that cannot contain matching keys. This composes with
+zone-map pruning: the index narrows down candidate row groups, and
+zone-map statistics further eliminate row groups where the column’s
+min/max range excludes the filter value.
+[`explain()`](https://gillescolling.com/vectra/reference/explain.md)
+reports the index a scan will probe.
 
 Create an index with
 [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md).

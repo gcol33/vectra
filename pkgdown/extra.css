@@ -46,7 +46,10 @@ figure {
 /* Code blocks use negative margins to expand on mobile - plots should too */
 /* Use :has() to target the parent <p> that contains an SVG/img */
 @media (max-width: 575.98px) {
-  /* Target the p element wrapping standalone SVGs/imgs to expand full width */
+  /* Target the p element wrapping standalone SVGs/imgs to expand full width.
+     A .svg-container that is a section-level sibling (its <p> auto-closed) is
+     bled here; one nested in a .figure is left to the .figure rule below to
+     avoid a double negative margin. */
   p:has(> svg.inline-svg),
   p:has(> img.r-plt),
   .svg-container:not(.figure *) {
@@ -55,7 +58,10 @@ figure {
     width: calc(100% + var(--bs-gutter-x, 1.5rem)) !important;
     max-width: none !important;
   }
-  /* SVGs/imgs inside the expanded p */
+  /* SVGs/imgs inside the expanded p, and SVGs wrapped directly in .svg-container.
+     The svg-container is created when an <img> is inlined; depending on the source
+     markup it is either a section-level sibling or nested in a .figure. Either way,
+     square its corners on mobile to match code blocks. */
   p > svg.inline-svg,
   p > img.r-plt,
   .svg-container > svg.inline-svg {
@@ -130,26 +136,35 @@ svg.inline-svg .svg-bg {
   stroke: none !important;
 }
 
-/* Only override default-colored strokes (axis ticks, frames) - preserve data colors */
-[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3e3f3a"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3e3f3a"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3e3f3a"],
-[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3e3f3a"],
-[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3e3f3a"] {
-  stroke: #DFD7CA !important;
-}
-/* Elements inheriting default stroke from CSS (no inline stroke) */
+/* Dark mode stroke - only elements drawn in the theme default stroke color */
+/* Colored strokes (blue edges, red threshold lines) are left alone: they are */
+/* a deliberate part of the figure and read on both backgrounds */
 [data-bs-theme="dark"] svg.inline-svg .svglite line:not([style*="stroke:"]),
 [data-bs-theme="dark"] svg.inline-svg .svglite polyline:not([style*="stroke:"]),
 [data-bs-theme="dark"] svg.inline-svg .svglite polygon:not([style*="stroke:"]),
 [data-bs-theme="dark"] svg.inline-svg .svglite path:not([style*="stroke:"]),
 [data-bs-theme="dark"] svg.inline-svg .svglite circle:not([style*="stroke:"]) {
   stroke: #DFD7CA !important;
+}
+
+/* Same for elements carrying the light theme stroke color inline */
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3E3F3A"],
+[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3E3F3A"] {
+  stroke: #DFD7CA !important;
+}
+
+/* Shape fills that follow the theme instead of staying at the device default */
+/* theme-fill-bg: white fills (node interiors, legend keys, filled polygons) */
+/* theme-fill-fg: black fills (pch 19 points, legend dots, arrow heads) */
+[data-bs-theme="dark"] svg.inline-svg .theme-fill-bg {
+  fill: #343739 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .theme-fill-fg {
+  fill: #DFD7CA !important;
 }
 
 /* Dark mode text color - but NOT for text on custom legend backgrounds */
@@ -162,18 +177,15 @@ svg.inline-svg .svglite text.preserve-color {
   fill: #3E3F3A !important;
 }
 
-/* Rect strokes (histogram bars, etc.) - match text color */
-/* Use > g > rect to exclude clipPath rects; exclude stroke: none (empty legend keys) */
-/* Exclude unfilled rects (plot frames) - they should have no stroke */
-[data-bs-theme="dark"] svg.inline-svg .svglite > g > rect[style*="fill:"]:not([style*="stroke: none"]) {
-  stroke: #DFD7CA !important;
-}
+/* Rect strokes (histogram bars, etc.) keep their light-mode outline in dark */
+/* mode: the fill stays colored, so a light outline would lose the contrast */
 
 /* Plot frame rects - remove stroke, CSS border handles the frame */
-/* Target unfilled rects (no inline fill style) excluding legend backgrounds */
-/* Rects can be direct children of .svglite or children of g elements */
+/* Target unfilled rects (no inline fill style) excluding legend backgrounds, */
+/* and rounded frame rects, which the outer CSS border already draws */
 svg.inline-svg .svglite > rect:not([style*="fill:"]),
-svg.inline-svg .svglite > g > rect:not([style*="fill:"]):not(.legend-bg) {
+svg.inline-svg .svglite > g > rect:not([style*="fill:"]):not(.legend-bg),
+svg.inline-svg .svglite > g > rect[rx] {
   stroke: none !important;
 }
 
@@ -231,25 +243,149 @@ svg.inline-svg .svglite polyline[style*="stroke: #ffffff"] {
   width: 100%;
 }
 
-/* SVG copy button styling - matches code block copy button exactly */
+/* SVG copy button styling - matches code block copy button */
 .btn-copy-svg {
   position: absolute;
-  top: 5px;
-  right: 5px;
-  visibility: hidden;
+  top: 0.5rem;
+  right: 0.5rem;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+  z-index: 10;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
 }
 
-/* Show button on hover - matches .hasCopyButton:hover button.btn-copy-ex */
+/* Show button on hover */
 .svg-container:hover .btn-copy-svg,
-.svg-container:focus-within .btn-copy-svg,
-.btn-copy-svg:focus {
-  visibility: visible;
+.svg-container:focus-within .btn-copy-svg {
+  opacity: 1;
 }
 
-/* Mobile: adjust position for full-width SVGs */
+/* Keep button visible when focused (for keyboard users) */
+.btn-copy-svg:focus {
+  opacity: 1;
+}
+
+/* Mobile: show button on tap/focus (no hover on touch) */
 @media (max-width: 575.98px) {
+  /* Adjust position for full-width mobile SVGs */
   .svg-container {
     position: relative;
   }
+}
+
+/* Math equations - responsive on mobile */
+/* MathJax display equations */
+.MathJax_Display,
+mjx-container[display="true"],
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  padding: 0.5rem 0;
+}
+
+/* Inline math - allow wrapping */
+mjx-container:not([display="true"]),
+.katex:not(.katex-display .katex) {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  vertical-align: middle;
+}
+
+/* Figure palette - dark mode counterparts */
+/* Authored with the light hex; swapped here so saturated color survives */
+/* both themes. Colors outside this table are passed through untouched. */
+
+/* blue */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #2E6F9E"] {
+  stroke: #7FB2D9 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #2E6F9E"] {
+  fill: #7FB2D9 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #2E6F9E"] {
+  fill: #7FB2D9 !important;
+}
+
+/* red */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #B5342B"] {
+  stroke: #E8837A !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #B5342B"] {
+  fill: #E8837A !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #B5342B"] {
+  fill: #E8837A !important;
+}
+
+/* green */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #3F7A3D"] {
+  stroke: #86C384 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #3F7A3D"] {
+  fill: #86C384 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #3F7A3D"] {
+  fill: #86C384 !important;
+}
+
+/* orange */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #9E5E0F"] {
+  stroke: #E2A85A !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #9E5E0F"] {
+  fill: #E2A85A !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #9E5E0F"] {
+  fill: #E2A85A !important;
+}
+
+/* purple */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #7A4F9E"] {
+  stroke: #BFA0DC !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #7A4F9E"] {
+  fill: #BFA0DC !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #7A4F9E"] {
+  fill: #BFA0DC !important;
+}
+
+/* teal */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #2A7A7A"] {
+  stroke: #6FC0C0 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #2A7A7A"] {
+  fill: #6FC0C0 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #2A7A7A"] {
+  fill: #6FC0C0 !important;
+}
+
+/* grey */
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #5C6166"] {
+  stroke: #A9B0B5 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #5C6166"] {
+  fill: #A9B0B5 !important;
+}
+
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #5C6166"] {
+  fill: #A9B0B5 !important;
 }
 
