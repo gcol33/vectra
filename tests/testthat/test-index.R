@@ -257,6 +257,35 @@ test_that("composite index columns may be named in any order", {
                collect(filter(tbl(g), ka == "a", kb == "x")))
 })
 
+test_that("a composite index is preferred over a single-column one", {
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, paste0(f, c(".site.vtri", ".site_year.vtri")))))
+
+  d <- data.frame(site = rep(sprintf("s%02d", 1:10), each = 40),
+                  year = rep(2000:2009, times = 40),
+                  v = seq_len(400), stringsAsFactors = FALSE)
+  write_vtr(d, f, batch_size = 20L)
+  write_vtr(d, g, batch_size = 20L)
+  create_index(f, "site")
+  create_index(f, c("site", "year"))
+
+  # Both apply to this predicate; the composite prunes at least as well, since
+  # it encodes the two keys co-occurring in a row group.
+  expect_match(paste(capture.output(explain(filter(tbl(f), site == "s03",
+                                                   year == 2005))),
+                     collapse = " "), "hash index (site + year)", fixed = TRUE)
+  # Only the single-column index covers a filter on site alone.
+  expect_match(paste(capture.output(explain(filter(tbl(f), site == "s03"))),
+                     collapse = " "), "hash index (site)", fixed = TRUE)
+
+  expect_equal(collect(filter(tbl(f), site == "s03", year == 2005)),
+               collect(filter(tbl(g), site == "s03", year == 2005)))
+  expect_gt(nrow(collect(filter(tbl(f), site == "s03", year == 2005))), 0L)
+  expect_equal(collect(filter(tbl(f), site == "s03")),
+               collect(filter(tbl(g), site == "s03")))
+})
+
 test_that("a superseded index format reads as absent but names its columns", {
   f <- tempfile(fileext = ".vtr")
   ix <- paste0(f, ".k.vtri")

@@ -43,6 +43,18 @@
 * A composite index over a narrow integer column is now probed rather than
   skipped.
 
+* A store carrying both a composite index and a single-column index on one of
+  its columns now uses the composite for a predicate the composite covers. The
+  single-column index was probed first and stopped the composite being
+  consulted, so the more selective index went unused on exactly the queries it
+  was built for.
+
+* The `indexing` and `engine` vignettes described the index internals
+  incorrectly: open addressing with a stored row-group bitmap per value and a
+  70% load factor, where the format is a chained table at 50%, and a claim that
+  the sidecar is memory-mapped, which it is not. `create_index()` was also shown
+  being passed `tbl(path)` rather than a path, which cannot work.
+
 * A filter reaches a value that is computed rather than held in a variable:
   `filter(x, id == keys[i])`, `filter(x, day > range$hi)`, and the like. A bare
   name was resolved in the calling environment, but any larger expression that

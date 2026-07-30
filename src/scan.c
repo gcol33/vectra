@@ -733,11 +733,12 @@ static void try_composite_index(ScanNode *sn) {
 static void try_binary_search(ScanNode *sn) {
     sn->rg_range_set = 1;  /* mark as attempted */
 
-    /* Try hash index first (highest priority) */
-    try_hash_index(sn);
-
-    /* If single-column index didn't help, try composite */
-    if (!sn->rg_bitmap) try_composite_index(sn);
+    /* A composite index covering every equality in the predicate prunes at least
+       as well as a single-column index on one of those columns, since it encodes
+       the keys co-occurring in a row group. Try it first; fall back to a
+       single-column index when there is no composite for exactly these columns. */
+    try_composite_index(sn);
+    if (!sn->rg_bitmap) try_hash_index(sn);
 
     const uint8_t *col_sorted = vtr1_tdc_col_sorted(sn->file);
     if (!sn->predicate || !col_sorted) return;
@@ -1012,6 +1013,28 @@ int scan_node_index_desc(const VecNode *node, char *buf, int bufsize) {
     if (!sn->predicate) return 0;
     const VecSchema *schema = vtr1_tdc_schema(sn->file);
 
+    /* Same order of preference as try_binary_search, so what is reported is what
+       will be probed. */
+    const char *col_names[MAX_COMPOSITE_COLS];
+    const VecExpr *lit_exprs[MAX_COMPOSITE_COLS];
+    int col_idxs[MAX_COMPOSITE_COLS];
+    int n_eq = scan_eq_chain(sn, col_names, lit_exprs, col_idxs);
+    VtrIndex *cidx = scan_open_composite_index(sn, col_names, n_eq);
+    if (cidx) {
+        vtri_close(cidx);
+        /* snprintf reports the length it would have written, so clamp rather
+           than letting pos run past the end of the buffer. */
+        int pos = 0;
+        for (int c = 0; c < n_eq && pos < bufsize - 1; c++) {
+            int n = snprintf(buf + pos, (size_t)(bufsize - pos), "%s%s",
+                             c ? " + " : "", col_names[c]);
+            if (n < 0) break;
+            pos += n;
+            if (pos > bufsize - 1) pos = bufsize - 1;
+        }
+        return 1;
+    }
+
     int ci = scan_index_col(sn);
     if (ci >= 0) {
         VtrIndex *idx = scan_open_col_index(sn, schema->col_names[ci], ci);
@@ -1021,26 +1044,7 @@ int scan_node_index_desc(const VecNode *node, char *buf, int bufsize) {
             return 1;
         }
     }
-
-    const char *col_names[MAX_COMPOSITE_COLS];
-    const VecExpr *lit_exprs[MAX_COMPOSITE_COLS];
-    int col_idxs[MAX_COMPOSITE_COLS];
-    int n_eq = scan_eq_chain(sn, col_names, lit_exprs, col_idxs);
-    VtrIndex *cidx = scan_open_composite_index(sn, col_names, n_eq);
-    if (!cidx) return 0;
-    vtri_close(cidx);
-
-    /* snprintf reports the length it would have written, so clamp rather than
-       letting pos run past the end of the buffer. */
-    int pos = 0;
-    for (int c = 0; c < n_eq && pos < bufsize - 1; c++) {
-        int n = snprintf(buf + pos, (size_t)(bufsize - pos), "%s%s",
-                         c ? " + " : "", col_names[c]);
-        if (n < 0) break;
-        pos += n;
-        if (pos > bufsize - 1) pos = bufsize - 1;
-    }
-    return 1;
+    return 0;
 }
 
 Vtr1TdcFile *scan_node_get_file(const VecNode *node) {
