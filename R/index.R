@@ -20,6 +20,10 @@
 #' many rows the store holds -- which is what keeps a lookup off the size of the
 #' store.
 #'
+#' Building one is bounded too: the entries are sorted through the streaming
+#' memory budget ([vectra_mem()]) and written in a single pass, so an index over
+#' a store larger than memory costs disk rather than RAM.
+#'
 #' [append_vtr()] leaves the existing row groups where they are, so an index
 #' stays valid across an append: it takes in the row groups just appended and
 #' keeps the rest, reading only the new data rather than the whole store.
@@ -28,7 +32,7 @@
 #' by `has_index()` and ignored by queries rather than pruning row groups that
 #' may now hold matching rows. The same goes for one that cannot be read at all:
 #' an index only ever saves a scan work, so an unusable one costs speed and
-#' never rows. Indexes written by vectra 0.11.7 and earlier are superseded and
+#' never rows. Indexes written by vectra 0.11.8 and earlier are superseded and
 #' read as absent; call `create_index()` again to rebuild them.
 #'
 #' @param path Path to a `.vtr` file.
@@ -50,7 +54,8 @@ create_index <- function(path, column, ci = FALSE) {
   if (!is.character(column) || length(column) < 1)
     stop("column must be a character vector of length >= 1")
   path <- normalizePath(path, mustWork = TRUE)
-  .Call(C_create_index, path, column, as.logical(ci))
+  .Call(C_create_index, path, column, as.logical(ci),
+        as.numeric(vectra_mem()))
   invisible(NULL)
 }
 
@@ -118,7 +123,7 @@ has_index <- function(path, column) {
 # extension of) is rebuilt in full instead.
 .extend_indexes <- function(path) {
   for (f in .index_files(path)) {
-    if (isTRUE(.Call(C_extend_index, path, f))) next
+    if (isTRUE(.Call(C_extend_index, path, f, as.numeric(vectra_mem())))) next
     spec <- .Call(C_index_spec, path, f)
     if (!is.null(spec)) create_index(path, spec$columns, ci = spec$ci)
   }

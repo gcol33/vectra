@@ -1,6 +1,7 @@
 #include "vtri.h"
 #include "vtr1_tdc.h"
 #include "vtr_fileops.h"
+#include "rec_spill.h"
 #include "batch.h"
 #include "schema.h"
 #include "array.h"
@@ -21,6 +22,9 @@
 #  define VTRI_FSEEK64(fp, off, wh) fseeko((fp), (off_t)(off), (wh))
 #endif
 
+/* Entries written per fwrite while the merge streams them out. */
+#define VTRI_WRITE_BATCH 8192
+
 /* Use shared hash functions from vtri.h (vtri_fnv1a, vtri_hash_int64, etc.) */
 /* Aliases for local use */
 #define fnv1a     vtri_fnv1a
@@ -31,7 +35,7 @@
 
 static uint64_t hash_string(const VecArray *col, int64_t row, int ci) {
     if (!vec_array_is_valid(col, row))
-        return FNV_OFFSET ^ 0xFF;
+        return VTRI_NA_HASH;
     int64_t s = col->buf.str.offsets[row];
     int64_t e = col->buf.str.offsets[row + 1];
     int64_t len = e - s;
@@ -42,7 +46,7 @@ static uint64_t hash_string(const VecArray *col, int64_t row, int ci) {
 
 static uint64_t hash_array_value(const VecArray *col, int64_t row, int ci) {
     if (!vec_array_is_valid(col, row))
-        return FNV_OFFSET ^ 0xFF;
+        return VTRI_NA_HASH;
     switch (col->type) {
     case VEC_STRING: return hash_string(col, row, ci);
     case VEC_INT64:  return hash_int64(col->buf.i64[row]);
@@ -73,33 +77,58 @@ static int64_t next_pow2(int64_t n) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Growable (hash, row group) entry list                              */
+/*  (hash, row group) entries                                          */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    uint64_t *hash;
-    uint32_t *rg;
-    int64_t   n, cap;
-} EntryVec;
+/* One entry as it sits both in the sort and on disk: 12 packed bytes, so
+   neither the sort's buffer nor the file pays for alignment. */
+typedef unsigned char VtrEnt[VTRI_ENTRY_BYTES];
 
-static int ev_push(EntryVec *ev, uint64_t h, uint32_t rg) {
-    if (ev->n == ev->cap) {
-        int64_t cap = ev->cap ? ev->cap * 2 : 1024;
-        uint64_t *nh = (uint64_t *)realloc(ev->hash, (size_t)cap * sizeof(uint64_t));
-        if (!nh) return 0;
-        ev->hash = nh;
-        uint32_t *nr = (uint32_t *)realloc(ev->rg, (size_t)cap * sizeof(uint32_t));
-        if (!nr) return 0;
-        ev->rg = nr;
-        ev->cap = cap;
-    }
-    ev->hash[ev->n] = h;
-    ev->rg[ev->n]   = rg;
-    ev->n++;
-    return 1;
+static inline void ent_put(VtrEnt e, uint64_t h, uint32_t rg) {
+    memcpy(e, &h, 8);
+    memcpy(e + 8, &rg, 4);
 }
 
-static void ev_free(EntryVec *ev) { free(ev->hash); free(ev->rg); }
+static inline uint64_t ent_hash(const void *e) {
+    uint64_t h;
+    memcpy(&h, e, 8);
+    return h;
+}
+
+static inline uint32_t ent_rg(const void *e) {
+    uint32_t rg;
+    memcpy(&rg, (const unsigned char *)e + 8, 4);
+    return rg;
+}
+
+/* Ascending by hash, then by row group. The row group breaks the tie so that a
+   rebuild and an extend of the same store write the same bytes. */
+static int ent_cmp(const void *a, const void *b) {
+    uint64_t ha = ent_hash(a), hb = ent_hash(b);
+    if (ha < hb) return -1;
+    if (ha > hb) return 1;
+    uint32_t ra = ent_rg(a), rb = ent_rg(b);
+    if (ra < rb) return -1;
+    if (ra > rb) return 1;
+    return 0;
+}
+
+/* Directory width: one slot per VTRI_DIR_ENTRIES_PER_SLOT entries, capped at
+   VTRI_DIR_MAX_BITS so the one array the build holds never passes 16 MB. A few
+   entries to a slot rather than one costs a couple of comparisons inside a slot
+   -- all within the bytes a single page already holds, so the page count a probe
+   pays is the same -- and takes the directory from 4 bytes an entry to 1.
+
+   A directory addresses entries with a u32, so an index with more entries than
+   that can hold does without one and is probed by binary search over the whole
+   file. */
+static int dir_bits_for(int64_t n_entries) {
+    if (n_entries <= 0 || n_entries > (int64_t)UINT32_MAX) return 0;
+    int64_t want = n_entries / VTRI_DIR_ENTRIES_PER_SLOT;
+    int d = 0;
+    while (d < VTRI_DIR_MAX_BITS && ((int64_t)1 << d) < want) d++;
+    return d;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Per-row-group dedup set                                            */
@@ -269,52 +298,44 @@ static uint64_t read_u64_f(FILE *fp) {
 /*
  * Build a .vtri over `col_names` and write it.
  *
- * Scanning starts at row group `first_rg` and the entry list starts out holding
- * the entries of `seed`, an already-open index, which is what lets an index be
- * brought up to date after an append without rereading the store: an entry
- * names the row group its key sits in, and a row append moves no existing row
- * group, so the entries already in an index stay true and only the appended row
- * groups need scanning. Pass first_rg = 0 and seed = NULL to build from nothing.
+ * Scanning starts at row group `first_rg`, and the entries of `seed`, an
+ * already-open index, are merged in as the file is written. That is what lets an
+ * index be brought up to date after an append without rereading the store: an
+ * entry names the row group its key sits in, and a row append moves no existing
+ * row group, so the entries already in an index stay true and only the appended
+ * row groups need scanning. Pass first_rg = 0 and seed = NULL to build from
+ * nothing.
+ *
+ * Nothing here holds the index. The scan pushes each entry into an external
+ * sort, which spills past mem_budget; the seed is already sorted, so it is read
+ * as a second stream and the two are merged straight into the output file. Peak
+ * resident memory is the sort's buffer, the directory (16 MB at most), and one
+ * decoded row group -- none of which grow with the number of entries, so an
+ * index far larger than RAM can be built and not just read. A chained layout
+ * could not do this: it has to know every entry's bucket before writing the
+ * first, which is what used to make the build cost the size of the index.
  *
  * The seed is read through the index accessors, so it may be either resident or
- * mapped -- a mapped one is read a page at a time as the copy walks it.
+ * mapped -- a mapped one is read a page at a time as the merge walks it.
  *
- * Everything after the scan -- bucket count, chaining, the stamp, the write --
- * is the same either way, and the stamp is always taken from the store as it
- * now stands, so an extended index is byte-identical to one rebuilt from
- * scratch except for the order entries appear in.
+ * The stamp is always taken from the store as it now stands, and the entry order
+ * is the data's rather than the scan's, so an extended index is byte-identical
+ * to one rebuilt from scratch.
  */
 static void vtri_build_core(const char *vtr_path, const char **col_names,
                             int n_cols, int ci,
                             uint32_t first_rg,
-                            VtrIndex *seed) {
-    EntryVec ev = {0};
-    int oom = 0;
-
-    /* Take the seed's entries first and close it, before anything else can fail
-       and before the new file is put in the old one's place: a seed opened over
-       a large index holds a mapping of the file being replaced, and on Windows a
-       live mapping is what a replace has to wait for. */
-    int64_t n_seed = seed ? seed->n_entries : 0;
-    for (int64_t i = 0; i < n_seed && !oom; i++) {
-        if (!ev_push(&ev, vtri_entry_hash(seed, i), vtri_entry_rg(seed, i)))
-            oom = 1;
-    }
-    vtri_close(seed);
-    if (oom) {
-        ev_free(&ev);
-        vectra_error("alloc failed building vtri index");
-    }
-
+                            VtrIndex *seed,
+                            int64_t mem_budget, const char *temp_dir) {
     if (n_cols < 1 || n_cols > VTRI_MAX_COLS) {
-        ev_free(&ev);
+        vtri_close(seed);
         vectra_error("an index spans 1 to %d columns, got %d",
                      VTRI_MAX_COLS, n_cols);
     }
 
     Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
     if (!file) {
-        ev_free(&ev);
+        vtri_close(seed);
         vectra_error("vtr1_open_tdc failed for %s", vtr_path);
     }
     const VecSchema *schema = vtr1_tdc_schema(file);
@@ -323,8 +344,8 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     const char *cols[VTRI_MAX_COLS];
     const char *bad = NULL, *why = NULL;
     if (!vtri_resolve_cols(schema, col_names, n_cols, col_idx, cols, &bad, &why)) {
-        ev_free(&ev);
         vtr1_close_tdc(file);
+        vtri_close(seed);
         if (bad && why) vectra_error("column '%s' %s", bad, why);
         vectra_error("an index spans 1 to %d columns", VTRI_MAX_COLS);
     }
@@ -340,7 +361,7 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     /* Read only the indexed columns */
     int *col_mask = (int *)calloc((size_t)schema->n_cols, sizeof(int));
     if (!col_mask) {
-        ev_free(&ev); vtr1_close_tdc(file); vectra_error("alloc failed");
+        vtr1_close_tdc(file); vtri_close(seed); vectra_error("alloc failed");
     }
     for (int c = 0; c < n_cols; c++) col_mask[col_idx[c]] = 1;
 
@@ -352,13 +373,21 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
             if (col_mask[j]) out_col[c]++;
     }
 
+    /* The dedup set spans one row group, which is decoded whole to be scanned
+       anyway, so it is bounded by the store's row-group size rather than by the
+       store. */
     HashSet seen;
     if (!hs_init(&seen, max_rg_rows)) {
-        hs_free(&seen); free(col_mask); ev_free(&ev); vtr1_close_tdc(file);
+        hs_free(&seen); free(col_mask); vtr1_close_tdc(file); vtri_close(seed);
         vectra_error("alloc failed building vtri index");
     }
 
+    RecSpill ev;
+    rec_spill_init(&ev, VTRI_ENTRY_BYTES, ent_cmp, mem_budget, temp_dir);
+
     uint64_t per_col_hash[VTRI_MAX_COLS];
+    VtrEnt rec;
+    int oom = 0;
 
     for (uint32_t rg = first_rg; rg < n_rg && !oom; rg++) {
         VecBatch *batch = vtr1_read_rowgroup_tdc(file, rg, col_mask);
@@ -378,9 +407,9 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
                 h = combine_hashes(per_col_hash, n_cols);
             }
             /* One entry per distinct key in this row group */
-            if (hs_insert(&seen, h) && !ev_push(&ev, h, rg)) {
-                oom = 1;
-                break;
+            if (hs_insert(&seen, h)) {
+                ent_put(rec, h, rg);
+                rec_spill_push(&ev, rec);
             }
         }
         vec_batch_free(batch);
@@ -390,28 +419,24 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     free(col_mask);
 
     if (oom) {
-        ev_free(&ev);
+        rec_spill_free(&ev);
         vtr1_close_tdc(file);
+        vtri_close(seed);
         vectra_error("alloc failed building vtri index");
     }
 
-    /* Chain the entries into hash buckets */
-    int64_t n_entries = ev.n;
-    int64_t n_slots = next_pow2(n_entries * 2); /* ~50% load factor */
-    int64_t *heads = (int64_t *)malloc((size_t)n_slots * sizeof(int64_t));
-    int64_t *entry_next = (int64_t *)malloc((size_t)(n_entries > 0 ? n_entries : 1)
-                                            * sizeof(int64_t));
-    if (!heads || !entry_next) {
-        free(heads); free(entry_next); ev_free(&ev);
-        vtr1_close_tdc(file);
+    int64_t n_seed   = seed ? seed->n_entries : 0;
+    int64_t n_entries = n_seed + rec_spill_total(&ev);
+
+    /* The directory is filled as the entries stream past, so it is the only
+       array held whole -- capped, and so not a function of the index's size. */
+    int dir_bits = dir_bits_for(n_entries);
+    int64_t dir_len = dir_bits ? ((int64_t)1 << dir_bits) + 1 : 0;
+    uint32_t *dir = dir_len ? (uint32_t *)malloc((size_t)dir_len * sizeof(uint32_t))
+                            : NULL;
+    if (dir_len && !dir) {
+        rec_spill_free(&ev); vtr1_close_tdc(file); vtri_close(seed);
         vectra_error("alloc failed building vtri index");
-    }
-    for (int64_t s = 0; s < n_slots; s++) heads[s] = -1;
-    int64_t mask = n_slots - 1;
-    for (int64_t i = 0; i < n_entries; i++) {
-        int64_t slot = (int64_t)(ev.hash[i] & (uint64_t)mask);
-        entry_next[i] = heads[slot];
-        heads[slot] = i;
     }
 
     /* Write to a temp path and rename, so a failed write never replaces a good
@@ -423,19 +448,13 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
         tmp_path = (char *)malloc(vlen + 5);
         if (tmp_path) { memcpy(tmp_path, vtri_path, vlen); memcpy(tmp_path + vlen, ".tmp", 5); }
     }
-    if (!vtri_path || !tmp_path) {
-        free(vtri_path); free(tmp_path);
-        free(heads); free(entry_next); ev_free(&ev);
-        vtr1_close_tdc(file);
-        vectra_error("alloc failed for vtri path");
-    }
-
-    FILE *fp = fopen(tmp_path, "wb");
+    FILE *fp = (vtri_path && tmp_path) ? fopen(tmp_path, "wb") : NULL;
     if (!fp) {
-        free(vtri_path); free(tmp_path);
-        free(heads); free(entry_next); ev_free(&ev);
-        vtr1_close_tdc(file);
-        vectra_error("cannot create vtri index file");
+        int no_path = !vtri_path || !tmp_path;
+        free(vtri_path); free(tmp_path); free(dir);
+        rec_spill_free(&ev); vtr1_close_tdc(file); vtri_close(seed);
+        vectra_error(no_path ? "alloc failed for vtri path"
+                             : "cannot create vtri index file");
     }
 
     Writer w = { fp, 1 };
@@ -447,18 +466,71 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     w_u64(&w, (uint64_t)total_rows);
     w_u32(&w, n_rg);
     w_u64(&w, (uint64_t)n_entries);
-    w_u64(&w, (uint64_t)n_slots);
-    w_bytes(&w, ev.hash, (size_t)n_entries * sizeof(uint64_t));
-    w_bytes(&w, ev.rg, (size_t)n_entries * sizeof(uint32_t));
-    w_bytes(&w, heads, (size_t)n_slots * sizeof(int64_t));
-    w_bytes(&w, entry_next, (size_t)n_entries * sizeof(int64_t));
+    w_u8(&w, (uint8_t)dir_bits);
 
-    int ok = w.ok && fclose(fp) == 0;
+    /* Merge the seed's entries with the newly scanned ones, both ascending, and
+       write the result as it goes. */
+    RecMerge *m = rec_spill_merge_begin(&ev);
+    VtrEnt fresh;
+    int have_fresh = rec_spill_merge_next(m, fresh);
 
-    free(heads);
-    free(entry_next);
-    ev_free(&ev);
+    VtrEnt out_buf[VTRI_WRITE_BATCH];
+    int64_t out_n = 0, si = 0, next_dir = 0, written = 0;
+
+    while (si < n_seed || have_fresh) {
+        uint64_t h;
+        uint32_t rg;
+        int take_seed;
+        if (si < n_seed && have_fresh) {
+            uint64_t sh = vtri_entry_hash(seed, si);
+            uint64_t fh = ent_hash(fresh);
+            take_seed = sh < fh ||
+                        (sh == fh && vtri_entry_rg(seed, si) <= ent_rg(fresh));
+        } else {
+            take_seed = si < n_seed;
+        }
+        if (take_seed) {
+            h  = vtri_entry_hash(seed, si);
+            rg = vtri_entry_rg(seed, si);
+            si++;
+        } else {
+            h  = ent_hash(fresh);
+            rg = ent_rg(fresh);
+            have_fresh = rec_spill_merge_next(m, fresh);
+        }
+
+        if (dir_bits) {
+            int64_t b = (int64_t)(h >> (64 - dir_bits));
+            while (next_dir <= b) dir[next_dir++] = (uint32_t)written;
+        }
+        ent_put(out_buf[out_n], h, rg);
+        out_n++;
+        written++;
+        if (out_n == VTRI_WRITE_BATCH) {
+            w_bytes(&w, out_buf, (size_t)out_n * VTRI_ENTRY_BYTES);
+            out_n = 0;
+        }
+    }
+    if (out_n > 0) w_bytes(&w, out_buf, (size_t)out_n * VTRI_ENTRY_BYTES);
+    rec_spill_merge_end(m);
+
+    /* Slots past the last entry's prefix, and any the entries skipped over, end
+       where the entries do -- an empty range, which is what a probe for an
+       absent key reads. */
+    while (next_dir < dir_len) dir[next_dir++] = (uint32_t)written;
+    if (dir_len) w_bytes(&w, dir, (size_t)dir_len * sizeof(uint32_t));
+
+    int wrote_all = w.ok && written == n_entries;
+    int ok = (fclose(fp) == 0) && wrote_all;
+
+    free(dir);
+    rec_spill_free(&ev);
     vtr1_close_tdc(file);
+
+    /* Close the seed before the replace: a seed opened over a large index holds
+       a mapping of the very file being replaced, and on Windows a live mapping
+       is what a replace has to wait for. */
+    vtri_close(seed);
 
     /* A reader that opened this index mapped it rather than copying it, so the
        old file can still be open when the new one arrives; vtr_atomic_replace
@@ -472,15 +544,17 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
 }
 
 void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
-                int ci) {
-    vtri_build_core(vtr_path, col_names, n_cols, ci, 0, NULL);
+                int ci, int64_t mem_budget, const char *temp_dir) {
+    vtri_build_core(vtr_path, col_names, n_cols, ci, 0, NULL,
+                    mem_budget, temp_dir);
 }
 
 /* ------------------------------------------------------------------ */
 /*  vtri_extend: take in row groups appended since the index was built */
 /* ------------------------------------------------------------------ */
 
-int vtri_extend(const char *vtr_path, const char *vtri_path) {
+int vtri_extend(const char *vtr_path, const char *vtri_path,
+                int64_t mem_budget, const char *temp_dir) {
     /* Opened with the stamp check skipped: the store has already grown past
        what this index was built against, which is precisely the case being
        handled. The stamp is then checked by hand, against the store's shape
@@ -556,10 +630,11 @@ int vtri_extend(const char *vtr_path, const char *vtri_path) {
     const char *col_ptrs[VTRI_MAX_COLS];
     for (int c = 0; c < n_idx_cols; c++) col_ptrs[c] = col_copies[c];
 
-    /* The seed is handed over: vtri_build_core copies its entries and closes it
-       straight away, so nothing of the old index is still open by the time the
-       new one is moved into its place. */
-    vtri_build_core(vtr_path, col_ptrs, n_idx_cols, idx_ci, first_rg, idx);
+    /* The seed is handed over: vtri_build_core merges its entries into the new
+       file and closes it before that file is moved into its place, so nothing of
+       the old index is still open by then. */
+    vtri_build_core(vtr_path, col_ptrs, n_idx_cols, idx_ci, first_rg, idx,
+                    mem_budget, temp_dir);
 
     for (int c = 0; c < n_idx_cols; c++) free(col_copies[c]);
     return 1;
@@ -592,7 +667,7 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices,
         }
         out_col_indices[0] = first;
         n_cols = 1;
-    } else if (version == 2 || version == VTRI_VERSION) {
+    } else if (version == 2 || version == 3 || version == VTRI_VERSION) {
         uint16_t nc = 0;
         if (fread(&nc, 2, 1, fp) != 1 || fread(&ci, 1, 1, fp) != 1 ||
             nc < 1 || nc > VTRI_MAX_COLS) {
@@ -643,11 +718,12 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
 
     uint16_t version = read_u16_f(fp);
     if (version != VTRI_VERSION) {
-        /* Versions 1 and 2 are superseded (one entry per row, no build stamp,
-           so they can neither be verified against the store nor opened
-           cheaply); a version above this build's is from a newer vectra and
-           its layout is unknown. Either way there is no index to probe, and
-           create_index() rebuilds in the current format. */
+        /* Versions 1 to 3 are superseded (1 and 2 hold one entry per row and no
+           build stamp, so they can neither be verified against the store nor
+           opened cheaply; 3 chains its entries, which is the layout a bounded
+           build cannot write); a version above this build's is from a newer
+           vectra and its layout is unknown. Either way there is no index to
+           probe, and create_index() rebuilds in the current format. */
         fclose(fp);
         return NULL;
     }
@@ -696,17 +772,16 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     }
 
     idx->n_entries = (int64_t)read_u64_f(fp);
-    idx->n_slots   = (int64_t)read_u64_f(fp);
+    idx->dir_bits  = (int)read_u8_f(fp);
 
     int64_t ne = idx->n_entries;
-    int64_t ns = idx->n_slots;
 
     /* Validate the declared sizes against the actual file before allocating, so
        a crafted/corrupt header cannot overflow the size arithmetic, request an
-       enormous allocation, or drive the fill loops past EOF. The arrays that
-       follow occupy 20*ne bytes (hash8 + rg4 + next8 per entry) plus 8*ns bytes
-       (one head per slot); n_slots must be >= 1 for the probe mask to be a valid
-       index. The bound is written division-first so 20*ne never overflows. */
+       enormous allocation, or drive the fill loops past EOF. What follows is
+       VTRI_ENTRY_BYTES*ne bytes of entries and, when there is a directory,
+       4*(2^dir_bits + 1) bytes after them. The entry bound is written
+       division-first so the product never overflows. */
     int64_t hdr_end = (int64_t)VTRI_FTELL64(fp);
     if (hdr_end < 0 || VTRI_FSEEK64(fp, 0, SEEK_END) != 0) {
         fclose(fp); vtri_close(idx);
@@ -718,54 +793,48 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
         return NULL;
     }
     int64_t remaining = (int64_t)fsize - (int64_t)hdr_end;
-    if (ne < 0 || ns < 1 || remaining < 0 ||
-        ns > remaining / 8 || ne > (remaining - 8 * ns) / 20) {
+    if (ne < 0 || remaining < 0 || idx->dir_bits < 0 ||
+        idx->dir_bits > VTRI_DIR_MAX_BITS ||
+        ne > remaining / VTRI_ENTRY_BYTES) {
         fclose(fp); vtri_close(idx);
         return NULL;
     }
-
-    /* Where each array begins. The header is a whole number of bytes rather than
-       of words, so these offsets are not 8-byte aligned; the mapped reads go
-       through memcpy for that reason. */
-    idx->off_hash  = hdr_end;
-    idx->off_rg    = idx->off_hash + 8 * ne;
-    idx->off_heads = idx->off_rg + 4 * ne;
-    idx->off_next  = idx->off_heads + 8 * ns;
-    int64_t arrays_end = idx->off_next + 8 * ne;
+    int64_t dir_bytes = idx->dir_bits
+                      ? (((int64_t)1 << idx->dir_bits) + 1) * 4 : 0;
+    int64_t arrays_bytes = ne * VTRI_ENTRY_BYTES + dir_bytes;
+    if (arrays_bytes > remaining) {
+        fclose(fp); vtri_close(idx);
+        return NULL;
+    }
 
     /* A big index is mapped rather than read: reading it would make every
        lookup cost a copy of the whole file, which is the cost this size is
        exactly when it starts to hurt. Reading stays the path for a small one,
        where the copy is a couple of milliseconds and leaves no handle open. */
-    if (arrays_end - hdr_end > VTRI_RESIDENT_MAX_BYTES) {
+    if (arrays_bytes > VTRI_RESIDENT_MAX_BYTES) {
         fclose(fp);
         if (!vec_file_map_open(&idx->map, vtri_path) ||
-            idx->map.size < arrays_end) {
+            idx->map.size < hdr_end + arrays_bytes) {
             /* Nothing here says the machine is out of memory -- a mapping is
                address space, not pages -- so this is an index that cannot be
                used, and reports absent like any other. */
             vtri_close(idx);
             return NULL;
         }
+        idx->arr = idx->map.base + hdr_end;
         return idx;
     }
 
-    idx->entry_hash = (uint64_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(uint64_t));
-    idx->entry_rg   = (uint32_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(uint32_t));
-    idx->heads       = (int64_t *)malloc((size_t)ns * sizeof(int64_t));
-    idx->entry_next  = (int64_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(int64_t));
-
-    if (!idx->entry_hash || !idx->entry_rg || !idx->heads || !idx->entry_next) {
+    idx->arr_owned = (uint8_t *)malloc((size_t)(arrays_bytes > 0 ? arrays_bytes : 1));
+    if (!idx->arr_owned) {
         fclose(fp);
         vtri_close(idx);
         vectra_error("alloc failed reading vtri index");
     }
+    idx->arr = idx->arr_owned;
 
-    int short_read =
-        (ne > 0 && fread(idx->entry_hash, sizeof(uint64_t), (size_t)ne, fp) != (size_t)ne) ||
-        (ne > 0 && fread(idx->entry_rg, sizeof(uint32_t), (size_t)ne, fp) != (size_t)ne) ||
-        (fread(idx->heads, sizeof(int64_t), (size_t)ns, fp) != (size_t)ns) ||
-        (ne > 0 && fread(idx->entry_next, sizeof(int64_t), (size_t)ne, fp) != (size_t)ne);
+    int short_read = arrays_bytes > 0 &&
+        fread(idx->arr_owned, 1, (size_t)arrays_bytes, fp) != (size_t)arrays_bytes;
 
     fclose(fp);
     if (short_read) {
@@ -781,10 +850,7 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
 
 void vtri_close(VtrIndex *idx) {
     if (!idx) return;
-    free(idx->entry_hash);
-    free(idx->entry_rg);
-    free(idx->heads);
-    free(idx->entry_next);
+    free(idx->arr_owned);
     vec_file_map_close(&idx->map);
     free(idx->col_name);
     if (idx->col_names) {
@@ -799,28 +865,41 @@ void vtri_close(VtrIndex *idx) {
 /*  Probe helpers                                                      */
 /* ------------------------------------------------------------------ */
 
+/* The entries are ascending by hash, so a probe is a binary search for the first
+   entry carrying `h` followed by a walk over the run of entries that share it --
+   one per row group the key appears in. The directory narrows the search to the
+   entries sharing the hash's leading bits before it starts, which is what keeps
+   the read count flat as the index grows rather than following log2(n_entries).
+
+   The range the directory hands over is clamped rather than trusted: a corrupt
+   file is a file that prunes the wrong row groups whatever the layout, but it
+   must not be one that reads outside the mapping. */
 static uint8_t *probe_by_hash(const VtrIndex *idx, uint64_t h,
                               uint32_t n_rowgroups) {
     uint8_t *bitmap = (uint8_t *)calloc((size_t)n_rowgroups, 1);
     if (!bitmap) return NULL;
+    if (idx->n_entries <= 0) return bitmap;
 
-    /* Defensive: n_slots >= 1 and every chain index in [0, n_entries) is
-       guaranteed by vtri_open's validation, but bound them here too so a probe
-       can never walk out of range or loop forever on a crafted chain. */
-    if (idx->n_slots <= 0 || idx->n_entries <= 0) return bitmap;
+    int64_t lo = 0, hi = idx->n_entries;
+    if (idx->dir_bits) {
+        int64_t b = (int64_t)(h >> (64 - idx->dir_bits));
+        lo = vtri_dir(idx, b);
+        hi = vtri_dir(idx, b + 1);
+        if (lo < 0 || lo > idx->n_entries) lo = 0;
+        if (hi < lo || hi > idx->n_entries) hi = idx->n_entries;
+    }
 
-    int64_t mask = idx->n_slots - 1;
-    int64_t slot = (int64_t)(h & (uint64_t)mask);
-    int64_t e = vtri_head(idx, slot);
+    /* Lower bound: the first entry whose hash is not below h. */
+    while (lo < hi) {
+        int64_t mid = lo + (hi - lo) / 2;
+        if (vtri_entry_hash(idx, mid) < h) lo = mid + 1;
+        else hi = mid;
+    }
 
-    int64_t steps = 0;
-    while (e >= 0 && e < idx->n_entries && steps++ < idx->n_entries) {
-        if (vtri_entry_hash(idx, e) == h) {
-            uint32_t rg = vtri_entry_rg(idx, e);
-            if (rg < n_rowgroups)
-                bitmap[rg] = 1;
-        }
-        e = vtri_entry_next(idx, e);
+    for (int64_t e = lo; e < idx->n_entries && vtri_entry_hash(idx, e) == h; e++) {
+        uint32_t rg = vtri_entry_rg(idx, e);
+        if (rg < n_rowgroups)
+            bitmap[rg] = 1;
     }
 
     return bitmap;
@@ -844,6 +923,10 @@ uint8_t *vtri_probe_int64(const VtrIndex *idx, int64_t key,
 uint8_t *vtri_probe_double(const VtrIndex *idx, double key,
                            uint32_t n_rowgroups) {
     return probe_by_hash(idx, hash_double(key), n_rowgroups);
+}
+
+uint8_t *vtri_probe_na(const VtrIndex *idx, uint32_t n_rowgroups) {
+    return probe_by_hash(idx, VTRI_NA_HASH, n_rowgroups);
 }
 
 uint8_t *vtri_probe_composite(const VtrIndex *idx, const uint64_t *col_hashes,

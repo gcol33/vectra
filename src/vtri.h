@@ -26,30 +26,51 @@
  * index built before it maps keys to row groups that have moved, and probing it
  * would silently drop rows.
  *
- * File format (version 3; a single layout for one or many columns):
+ * File format (version 4; a single layout for one or many columns):
  *   "VTRI" magic (4 bytes)
- *   version: u16 (3)
+ *   version: u16 (4)
  *   n_cols: u16 (number of indexed columns)
  *   ci: u8 (case-insensitive flag)
  *   col_indices[n_cols]: u16 each (schema column indices, ascending)
  *   src_n_rows: u64 (rows in the store at build time)
  *   src_n_rowgroups: u32 (row groups in the store at build time)
  *   n_entries: u64
- *   n_slots: u64
- *   entry_hash[n_entries]: u64 each
- *   entry_rg[n_entries]: u32 each
- *   heads[n_slots]: i64 each (-1 = empty)
- *   entry_next[n_entries]: i64 each (-1 = end of chain)
+ *   dir_bits: u8 (directory prefix width; 0 = no directory)
+ *   entries[n_entries]: { hash u64; rg u32 } packed, 12 bytes each,
+ *                       ascending by (hash, rg)
+ *   dir[(1 << dir_bits) + 1]: u32 each (see below; absent when dir_bits = 0)
  *
- * Versions 1 and 2 (one entry per row, no stamp) are superseded: vtri_open()
- * reports no index for them, and vtri_read_spec() reads their column list so
- * they can be rebuilt.
+ * The entries are SORTED rather than chained, and that is what lets an index be
+ * built without holding it in memory. A chained table has to know every entry's
+ * bucket before it can write the first one, so it materializes the whole index:
+ * building a 2.12 GB sidecar peaked at 2.68 GB resident, and an index too large
+ * for RAM could be read but not made. Sorted entries are produced by an external
+ * sort and written in one forward pass, so the build's peak is its sort buffer
+ * whatever the index's size. The bytes come out identical whether an index is
+ * built from a whole store or extended after an append, since the order is the
+ * data's rather than the scan's.
+ *
+ * Sorting also drops the per-entry chain pointer and the bucket array: 12 bytes
+ * per entry against the 20 + ~16 the chained layout spent, so a sidecar is about
+ * a third the size it was.
+ *
+ * `dir` keeps a probe off log2(n_entries): dir[j] is the first entry whose hash
+ * begins with prefix j, taking the top dir_bits bits, so a probe reads one
+ * directory slot and binary-searches the handful of entries between dir[j] and
+ * dir[j+1] rather than the whole file. It is sized at a few entries to a slot
+ * and capped at VTRI_DIR_MAX_BITS, which bounds it to 16 MB and keeps it the one
+ * array the build holds in memory -- a fixed cost rather than one that grows
+ * with the index. Past the cap the slots simply cover more entries each, and the
+ * search inside a slot absorbs the difference.
+ *
+ * Versions 1 to 3 are superseded: vtri_open() reports no index for them, and
+ * vtri_read_spec() reads their column list so they can be rebuilt.
  *
  * An open index is backed one of two ways, chosen by size, and a probe reads
  * through accessors so it does not care which:
  *
- *   resident  the four arrays are read into memory. Costs one copy of the file
- *             and holds no handle afterwards.
+ *   resident  the arrays are read into memory. Costs one copy of the file and
+ *             holds no handle afterwards.
  *   mapped    the file is mapped read-only and the arrays are read out of the
  *             mapping in place. Costs the pages a probe touches, so an index
  *             far larger than RAM is still probeable, and a probe's cost stays
@@ -57,14 +78,24 @@
  *
  * Reading the file whole is the cheaper of the two while it is small, and it
  * leaves nothing open behind it; past VTRI_RESIDENT_MAX_BYTES that copy is what
- * a lookup pays for, and a chained-hash probe touches a handful of pages
- * whatever the file's size, so the mapping takes over. An index too large to be
- * mapped reports absent, as any other unusable index does -- a lookup falls
- * back to reading the store instead of exhausting memory.
+ * a lookup pays for, and a probe touches a handful of pages whatever the file's
+ * size, so the mapping takes over. An index too large to be mapped reports
+ * absent, as any other unusable index does -- a lookup falls back to reading the
+ * store instead of exhausting memory.
  */
 
 #define VTRI_MAX_COLS 8
-#define VTRI_VERSION  3
+#define VTRI_VERSION  4
+
+/* Bytes on disk per entry: u64 hash + u32 row group, packed. */
+#define VTRI_ENTRY_BYTES 12
+
+/* Directory ceiling: 2^22 slots of u32 is 16 MB, the largest array the build
+   keeps resident. */
+#define VTRI_DIR_MAX_BITS 22
+
+/* Entries a directory slot spans, below the ceiling. */
+#define VTRI_DIR_ENTRIES_PER_SLOT 4
 
 /* Read an index below this size, map it above. A few MB reads in a couple of
    milliseconds and costs one allocation that is freed straight after, which
@@ -76,24 +107,18 @@ typedef struct VtrIndex {
     uint16_t  col_idx;      /* first indexed column (== col_indices[0]) */
     uint8_t   ci;
     int64_t   n_entries;
-    int64_t   n_slots;
+    int       dir_bits;
     int64_t   src_n_rows;      /* rows in the store at build time */
     int64_t   src_n_rowgroups; /* row groups in the store at build time */
 
-    /* Resident backing: NULL when the index is mapped instead. */
-    uint64_t *entry_hash;   /* [n_entries] */
-    uint32_t *entry_rg;     /* [n_entries] — row group index */
-    int64_t  *heads;        /* [n_slots] */
-    int64_t  *entry_next;   /* [n_entries] */
-
-    /* Mapped backing: map.base is NULL when the index is resident instead.
-       The offsets locate each array within the file and carry no alignment,
-       so vtri_entry_hash() and friends memcpy rather than dereference. */
-    VecFileMap map;
-    int64_t   off_hash;
-    int64_t   off_rg;
-    int64_t   off_heads;
-    int64_t   off_next;
+    /* The arrays region -- entries then directory -- however it is backed.
+       `arr` points into arr_owned when the index was read, or into the mapping
+       when it was mapped; exactly one of the two is set. Neither is aligned,
+       since the header before it is a whole number of bytes rather than of
+       words, so the accessors below memcpy rather than dereference. */
+    const uint8_t *arr;
+    uint8_t       *arr_owned;  /* NULL when mapped */
+    VecFileMap     map;        /* map.base NULL when resident */
 
     char     *col_name;     /* first column name (resolved from schema at load time) */
     uint16_t  n_cols;       /* number of indexed columns */
@@ -103,37 +128,28 @@ typedef struct VtrIndex {
 
 /* ---- Backing-agnostic element reads ----
 
-   Every index array is read through one of these, so the probe and the rebuild
-   are written once and work against either backing. Indices are assumed in
-   range; vtri_open validates the file's declared sizes against its actual
-   length, and probe_by_hash bounds every chain step it takes. */
+   Every array is read through one of these, so the probe and the rebuild's copy
+   of a seed index are written once and work against either backing. Indices are
+   assumed in range; vtri_open validates the file's declared sizes against its
+   actual length, and probe_by_hash clamps the range a directory slot hands it. */
 
 static inline uint64_t vtri_entry_hash(const struct VtrIndex *idx, int64_t i) {
-    if (idx->entry_hash) return idx->entry_hash[i];
     uint64_t v;
-    memcpy(&v, idx->map.base + idx->off_hash + i * 8, 8);
+    memcpy(&v, idx->arr + i * VTRI_ENTRY_BYTES, 8);
     return v;
 }
 
 static inline uint32_t vtri_entry_rg(const struct VtrIndex *idx, int64_t i) {
-    if (idx->entry_rg) return idx->entry_rg[i];
     uint32_t v;
-    memcpy(&v, idx->map.base + idx->off_rg + i * 4, 4);
+    memcpy(&v, idx->arr + i * VTRI_ENTRY_BYTES + 8, 4);
     return v;
 }
 
-static inline int64_t vtri_head(const struct VtrIndex *idx, int64_t slot) {
-    if (idx->heads) return idx->heads[slot];
-    int64_t v;
-    memcpy(&v, idx->map.base + idx->off_heads + slot * 8, 8);
-    return v;
-}
-
-static inline int64_t vtri_entry_next(const struct VtrIndex *idx, int64_t i) {
-    if (idx->entry_next) return idx->entry_next[i];
-    int64_t v;
-    memcpy(&v, idx->map.base + idx->off_next + i * 8, 8);
-    return v;
+/* First entry carrying directory prefix `j`. Only called when dir_bits > 0. */
+static inline int64_t vtri_dir(const struct VtrIndex *idx, int64_t j) {
+    uint32_t v;
+    memcpy(&v, idx->arr + idx->n_entries * VTRI_ENTRY_BYTES + j * 4, 4);
+    return (int64_t)v;
 }
 
 /* ---- Hashing helpers (shared between vtri.c and scan.c) ---- */
@@ -156,6 +172,11 @@ static inline uint64_t vtri_fnv1a_ci(const char *s, int64_t len) {
     }
     return h;
 }
+
+/* The key an index files an NA under. A predicate that matches NA -- `%in%` with
+   an NA in its set -- has to keep the row groups holding one, so a probe needs
+   the same hash the build used. */
+#define VTRI_NA_HASH (VTRI_FNV_OFFSET ^ 0xFFULL)
 
 static inline uint64_t vtri_hash_int64(int64_t val) {
     return vtri_fnv1a((const uint8_t *)&val, 8);
@@ -198,8 +219,16 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices, int *out_ci
    col_names: array of column name strings (any order; canonicalized to schema
               order so the file name and the key hashing match what a probe does)
    n_cols: number of columns (1..VTRI_MAX_COLS)
-   ci: case-insensitive flag */
-void vtri_build(const char *vtr_path, const char **col_names, int n_cols, int ci);
+   ci: case-insensitive flag
+   mem_budget: bytes the entry sort may hold before spilling (<= 0 = default)
+   temp_dir: directory for the sort's run files; NULL keeps the sort in RAM,
+             which is what makes the build's peak grow with the index again
+
+   The entries are sorted externally and written in one forward pass, so peak
+   resident memory is the sort buffer, the directory, and one decoded row group
+   -- none of which grow with the number of entries. */
+void vtri_build(const char *vtr_path, const char **col_names, int n_cols, int ci,
+                int64_t mem_budget, const char *temp_dir);
 
 /* Bring an existing .vtri up to date with a store that has gained row groups
    since it was built, scanning only the row groups it does not already cover.
@@ -209,10 +238,16 @@ void vtri_build(const char *vtr_path, const char **col_names, int n_cols, int ci
    appended groups need reading. That keeps maintaining an index off the size of
    the store, which is what stops an indexed store's append being quadratic.
 
+   The index already on disk is a sorted stream, so its entries are merged with
+   the appended ones as the new file is written rather than gathered first: an
+   extend costs one sequential pass over the old sidecar plus a sort of what the
+   appended row groups contribute, and holds neither in memory.
+
    Returns 1 when the index was rewritten, or 0 when it cannot be extended --
    unreadable, or built against a store this one is not an extension of -- in
    which case the caller should rebuild it with vtri_build. */
-int vtri_extend(const char *vtr_path, const char *vtri_path);
+int vtri_extend(const char *vtr_path, const char *vtri_path,
+                int64_t mem_budget, const char *temp_dir);
 
 /* Resolve index column names against a schema, sorted into schema order.
    Writes n_cols entries to out_idx and out_names. Returns 1 on success, or 0
@@ -235,6 +270,9 @@ uint8_t *vtri_probe_int64(const VtrIndex *idx, int64_t key,
 /* Probe the index with a double key. */
 uint8_t *vtri_probe_double(const VtrIndex *idx, double key,
                            uint32_t n_rowgroups);
+
+/* Probe the index for the rows whose key is NA. */
+uint8_t *vtri_probe_na(const VtrIndex *idx, uint32_t n_rowgroups);
 
 /* Probe composite index with array of hash values (one per indexed column).
    Returns row-group bitmap. */

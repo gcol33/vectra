@@ -2,6 +2,54 @@
 
 ## Bug fixes
 
+* `filter()` no longer drops rows when a `%in%` predicate runs against an
+  indexed column. The scan probed the `.vtri` sidecar with whichever
+  representation the predicate happened to carry, and contributed nothing when
+  none matched the column's own type -- so the row-group bitmap came back empty
+  and every row group was pruned. `filter(k %in% c(5, 9))` on an integer column
+  returned zero rows where the same store without an index returned all of them,
+  and since R writes a bare numeric literal as a double whatever the column
+  holds, that is the ordinary way of writing the predicate rather than a corner
+  case. The same went for a logical column, and for an `NA` in the set, whose
+  matching rows an index files under a key of its own.
+
+  Every set element is now probed by the column's type, and a key that cannot be
+  probed leaves the scan unpruned rather than being passed over. Where a double
+  names no single integer the two possible readings are now separated: a
+  fractional key matches no row, so every row group can go, while a key past
+  2^53 stands for several integers at once, so nothing is pruned. `filter(x ==
+  -1)` also reaches the index now: R parses a negative literal as a call rather
+  than a constant, and neither the index nor the zone maps could read it, so the
+  predicate scanned the store -- 1.59 s over 60 million rows against 0.03 s once
+  the constant is folded.
+
+  The test file now answers 21 predicate shapes against both an indexed store
+  and a plain copy of the same data and requires the two to agree.
+
+* Building a `.vtri` index no longer holds the whole index in memory. Entries
+  had to be chained into hash buckets, which cannot be done before every entry
+  is known, so a build cost about what the sidecar cost: 2.23 GB resident for a
+  2.12 GB index over 60 million distinct keys, and an index too large for memory
+  could be read but not made.
+
+  The entries are now sorted rather than chained, through the same streaming
+  budget everything else spills against (`vectra_mem()`), and written in a single
+  forward pass. On that store the build peaks at 0.32 GB under a 128 MB budget,
+  in the same time as before. Extending an index after `append_vtr()` is bounded
+  the same way: the sidecar on disk is already a sorted stream, so it is merged
+  with the appended row groups' entries as the new file is written rather than
+  gathered first.
+
+  Sorted entries also drop the chain pointer and the bucket array, taking the
+  same index from 2.12 GB to 0.69 GB, and make the file a function of the data
+  rather than of the scan -- an index that took in an append is byte-identical to
+  one rebuilt from the whole store, and one built under a small budget to one
+  built under a large one. A probe reads a directory slot and binary-searches the
+  few entries it spans, so a fetch stays flat as the index grows.
+
+  `.vtri` files written by earlier versions of vectra read as absent, as any
+  unusable index does; `create_index()` rebuilds them.
+
 * `append_vtr(along = "rows")` no longer rewrites the store on every call.
   Because the container keeps its row-group index in the trailer, the row path
   used to restream every existing row group through a fresh writer into a temp

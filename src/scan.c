@@ -463,6 +463,32 @@ static VtrIndex *scan_open_col_index(ScanNode *sn, const char *col_name,
     return idx;
 }
 
+/* An index is hashed on the column's own values, so a probe has to present a key
+   of the column's type -- R writes a numeric literal as a double whatever the
+   column holds, so an integer column is routinely probed with one. Where the
+   double names no single int64 the answer is one of two things, and the
+   difference decides whether the scan may prune at all:
+
+     PROBE_KEY_NO_MATCH  no int64 equals it (fractional, or NaN), so the
+                         predicate matches no row and every row group can go.
+     PROBE_KEY_UNSAFE    past 2^53 a double stands for several int64 values, all
+                         of which compare equal to it once the column is
+                         promoted. One probe would name the row groups holding
+                         one of them and prune away the rest, so nothing is
+                         pruned instead. */
+#define PROBE_KEY_OK        1
+#define PROBE_KEY_NO_MATCH  0
+#define PROBE_KEY_UNSAFE  (-1)
+
+static int int_probe_key(double d, int64_t *out) {
+    if (d != d) return PROBE_KEY_NO_MATCH;
+    if (d != floor(d)) return PROBE_KEY_NO_MATCH;
+    if (d < -9007199254740992.0 || d > 9007199254740992.0)
+        return PROBE_KEY_UNSAFE;
+    *out = (int64_t)d;
+    return PROBE_KEY_OK;
+}
+
 /* The equality or %in% predicate an index could be probed with, if any. Shared
    by the probe itself and by the plan description, so what explain() reports and
    what the scan does cannot drift apart. */
@@ -528,7 +554,12 @@ static void try_hash_index(ScanNode *sn) {
     const VecExpr *eq_pred, *in_pred;
     scan_index_preds(sn, &eq_pred, &in_pred);
 
-    /* Handle %in% with index: probe each set value, OR bitmaps */
+    /* Handle %in% with index: probe each set value, OR bitmaps.
+
+       Every element has to be probed for the union to name every row group that
+       may match. An element that cannot be probed leaves the scan unpruned --
+       dropping it instead would prune row groups it matches, which is the one
+       thing an index may never do. */
     if (in_pred) {
         if (!in_pred->operand || in_pred->operand->kind != EXPR_COL_REF) return;
         int ci = vec_schema_find_col(schema, in_pred->operand->col_name);
@@ -540,21 +571,72 @@ static void try_hash_index(ScanNode *sn) {
         uint8_t *combined = (uint8_t *)calloc(n_rgs, 1);
         if (!combined) return;
         VecType idx_col_type = schema->col_types[ci];
+        int prunable = 1;
 
-        for (int64_t s = 0; s < in_pred->n_set; s++) {
-            uint8_t *bm = NULL;
-            if (idx_col_type == VEC_STRING && in_pred->set_str) {
-                bm = vtri_probe_string(sn->index, in_pred->set_str[s],
-                                       (int64_t)strlen(in_pred->set_str[s]), n_rgs);
-            } else if (vec_type_is_int(idx_col_type) && in_pred->set_i64) {
-                bm = vtri_probe_int64(sn->index, in_pred->set_i64[s], n_rgs);
-            } else if (idx_col_type == VEC_DOUBLE && in_pred->set_dbl) {
-                bm = vtri_probe_double(sn->index, in_pred->set_dbl[s], n_rgs);
+        /* An NA in the set matches an NA in the column, so the row groups
+           holding one are part of the answer. */
+        if (in_pred->set_has_na) {
+            uint8_t *bm = vtri_probe_na(sn->index, n_rgs);
+            if (!bm) prunable = 0;
+            else {
+                for (uint32_t r = 0; r < n_rgs; r++) combined[r] |= bm[r];
+                free(bm);
             }
+        }
+
+        for (int64_t s = 0; s < in_pred->n_set && prunable; s++) {
+            uint8_t *bm = NULL;
+            int matchable = 1;   /* 0 => no value of this column can equal it */
+
+            if (idx_col_type == VEC_STRING) {
+                if (in_pred->set_str)
+                    bm = vtri_probe_string(sn->index, in_pred->set_str[s],
+                                           (int64_t)strlen(in_pred->set_str[s]),
+                                           n_rgs);
+                else
+                    prunable = 0;
+            } else if (vec_type_is_int(idx_col_type)) {
+                if (in_pred->set_i64) {
+                    bm = vtri_probe_int64(sn->index, in_pred->set_i64[s], n_rgs);
+                } else if (in_pred->set_dbl) {
+                    /* R writes `x %in% c(5, 9)` as doubles whatever x holds, so
+                       the common spelling of the predicate lands here. */
+                    int64_t key = 0;
+                    switch (int_probe_key(in_pred->set_dbl[s], &key)) {
+                    case PROBE_KEY_OK:
+                        bm = vtri_probe_int64(sn->index, key, n_rgs);
+                        break;
+                    case PROBE_KEY_NO_MATCH: matchable = 0; break;
+                    default:                 prunable = 0; break;
+                    }
+                } else {
+                    prunable = 0;
+                }
+            } else if (idx_col_type == VEC_DOUBLE) {
+                if (in_pred->set_dbl)
+                    bm = vtri_probe_double(sn->index, in_pred->set_dbl[s], n_rgs);
+                else if (in_pred->set_i64)
+                    bm = vtri_probe_double(sn->index,
+                                           (double)in_pred->set_i64[s], n_rgs);
+                else
+                    prunable = 0;
+            } else {
+                /* A bool column hashes its own byte, which no probe here
+                   presents; leave the scan unpruned, as the == path does. */
+                prunable = 0;
+            }
+
+            if (!prunable) break;
+            if (matchable && !bm) { prunable = 0; break; }  /* probe alloc failed */
             if (bm) {
                 for (uint32_t r = 0; r < n_rgs; r++) combined[r] |= bm[r];
                 free(bm);
             }
+        }
+
+        if (!prunable) {
+            free(combined);
+            return;
         }
         sn->rg_bitmap = combined;
         return;
@@ -593,14 +675,18 @@ static void try_hash_index(ScanNode *sn) {
         bitmap = vtri_probe_string(sn->index, lit_expr->lit_str,
                                    (int64_t)strlen(lit_expr->lit_str), n_rgs);
     } else if (vec_type_is_int(idx_col_type)) {
-        int64_t key;
-        if (lit_expr->kind == EXPR_LIT_INT64)
+        int64_t key = 0;
+        int kind = PROBE_KEY_UNSAFE;
+        if (lit_expr->kind == EXPR_LIT_INT64) {
             key = lit_expr->lit_i64;
-        else if (lit_expr->kind == EXPR_LIT_DOUBLE)
-            key = (int64_t)lit_expr->lit_dbl;
-        else
-            goto skip_probe;
-        bitmap = vtri_probe_int64(sn->index, key, n_rgs);
+            kind = PROBE_KEY_OK;
+        } else if (lit_expr->kind == EXPR_LIT_DOUBLE) {
+            kind = int_probe_key(lit_expr->lit_dbl, &key);
+        }
+        if (kind == PROBE_KEY_OK)
+            bitmap = vtri_probe_int64(sn->index, key, n_rgs);
+        else if (kind == PROBE_KEY_NO_MATCH)
+            bitmap = (uint8_t *)calloc(n_rgs, 1);   /* no row can hold it */
     } else if (idx_col_type == VEC_DOUBLE) {
         double key;
         if (lit_expr->kind == EXPR_LIT_DOUBLE)

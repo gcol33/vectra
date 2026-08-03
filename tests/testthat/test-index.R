@@ -312,6 +312,32 @@ test_that("a superseded index format reads as absent but names its columns", {
   expect_equal(nrow(collect(filter(tbl(f), k == "m"))), 1L)
 })
 
+test_that("a chained-layout index reads as absent but names its columns", {
+  # Version 3 held one chained hash table; a bounded build cannot write that
+  # layout, so those sidecars are read as absent and rebuilt from the columns
+  # their header still names.
+  f <- tempfile(fileext = ".vtr")
+  ix <- paste0(f, ".k.vtri")
+  on.exit(unlink(c(f, ix)))
+
+  write_vtr(data.frame(k = letters, v = 1:26, stringsAsFactors = FALSE), f)
+
+  con <- file(ix, "wb")                     # a v3 header: n_cols, ci, col_idx
+  writeBin(charToRaw("VTRI"), con)
+  writeBin(3L, con, size = 2L)
+  writeBin(1L, con, size = 2L)
+  writeBin(as.raw(0), con)
+  writeBin(0L, con, size = 2L)
+  close(con)
+
+  expect_false(has_index(f, "k"))
+  expect_identical(vectra:::.index_specs(f)[[1]]$columns, "k")
+
+  vectra:::.rebuild_indexes(f)
+  expect_true(has_index(f, "k"))
+  expect_equal(nrow(collect(filter(tbl(f), k == "m"))), 1L)
+})
+
 test_that("index survives re-creation after data change", {
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(c(f, paste0(f, ".name.vtri"))))
@@ -451,10 +477,10 @@ test_that("an index past the resident limit is mapped and answers the same", {
   idx <- paste0(f, ".id.vtri")
   on.exit(unlink(c(f, idx)))
 
-  # 20 bytes per entry plus 8 per bucket, and the bucket count is the next power
-  # of two above twice the entries, so 150,000 distinct keys puts the sidecar
-  # past VTRI_RESIDENT_MAX_BYTES and vtri_open() maps it instead of reading it.
-  n <- 150000L
+  # 12 bytes per entry plus about one more for the directory, so 400,000
+  # distinct keys puts the sidecar past VTRI_RESIDENT_MAX_BYTES and vtri_open()
+  # maps it instead of reading it.
+  n <- 400000L
   write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
             batch_size = 10000L)
   create_index(f, "id")
@@ -462,12 +488,12 @@ test_that("an index past the resident limit is mapped and answers the same", {
 
   expect_true(has_index(f, "id"))
 
-  res <- tbl(f) |> filter(id == 149999L) |> collect()
+  res <- tbl(f) |> filter(id == 399999L) |> collect()
   expect_equal(nrow(res), 1L)
-  expect_equal(res$val, 299998)
+  expect_equal(res$val, 799998)
 
-  res_in <- tbl(f) |> filter(id %in% c(7L, 88888L, 150000L)) |> collect()
-  expect_equal(sort(res_in$id), c(7, 88888, 150000))
+  res_in <- tbl(f) |> filter(id %in% c(7L, 88888L, 400000L)) |> collect()
+  expect_equal(sort(res_in$id), c(7, 88888, 400000))
 
   # A key that is not there prunes to nothing rather than reporting a row.
   expect_equal(nrow(tbl(f) |> filter(id == 999999L) |> collect()), 0L)
@@ -478,7 +504,7 @@ test_that("a mapped index extends across a row append", {
   idx <- paste0(f, ".id.vtri")
   on.exit(unlink(c(f, idx)))
 
-  n <- 150000L
+  n <- 400000L
   write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
             batch_size = 10000L)
   create_index(f, "id")
@@ -488,7 +514,7 @@ test_that("a mapped index extends across a row append", {
                         val = ((n + 1L):(n + 1000L)) * 2L), f)
 
   expect_true(has_index(f, "id"))
-  expect_equal(nrow(tbl(f) |> filter(id == 150500L) |> collect()), 1L)
+  expect_equal(nrow(tbl(f) |> filter(id == 400500L) |> collect()), 1L)
   expect_equal(nrow(tbl(f) |> filter(id == 42L) |> collect()), 1L)
 })
 
@@ -497,7 +523,7 @@ test_that("an index is rebuilt while a reader still holds the old one", {
   idx <- paste0(f, ".id.vtri")
   on.exit(unlink(c(f, idx)))
 
-  n <- 150000L
+  n <- 400000L
   write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
             batch_size = 10000L)
   create_index(f, "id")
@@ -510,4 +536,129 @@ test_that("an index is rebuilt while a reader still holds the old one", {
   expect_no_error(create_index(f, "id"))
   expect_true(has_index(f, "id"))
   expect_equal(nrow(tbl(f) |> filter(id == 5L) |> collect()), 1L)
+})
+
+# ── an index never changes the answer ─────────────────────────────────────────
+
+test_that("an indexed store answers every prunable predicate as a plain one does", {
+  # A probe has to present a key of the column's type, and every element of a
+  # %in% set has to be probed, or the union of row groups is short and the rows
+  # in the ones left out go missing. R spells `k %in% c(5, 9)` as doubles
+  # whatever k holds, so the ordinary way of writing the predicate is the one
+  # that has to survive this.
+  same <- function(d, col, f_expr, ci = FALSE) {
+    f <- tempfile(fileext = ".vtr")
+    g <- tempfile(fileext = ".vtr")
+    write_vtr(d, f, batch_size = 20L)
+    write_vtr(d, g, batch_size = 20L)
+    create_index(f, col, ci = ci)
+    on.exit(unlink(c(f, g, paste0(f, ".", col, ".vtri"))), add = TRUE)
+    identical(collect(f_expr(tbl(f))), collect(f_expr(tbl(g))))
+  }
+
+  n <- 200L
+  di <- data.frame(k = rep(1:20L, each = 10L), v = seq_len(n))
+  dd <- data.frame(k = rep(as.numeric(1:20), each = 10L), v = seq_len(n))
+  ds <- data.frame(k = rep(sprintf("k%02d", 1:20), each = 10L), v = seq_len(n),
+                   stringsAsFactors = FALSE)
+  db <- data.frame(k = rep(c(TRUE, FALSE), each = 100L), v = seq_len(n))
+  dna <- data.frame(k = c(rep(1:19L, each = 10L), rep(NA_integer_, 10L)),
+                    v = seq_len(n))
+  dsna <- data.frame(k = c(rep(sprintf("k%02d", 1:19), each = 10L),
+                           rep(NA_character_, 10L)),
+                     v = seq_len(n), stringsAsFactors = FALSE)
+
+  # An integer column probed with the double literals R actually hands over.
+  expect_true(same(di, "k", function(t) filter(t, k == 5L)))
+  expect_true(same(di, "k", function(t) filter(t, k == 5)))
+  expect_true(same(di, "k", function(t) filter(t, k %in% c(5L, 9L))))
+  expect_true(same(di, "k", function(t) filter(t, k %in% c(5, 9))))
+  # A key no integer can equal, and one that stands for several.
+  expect_true(same(di, "k", function(t) filter(t, k == 5.5)))
+  expect_true(same(di, "k", function(t) filter(t, k %in% c(5.5, 9))))
+  expect_true(same(di, "k", function(t) filter(t, k == 1e300)))
+  expect_true(same(di, "k", function(t) filter(t, k %in% c(1e300, 5))))
+
+  expect_true(same(dd, "k", function(t) filter(t, k == 5)))
+  expect_true(same(dd, "k", function(t) filter(t, k == 5L)))
+  expect_true(same(dd, "k", function(t) filter(t, k %in% c(5, 9))))
+  expect_true(same(dd, "k", function(t) filter(t, k %in% c(5L, 9L))))
+
+  expect_true(same(ds, "k", function(t) filter(t, k == "k05")))
+  expect_true(same(ds, "k", function(t) filter(t, k %in% c("k05", "k09"))))
+  expect_true(same(ds, "k", function(t) filter(t, k == "K05"), ci = TRUE))
+
+  expect_true(same(db, "k", function(t) filter(t, k == TRUE)))
+  expect_true(same(db, "k", function(t) filter(t, k %in% TRUE)))
+
+  # An NA in the set matches the NA rows, which sit in row groups the keys alone
+  # would not have named.
+  expect_true(same(dna, "k", function(t) filter(t, k %in% c(NA, 5L))))
+  expect_true(same(dna, "k", function(t) filter(t, k %in% NA_integer_)))
+  expect_true(same(dsna, "k", function(t) filter(t, k %in% c(NA, "k05"))))
+
+  expect_true(same(di, "k", function(t) filter(t, k %in% integer(0))))
+})
+
+# ── building an index is bounded ──────────────────────────────────────────────
+
+test_that("a build that spills writes the same index as one that does not", {
+  # The entries are sorted through the streaming budget, so a build small enough
+  # to sort in RAM and one forced to spill to run files have to agree byte for
+  # byte -- otherwise what a store's index holds would depend on how much memory
+  # happened to be allowed at the time.
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".id.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  n <- 60000L
+  write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
+            batch_size = 5000L)
+
+  create_index(f, "id")
+  in_ram <- readBin(idx, "raw", file.size(idx))
+
+  old <- options(vectra.memory = 1024 * 1024)
+  create_index(f, "id")
+  options(old)
+  spilled <- readBin(idx, "raw", file.size(idx))
+
+  expect_identical(spilled, in_ram)
+  expect_true(has_index(f, "id"))
+  expect_equal(nrow(tbl(f) |> filter(id == 44444L) |> collect()), 1L)
+  expect_equal(nrow(tbl(f) |> filter(id == 90000L) |> collect()), 0L)
+})
+
+test_that("extending an index writes the same bytes as rebuilding it", {
+  # The entries are ordered by the data rather than by the order they were
+  # scanned in, so an index that took in an append and one built from the whole
+  # store are the same file.
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".id.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  write_vtr(data.frame(id = 1:5000, val = (1:5000) * 2L), f, batch_size = 500L)
+  create_index(f, "id")
+  append_vtr(data.frame(id = 5001:5500, val = (5001:5500) * 2L), f)
+  extended <- readBin(idx, "raw", file.size(idx))
+
+  create_index(f, "id")
+  rebuilt <- readBin(idx, "raw", file.size(idx))
+
+  expect_identical(extended, rebuilt)
+})
+
+test_that("an index costs a flat number of bytes per entry", {
+  # Sorted entries carry no chain pointer and need no bucket array: 12 bytes an
+  # entry plus a directory of about one more. Chaining them again would take this
+  # past 30 and put the build's memory back on the size of the index.
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".id.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  n <- 50000L
+  write_vtr(data.frame(id = seq_len(n), val = seq_len(n)), f, batch_size = 5000L)
+  create_index(f, "id")
+
+  expect_lt(file.size(idx) / n, 16)
 })

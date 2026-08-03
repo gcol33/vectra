@@ -1,4 +1,5 @@
 #include "r_bridge.h"
+#include "r_bridge_internal.h"
 #include "vtri.h"
 #include "vtr1_tdc.h"
 #include "schema.h"
@@ -46,9 +47,11 @@ static char *canonical_index_path(const char *vtr_path, SEXP col_name) {
     return path;
 }
 
-/* --- C_create_index(path, col_name, ci) --- */
+/* --- C_create_index(path, col_name, ci, mem) ---
+   mem is the sort budget the entries spill past, so building an index over a
+   store larger than memory costs disk rather than RAM. */
 
-SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci) {
+SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci, SEXP mem) {
     const char *vtr_path = CHAR(STRING_ELT(path, 0));
     int ci_flag = Rf_asLogical(ci);
     int n_cols = Rf_length(col_name);
@@ -61,20 +64,23 @@ SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci) {
     for (int i = 0; i < n_cols; i++)
         col_names[i] = CHAR(STRING_ELT(col_name, i));
 
-    vtri_build(vtr_path, col_names, n_cols, ci_flag);
+    vtri_build(vtr_path, col_names, n_cols, ci_flag,
+               (int64_t)Rf_asReal(mem), get_r_tempdir());
     return R_NilValue;
 }
 
-/* --- C_extend_index(path, vtri_path) ---
+/* --- C_extend_index(path, vtri_path, mem) ---
    Bring one sidecar up to date with a store that has just gained row groups,
    reading only the appended ones. TRUE when it was extended; FALSE when it
    cannot be (unreadable, or built against a store this one is not an extension
    of), which tells the caller to rebuild it instead. */
 
-SEXP C_extend_index(SEXP path, SEXP vtri_path) {
+SEXP C_extend_index(SEXP path, SEXP vtri_path, SEXP mem) {
     const char *vtr_p  = CHAR(STRING_ELT(path, 0));
     const char *vtri_p = CHAR(STRING_ELT(vtri_path, 0));
-    return Rf_ScalarLogical(vtri_extend(vtr_p, vtri_p));
+    return Rf_ScalarLogical(vtri_extend(vtr_p, vtri_p,
+                                        (int64_t)Rf_asReal(mem),
+                                        get_r_tempdir()));
 }
 
 /* --- C_has_index(path, col_name) ---

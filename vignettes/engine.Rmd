@@ -600,11 +600,17 @@ are canonicalized to schema order, so they may be named in any order.
 
 ### Index format
 
-The `.vtri` format is a chained hash table mapping key hashes to row group
-indices. One layout covers both cases: a header with the indexed column
-indices, a case-insensitive flag, and the row and row-group counts of the store
-at build time, followed by the hash entries, their row group entries, a bucket
-heads array, and a next-pointer chain.
+The `.vtri` format is a sorted array of (key hash, row group) entries. One
+layout covers both cases: a header with the indexed column indices, a
+case-insensitive flag, and the row and row-group counts of the store at build
+time, followed by the entries in ascending hash order and a directory giving the
+first entry for each range of leading hash bits.
+
+Sorting the entries rather than chaining them is what lets an index be built in
+one forward pass through a fixed memory budget, since a chained table has to
+know every entry's bucket before it can write the first one. It also drops the
+per-entry chain pointer and the bucket array: 12 bytes an entry rather than
+about 36.
 
 Hashing uses FNV-1a on the raw column bytes; a case-insensitive index folds
 ASCII uppercase to lowercase before hashing. A composite key combines the
