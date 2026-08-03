@@ -1,6 +1,162 @@
 # Changelog
 
+## vectra 0.11.9
+
+### Bug fixes
+
+- [`filter()`](https://gillescolling.com/vectra/reference/filter.md) no
+  longer drops rows when a `%in%` predicate runs against an indexed
+  column. The scan probed the `.vtri` sidecar with whichever
+  representation the predicate happened to carry, and contributed
+  nothing when none matched the column’s own type – so the row-group
+  bitmap came back empty and every row group was pruned.
+  `filter(k %in% c(5, 9))` on an integer column returned zero rows where
+  the same store without an index returned all of them, and since R
+  writes a bare numeric literal as a double whatever the column holds,
+  that is the ordinary way of writing the predicate rather than a corner
+  case. The same went for a logical column, and for an `NA` in the set,
+  whose matching rows an index files under a key of its own.
+
+  Every set element is now probed by the column’s type, and a key that
+  cannot be probed leaves the scan unpruned rather than being passed
+  over. Where a double names no single integer the two possible readings
+  are now separated: a fractional key matches no row, so every row group
+  can go, while a key past 2^53 stands for several integers at once, so
+  nothing is pruned. `filter(x == -1)` also reaches the index now: R
+  parses a negative literal as a call rather than a constant, and
+  neither the index nor the zone maps could read it, so the predicate
+  scanned the store – 1.59 s over 60 million rows against 0.03 s once
+  the constant is folded.
+
+  The test file now answers 21 predicate shapes against both an indexed
+  store and a plain copy of the same data and requires the two to agree.
+
+- Building a `.vtri` index no longer holds the whole index in memory.
+  Entries had to be chained into hash buckets, which cannot be done
+  before every entry is known, so a build cost about what the sidecar
+  cost: 2.23 GB resident for a 2.12 GB index over 60 million distinct
+  keys, and an index too large for memory could be read but not made.
+
+  The entries are now sorted rather than chained, through the same
+  streaming budget everything else spills against
+  ([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)),
+  and written in a single forward pass. On that store the build peaks at
+  0.32 GB under a 128 MB budget, in the same time as before. Extending
+  an index after
+  [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  is bounded the same way: the sidecar on disk is already a sorted
+  stream, so it is merged with the appended row groups’ entries as the
+  new file is written rather than gathered first.
+
+  Sorted entries also drop the chain pointer and the bucket array,
+  taking the same index from 2.12 GB to 0.69 GB, and make the file a
+  function of the data rather than of the scan – an index that took in
+  an append is byte-identical to one rebuilt from the whole store, and
+  one built under a small budget to one built under a large one. A probe
+  reads a directory slot and binary-searches the few entries it spans,
+  so a fetch stays flat as the index grows.
+
+  `.vtri` files written by earlier versions of vectra read as absent, as
+  any unusable index does;
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  rebuilds them.
+
+- `append_vtr(along = "rows")` no longer rewrites the store on every
+  call. Because the container keeps its row-group index in the trailer,
+  the row path used to restream every existing row group through a fresh
+  writer into a temp file and swap it over the original, so a call cost
+  a full pass over whatever was already on disk. Building a store the
+  natural way – append a batch, append the next – was therefore
+  quadratic in the number of batches, and the degradation was invisible
+  until the store was large: on 30 appends of 100,000 rows x 13 columns,
+  per-call time grew with the preceding store size at 0.0215 s/MB (R^2 =
+  0.996), and a real 486-million-row build decayed from 8.0M rows/min to
+  0.58M rows/min as it passed 4 GB.
+
+  The existing row groups are now neither read nor moved: the new blocks
+  and a rebuilt index are written past the container’s trailer and the
+  header is patched last, exactly as `along = "cols"` already worked.
+  The index entries describing the existing row groups are carried over
+  verbatim, which is sound because nothing before the old trailer moves.
+  On the same measurement, per-call time is now flat – 0.28 s with 4 MB
+  on disk, 0.28 s with 112 MB, slope 0.00006 s/MB – so building a store
+  by appending costs one pass over the rows written, however many calls
+  it takes.
+
+  Two consequences follow. A row append is now interruption-safe:
+  everything is written past the existing data and the header last, so a
+  crash leaves the store readable exactly as it was, where the old
+  temp-file path could leave a half-written file. And a store grown in
+  place is stamped so that readers predating this format refuse it
+  rather than misread it.
+
+- `append_vtr(along = "rows")` now honours `compress`. The row path
+  ignored the argument and always re-encoded at `"fast"`, whatever the
+  file was written with.
+
+- A row append no longer rebuilds every `.vtri` the store carries.
+  Rebuilding read the whole store, which would have kept an indexed
+  store’s append quadratic even with the container fix. Since a row
+  append moves no existing row group, the entries an index already holds
+  stay true, so each index now takes in only the row groups just
+  appended.
+
+- A `.vtri` sidecar that cannot be read no longer makes the store
+  unreadable. `vtri_open()` sized the index file with `ftell()` into a
+  `long`, which is 32 bits on Windows, so any index past 2 GB got a
+  meaningless size, tripped the sanity guard, and raised
+  `corrupt .vtri: entry/slot counts exceed file size` from
+  [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) – on an
+  intact index, and with no way to read the store at all, not even by
+  falling back to a scan. Offsets now go through the 64-bit calls the
+  rest of the package already uses.
+
+  Independently of the sizing, every way of failing to read a sidecar
+  now reports no index rather than raising: absent, superseded, written
+  by a newer vectra, stale against the store, or malformed. An index
+  only ever saves a scan work, so an unusable one costs speed and never
+  rows, and raising turned a readable store into an unopenable one.
+  [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  reports `FALSE` for these and
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  rebuilds.
+
+- Opening a `.vtri` no longer costs a copy of the whole index.
+  `vtri_open()` read all four of the index’s arrays into memory, so
+  every lookup that reached an index first paid for the entire file – a
+  223 MB sidecar cost 67 ms and 223 MB per open, and the same read
+  repeated on each fetch, which is exactly the cost an index exists to
+  avoid. An index past `VTRI_RESIDENT_MAX_BYTES` (4 MB) is now mapped
+  read-only instead, and the probe reads the handful of entries a
+  chained-hash lookup touches out of the mapping in place. Both backings
+  are read through the same accessors, so the probe and the rebuild are
+  written once.
+
+  What a lookup costs is now the pages it touches rather than the size
+  of the index. On a 5-million-key store, opening a 223 MB sidecar went
+  from 67 ms to under the timer’s resolution, and an indexed fetch from
+  71.4 ms to 4.75 ms. The effect grows with the index: a 17 GB sidecar
+  had needed 17 GB of resident memory per fetch.
+
+  This is also what makes an index past 2 GB usable rather than merely
+  readable. A 2.12 GB sidecar over 60 million distinct keys now opens in
+  2 ms and answers equality and `%in%` lookups; the same file previously
+  had to be allocated in full before it could be probed at all. An index
+  too large even to map reports absent, like any other unusable index,
+  so a lookup falls back to reading the store rather than exhausting
+  memory.
+
+  Below the threshold nothing changes: a small index is still read
+  whole, which is cheaper than faulting pages in for a single probe and
+  leaves no handle open. Because a mapped index does hold its file open,
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  now swaps the rebuilt sidecar into place through the same atomic
+  replace the writers use, which waits out a sharing violation rather
+  than failing on one.
+
 ## vectra 0.11.8
+
+CRAN release: 2026-07-30
 
 ### Bug fixes
 
@@ -572,6 +728,10 @@
 - [`focal()`](https://gillescolling.com/vectra/reference/focal.md)
   reports a clean error instead of a null-pointer dereference if a
   per-thread scratch allocation fails.
+
+## vectra 0.11.3
+
+CRAN release: 2026-07-17
 
 ### Bug fixes
 

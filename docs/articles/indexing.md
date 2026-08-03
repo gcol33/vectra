@@ -216,19 +216,24 @@ check every row group’s string min/max bounds, which often span the
 entire alphabet. This is where hash indexes help.
 
 A hash index is a `.vtri` sidecar file that maps column values to the
-row groups that contain them. Internally the file is a serialized
-chained hash table using FNV-1a as the hash function: a bucket array, an
-entry array, and a next-index per entry linking the entries that share a
-bucket. Each entry pairs one distinct key hash with one row group
-holding it, so a key present in six row groups takes six entries, and a
-key repeated a million times inside one row group takes one. The bucket
-count is the next power of two above twice the entry count, which holds
-the load factor at or under 50% and keeps the chains short. At query
-time, “probing the index” means hashing the filter value, walking the
-chain for its bucket, and setting a bit for each row group the matching
-entries name. That bitmap is what the scan then uses to skip groups. The
-cost of a probe tracks the number of row groups holding the key; the
-number of rows in the file does not enter it.
+row groups that contain them. Internally the file is an array of entries
+sorted by FNV-1a hash, preceded by a directory that says where each
+range of hashes begins. Each entry pairs one distinct key hash with one
+row group holding it, so a key present in six row groups takes six
+entries, and a key repeated a million times inside one row group takes
+one. At query time, “probing the index” means hashing the filter value,
+reading the directory slot for its leading bits, binary-searching the
+handful of entries that slot spans, and setting a bit for each row group
+the matching entries name. That bitmap is what the scan then uses to
+skip groups. The cost of a probe tracks the number of row groups holding
+the key; the number of rows in the file does not enter it.
+
+Keeping the entries in order is also what keeps building an index off
+the size of the index. They are sorted through the streaming memory
+budget
+([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)),
+spilling to disk past it, and written in a single forward pass, so the
+memory a build takes is the budget rather than the file it produces.
 
 Because an entry covers a distinct key within a row group, the size of
 an index follows the number of distinct keys. A column of 200 site names
@@ -516,7 +521,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.13 s
+#> With index, %in% filter: 0.11 s
 ```
 
 Without an index, the same query reads all row groups and filters in
@@ -1019,13 +1024,13 @@ amortize their creation cost over many queries. As a rough heuristic, if
 the query will run fewer than 5 times, a full scan is likely cheaper in
 total wall time.
 
-Disk space is another consideration. A `.vtri` file stores 20 bytes per
-(distinct key, row group) pair plus 8 bytes per bucket, and no key
-values, only their hashes. A column of 100,000 distinct strings spread
-over a few row groups each indexes to a few megabytes. A column whose
-values are nearly all distinct puts one entry per row into the index,
-which can rival the size of the data file. Zone maps and sorted-column
-binary search cover that case without a sidecar.
+Disk space is another consideration. A `.vtri` file stores 12 bytes per
+(distinct key, row group) pair plus about one more for the directory,
+and no key values, only their hashes. A column of 100,000 distinct
+strings spread over a few row groups each indexes to a few megabytes. A
+column whose values are nearly all distinct puts one entry per row into
+the index, which can rival the size of the data file. Zone maps and
+sorted-column binary search cover that case without a sidecar.
 [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
 reports whether a usable index exists; checking the file size directly
 shows its cost.

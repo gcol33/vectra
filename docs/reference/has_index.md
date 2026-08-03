@@ -1,8 +1,9 @@
 # Check whether a .vtr column has a usable hash index
 
-`TRUE` when the `.vtri` sidecar is present, in the current format, and
-built against the store as it now stands. An index that no longer
-matches the store reads as `FALSE`, because queries ignore it;
+`TRUE` when the `.vtri` sidecar is present, readable, in the current
+format, and built against the store as it now stands. An index that no
+longer matches the store, or that cannot be read, reads as `FALSE`,
+because queries ignore it and fall back to a scan;
 [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
 rebuilds it.
 

@@ -48,16 +48,25 @@ per row, so an index over a column with few distinct values stays small
 however many rows the store holds – which is what keeps a lookup off the
 size of the store.
 
+Building one is bounded too: the entries are sorted through the
+streaming memory budget
+([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md))
+and written in a single pass, so an index over a store larger than
+memory costs disk rather than RAM.
+
 [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
-with `along = "rows"` rewrites every row group, which moves the rows a
-key sits in; it rebuilds each of the store's indexes for that reason. An
-index left behind by any other change of the store is reported as absent
-by
+leaves the existing row groups where they are, so an index stays valid
+across an append: it takes in the row groups just appended and keeps the
+rest, reading only the new data rather than the whole store.
+
+An index left behind by any other change of the store is reported as
+absent by
 [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
 and ignored by queries rather than pruning row groups that may now hold
-matching rows. Indexes written by vectra 0.11.7 and earlier are
-superseded and read as absent; call `create_index()` again to rebuild
-them.
+matching rows. The same goes for one that cannot be read at all: an
+index only ever saves a scan work, so an unusable one costs speed and
+never rows. Indexes written by vectra 0.11.8 and earlier are superseded
+and read as absent; call `create_index()` again to rebuild them.
 
 ## Examples
 

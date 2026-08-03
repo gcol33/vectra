@@ -24,7 +24,7 @@ rows already there.'><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.8</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -102,8 +102,8 @@ rows already there.</p>
 
 
 <dt id="arg-compress">compress<a class="anchor" aria-label="anchor" href="#arg-compress"></a></dt>
-<dd><p>Compression for the appended columns: <code>"fast"</code>,
-<code>"small"</code>, or <code>"none"</code>. <code>along = "cols"</code> only.</p></dd>
+<dd><p>Compression for the appended rows or columns: <code>"fast"</code>,
+<code>"small"</code>, or <code>"none"</code>.</p></dd>
 
 
 <dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
@@ -117,9 +117,19 @@ rows already there.</p>
     <div class="section level2">
     <h2 id="appending-rows">Appending rows<a class="anchor" aria-label="anchor" href="#appending-rows"></a></h2>
     <p>The schema of <code>x</code> must exactly match the schema of the target file (same
-column names and types, in the same order). Existing row groups are
-restreamed through a fresh writer, so a row append costs a pass over the
-file.</p>
+column names and types, in the same order). The row groups already in the
+store are neither read nor rewritten – the new ones are encoded and
+attached on their own – so the cost tracks the rows being appended rather
+than the size of the store.</p>
+<p>That is what lets a table too long to hold in memory be built a batch at a
+time: write the first batch with <code><a href="write_vtr.html">write_vtr()</a></code>, then append each later one
+as it is produced, with a peak of one batch rather than the whole table.
+Building a store this way costs one pass over the rows written, however
+many calls it takes.</p>
+<p>Existing row groups keep their positions, so any <code>.vtri</code> index built with
+<code><a href="create_index.html">create_index()</a></code> stays valid across a row append: each one takes in the
+appended row groups and keeps the rest, rather than being rebuilt from the
+whole store.</p>
     </div>
     <div class="section level2">
     <h2 id="appending-columns">Appending columns<a class="anchor" aria-label="anchor" href="#appending-columns"></a></h2>
@@ -136,12 +146,17 @@ to the store's rows by position.</p>
 <p>Existing row-group boundaries and column data are untouched, so any
 <code>.vtri</code> index built with <code><a href="create_index.html">create_index()</a></code> over the original columns stays
 valid across a column append.</p>
-<p>A column append rewrites the file header last, and everything before that
-is written past the end of the existing data, so an interruption leaves
-the store readable exactly as it was. A row append has no such property:
-interrupted after the new row groups are written but before the header is
-patched, the file is left corrupted. Use <code><a href="write_vtr.html">write_vtr()</a></code> for
-safety-critical write-once workloads.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="interruption">Interruption<a class="anchor" aria-label="anchor" href="#interruption"></a></h2>
+    <p>Either direction writes everything past the end of the existing data and
+rewrites the file header last, so an interruption – a crash, a full disk,
+a killed process – leaves the store readable exactly as it was before the
+call. The appended bytes are referenced by nothing and the next append
+writes over them.</p>
+<p>The trade is that a store grown in place is stamped so that readers
+predating this format refuse it rather than misread it, and is
+random-access only, which is how vectra reads a <code>.vtr</code> anyway.</p>
     </div>
 
     <div class="section level2">

@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.8</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -44,7 +44,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-07-30</h4>
+            <h4 data-toc-skip class="date">2026-08-03</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/engine.Rmd" class="external-link"><code>vignettes/engine.Rmd</code></a></small>
       <div class="d-none name"><code>engine.Rmd</code></div>
@@ -1197,12 +1197,17 @@ order.</p>
 <div class="section level3">
 <h3 id="index-format">Index format<a class="anchor" aria-label="anchor" href="#index-format"></a>
 </h3>
-<p>The <code>.vtri</code> format is a chained hash table mapping key
-hashes to row group indices. One layout covers both cases: a header with
-the indexed column indices, a case-insensitive flag, and the row and
-row-group counts of the store at build time, followed by the hash
-entries, their row group entries, a bucket heads array, and a
-next-pointer chain.</p>
+<p>The <code>.vtri</code> format is a sorted array of (key hash, row
+group) entries. One layout covers both cases: a header with the indexed
+column indices, a case-insensitive flag, and the row and row-group
+counts of the store at build time, followed by the entries in ascending
+hash order and a directory giving the first entry for each range of
+leading hash bits.</p>
+<p>Sorting the entries rather than chaining them is what lets an index
+be built in one forward pass through a fixed memory budget, since a
+chained table has to know every entry’s bucket before it can write the
+first one. It also drops the per-entry chain pointer and the bucket
+array: 12 bytes an entry rather than about 36.</p>
 <p>Hashing uses FNV-1a on the raw column bytes; a case-insensitive index
 folds ASCII uppercase to lowercase before hashing. A composite key
 combines the per-column FNV-1a hashes by XOR and multiplication with the

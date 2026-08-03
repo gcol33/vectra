@@ -1,5 +1,7 @@
 /* Plot styling - match code block borders */
 /* Bootstrap 5 Sandstone uses --bs-border-radius: .375rem for pre/code */
+/* Figures fill the column, flush with the code blocks. Text size is handled */
+/* separately, by the figure text scale below. */
 img.r-plt,
 .figure img,
 figure img,
@@ -12,6 +14,8 @@ svg.inline-svg {
   border-radius: .375rem;
   overflow: hidden;
   display: block;
+  margin-left: auto;
+  margin-right: auto;
   margin-bottom: 1rem;
 }
 
@@ -292,6 +296,35 @@ mjx-container:not([display="true"]),
   max-width: 100%;
   overflow-x: auto;
   vertical-align: middle;
+}
+
+/* Figure text scale */
+/* One SVG serves every breakpoint and scales to the width it is given, so */
+/* text sized to stay legible on a phone renders about twice as large in a */
+/* desktop column. Figure text is authored in em against this root size, */
+/* which steps down as the column widens so on-figure text tracks prose. */
+/* Figure width is untouched: figures stay flush with the code blocks. */
+
+svg.inline-svg {
+  font-size: 10.5px;
+}
+
+@media (min-width: 768px) {
+  svg.inline-svg {
+    font-size: 10.5px;
+  }
+}
+
+@media (min-width: 992px) {
+  svg.inline-svg {
+    font-size: 7.25px;
+  }
+}
+
+@media (min-width: 1400px) {
+  svg.inline-svg {
+    font-size: 8.19px;
+  }
 }
 
 /* Figure palette - dark mode counterparts */
