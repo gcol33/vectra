@@ -9,6 +9,17 @@
 #include <stdio.h>
 #include <ctype.h>
 
+/* An index holds 20 bytes per entry plus 8 per slot, so it passes 2 GB on a store of a few tens of
+   millions of rows. ftell()/fseek() carry a 32-bit `long` on Windows and cannot address that, so
+   offsets into a .vtri go through the 64-bit calls, as in vtr1_tdc.c and byte_reader.c. */
+#ifdef _WIN32
+#  define VTRI_FTELL64(fp)          _ftelli64(fp)
+#  define VTRI_FSEEK64(fp, off, wh) _fseeki64((fp), (int64_t)(off), (wh))
+#else
+#  define VTRI_FTELL64(fp)          ftello(fp)
+#  define VTRI_FSEEK64(fp, off, wh) fseeko((fp), (off_t)(off), (wh))
+#endif
+
 /* Use shared hash functions from vtri.h (vtri_fnv1a, vtri_hash_int64, etc.) */
 /* Aliases for local use */
 #define fnv1a     vtri_fnv1a
@@ -549,13 +560,16 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
        follow occupy 20*ne bytes (hash8 + rg4 + next8 per entry) plus 8*ns bytes
        (one head per slot); n_slots must be >= 1 for the probe mask to be a valid
        index. The bound is written division-first so 20*ne never overflows. */
-    long hdr_end = ftell(fp);
-    if (hdr_end < 0 || fseek(fp, 0, SEEK_END) != 0) {
+    int64_t hdr_end = (int64_t)VTRI_FTELL64(fp);
+    if (hdr_end < 0 || VTRI_FSEEK64(fp, 0, SEEK_END) != 0) {
         fclose(fp); vtri_close(idx);
         vectra_error("corrupt .vtri: cannot size index file");
     }
-    long fsize = ftell(fp);
-    fseek(fp, hdr_end, SEEK_SET);
+    int64_t fsize = (int64_t)VTRI_FTELL64(fp);
+    if (fsize < 0 || VTRI_FSEEK64(fp, hdr_end, SEEK_SET) != 0) {
+        fclose(fp); vtri_close(idx);
+        vectra_error("corrupt .vtri: cannot size index file");
+    }
     int64_t remaining = (int64_t)fsize - (int64_t)hdr_end;
     if (ne < 0 || ns < 1 || remaining < 0 ||
         ns > remaining / 8 || ne > (remaining - 8 * ns) / 20) {
