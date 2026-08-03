@@ -445,3 +445,69 @@ test_that("a .vtri of garbage degrades to a scan", {
   expect_equal(nrow(res), 1L)
   expect_equal(res$val, 3)
 })
+
+test_that("an index past the resident limit is mapped and answers the same", {
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".id.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  # 20 bytes per entry plus 8 per bucket, and the bucket count is the next power
+  # of two above twice the entries, so 150,000 distinct keys puts the sidecar
+  # past VTRI_RESIDENT_MAX_BYTES and vtri_open() maps it instead of reading it.
+  n <- 150000L
+  write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
+            batch_size = 10000L)
+  create_index(f, "id")
+  expect_gt(file.size(idx), 4 * 1024 * 1024)
+
+  expect_true(has_index(f, "id"))
+
+  res <- tbl(f) |> filter(id == 149999L) |> collect()
+  expect_equal(nrow(res), 1L)
+  expect_equal(res$val, 299998)
+
+  res_in <- tbl(f) |> filter(id %in% c(7L, 88888L, 150000L)) |> collect()
+  expect_equal(sort(res_in$id), c(7, 88888, 150000))
+
+  # A key that is not there prunes to nothing rather than reporting a row.
+  expect_equal(nrow(tbl(f) |> filter(id == 999999L) |> collect()), 0L)
+})
+
+test_that("a mapped index extends across a row append", {
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".id.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  n <- 150000L
+  write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
+            batch_size = 10000L)
+  create_index(f, "id")
+  expect_gt(file.size(idx), 4 * 1024 * 1024)
+
+  append_vtr(data.frame(id = (n + 1L):(n + 1000L),
+                        val = ((n + 1L):(n + 1000L)) * 2L), f)
+
+  expect_true(has_index(f, "id"))
+  expect_equal(nrow(tbl(f) |> filter(id == 150500L) |> collect()), 1L)
+  expect_equal(nrow(tbl(f) |> filter(id == 42L) |> collect()), 1L)
+})
+
+test_that("an index is rebuilt while a reader still holds the old one", {
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".id.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  n <- 150000L
+  write_vtr(data.frame(id = seq_len(n), val = seq_len(n) * 2L), f,
+            batch_size = 10000L)
+  create_index(f, "id")
+
+  # The scan opens the sidecar on its first batch and holds it until the node is
+  # collected, which for a mapped index means the file is still open here.
+  reader <- tbl(f) |> filter(id == 5L)
+  expect_equal(nrow(collect(reader)), 1L)
+
+  expect_no_error(create_index(f, "id"))
+  expect_true(has_index(f, "id"))
+  expect_equal(nrow(tbl(f) |> filter(id == 5L) |> collect()), 1L)
+})

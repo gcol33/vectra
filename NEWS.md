@@ -53,6 +53,35 @@
   readable store into an unopenable one. `has_index()` reports `FALSE` for these
   and `create_index()` rebuilds.
 
+* Opening a `.vtri` no longer costs a copy of the whole index. `vtri_open()`
+  read all four of the index's arrays into memory, so every lookup that reached
+  an index first paid for the entire file -- a 223 MB sidecar cost 67 ms and
+  223 MB per open, and the same read repeated on each fetch, which is exactly
+  the cost an index exists to avoid. An index past `VTRI_RESIDENT_MAX_BYTES`
+  (4 MB) is now mapped read-only instead, and the probe reads the handful of
+  entries a chained-hash lookup touches out of the mapping in place. Both
+  backings are read through the same accessors, so the probe and the rebuild are
+  written once.
+
+  What a lookup costs is now the pages it touches rather than the size of the
+  index. On a 5-million-key store, opening a 223 MB sidecar went from 67 ms to
+  under the timer's resolution, and an indexed fetch from 71.4 ms to 4.75 ms.
+  The effect grows with the index: a 17 GB sidecar had needed 17 GB of resident
+  memory per fetch.
+
+  This is also what makes an index past 2 GB usable rather than merely readable.
+  A 2.12 GB sidecar over 60 million distinct keys now opens in 2 ms and answers
+  equality and `%in%` lookups; the same file previously had to be allocated in
+  full before it could be probed at all. An index too large even to map reports
+  absent, like any other unusable index, so a lookup falls back to reading the
+  store rather than exhausting memory.
+
+  Below the threshold nothing changes: a small index is still read whole, which
+  is cheaper than faulting pages in for a single probe and leaves no handle
+  open. Because a mapped index does hold its file open, `create_index()` now
+  swaps the rebuilt sidecar into place through the same atomic replace the
+  writers use, which waits out a sharing violation rather than failing on one.
+
 # vectra 0.11.8
 
 ## Bug fixes

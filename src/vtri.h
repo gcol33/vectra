@@ -2,7 +2,9 @@
 #define VECTRA_VTRI_H
 
 #include "types.h"
+#include "file_map.h"
 #include <stdint.h>
+#include <string.h>
 
 /*
  * VtrIndex: persistent on-disk hash index (.vtri sidecar file).
@@ -42,10 +44,33 @@
  * Versions 1 and 2 (one entry per row, no stamp) are superseded: vtri_open()
  * reports no index for them, and vtri_read_spec() reads their column list so
  * they can be rebuilt.
+ *
+ * An open index is backed one of two ways, chosen by size, and a probe reads
+ * through accessors so it does not care which:
+ *
+ *   resident  the four arrays are read into memory. Costs one copy of the file
+ *             and holds no handle afterwards.
+ *   mapped    the file is mapped read-only and the arrays are read out of the
+ *             mapping in place. Costs the pages a probe touches, so an index
+ *             far larger than RAM is still probeable, and a probe's cost stays
+ *             off the size of the index.
+ *
+ * Reading the file whole is the cheaper of the two while it is small, and it
+ * leaves nothing open behind it; past VTRI_RESIDENT_MAX_BYTES that copy is what
+ * a lookup pays for, and a chained-hash probe touches a handful of pages
+ * whatever the file's size, so the mapping takes over. An index too large to be
+ * mapped reports absent, as any other unusable index does -- a lookup falls
+ * back to reading the store instead of exhausting memory.
  */
 
 #define VTRI_MAX_COLS 8
 #define VTRI_VERSION  3
+
+/* Read an index below this size, map it above. A few MB reads in a couple of
+   milliseconds and costs one allocation that is freed straight after, which
+   beats faulting pages in for a single probe; from here up, reading grows with
+   the index while a mapped probe does not. */
+#define VTRI_RESIDENT_MAX_BYTES (4LL * 1024 * 1024)
 
 typedef struct VtrIndex {
     uint16_t  col_idx;      /* first indexed column (== col_indices[0]) */
@@ -54,15 +79,62 @@ typedef struct VtrIndex {
     int64_t   n_slots;
     int64_t   src_n_rows;      /* rows in the store at build time */
     int64_t   src_n_rowgroups; /* row groups in the store at build time */
+
+    /* Resident backing: NULL when the index is mapped instead. */
     uint64_t *entry_hash;   /* [n_entries] */
     uint32_t *entry_rg;     /* [n_entries] — row group index */
     int64_t  *heads;        /* [n_slots] */
     int64_t  *entry_next;   /* [n_entries] */
+
+    /* Mapped backing: map.base is NULL when the index is resident instead.
+       The offsets locate each array within the file and carry no alignment,
+       so vtri_entry_hash() and friends memcpy rather than dereference. */
+    VecFileMap map;
+    int64_t   off_hash;
+    int64_t   off_rg;
+    int64_t   off_heads;
+    int64_t   off_next;
+
     char     *col_name;     /* first column name (resolved from schema at load time) */
     uint16_t  n_cols;       /* number of indexed columns */
     uint16_t *col_indices;  /* [n_cols] column indices */
     char    **col_names;    /* [n_cols] column names (resolved at load time) */
 } VtrIndex;
+
+/* ---- Backing-agnostic element reads ----
+
+   Every index array is read through one of these, so the probe and the rebuild
+   are written once and work against either backing. Indices are assumed in
+   range; vtri_open validates the file's declared sizes against its actual
+   length, and probe_by_hash bounds every chain step it takes. */
+
+static inline uint64_t vtri_entry_hash(const struct VtrIndex *idx, int64_t i) {
+    if (idx->entry_hash) return idx->entry_hash[i];
+    uint64_t v;
+    memcpy(&v, idx->map.base + idx->off_hash + i * 8, 8);
+    return v;
+}
+
+static inline uint32_t vtri_entry_rg(const struct VtrIndex *idx, int64_t i) {
+    if (idx->entry_rg) return idx->entry_rg[i];
+    uint32_t v;
+    memcpy(&v, idx->map.base + idx->off_rg + i * 4, 4);
+    return v;
+}
+
+static inline int64_t vtri_head(const struct VtrIndex *idx, int64_t slot) {
+    if (idx->heads) return idx->heads[slot];
+    int64_t v;
+    memcpy(&v, idx->map.base + idx->off_heads + slot * 8, 8);
+    return v;
+}
+
+static inline int64_t vtri_entry_next(const struct VtrIndex *idx, int64_t i) {
+    if (idx->entry_next) return idx->entry_next[i];
+    int64_t v;
+    memcpy(&v, idx->map.base + idx->off_next + i * 8, 8);
+    return v;
+}
 
 /* ---- Hashing helpers (shared between vtri.c and scan.c) ---- */
 
@@ -103,10 +175,13 @@ static inline uint64_t vtri_hash_double(double val) {
 
    Returns NULL whenever there is no index to probe: the file does not exist, is
    not a .vtri, was written by a superseded or newer version, does not match the
-   store, or is malformed. An index only ever saves a scan work, so an unusable
-   one costs speed and never rows -- reporting absent keeps a bad sidecar from
-   turning a readable store into an unopenable one. Allocation failure still
-   raises, being a fact about the machine rather than about the index. */
+   store, is malformed, or is too large both to read and to map. An index only
+   ever saves a scan work, so an unusable one costs speed and never rows --
+   reporting absent keeps a bad sidecar from turning a readable store into an
+   unopenable one. Allocation failure on the resident path still raises, being a
+   fact about the machine rather than about the index; running out of memory is
+   not how a large index is handled, since one past
+   VTRI_RESIDENT_MAX_BYTES is mapped rather than read. */
 VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
                     int64_t src_n_rows, int64_t src_n_rowgroups);
 

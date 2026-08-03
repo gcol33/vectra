@@ -1,5 +1,6 @@
 #include "vtri.h"
 #include "vtr1_tdc.h"
+#include "vtr_fileops.h"
 #include "batch.h"
 #include "schema.h"
 #include "array.h"
@@ -268,13 +269,15 @@ static uint64_t read_u64_f(FILE *fp) {
 /*
  * Build a .vtri over `col_names` and write it.
  *
- * Scanning starts at row group `first_rg` and the entry list starts out
- * holding the `n_seed` (hash, row group) pairs given, which is what lets an
- * index be brought up to date after an append without rereading the store: an
- * entry names the row group its key sits in, and a row append moves no
- * existing row group, so the entries already in an index stay true and only
- * the appended row groups need scanning. Pass first_rg = 0 and no seed to
- * build from nothing.
+ * Scanning starts at row group `first_rg` and the entry list starts out holding
+ * the entries of `seed`, an already-open index, which is what lets an index be
+ * brought up to date after an append without rereading the store: an entry
+ * names the row group its key sits in, and a row append moves no existing row
+ * group, so the entries already in an index stay true and only the appended row
+ * groups need scanning. Pass first_rg = 0 and seed = NULL to build from nothing.
+ *
+ * The seed is read through the index accessors, so it may be either resident or
+ * mapped -- a mapped one is read a page at a time as the copy walks it.
  *
  * Everything after the scan -- bucket count, chaining, the stamp, the write --
  * is the same either way, and the stamp is always taken from the store as it
@@ -284,20 +287,43 @@ static uint64_t read_u64_f(FILE *fp) {
 static void vtri_build_core(const char *vtr_path, const char **col_names,
                             int n_cols, int ci,
                             uint32_t first_rg,
-                            const uint64_t *seed_hash, const uint32_t *seed_rg,
-                            int64_t n_seed) {
-    if (n_cols < 1 || n_cols > VTRI_MAX_COLS)
+                            VtrIndex *seed) {
+    EntryVec ev = {0};
+    int oom = 0;
+
+    /* Take the seed's entries first and close it, before anything else can fail
+       and before the new file is put in the old one's place: a seed opened over
+       a large index holds a mapping of the file being replaced, and on Windows a
+       live mapping is what a replace has to wait for. */
+    int64_t n_seed = seed ? seed->n_entries : 0;
+    for (int64_t i = 0; i < n_seed && !oom; i++) {
+        if (!ev_push(&ev, vtri_entry_hash(seed, i), vtri_entry_rg(seed, i)))
+            oom = 1;
+    }
+    vtri_close(seed);
+    if (oom) {
+        ev_free(&ev);
+        vectra_error("alloc failed building vtri index");
+    }
+
+    if (n_cols < 1 || n_cols > VTRI_MAX_COLS) {
+        ev_free(&ev);
         vectra_error("an index spans 1 to %d columns, got %d",
                      VTRI_MAX_COLS, n_cols);
+    }
 
     Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
-    if (!file) vectra_error("vtr1_open_tdc failed for %s", vtr_path);
+    if (!file) {
+        ev_free(&ev);
+        vectra_error("vtr1_open_tdc failed for %s", vtr_path);
+    }
     const VecSchema *schema = vtr1_tdc_schema(file);
 
     int col_idx[VTRI_MAX_COLS];
     const char *cols[VTRI_MAX_COLS];
     const char *bad = NULL, *why = NULL;
     if (!vtri_resolve_cols(schema, col_names, n_cols, col_idx, cols, &bad, &why)) {
+        ev_free(&ev);
         vtr1_close_tdc(file);
         if (bad && why) vectra_error("column '%s' %s", bad, why);
         vectra_error("an index spans 1 to %d columns", VTRI_MAX_COLS);
@@ -313,7 +339,9 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
 
     /* Read only the indexed columns */
     int *col_mask = (int *)calloc((size_t)schema->n_cols, sizeof(int));
-    if (!col_mask) { vtr1_close_tdc(file); vectra_error("alloc failed"); }
+    if (!col_mask) {
+        ev_free(&ev); vtr1_close_tdc(file); vectra_error("alloc failed");
+    }
     for (int c = 0; c < n_cols; c++) col_mask[col_idx[c]] = 1;
 
     /* Map each indexed column to its position in the masked read */
@@ -326,18 +354,11 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
 
     HashSet seen;
     if (!hs_init(&seen, max_rg_rows)) {
-        hs_free(&seen); free(col_mask); vtr1_close_tdc(file);
+        hs_free(&seen); free(col_mask); ev_free(&ev); vtr1_close_tdc(file);
         vectra_error("alloc failed building vtri index");
     }
 
-    EntryVec ev = {0};
     uint64_t per_col_hash[VTRI_MAX_COLS];
-    int oom = 0;
-
-    /* Carry over the entries an earlier build already established. */
-    for (int64_t i = 0; i < n_seed && !oom; i++) {
-        if (!ev_push(&ev, seed_hash[i], seed_rg[i])) oom = 1;
-    }
 
     for (uint32_t rg = first_rg; rg < n_rg && !oom; rg++) {
         VecBatch *batch = vtr1_read_rowgroup_tdc(file, rg, col_mask);
@@ -439,10 +460,10 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     ev_free(&ev);
     vtr1_close_tdc(file);
 
-    if (ok) {
-        remove(vtri_path);
-        ok = rename(tmp_path, vtri_path) == 0;
-    }
+    /* A reader that opened this index mapped it rather than copying it, so the
+       old file can still be open when the new one arrives; vtr_atomic_replace
+       waits out a sharing violation instead of failing on it. */
+    if (ok) ok = vtr_atomic_replace(tmp_path, vtri_path) == 0;
     if (!ok) remove(tmp_path);
 
     free(vtri_path);
@@ -452,7 +473,7 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
 
 void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
                 int ci) {
-    vtri_build_core(vtr_path, col_names, n_cols, ci, 0, NULL, NULL, 0);
+    vtri_build_core(vtr_path, col_names, n_cols, ci, 0, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -512,11 +533,8 @@ int vtri_extend(const char *vtr_path, const char *vtri_path) {
        gaining a row group (an appended empty batch). */
     uint32_t first_rg = (uint32_t)idx->src_n_rowgroups;
 
-    int      n_idx_cols = idx->n_cols;
-    int      idx_ci     = idx->ci;
-    int64_t  n_seed     = idx->n_entries;
-    uint64_t *seed_hash = idx->entry_hash;
-    uint32_t *seed_rg   = idx->entry_rg;
+    int n_idx_cols = idx->n_cols;
+    int idx_ci     = idx->ci;
 
     /* vtri_build_core reopens the store itself; close this handle first so the
        two are never open at once. The column names are held by the index's own
@@ -538,11 +556,12 @@ int vtri_extend(const char *vtr_path, const char *vtri_path) {
     const char *col_ptrs[VTRI_MAX_COLS];
     for (int c = 0; c < n_idx_cols; c++) col_ptrs[c] = col_copies[c];
 
-    vtri_build_core(vtr_path, col_ptrs, n_idx_cols, idx_ci,
-                    first_rg, seed_hash, seed_rg, n_seed);
+    /* The seed is handed over: vtri_build_core copies its entries and closes it
+       straight away, so nothing of the old index is still open by the time the
+       new one is moved into its place. */
+    vtri_build_core(vtr_path, col_ptrs, n_idx_cols, idx_ci, first_rg, idx);
 
     for (int c = 0; c < n_idx_cols; c++) free(col_copies[c]);
-    vtri_close(idx);
     return 1;
 }
 
@@ -679,7 +698,6 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     idx->n_entries = (int64_t)read_u64_f(fp);
     idx->n_slots   = (int64_t)read_u64_f(fp);
 
-    /* Read arrays */
     int64_t ne = idx->n_entries;
     int64_t ns = idx->n_slots;
 
@@ -704,6 +722,32 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
         ns > remaining / 8 || ne > (remaining - 8 * ns) / 20) {
         fclose(fp); vtri_close(idx);
         return NULL;
+    }
+
+    /* Where each array begins. The header is a whole number of bytes rather than
+       of words, so these offsets are not 8-byte aligned; the mapped reads go
+       through memcpy for that reason. */
+    idx->off_hash  = hdr_end;
+    idx->off_rg    = idx->off_hash + 8 * ne;
+    idx->off_heads = idx->off_rg + 4 * ne;
+    idx->off_next  = idx->off_heads + 8 * ns;
+    int64_t arrays_end = idx->off_next + 8 * ne;
+
+    /* A big index is mapped rather than read: reading it would make every
+       lookup cost a copy of the whole file, which is the cost this size is
+       exactly when it starts to hurt. Reading stays the path for a small one,
+       where the copy is a couple of milliseconds and leaves no handle open. */
+    if (arrays_end - hdr_end > VTRI_RESIDENT_MAX_BYTES) {
+        fclose(fp);
+        if (!vec_file_map_open(&idx->map, vtri_path) ||
+            idx->map.size < arrays_end) {
+            /* Nothing here says the machine is out of memory -- a mapping is
+               address space, not pages -- so this is an index that cannot be
+               used, and reports absent like any other. */
+            vtri_close(idx);
+            return NULL;
+        }
+        return idx;
     }
 
     idx->entry_hash = (uint64_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(uint64_t));
@@ -741,6 +785,7 @@ void vtri_close(VtrIndex *idx) {
     free(idx->entry_rg);
     free(idx->heads);
     free(idx->entry_next);
+    vec_file_map_close(&idx->map);
     free(idx->col_name);
     if (idx->col_names) {
         for (int c = 0; c < idx->n_cols; c++) free(idx->col_names[c]);
@@ -766,16 +811,16 @@ static uint8_t *probe_by_hash(const VtrIndex *idx, uint64_t h,
 
     int64_t mask = idx->n_slots - 1;
     int64_t slot = (int64_t)(h & (uint64_t)mask);
-    int64_t e = idx->heads[slot];
+    int64_t e = vtri_head(idx, slot);
 
     int64_t steps = 0;
     while (e >= 0 && e < idx->n_entries && steps++ < idx->n_entries) {
-        if (idx->entry_hash[e] == h) {
-            uint32_t rg = idx->entry_rg[e];
+        if (vtri_entry_hash(idx, e) == h) {
+            uint32_t rg = vtri_entry_rg(idx, e);
             if (rg < n_rowgroups)
                 bitmap[rg] = 1;
         }
-        e = idx->entry_next[e];
+        e = vtri_entry_next(idx, e);
     }
 
     return bitmap;
