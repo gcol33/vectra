@@ -20,13 +20,16 @@
 #' many rows the store holds -- which is what keeps a lookup off the size of the
 #' store.
 #'
-#' [append_vtr()] with `along = "rows"` rewrites every row group, which moves
-#' the rows a key sits in; it rebuilds each of the store's indexes for that
-#' reason. An index left behind by any other change of the store is reported as
-#' absent by `has_index()` and ignored by queries rather than pruning row groups
-#' that may now hold matching rows. Indexes written by vectra 0.11.7 and earlier
-#' are superseded and read as absent; call `create_index()` again to rebuild
-#' them.
+#' [append_vtr()] leaves the existing row groups where they are, so an index
+#' stays valid across an append: it takes in the row groups just appended and
+#' keeps the rest, reading only the new data rather than the whole store.
+#'
+#' An index left behind by any other change of the store is reported as absent
+#' by `has_index()` and ignored by queries rather than pruning row groups that
+#' may now hold matching rows. The same goes for one that cannot be read at all:
+#' an index only ever saves a scan work, so an unusable one costs speed and
+#' never rows. Indexes written by vectra 0.11.7 and earlier are superseded and
+#' read as absent; call `create_index()` again to rebuild them.
 #'
 #' @param path Path to a `.vtr` file.
 #' @param column Character vector. Name(s) of column(s) to index.
@@ -53,9 +56,10 @@ create_index <- function(path, column, ci = FALSE) {
 
 #' Check whether a .vtr column has a usable hash index
 #'
-#' `TRUE` when the `.vtri` sidecar is present, in the current format, and built
-#' against the store as it now stands. An index that no longer matches the store
-#' reads as `FALSE`, because queries ignore it; [create_index()] rebuilds it.
+#' `TRUE` when the `.vtri` sidecar is present, readable, in the current format,
+#' and built against the store as it now stands. An index that no longer matches
+#' the store, or that cannot be read, reads as `FALSE`, because queries ignore
+#' it and fall back to a scan; [create_index()] rebuilds it.
 #'
 #' @param path Path to a `.vtr` file.
 #' @param column Character vector. Name(s) of column(s), in any order.
@@ -96,11 +100,27 @@ has_index <- function(path, column) {
   specs[!vapply(specs, is.null, logical(1))]
 }
 
-# Rebuild every index a store carries. A row append rewrites every row group, so
-# the keys an index maps to row groups have moved and the index has to be built
-# again against the store as it now stands.
+# Rebuild every index a store carries, from the whole store.
 .rebuild_indexes <- function(path) {
   for (spec in .index_specs(path))
     create_index(path, spec$columns, ci = spec$ci)
+  invisible(NULL)
+}
+
+# Bring every index a store carries up to date after a row append.
+#
+# An append leaves the existing row groups where they are, so the row groups an
+# index already names still hold the keys it maps to them; the only thing it
+# does not cover is the row groups just appended. Each index therefore takes
+# those in and keeps the rest, reading only the appended data -- which is what
+# keeps an indexed store's append off the size of the store. An index that
+# cannot be extended (unreadable, or built against a store this one is not an
+# extension of) is rebuilt in full instead.
+.extend_indexes <- function(path) {
+  for (f in .index_files(path)) {
+    if (isTRUE(.Call(C_extend_index, path, f))) next
+    spec <- .Call(C_index_spec, path, f)
+    if (!is.null(spec)) create_index(path, spec$columns, ci = spec$ci)
+  }
   invisible(NULL)
 }

@@ -101,8 +101,12 @@ static inline uint64_t vtri_hash_double(double val) {
    them, which is how an index left behind by a row append is kept from pruning.
    Pass -1 for either to skip that check.
 
-   Returns NULL when the file does not exist, is not a .vtri, was written by a
-   superseded version, or does not match the store. */
+   Returns NULL whenever there is no index to probe: the file does not exist, is
+   not a .vtri, was written by a superseded or newer version, does not match the
+   store, or is malformed. An index only ever saves a scan work, so an unusable
+   one costs speed and never rows -- reporting absent keeps a bad sidecar from
+   turning a readable store into an unopenable one. Allocation failure still
+   raises, being a fact about the machine rather than about the index. */
 VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
                     int64_t src_n_rows, int64_t src_n_rowgroups);
 
@@ -121,6 +125,19 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices, int *out_ci
    n_cols: number of columns (1..VTRI_MAX_COLS)
    ci: case-insensitive flag */
 void vtri_build(const char *vtr_path, const char **col_names, int n_cols, int ci);
+
+/* Bring an existing .vtri up to date with a store that has gained row groups
+   since it was built, scanning only the row groups it does not already cover.
+
+   An entry names the row group its key sits in, and a row append moves no
+   existing row group, so the entries an index already holds stay true; only the
+   appended groups need reading. That keeps maintaining an index off the size of
+   the store, which is what stops an indexed store's append being quadratic.
+
+   Returns 1 when the index was rewritten, or 0 when it cannot be extended --
+   unreadable, or built against a store this one is not an extension of -- in
+   which case the caller should rebuild it with vtri_build. */
+int vtri_extend(const char *vtr_path, const char *vtri_path);
 
 /* Resolve index column names against a schema, sorted into schema order.
    Writes n_cols entries to out_idx and out_names. Returns 1 on success, or 0

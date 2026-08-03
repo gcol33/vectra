@@ -65,6 +65,18 @@ SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci) {
     return R_NilValue;
 }
 
+/* --- C_extend_index(path, vtri_path) ---
+   Bring one sidecar up to date with a store that has just gained row groups,
+   reading only the appended ones. TRUE when it was extended; FALSE when it
+   cannot be (unreadable, or built against a store this one is not an extension
+   of), which tells the caller to rebuild it instead. */
+
+SEXP C_extend_index(SEXP path, SEXP vtri_path) {
+    const char *vtr_p  = CHAR(STRING_ELT(path, 0));
+    const char *vtri_p = CHAR(STRING_ELT(vtri_path, 0));
+    return Rf_ScalarLogical(vtri_extend(vtr_p, vtri_p));
+}
+
 /* --- C_has_index(path, col_name) ---
    TRUE only when the index can actually be used: present, in the current
    format, and matching the store as it is now. */

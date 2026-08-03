@@ -331,3 +331,117 @@ test_that("index survives re-creation after data change", {
   expect_equal(nrow(result), 1L)
   expect_equal(result$name, "y")
 })
+
+# ── an index after a row append ───────────────────────────────────────────────
+
+test_that("a row append leaves each index usable and covering the new rows", {
+  # A row append moves no existing row group, so an index's entries stay true
+  # and it only has to take in the appended groups. What matters here is the
+  # result: keys that appear only in the appended rows are still found, and
+  # keys on both sides find both.
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".name.vtri"))))
+
+  write_vtr(data.frame(name = c("a", "b", "c"), val = 1:3,
+                       stringsAsFactors = FALSE), f)
+  create_index(f, "name")
+  expect_true(has_index(f, "name"))
+
+  append_vtr(data.frame(name = c("d", "a"), val = 4:5,
+                        stringsAsFactors = FALSE), f)
+
+  expect_true(has_index(f, "name"))
+
+  only_new <- tbl(f) |> filter(name == "d") |> collect()
+  expect_equal(nrow(only_new), 1L)
+  expect_equal(only_new$val, 4)
+
+  both <- tbl(f) |> filter(name == "a") |> collect()
+  expect_equal(sort(both$val), c(1, 5))
+
+  absent <- tbl(f) |> filter(name == "zzz") |> collect()
+  expect_equal(nrow(absent), 0L)
+})
+
+test_that("indexes stay correct across repeated row appends", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".name.vtri"))))
+
+  write_vtr(data.frame(name = "k0", val = 0L, stringsAsFactors = FALSE), f)
+  create_index(f, "name")
+
+  for (i in 1:8)
+    append_vtr(data.frame(name = c(paste0("k", i), "shared"),
+                          val = c(i, 100L + i), stringsAsFactors = FALSE), f)
+
+  expect_true(has_index(f, "name"))
+  expect_equal(nrow(tbl(f) |> filter(name == "k5") |> collect()), 1L)
+  expect_equal(tbl(f) |> filter(name == "k5") |> collect() |> getElement("val"), 5)
+  expect_equal(nrow(tbl(f) |> filter(name == "shared") |> collect()), 8L)
+  expect_equal(nrow(tbl(f) |> collect()), 17L)
+})
+
+test_that("a composite index survives a row append", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, paste0(f, ".a.b.vtri"))))
+
+  write_vtr(data.frame(a = c("x", "y"), b = c("p", "q"), val = 1:2,
+                       stringsAsFactors = FALSE), f)
+  create_index(f, c("a", "b"))
+  expect_true(has_index(f, c("a", "b")))
+
+  append_vtr(data.frame(a = c("z", "x"), b = c("r", "p"), val = 3:4,
+                        stringsAsFactors = FALSE), f)
+
+  expect_true(has_index(f, c("a", "b")))
+  expect_equal(nrow(tbl(f) |> filter(a == "z", b == "r") |> collect()), 1L)
+  expect_equal(sort(tbl(f) |> filter(a == "x", b == "p") |> collect() |>
+                      getElement("val")), c(1, 4))
+})
+
+# ── an unusable sidecar costs speed, never rows ───────────────────────────────
+
+test_that("a malformed .vtri degrades to a scan rather than failing the read", {
+  # An index only ever saves a scan work, so nothing about a query's
+  # correctness rests on one. A sidecar that cannot be read has to report as
+  # absent, not turn a readable store into an unopenable one.
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".name.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  df <- data.frame(name = c("a", "b", "c"), val = 1:3, stringsAsFactors = FALSE)
+  write_vtr(df, f)
+  create_index(f, "name")
+  expect_true(has_index(f, "name"))
+
+  # Truncate the sidecar: its header now promises far more than the file holds,
+  # which is what the size guard rejects.
+  raw <- readBin(idx, "raw", file.size(idx))
+  writeBin(raw[seq_len(length(raw) %/% 2L)], idx)
+
+  expect_false(has_index(f, "name"))
+  res <- tbl(f) |> filter(name == "b") |> collect()
+  expect_equal(nrow(res), 1L)
+  expect_equal(res$val, 2)
+  expect_equal(nrow(tbl(f) |> collect()), 3L)
+})
+
+test_that("a .vtri of garbage degrades to a scan", {
+  f <- tempfile(fileext = ".vtr")
+  idx <- paste0(f, ".name.vtri")
+  on.exit(unlink(c(f, idx)))
+
+  write_vtr(data.frame(name = c("a", "b", "c"), val = 1:3,
+                       stringsAsFactors = FALSE), f)
+  create_index(f, "name")
+
+  # Keep the magic, wreck the counts that follow it.
+  raw <- readBin(idx, "raw", file.size(idx))
+  raw[5:length(raw)] <- as.raw(0xff)
+  writeBin(raw, idx)
+
+  expect_false(has_index(f, "name"))
+  res <- tbl(f) |> filter(name == "c") |> collect()
+  expect_equal(nrow(res), 1L)
+  expect_equal(res$val, 3)
+})

@@ -481,3 +481,75 @@ test_that("diff_vtr handles all rows deleted (new is empty subset)", {
   expect_equal(length(d$deleted), 5L)
   expect_equal(nrow(collect(d$added)), 0L)
 })
+
+# ── append_vtr(along = "rows") appends in place ───────────────────────────────
+
+test_that("a row append leaves the bytes already written where they are", {
+  # The claim the in-place append rests on: existing row groups are neither
+  # read nor moved, so the call costs the rows being appended rather than the
+  # size of the store. Everything past the 64-byte container header must
+  # therefore survive verbatim -- only the header is rewritten, last.
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  write_vtr(data.frame(x = 1:1000, y = as.double(1:1000)), f)
+  before <- readBin(f, "raw", file.size(f))
+
+  append_vtr(data.frame(x = 1001:1100, y = as.double(1001:1100)), f)
+  after <- readBin(f, "raw", file.size(f))
+
+  hdr <- 64L
+  expect_gt(length(after), length(before))
+  expect_identical(after[(hdr + 1L):length(before)],
+                   before[(hdr + 1L):length(before)])
+
+  result <- tbl(f) |> collect()
+  expect_equal(nrow(result), 1100L)
+  expect_equal(result$x, as.double(1:1100))
+  expect_equal(result$y, as.double(1:1100))
+})
+
+test_that("repeated row appends never move the rows already written", {
+  # Building a store by appending batch after batch is the case that used to
+  # degrade: each call rewrote everything before it. Ten appends later the
+  # first batch's bytes are still untouched.
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+
+  write_vtr(data.frame(x = 1:100), f)
+  base <- readBin(f, "raw", file.size(f))
+
+  for (i in 1:10)
+    append_vtr(data.frame(x = (100L * i + 1L):(100L * i + 100L)), f)
+
+  after <- readBin(f, "raw", file.size(f))
+  hdr <- 64L
+  expect_identical(after[(hdr + 1L):length(base)], base[(hdr + 1L):length(base)])
+
+  expect_equal(tbl(f) |> collect() |> nrow(), 1100L)
+  expect_equal(tbl(f) |> collect() |> getElement("x"), as.double(1:1100))
+})
+
+test_that("a row append honours compress", {
+  f_none  <- tempfile(fileext = ".vtr")
+  f_small <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f_none, f_small)))
+
+  seed  <- data.frame(x = 1:10)
+  extra <- data.frame(x = rep(7L, 20000))   # compresses to almost nothing
+
+  write_vtr(seed, f_none)
+  write_vtr(seed, f_small)
+  grew <- function(f, before) file.size(f) - before
+  before_none  <- file.size(f_none)
+  before_small <- file.size(f_small)
+
+  append_vtr(extra, f_none,  compress = "none")
+  append_vtr(extra, f_small, compress = "small")
+
+  expect_lt(grew(f_small, before_small), grew(f_none, before_none))
+  expect_equal(tbl(f_none)  |> collect() |> nrow(), 20010L)
+  expect_equal(tbl(f_small) |> collect() |> nrow(), 20010L)
+  expect_equal(tbl(f_small) |> collect() |> getElement("x"),
+               c(as.double(1:10), rep(7, 20000)))
+})

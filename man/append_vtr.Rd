@@ -19,8 +19,8 @@ append_vtr(
 
 \item{along}{\code{"rows"} to add rows (default), \code{"cols"} to add columns.}
 
-\item{compress}{Compression for the appended columns: \code{"fast"},
-\code{"small"}, or \code{"none"}. \code{along = "cols"} only.}
+\item{compress}{Compression for the appended rows or columns: \code{"fast"},
+\code{"small"}, or \code{"none"}.}
 
 \item{...}{Additional arguments passed to methods.}
 }
@@ -34,9 +34,21 @@ rows already there.
 }
 \section{Appending rows}{
 The schema of \code{x} must exactly match the schema of the target file (same
-column names and types, in the same order). Existing row groups are
-restreamed through a fresh writer, so a row append costs a pass over the
-file.
+column names and types, in the same order). The row groups already in the
+store are neither read nor rewritten -- the new ones are encoded and
+attached on their own -- so the cost tracks the rows being appended rather
+than the size of the store.
+
+That is what lets a table too long to hold in memory be built a batch at a
+time: write the first batch with \code{\link[=write_vtr]{write_vtr()}}, then append each later one
+as it is produced, with a peak of one batch rather than the whole table.
+Building a store this way costs one pass over the rows written, however
+many calls it takes.
+
+Existing row groups keep their positions, so any \code{.vtri} index built with
+\code{\link[=create_index]{create_index()}} stays valid across a row append: each one takes in the
+appended row groups and keeps the rest, rather than being rebuilt from the
+whole store.
 }
 
 \section{Appending columns}{
@@ -55,13 +67,18 @@ to the store's rows by position.
 Existing row-group boundaries and column data are untouched, so any
 \code{.vtri} index built with \code{\link[=create_index]{create_index()}} over the original columns stays
 valid across a column append.
+}
 
-A column append rewrites the file header last, and everything before that
-is written past the end of the existing data, so an interruption leaves
-the store readable exactly as it was. A row append has no such property:
-interrupted after the new row groups are written but before the header is
-patched, the file is left corrupted. Use \code{\link[=write_vtr]{write_vtr()}} for
-safety-critical write-once workloads.
+\section{Interruption}{
+Either direction writes everything past the end of the existing data and
+rewrites the file header last, so an interruption -- a crash, a full disk,
+a killed process -- leaves the store readable exactly as it was before the
+call. The appended bytes are referenced by nothing and the next append
+writes over them.
+
+The trade is that a store grown in place is stamped so that readers
+predating this format refuse it rather than misread it, and is
+random-access only, which is how vectra reads a \code{.vtr} anyway.
 }
 
 \examples{

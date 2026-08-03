@@ -265,8 +265,27 @@ static uint64_t read_u64_f(FILE *fp) {
 /*  vtri_build: build and write a .vtri index                          */
 /* ------------------------------------------------------------------ */
 
-void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
-                int ci) {
+/*
+ * Build a .vtri over `col_names` and write it.
+ *
+ * Scanning starts at row group `first_rg` and the entry list starts out
+ * holding the `n_seed` (hash, row group) pairs given, which is what lets an
+ * index be brought up to date after an append without rereading the store: an
+ * entry names the row group its key sits in, and a row append moves no
+ * existing row group, so the entries already in an index stay true and only
+ * the appended row groups need scanning. Pass first_rg = 0 and no seed to
+ * build from nothing.
+ *
+ * Everything after the scan -- bucket count, chaining, the stamp, the write --
+ * is the same either way, and the stamp is always taken from the store as it
+ * now stands, so an extended index is byte-identical to one rebuilt from
+ * scratch except for the order entries appear in.
+ */
+static void vtri_build_core(const char *vtr_path, const char **col_names,
+                            int n_cols, int ci,
+                            uint32_t first_rg,
+                            const uint64_t *seed_hash, const uint32_t *seed_rg,
+                            int64_t n_seed) {
     if (n_cols < 1 || n_cols > VTRI_MAX_COLS)
         vectra_error("an index spans 1 to %d columns, got %d",
                      VTRI_MAX_COLS, n_cols);
@@ -315,7 +334,12 @@ void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
     uint64_t per_col_hash[VTRI_MAX_COLS];
     int oom = 0;
 
-    for (uint32_t rg = 0; rg < n_rg && !oom; rg++) {
+    /* Carry over the entries an earlier build already established. */
+    for (int64_t i = 0; i < n_seed && !oom; i++) {
+        if (!ev_push(&ev, seed_hash[i], seed_rg[i])) oom = 1;
+    }
+
+    for (uint32_t rg = first_rg; rg < n_rg && !oom; rg++) {
         VecBatch *batch = vtr1_read_rowgroup_tdc(file, rg, col_mask);
         if (!batch) {
             oom = 1;
@@ -426,6 +450,102 @@ void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
     if (!ok) vectra_error("failed writing vtri index file");
 }
 
+void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
+                int ci) {
+    vtri_build_core(vtr_path, col_names, n_cols, ci, 0, NULL, NULL, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/*  vtri_extend: take in row groups appended since the index was built */
+/* ------------------------------------------------------------------ */
+
+int vtri_extend(const char *vtr_path, const char *vtri_path) {
+    /* Opened with the stamp check skipped: the store has already grown past
+       what this index was built against, which is precisely the case being
+       handled. The stamp is then checked by hand, against the store's shape
+       BEFORE the append rather than after. */
+    VtrIndex *idx = vtri_open(vtri_path, NULL, -1, -1);
+    if (!idx) return 0;
+
+    Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
+    if (!file) { vtri_close(idx); return 0; }
+
+    const VecSchema *schema = vtr1_tdc_schema(file);
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(file);
+
+    /* The index's entries name row groups by position, so they survive only if
+       the row groups they name are still the same ones. Verify that the store
+       opens with the index's row groups as an unchanged PREFIX: the count has
+       not shrunk, and those first groups still hold exactly the rows the index
+       was built over. A store rewritten rather than appended to fails this and
+       falls back to a full rebuild. */
+    int extendable = (idx->src_n_rowgroups >= 0 &&
+                      idx->src_n_rowgroups <= (int64_t)n_rg);
+    if (extendable) {
+        int64_t prefix_rows = 0;
+        for (uint32_t rg = 0; rg < (uint32_t)idx->src_n_rowgroups; rg++)
+            prefix_rows += vtr1_tdc_rowgroup_n_rows(file, rg);
+        extendable = (prefix_rows == idx->src_n_rows);
+    }
+
+    /* Resolve the indexed columns by name against the current schema, since
+       that is what the rebuild takes. A store whose columns moved (a column
+       append puts new ones at the tail, so positions are stable, but be
+       defensive) cannot reuse the old entries. */
+    const char *cols[VTRI_MAX_COLS];
+    if (extendable) {
+        for (int c = 0; c < idx->n_cols; c++) {
+            uint16_t ci_col = idx->col_indices[c];
+            if (ci_col >= (uint16_t)schema->n_cols) { extendable = 0; break; }
+            cols[c] = schema->col_names[ci_col];
+        }
+    }
+
+    if (!extendable) {
+        vtr1_close_tdc(file);
+        vtri_close(idx);
+        return 0;
+    }
+
+    /* Nothing new to take in: the index already covers the store. Rewrite it
+       anyway, so its stamp matches a store whose row count changed without
+       gaining a row group (an appended empty batch). */
+    uint32_t first_rg = (uint32_t)idx->src_n_rowgroups;
+
+    int      n_idx_cols = idx->n_cols;
+    int      idx_ci     = idx->ci;
+    int64_t  n_seed     = idx->n_entries;
+    uint64_t *seed_hash = idx->entry_hash;
+    uint32_t *seed_rg   = idx->entry_rg;
+
+    /* vtri_build_core reopens the store itself; close this handle first so the
+       two are never open at once. The column names are held by the index's own
+       resolved copies, which outlive the close. */
+    char *col_copies[VTRI_MAX_COLS];
+    for (int c = 0; c < n_idx_cols; c++) {
+        size_t len = strlen(cols[c]);
+        col_copies[c] = (char *)malloc(len + 1);
+        if (!col_copies[c]) {
+            for (int j = 0; j < c; j++) free(col_copies[j]);
+            vtr1_close_tdc(file);
+            vtri_close(idx);
+            vectra_error("alloc failed extending vtri index");
+        }
+        memcpy(col_copies[c], cols[c], len + 1);
+    }
+    vtr1_close_tdc(file);
+
+    const char *col_ptrs[VTRI_MAX_COLS];
+    for (int c = 0; c < n_idx_cols; c++) col_ptrs[c] = col_copies[c];
+
+    vtri_build_core(vtr_path, col_ptrs, n_idx_cols, idx_ci,
+                    first_rg, seed_hash, seed_rg, n_seed);
+
+    for (int c = 0; c < n_idx_cols; c++) free(col_copies[c]);
+    vtri_close(idx);
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /*  vtri_read_spec: header-only read, any version                      */
 /* ------------------------------------------------------------------ */
@@ -479,6 +599,17 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices,
 /*  vtri_open: read a .vtri index                                      */
 /* ------------------------------------------------------------------ */
 
+/* An index is an optimization: it names the row groups a key may sit in, and
+   every query it accelerates is answerable by reading the store. So no query's
+   correctness rests on one, and every way of failing to read one -- absent,
+   superseded, written by a newer vectra, stale against the store, malformed --
+   reports no index and leaves the scan to read the store. Raising an error
+   instead would make an unusable sidecar an unreadable store, which is the
+   worse failure: a file that reads fine becomes one that cannot be opened at
+   all, and not even a full scan gets the caller their rows.
+
+   Allocation failure is the one exception, and a different kind of thing: it
+   says nothing about the index, so it is raised rather than swallowed. */
 VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
                     int64_t src_n_rows, int64_t src_n_rowgroups) {
     FILE *fp = fopen(vtri_path, "rb");
@@ -492,16 +623,14 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     }
 
     uint16_t version = read_u16_f(fp);
-    if (version == 1 || version == 2) {
-        /* Superseded layouts: one entry per row and no build stamp, so they can
-           neither be verified against the store nor opened cheaply. Report no
-           index; create_index() rebuilds in the current format. */
+    if (version != VTRI_VERSION) {
+        /* Versions 1 and 2 are superseded (one entry per row, no build stamp,
+           so they can neither be verified against the store nor opened
+           cheaply); a version above this build's is from a newer vectra and
+           its layout is unknown. Either way there is no index to probe, and
+           create_index() rebuilds in the current format. */
         fclose(fp);
         return NULL;
-    }
-    if (version != VTRI_VERSION) {
-        fclose(fp);
-        vectra_error(".vtri version %u was written by a newer vectra", version);
     }
 
     VtrIndex *idx = (VtrIndex *)calloc(1, sizeof(VtrIndex));
@@ -511,7 +640,7 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     idx->ci     = read_u8_f(fp);
     if (idx->n_cols < 1 || idx->n_cols > VTRI_MAX_COLS) {
         fclose(fp); vtri_close(idx);
-        vectra_error("corrupt .vtri: index spans %d columns", (int)idx->n_cols);
+        return NULL;
     }
     idx->col_indices = (uint16_t *)malloc((size_t)idx->n_cols * sizeof(uint16_t));
     idx->col_names   = (char **)calloc((size_t)idx->n_cols, sizeof(char *));
@@ -563,18 +692,18 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     int64_t hdr_end = (int64_t)VTRI_FTELL64(fp);
     if (hdr_end < 0 || VTRI_FSEEK64(fp, 0, SEEK_END) != 0) {
         fclose(fp); vtri_close(idx);
-        vectra_error("corrupt .vtri: cannot size index file");
+        return NULL;
     }
     int64_t fsize = (int64_t)VTRI_FTELL64(fp);
     if (fsize < 0 || VTRI_FSEEK64(fp, hdr_end, SEEK_SET) != 0) {
         fclose(fp); vtri_close(idx);
-        vectra_error("corrupt .vtri: cannot size index file");
+        return NULL;
     }
     int64_t remaining = (int64_t)fsize - (int64_t)hdr_end;
     if (ne < 0 || ns < 1 || remaining < 0 ||
         ns > remaining / 8 || ne > (remaining - 8 * ns) / 20) {
         fclose(fp); vtri_close(idx);
-        vectra_error("corrupt .vtri: entry/slot counts exceed file size");
+        return NULL;
     }
 
     idx->entry_hash = (uint64_t *)malloc((size_t)(ne > 0 ? ne : 1) * sizeof(uint64_t));
@@ -597,7 +726,7 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     fclose(fp);
     if (short_read) {
         vtri_close(idx);
-        vectra_error("vtri: unexpected EOF");
+        return NULL;
     }
     return idx;
 }

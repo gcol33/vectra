@@ -52,7 +52,7 @@ SEXP C_tiff_read_metadata(SEXP path);
 SEXP C_tiff_read_crs(SEXP path);
 SEXP C_write_vtr_node(SEXP node_xptr, SEXP path, SEXP batch_size, SEXP compress,
                       SEXP col_types, SEXP quantize, SEXP spatial);
-SEXP C_append_vtr(SEXP node_xptr, SEXP path);
+SEXP C_append_vtr(SEXP node_xptr, SEXP path, SEXP compress);
 SEXP C_delete_vtr(SEXP path, SEXP row_indices);
 SEXP C_fuzzy_join_node(SEXP probe_xptr, SEXP build_xptr,
                        SEXP by_probe, SEXP by_build,
@@ -70,5 +70,6 @@ SEXP C_interval_join_node(SEXP probe_xptr, SEXP build_xptr,
 SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci);
 SEXP C_has_index(SEXP path, SEXP col_name);
 SEXP C_index_spec(SEXP path, SEXP vtri_path);
+SEXP C_extend_index(SEXP path, SEXP vtri_path);
 
 #endif /* VECTRA_R_BRIDGE_H */

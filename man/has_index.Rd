@@ -15,9 +15,10 @@ has_index(path, column)
 Logical scalar: \code{TRUE} if the index exists and can be used.
 }
 \description{
-\code{TRUE} when the \code{.vtri} sidecar is present, in the current format, and built
-against the store as it now stands. An index that no longer matches the store
-reads as \code{FALSE}, because queries ignore it; \code{\link[=create_index]{create_index()}} rebuilds it.
+\code{TRUE} when the \code{.vtri} sidecar is present, readable, in the current format,
+and built against the store as it now stands. An index that no longer matches
+the store, or that cannot be read, reads as \code{FALSE}, because queries ignore
+it and fall back to a scan; \code{\link[=create_index]{create_index()}} rebuilds it.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")

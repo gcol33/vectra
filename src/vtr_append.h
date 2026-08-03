@@ -5,12 +5,13 @@
 #include <R.h>
 #include <Rinternals.h>
 
-/* Append new rows (from node) as one or more new row groups to an existing
-   .vtr file. Existing row groups are untouched; only the n_rowgroups field
-   in the header is updated. Schema must match exactly. */
-void vtr_append_node(VecNode *node, const char *path);
+/* Append the node's rows as new row groups of an existing .vtr file. The
+   existing row groups are neither read nor rewritten, so the call costs the
+   rows being appended rather than the size of the store. Schema must match
+   exactly. comp_level is VTR_COMPRESS_NONE / _FAST / _SMALL. */
+void vtr_append_node(VecNode *node, const char *path, int comp_level);
 
-/* .Call entry point: C_append_vtr(node_xptr, path) */
-SEXP C_append_vtr(SEXP node_xptr, SEXP path);
+/* .Call entry point: C_append_vtr(node_xptr, path, compress) */
+SEXP C_append_vtr(SEXP node_xptr, SEXP path, SEXP compress);
 
 #endif /* VECTRA_VTR_APPEND_H */

@@ -35,7 +35,7 @@ explain(q)              # inspect optimized plan without executing
 ## Sinks
 
 - `write_vtr(x, path, compress = c("fast","small","none"), batch_size = NULL, col_types = NULL, quantize = NULL, spatial = NULL)` — atomic write; streams from a node.
-- `append_vtr(x, path)` — appends a row group; **schema (names, types, order) must match exactly**.
+- `append_vtr(x, path, along = c("rows","cols"), compress = c("fast","small","none"))` — grows a store in place; **schema (names, types, order) must match exactly** for rows, and `x` must supply exactly as many rows as the store holds for cols. Neither direction reads or rewrites the data already in the file, so the cost tracks what is being added, and building a store by appending batch after batch is linear in the rows written.
 - `delete_vtr(path, row_ids)` and `diff_vtr(old_path, new_path, key_col)` — logical (key-based) diff, returns `list(added = vectra_node, deleted = key_vector)`.
 - `write_csv(x, path)`, `write_sqlite(x, path, table)`.
 - `write_tiff(x, path, compress = FALSE, pixel_type = "float64", metadata = NULL, crs = NULL, tiled = FALSE, tile_size = 256L, bigtiff = "auto")` — `compress` is logical; `pixel_type` ∈ `"int8"`, `"int16"`, `"int32"`, `"uint8"`, `"uint16"`, `"float32"`, `"float64"`; `tile_size` must be a multiple of 16; `crs` accepts an integer EPSG, `"EPSG:4326"`, or `list(epsg=, citation=)`.
@@ -57,7 +57,7 @@ file path and will be rejected.
 
 ## Indexes and materialized blocks
 
-- `create_index(path, column, ci = FALSE)` writes a `.vtri` sidecar; pass a character vector (in any order) for composite indexes. `has_index(path, column)` reports whether one exists and is usable against the store as it now stands. `append_vtr(along = "rows")` rebuilds the sidecars it invalidates; an index that stops matching its store is ignored rather than used to prune, so rebuild it with `create_index()` when `has_index()` turns `FALSE`. `explain()` names the index a scan will probe.
+- `create_index(path, column, ci = FALSE)` writes a `.vtri` sidecar; pass a character vector (in any order) for composite indexes. `has_index(path, column)` reports whether one exists and is usable against the store as it now stands. `append_vtr(along = "rows")` leaves each sidecar valid, taking in the appended row groups rather than rebuilding from the whole store. An index that stops matching its store, or that cannot be read at all, is ignored rather than used to prune — it only ever saves a scan work, so losing one costs speed and never rows — so rebuild it with `create_index()` when `has_index()` turns `FALSE`. `explain()` names the index a scan will probe.
 - `materialize(node)` returns a `vectra_block` (in memory, reusable). Probe with `block_lookup(block, column, keys, ci = FALSE)` or `block_fuzzy_lookup(block, column, keys, method = c("dl","levenshtein","jw"), max_dist = 0.2, block_col = NULL, block_keys = NULL, n_threads = 4L)`.
 
 ## Out-of-core model fitting and per-group work
@@ -99,7 +99,7 @@ fits <- group_map(p, function(d, region)
 - `lookup(s, ...)` uses `dim$col` syntax (it parses the `$` call), not `dim.col`.
 - `summarize` is an alias of `summarise` — both are exported.
 - `tbl_xlsx` is **not streaming**; the whole sheet is loaded. Use `tbl_csv` or convert to `.vtr` for large data.
-- `append_vtr` is not fully atomic. For safety-critical writes, use `write_vtr` (which is).
+- `append_vtr` writes past the existing data and patches the file header last, so an interruption leaves the store readable exactly as it was. A store grown in place is random-access only and is refused by readers predating that format.
 
 ## Use cases / keywords
 

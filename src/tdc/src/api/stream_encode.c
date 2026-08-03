@@ -37,6 +37,27 @@
 typedef tdc_rg_col_entry v2_col_entry;
 typedef tdc_rg_group     v2_rowgroup_entry;
 
+/*
+ * How the encoder was opened, which decides what it may write and what it
+ * emits at close.
+ *
+ * CREATE builds a container from nothing: it wrote the header (and schema) at
+ * open and appends row groups.
+ *
+ * WIDEN and EXTEND both REOPEN an existing container and write past its
+ * trailing index, leaving everything already on disk untouched; they differ
+ * only in what they add. Widening gives the row groups already present a new
+ * column; extending adds row groups carrying the columns already declared.
+ * Both rebuild the index at close, patch the header last, and leave the
+ * blocks region with a gap where the superseded index sits -- which is what
+ * TDC_CONTAINER_VERSION_WIDENED marks.
+ */
+typedef enum {
+    V2_MODE_CREATE = 0,
+    V2_MODE_WIDEN,
+    V2_MODE_EXTEND
+} v2_mode;
+
 /* ----- Internal state ----------------------------------------------------- */
 
 /*
@@ -86,14 +107,19 @@ typedef struct {
     uint64_t           groups_cap;
     uint64_t           n_groups;
 
-    /* --- Widen mode (tdc_stream_encoder_open_widen) --- */
-    /* When widen != 0 the encoder is appending columns to an existing
-     * container: it wrote no header at open, and at close it emits the
-     * replacement schema and the rebuilt index at the tail, then stamps
-     * the header as TDC_CONTAINER_VERSION_WIDENED. */
-    uint8_t   widen;
+    /* --- Reopened-container state (WIDEN / EXTEND) --- */
+    uint8_t   mode;           /* v2_mode */
     uint64_t  blocks_start;   /* preserved from the existing container */
-    uint8_t  *schema_buf;     /* serialized replacement schema; owned */
+
+    /* WIDEN: the serialized replacement schema, written at the tail at close
+     * because the original slot at offset 64 cannot grow in place. Owned. */
+    uint8_t  *schema_buf;
+
+    /* EXTEND: the existing schema is reused as-is, so nothing is written for
+     * it and the header just records where it already sits. schema_n_cols is
+     * what each appended row group must supply. */
+    uint64_t  kept_schema_offset;
+    uint16_t  schema_n_cols;
 } v2_stream_encoder_state;
 
 /* ----- Helpers ------------------------------------------------------------ */
@@ -267,6 +293,11 @@ tdc_status tdc_stream_encoder_write_block(tdc_stream_encoder       *enc,
 
     v2_stream_encoder_state *e = (v2_stream_encoder_state *)enc;
 
+    /* A widening encoder adds columns to row groups that already exist, and
+     * names the one it means per call; the open-row-group accumulator this
+     * path feeds has nothing to attach to. Use widen_block there. */
+    if (e->mode == V2_MODE_WIDEN) return TDC_E_INVAL;
+
     /* Encode the block into the scratch buffer. */
     e->scratch.size = 0;
     tdc_status st = tdc_encode_block(src, spec, &e->scratch);
@@ -307,8 +338,18 @@ tdc_status tdc_stream_encoder_end_rowgroup(tdc_stream_encoder *enc,
 
     v2_stream_encoder_state *e = (v2_stream_encoder_state *)enc;
 
+    if (e->mode == V2_MODE_WIDEN) return TDC_E_INVAL;
+
     /* Must have written at least one block since the last end_rowgroup. */
     if (e->cur_n_cols == 0) return TDC_E_INVAL;
+
+    /* A row group appended to an existing container must carry exactly the
+     * columns that container declares: entries are positional against the
+     * schema, so a short or long group would misalign every column read out
+     * of it. A fresh container has no such constraint to check against --
+     * its schema is whatever the caller declared at open. */
+    if (e->mode == V2_MODE_EXTEND && e->cur_n_cols != (uint64_t)e->schema_n_cols)
+        return TDC_E_INVAL;
 
     /* Grow the finalized groups array if needed. */
     if (e->n_groups >= e->groups_cap) {
@@ -384,16 +425,24 @@ tdc_status tdc_stream_encoder_close(tdc_stream_encoder **enc) {
     tdc_status first_err = TDC_OK;
     uint64_t   schema_offset = 0;
 
-    /* In widen mode the replacement schema could not be written at open --
-     * the original schema slot sits immediately before the first block and
-     * cannot grow -- so it goes here, at the tail, just before the rebuilt
-     * index. */
-    if (e->widen && e->schema_size > 0) {
+    /* A reopened container records where its schema lives, since a nonzero
+     * schema_offset is what stamps the header as relocated-layout -- the
+     * warning a reader needs once the superseded index has left a gap in the
+     * blocks region.
+     *
+     * Widening had to move the schema: it grew, and the original slot sits
+     * immediately before the first block with no room. So it is written here,
+     * at the tail, just before the rebuilt index. Extending did not change the
+     * schema at all, so it stays where it already is and only its address is
+     * recorded. */
+    if (e->mode == V2_MODE_WIDEN && e->schema_size > 0) {
         schema_offset = e->write_pos;
         tdc_status st = v2_io_write_exact(&e->io, e->schema_buf,
                                           e->schema_size);
         if (st != TDC_OK) first_err = st;
         else e->write_pos += e->schema_size;
+    } else if (e->mode == V2_MODE_EXTEND) {
+        schema_offset = e->kept_schema_offset;
     }
 
     /* Write the trailing row-group index. */
@@ -443,31 +492,151 @@ tdc_status tdc_stream_encoder_close(tdc_stream_encoder **enc) {
     return first_err;
 }
 
-/* ----- Widening an existing container -------------------------------------- */
+/* ----- Reopening an existing container -------------------------------------- */
 
 /*
- * Column-widening rests on two properties of the container format:
+ * Widening (add columns) and extending (add row groups) are the same trick
+ * applied to the two axes, and rest on two properties of the container format:
  *
  *   1. Block records are located solely by the (row group, column) offsets
- *      in the trailing index, so a new column's blocks may sit anywhere in
- *      the file -- they do not have to be adjacent to the row group they
- *      belong to.
+ *      in the trailing index, so a new block may sit anywhere in the file --
+ *      it does not have to be adjacent to the row group it belongs to. Which
+ *      also means the entries already in the index stay correct verbatim:
+ *      nothing before the old trailer moves, so nothing it points at moves.
  *   2. The index and the schema are both rewritten wholesale at close, so
  *      growing them costs only their own (small) size.
  *
- * The one thing that cannot move is the original schema section, pinned at
- * offset 64 immediately before the first block. Rather than shift the body
- * to make room, the widened schema is written at the tail and the header
- * records where it went, which is what TDC_CONTAINER_VERSION_WIDENED means.
+ * Together those make the cost of either operation proportional to what is
+ * being added, not to what is already in the file.
  *
- * Crash behaviour: every byte this path writes goes PAST the existing
- * trailing index rather than over it, and the 64-byte header is patched
- * last. Interrupted at any point before that patch, the file still reads as
- * the pre-widen container -- its header, schema, blocks and index are all
+ * The one thing that cannot move is the original schema section, pinned at
+ * offset 64 immediately before the first block. Widening grows the schema, so
+ * rather than shift the body to make room it writes the replacement at the
+ * tail and points the header there. Extending does not touch the schema, so it
+ * leaves it in place and records the address it already has.
+ *
+ * Crash behaviour: every byte either path writes goes PAST the existing
+ * trailing index rather than over it, and the 64-byte header is patched last.
+ * Interrupted at any point before that patch, the file still reads as the
+ * container did before -- its header, schema, blocks and index are all
  * untouched, with unreferenced bytes appended. The cost is that the stale
- * index stays behind as a gap in the blocks region, which is why a widened
- * container is random-access only (see tdc_stream_decoder_peek_block).
+ * index stays behind as a gap in the blocks region, which is why a reopened
+ * container is random-access only (see tdc_stream_decoder_peek_block) and is
+ * stamped TDC_CONTAINER_VERSION_WIDENED whichever axis it grew along.
  */
+
+/* Allocate and prime the state for a reopen. */
+static v2_stream_encoder_state *v2_new_reopen_state(
+    const tdc_io *io,
+    void *(*realloc_fn)(void *user, void *ptr, size_t new_size),
+    void *alloc_user,
+    v2_mode mode) {
+    v2_stream_encoder_state *e = (v2_stream_encoder_state *)realloc_fn(
+        alloc_user, NULL, sizeof(v2_stream_encoder_state));
+    if (!e) return NULL;
+    memset(e, 0, sizeof(*e));
+
+    e->io         = *io;
+    e->realloc_fn = realloc_fn;
+    e->alloc_user = alloc_user;
+    e->seekable   = 1;
+    e->mode       = (uint8_t)mode;
+
+    e->scratch.realloc_fn = realloc_fn;
+    e->scratch.user       = alloc_user;
+    return e;
+}
+
+/* Teardown for an open that failed: no handle escaped, and nothing was
+ * written, so this only has to give back memory. */
+static void v2_open_abort(v2_stream_encoder_state *e) {
+    v2_free(e, e->schema_buf);
+    if (e->groups) v2_free_groups(e);
+    if (e->scratch.data) e->realloc_fn(e->alloc_user, e->scratch.data, 0);
+    e->realloc_fn(e->alloc_user, e, 0);
+}
+
+static tdc_status v2_read_exact(v2_stream_encoder_state *e,
+                                uint8_t *buf, size_t size) {
+    size_t total = 0;
+    while (total < size) {
+        size_t got = 0;
+        tdc_status st = e->io.read_fn(e->io.ctx, buf + total,
+                                      size - total, &got);
+        if (st != TDC_OK) return TDC_E_IO;
+        if (got == 0)     return TDC_E_CORRUPT;
+        total += got;
+    }
+    return TDC_OK;
+}
+
+/*
+ * Validate an existing container, adopt its row-group index, and leave the
+ * write cursor just past its trailing index -- the first byte no reader is
+ * looking at. Shared by widening and extending, which differ only in what they
+ * write from there and in what becomes of the schema.
+ *
+ * On success the header is handed back, since each caller needs a different
+ * part of it. On failure nothing is freed: the caller owns the state.
+ */
+static tdc_status v2_reopen_existing(v2_stream_encoder_state *e,
+                                     tdc_container_header *out_hdr) {
+    tdc_container_header hdr;
+    tdc_status st = e->io.seek_fn(e->io.ctx, 0, TDC_SEEK_SET);
+    if (st != TDC_OK) return st;
+
+    st = v2_read_exact(e, (uint8_t *)&hdr, TDC_CONTAINER_HEADER_SIZE);
+    if (st != TDC_OK) return st;
+
+    if (hdr.magic != TDC_CONTAINER_MAGIC) return TDC_E_CORRUPT;
+    if (hdr.version != TDC_CONTAINER_VERSION &&
+        hdr.version != TDC_CONTAINER_VERSION_WIDENED)
+        return TDC_E_VERSION;
+    /* Only a heterogeneous container can be reopened: the relocated-schema
+     * pointers occupy the global-shape slots, and a per-column schema is what
+     * both operations are defined against. */
+    if (!(hdr.flags & TDC_CONTAINER_FLAG_HETEROGENEOUS)) return TDC_E_INVAL;
+    /* There must be an index to carry over. */
+    if (hdr.index_offset == 0 || hdr.index_size == 0) return TDC_E_INVAL;
+
+    e->flags = hdr.flags;
+    e->blocks_start = (hdr.version == TDC_CONTAINER_VERSION_WIDENED)
+                    ? hdr.u.het.blocks_start
+                    : TDC_CONTAINER_HEADER_SIZE + hdr.schema_size;
+    e->n_blocks  = hdr.n_blocks;
+    e->any_stats = (hdr.flags & TDC_CONTAINER_FLAG_HAS_STATS) != 0;
+
+    /* ---- Read and parse the existing row-group index. ---- */
+    {
+        size_t idx_bytes = (size_t)hdr.index_size;
+        uint8_t *idx_buf = (uint8_t *)v2_alloc(e, NULL, idx_bytes);
+        if (!idx_buf) return TDC_E_NOMEM;
+
+        st = e->io.seek_fn(e->io.ctx, (int64_t)hdr.index_offset, TDC_SEEK_SET);
+        if (st != TDC_OK) { v2_free(e, idx_buf); return st; }
+
+        st = v2_read_exact(e, idx_buf, idx_bytes);
+        if (st != TDC_OK) { v2_free(e, idx_buf); return st; }
+
+        tdc_rowgroup_index idx;
+        st = tdc_rowgroup_index_parse(idx_buf, idx_bytes, e->any_stats,
+                                      e->realloc_fn, e->alloc_user, &idx);
+        v2_free(e, idx_buf);
+        if (st != TDC_OK) return st;
+
+        e->groups     = idx.groups;
+        e->n_groups   = idx.n_rowgroups;
+        e->groups_cap = idx.n_rowgroups;
+    }
+
+    /* ---- Position past the existing trailer, and write from there. ---- */
+    e->write_pos = hdr.index_offset + hdr.index_size;
+    st = e->io.seek_fn(e->io.ctx, (int64_t)e->write_pos, TDC_SEEK_SET);
+    if (st != TDC_OK) return st;
+
+    if (out_hdr) *out_hdr = hdr;
+    return TDC_OK;
+}
 
 tdc_status tdc_stream_encoder_open_widen(
     const tdc_stream_encoder_widen_config *cfg,
@@ -480,122 +649,97 @@ tdc_status tdc_stream_encoder_open_widen(
     if (!cfg->realloc_fn) return TDC_E_INVAL;
     if (!cfg->schema || cfg->schema->n_columns == 0) return TDC_E_INVAL;
 
-    v2_stream_encoder_state *e = (v2_stream_encoder_state *)cfg->realloc_fn(
-        cfg->alloc_user, NULL, sizeof(v2_stream_encoder_state));
+    v2_stream_encoder_state *e = v2_new_reopen_state(
+        &cfg->io, cfg->realloc_fn, cfg->alloc_user, V2_MODE_WIDEN);
     if (!e) return TDC_E_NOMEM;
-    memset(e, 0, sizeof(*e));
 
-    e->io         = cfg->io;
-    e->realloc_fn = cfg->realloc_fn;
-    e->alloc_user = cfg->alloc_user;
-    e->seekable   = 1;
-    e->widen      = 1;
-
-    e->scratch.data       = NULL;
-    e->scratch.size       = 0;
-    e->scratch.capacity   = 0;
-    e->scratch.realloc_fn = cfg->realloc_fn;
-    e->scratch.user       = cfg->alloc_user;
-
-    /* ---- Read the existing container header. ---- */
-    tdc_container_header hdr;
-    tdc_status st = e->io.seek_fn(e->io.ctx, 0, TDC_SEEK_SET);
-    if (st != TDC_OK) { v2_free(e, e); return st; }
-
-    {
-        size_t got = 0, total = 0;
-        while (total < TDC_CONTAINER_HEADER_SIZE) {
-            st = e->io.read_fn(e->io.ctx, (uint8_t *)&hdr + total,
-                               TDC_CONTAINER_HEADER_SIZE - total, &got);
-            if (st != TDC_OK) { v2_free(e, e); return TDC_E_IO; }
-            if (got == 0)     { v2_free(e, e); return TDC_E_CORRUPT; }
-            total += got;
-        }
-    }
-
-    if (hdr.magic != TDC_CONTAINER_MAGIC) { v2_free(e, e); return TDC_E_CORRUPT; }
-    if (hdr.version != TDC_CONTAINER_VERSION &&
-        hdr.version != TDC_CONTAINER_VERSION_WIDENED) {
-        v2_free(e, e);
-        return TDC_E_VERSION;
-    }
-    /* Only a heterogeneous container can be widened: the relocated-schema
-     * pointers occupy the global-shape slots, and a per-column schema is
-     * what widening extends. */
-    if (!(hdr.flags & TDC_CONTAINER_FLAG_HETEROGENEOUS)) {
-        v2_free(e, e);
-        return TDC_E_INVAL;
-    }
-    /* There must be an index to extend. */
-    if (hdr.index_offset == 0 || hdr.index_size == 0) {
-        v2_free(e, e);
-        return TDC_E_INVAL;
-    }
-
-    e->flags = hdr.flags;
-    e->blocks_start = (hdr.version == TDC_CONTAINER_VERSION_WIDENED)
-                    ? hdr.u.het.blocks_start
-                    : TDC_CONTAINER_HEADER_SIZE + hdr.schema_size;
-    e->n_blocks = hdr.n_blocks;
-    e->any_stats = (hdr.flags & TDC_CONTAINER_FLAG_HAS_STATS) != 0;
-
-    /* ---- Read and parse the existing row-group index. ---- */
-    {
-        size_t idx_bytes = (size_t)hdr.index_size;
-        uint8_t *idx_buf = (uint8_t *)v2_alloc(e, NULL, idx_bytes);
-        if (!idx_buf) { v2_free(e, e); return TDC_E_NOMEM; }
-
-        st = e->io.seek_fn(e->io.ctx, (int64_t)hdr.index_offset, TDC_SEEK_SET);
-        if (st != TDC_OK) { v2_free(e, idx_buf); v2_free(e, e); return st; }
-
-        size_t total = 0;
-        while (total < idx_bytes) {
-            size_t got = 0;
-            st = e->io.read_fn(e->io.ctx, idx_buf + total,
-                               idx_bytes - total, &got);
-            if (st != TDC_OK) { v2_free(e, idx_buf); v2_free(e, e); return TDC_E_IO; }
-            if (got == 0)     { v2_free(e, idx_buf); v2_free(e, e); return TDC_E_CORRUPT; }
-            total += got;
-        }
-
-        tdc_rowgroup_index idx;
-        st = tdc_rowgroup_index_parse(idx_buf, idx_bytes, e->any_stats,
-                                      e->realloc_fn, e->alloc_user, &idx);
-        v2_free(e, idx_buf);
-        if (st != TDC_OK) { v2_free(e, e); return st; }
-
-        e->groups     = idx.groups;
-        e->n_groups   = idx.n_rowgroups;
-        e->groups_cap = idx.n_rowgroups;
-    }
+    tdc_status st = v2_reopen_existing(e, NULL);
+    if (st != TDC_OK) { v2_open_abort(e); return st; }
 
     /* ---- Serialize the replacement schema now, write it at close. ---- */
     {
         size_t sz = tdc_schema_serialized_size(cfg->schema);
         if (sz == 0 || sz > UINT32_MAX) {
-            v2_free_groups(e);
-            v2_free(e, e);
+            v2_open_abort(e);
             return TDC_E_INVAL;
         }
         e->schema_buf = (uint8_t *)v2_alloc(e, NULL, sz);
         if (!e->schema_buf) {
-            v2_free_groups(e);
-            v2_free(e, e);
+            v2_open_abort(e);
             return TDC_E_NOMEM;
         }
         tdc_schema_serialize(cfg->schema, e->schema_buf);
         e->schema_size = (uint32_t)sz;
     }
 
-    /* ---- Position past the existing trailer, and write from there. ---- */
-    e->write_pos = hdr.index_offset + hdr.index_size;
+    *enc = (tdc_stream_encoder *)e;
+    return TDC_OK;
+}
+
+/* How many columns the container's schema declares. Read at open so every
+ * appended row group can be checked against it; the parsed descriptors
+ * themselves are not needed, only the count. */
+static tdc_status v2_read_schema_n_cols(v2_stream_encoder_state *e,
+                                        uint64_t offset, uint32_t size,
+                                        uint16_t *out_n_cols) {
+    uint8_t *buf = (uint8_t *)v2_alloc(e, NULL, (size_t)size);
+    if (!buf) return TDC_E_NOMEM;
+
+    tdc_status st = e->io.seek_fn(e->io.ctx, (int64_t)offset, TDC_SEEK_SET);
+    if (st != TDC_OK) { v2_free(e, buf); return st; }
+
+    st = v2_read_exact(e, buf, (size_t)size);
+    if (st != TDC_OK) { v2_free(e, buf); return st; }
+
+    uint16_t         n_cols = 0;
+    tdc_column_desc *cols   = NULL;
+    st = tdc_schema_parse(buf, (size_t)size, e->realloc_fn, e->alloc_user,
+                          &n_cols, &cols);
+    v2_free(e, buf);
+    if (st != TDC_OK) return st;
+
+    tdc_schema_free(cols, n_cols, e->realloc_fn, e->alloc_user);
+    *out_n_cols = n_cols;
+    return TDC_OK;
+}
+
+tdc_status tdc_stream_encoder_open_extend(
+    const tdc_stream_encoder_extend_config *cfg,
+    tdc_stream_encoder **enc) {
+    if (!cfg || !enc) return TDC_E_INVAL;
+    *enc = NULL;
+
+    if (!cfg->io.write_fn || !cfg->io.read_fn || !cfg->io.seek_fn)
+        return TDC_E_INVAL;
+    if (!cfg->realloc_fn) return TDC_E_INVAL;
+
+    v2_stream_encoder_state *e = v2_new_reopen_state(
+        &cfg->io, cfg->realloc_fn, cfg->alloc_user, V2_MODE_EXTEND);
+    if (!e) return TDC_E_NOMEM;
+
+    tdc_container_header hdr;
+    tdc_status st = v2_reopen_existing(e, &hdr);
+    if (st != TDC_OK) { v2_open_abort(e); return st; }
+
+    /* Appended row groups carry the columns the container already declares,
+     * so there has to be a schema declaring them. Its address is also what
+     * the patched header records, and a zero there would read as "not a
+     * relocated layout" -- the one thing this container definitely is. */
+    if (hdr.schema_size == 0) { v2_open_abort(e); return TDC_E_INVAL; }
+
+    e->schema_size        = hdr.schema_size;
+    e->kept_schema_offset = (hdr.version == TDC_CONTAINER_VERSION_WIDENED)
+                          ? hdr.u.het.schema_offset
+                          : TDC_CONTAINER_HEADER_SIZE;
+
+    st = v2_read_schema_n_cols(e, e->kept_schema_offset, hdr.schema_size,
+                               &e->schema_n_cols);
+    if (st != TDC_OK)        { v2_open_abort(e); return st; }
+    if (e->schema_n_cols == 0) { v2_open_abort(e); return TDC_E_CORRUPT; }
+
+    /* Reading the schema moved the cursor; put it back past the trailer. */
     st = e->io.seek_fn(e->io.ctx, (int64_t)e->write_pos, TDC_SEEK_SET);
-    if (st != TDC_OK) {
-        v2_free(e, e->schema_buf);
-        v2_free_groups(e);
-        v2_free(e, e);
-        return st;
-    }
+    if (st != TDC_OK) { v2_open_abort(e); return st; }
 
     *enc = (tdc_stream_encoder *)e;
     return TDC_OK;
@@ -609,7 +753,7 @@ tdc_status tdc_stream_encoder_widen_block(tdc_stream_encoder     *enc,
     if (!enc || !src || !spec) return TDC_E_INVAL;
 
     v2_stream_encoder_state *e = (v2_stream_encoder_state *)enc;
-    if (!e->widen) return TDC_E_INVAL;
+    if (e->mode != V2_MODE_WIDEN) return TDC_E_INVAL;
     if (rg_index >= e->n_groups) return TDC_E_INVAL;
 
     v2_rowgroup_entry *rg = &e->groups[rg_index];
@@ -671,8 +815,9 @@ tdc_status tdc_stream_encoder_abort(tdc_stream_encoder **enc) {
     v2_stream_encoder_state *e = (v2_stream_encoder_state *)*enc;
 
     /* Same teardown as close, minus every write. Nothing that was already
-     * emitted is referenced by the on-disk header, so for a widen the
-     * container is left exactly as it was found. */
+     * emitted is referenced by the on-disk header, so for a reopened
+     * container -- widened or extended -- the file is left exactly as it was
+     * found. */
     v2_free(e, e->cur_cols);
     v2_free(e, e->cur_stats);
     v2_free(e, e->schema_buf);

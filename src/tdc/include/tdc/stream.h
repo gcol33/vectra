@@ -164,6 +164,12 @@ tdc_status tdc_stream_encoder_open(const tdc_stream_encoder_config *cfg,
  * total size for the trailing index.
  *
  * Blocks must be written in order.  Each call writes immediately.
+ *
+ * Valid on an encoder from tdc_stream_encoder_open (building a container) or
+ * tdc_stream_encoder_open_extend (adding row groups to one). A widening
+ * encoder adds columns to row groups that already exist and names the one it
+ * means per call, so it uses tdc_stream_encoder_widen_block instead and
+ * rejects this.
  */
 tdc_status tdc_stream_encoder_write_block(tdc_stream_encoder       *enc,
                                           const tdc_block          *src,
@@ -302,6 +308,62 @@ tdc_status tdc_stream_encoder_widen_block(tdc_stream_encoder     *enc,
                                           const tdc_block        *src,
                                           const tdc_codec_spec   *spec,
                                           const tdc_column_stats *stats);
+
+/* ----- Extending an existing container ------------------------------------ */
+
+/*
+ * Configuration for opening an existing container to APPEND ROW GROUPS.
+ * io must supply write_fn, read_fn and seek_fn: the existing header and
+ * row-group index are read back, and the new bytes are written past them.
+ *
+ * There is deliberately no schema field. Appended row groups carry the columns
+ * the container already declares, so its schema is reused untouched -- and
+ * left where it is, rather than relocated as widening must.
+ */
+typedef struct {
+    tdc_io io;
+
+    void *(*realloc_fn)(void *user, void *ptr, size_t new_size);
+    void   *alloc_user;
+} tdc_stream_encoder_extend_config;
+
+/*
+ * Open an existing heterogeneous container to append ROW GROUPS to it,
+ * WITHOUT reading or rewriting the data already in the file.
+ *
+ * This is the other axis of tdc_stream_encoder_open_widen: widening gives the
+ * row groups already present a new column, extending adds row groups carrying
+ * the columns already declared. Both reopen a container, write past its
+ * trailing index, rebuild that index at close, and patch the header last.
+ *
+ * Cost is proportional to the appended row groups plus the rebuilt index, not
+ * to the container's size: existing block records are never read, decoded or
+ * moved, and the index entries describing them are carried over verbatim --
+ * they still point where they always did, because nothing before the old
+ * trailer is touched.
+ *
+ * The container must carry TDC_CONTAINER_FLAG_HETEROGENEOUS, a trailing
+ * row-group index, and a schema. Write the new row groups with the ordinary
+ * tdc_stream_encoder_write_block / tdc_stream_encoder_set_rowgroup_stats /
+ * tdc_stream_encoder_end_rowgroup calls -- one block per schema column, in
+ * schema order, since column entries are positional -- then
+ * tdc_stream_encoder_close to emit the rebuilt index and the patched header.
+ * end_rowgroup rejects a group whose block count differs from the schema's
+ * column count. Closing without writing any row group leaves the container's
+ * contents as they were.
+ *
+ * Crash safety: as for widening, every byte goes PAST the existing trailing
+ * index and the 64-byte header is patched last, so a process that dies before
+ * that patch leaves a file that still reads exactly as it did before.
+ *
+ * The result is stamped TDC_CONTAINER_VERSION_WIDENED whatever the input
+ * version, because the superseded index stays behind as a gap between the old
+ * blocks and the new ones -- which is what that stamp tells a reader. The
+ * schema is NOT moved; the header simply records where it already sits.
+ */
+tdc_status tdc_stream_encoder_open_extend(
+    const tdc_stream_encoder_extend_config *cfg,
+    tdc_stream_encoder **enc);
 
 /* ----- Decoder ---------------------------------------------------------- */
 

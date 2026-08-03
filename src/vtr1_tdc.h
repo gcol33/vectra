@@ -99,6 +99,53 @@ void vtr1_close_tdc_widener(Vtr1TdcWidener *w);
  * and the bytes written so far are truncated away. */
 void vtr1_abort_tdc_widener(Vtr1TdcWidener *w);
 
+/* ---------- extender (append row groups in place) ------------------------- */
+
+/*
+ * Appends row groups to an existing container WITHOUT reading or rewriting the
+ * ones already in it -- the widener's other axis, on the same terms. tdc writes
+ * the new blocks and a rebuilt row-group index past the existing trailer, then
+ * patches the 64-byte header last, so the cost tracks the appended rows rather
+ * than the store's size and an interrupted append leaves the container readable
+ * as it was. Growing a store by repeated appends is therefore linear in the
+ * total rows written, not quadratic.
+ *
+ * The schema is reused rather than rewritten: appended row groups carry the
+ * columns the container already declares, and tdc rejects a row group whose
+ * column count disagrees.
+ *
+ * As with widening, the container is stamped as grown-in-place (older readers
+ * refuse it rather than misread it) and the superseded index stays behind as a
+ * gap, so it is random-access only. Existing row-group boundaries and block
+ * offsets are unchanged, so a `.vtri` sidecar's entries still name the row
+ * groups its keys sit in; only the store's row/row-group counts change, which
+ * the sidecar stamps.
+ */
+
+typedef struct Vtr1TdcExtender Vtr1TdcExtender;
+
+/* Open `path` for appending row groups. `schema` is the container's existing
+ * schema, used to type-check incoming batches. Aborts via vectra_error on I/O
+ * or validation failure. */
+Vtr1TdcExtender *vtr1_open_tdc_extender(const char *path,
+                                        const VecSchema *schema);
+
+/* Append one row group. Same contract as vtr1_write_rowgroup_tdc: batch->n_cols
+ * and column types must match the schema, comp_level is VTR_COMPRESS_NONE /
+ * _FAST / _SMALL, qspecs / sspecs may be NULL. */
+void vtr1_extend_rowgroup_tdc(Vtr1TdcExtender       *x,
+                              const VecBatch        *batch,
+                              int                    comp_level,
+                              const VtrQuantizeSpec *qspecs,
+                              const VtrSpatialSpec  *sspecs);
+
+/* Finalize (index + header patch) and free. */
+void vtr1_close_tdc_extender(Vtr1TdcExtender *x);
+
+/* Free without committing: the container is left exactly as it was found
+ * and the bytes written so far are truncated away. */
+void vtr1_abort_tdc_extender(Vtr1TdcExtender *x);
+
 /* ---------- reader -------------------------------------------------------- */
 
 typedef struct Vtr1TdcFile Vtr1TdcFile;

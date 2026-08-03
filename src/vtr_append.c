@@ -5,19 +5,33 @@
 #include "optimize.h"
 #include "error.h"
 #include "r_bridge.h"
-#include "vtr_fileops.h"
+#include "r_bridge_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* The tdc container keeps its row-group index in the trailer and
-   patches header pointers on close, so v4-style in-place append (seek
-   to EOF, write rgs, patch header n_rowgroups) is structurally not an
-   option. Instead: stream all existing rgs through a fresh writer
-   targeting a temp file, append the new rgs from the node, then
-   atomically swap the temp over the original. */
+/*
+ * Row append.
+ *
+ * The store's existing row groups are neither read nor rewritten. tdc appends
+ * the new blocks and a rebuilt row-group index past the container's trailing
+ * index and patches the 64-byte header last (see vtr1_tdc.h), so the cost
+ * tracks the rows being appended rather than the size of the store, and
+ * building a store by appending batch after batch is linear in the rows
+ * written rather than quadratic.
+ *
+ * The container keeps its row-group index in the trailer, so there is no count
+ * to bump at a fixed offset: an append cannot simply seek to EOF and write. It
+ * works anyway because that index is rebuilt wholesale on every close -- the
+ * entries describing the existing row groups are carried over verbatim, and
+ * they stay correct because nothing before the old trailer is touched.
+ *
+ * Peak memory is one row group, and an interrupted append leaves the store
+ * exactly as it was -- the appended bytes sit past the trailer referenced by
+ * nothing, and the next append writes over them.
+ */
 
-void vtr_append_node(VecNode *node, const char *path) {
+void vtr_append_node(VecNode *node, const char *path, int comp_level) {
     vec_optimize(node);
 
     Vtr1TdcFile *existing = vtr1_open_tdc(path);
@@ -55,57 +69,37 @@ void vtr_append_node(VecNode *node, const char *path) {
         }
     }
 
-    /* Snapshot the file schema so we can keep the writer alive after
-       closing the read handle. */
+    /* Snapshot the file schema so it outlives the read handle: the extender
+       opens the same path for update, so the reader is closed first. */
     VecSchema schema_copy = vec_schema_copy(file_schema);
-
     int n_cols = file_schema->n_cols;
-    int *all_cols = (int *)malloc((size_t)n_cols * sizeof(int));
-    if (!all_cols) {
-        vec_schema_free(&schema_copy);
-        vtr1_close_tdc(existing);
-        vectra_error("append_vtr: alloc failed");
-    }
-    for (int c = 0; c < n_cols; c++) all_cols[c] = 1;
-
-    size_t path_len = strlen(path);
-    char *tmp_path = (char *)malloc(path_len + 10);
-    if (!tmp_path) {
-        free(all_cols);
-        vec_schema_free(&schema_copy);
-        vtr1_close_tdc(existing);
-        vectra_error("append_vtr: alloc failed for tmp_path");
-    }
-    memcpy(tmp_path, path, path_len);
-    memcpy(tmp_path + path_len, ".~append", 9);
-
-    Vtr1TdcWriter *w = vtr1_open_tdc_writer(tmp_path, &schema_copy);
-
-    uint32_t n_rg = vtr1_tdc_n_rowgroups(existing);
-    for (uint32_t rg = 0; rg < n_rg; rg++) {
-        VecBatch *batch = vtr1_read_rowgroup_tdc(existing, rg, all_cols);
-        vtr1_write_rowgroup_tdc(w, batch, VTR_COMPRESS_FAST, NULL, NULL);
-        vec_batch_free(batch);
-    }
     vtr1_close_tdc(existing);
-    free(all_cols);
 
+    Vtr1TdcExtender *x = vtr1_open_tdc_extender(path, &schema_copy);
+
+    int fail = 0;
     VecBatch *batch;
     while ((batch = node->next_batch(node)) != NULL) {
         batch = vec_batch_compact(batch);
-        vtr1_write_rowgroup_tdc(w, batch, VTR_COMPRESS_FAST, NULL, NULL);
+        if (batch->n_cols != n_cols) {
+            vec_batch_free(batch);
+            fail = 1;
+            break;
+        }
+        vtr1_extend_rowgroup_tdc(x, batch, comp_level, NULL, NULL);
         vec_batch_free(batch);
     }
 
-    vtr1_close_tdc_writer(w);
     vec_schema_free(&schema_copy);
 
-    if (vtr_atomic_replace(tmp_path, path) != 0) {
-        remove(tmp_path);
-        free(tmp_path);
-        vectra_error("append_vtr: failed to rename temp file to: %s", path);
+    if (fail) {
+        /* Nothing is committed until close, so walking away here leaves the
+           store exactly as it was found. */
+        vtr1_abort_tdc_extender(x);
+        vectra_error("append_vtr: the appended rows changed shape mid-stream");
     }
-    free(tmp_path);
+
+    vtr1_close_tdc_extender(x);
 }
 
 /* --- .Call bridge --- */
@@ -116,14 +110,15 @@ static VecNode *unwrap_node_for_append(SEXP xptr) {
     return node;
 }
 
-SEXP C_append_vtr(SEXP node_xptr, SEXP path_sexp) {
+SEXP C_append_vtr(SEXP node_xptr, SEXP path_sexp, SEXP compress_sexp) {
     VecNode *node = unwrap_node_for_append(node_xptr);
     /* Consume-once: invalidate the handle before draining, so a later terminal
        op on the same node errors clearly rather than re-running an exhausted
        plan (mirrors write_node_dispatch and C_collect). */
     R_ClearExternalPtr(node_xptr);
     const char *path = CHAR(STRING_ELT(path_sexp, 0));
-    vtr_append_node(node, path);
+    int comp_level = parse_compress_level(compress_sexp);
+    vtr_append_node(node, path, comp_level);
     node->free_node(node);
     return R_NilValue;
 }

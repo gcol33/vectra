@@ -1,3 +1,58 @@
+# vectra 0.11.9
+
+## Bug fixes
+
+* `append_vtr(along = "rows")` no longer rewrites the store on every call.
+  Because the container keeps its row-group index in the trailer, the row path
+  used to restream every existing row group through a fresh writer into a temp
+  file and swap it over the original, so a call cost a full pass over whatever
+  was already on disk. Building a store the natural way -- append a batch,
+  append the next -- was therefore quadratic in the number of batches, and the
+  degradation was invisible until the store was large: on 30 appends of 100,000
+  rows x 13 columns, per-call time grew with the preceding store size at
+  0.0215 s/MB (R^2 = 0.996), and a real 486-million-row build decayed from 8.0M
+  rows/min to 0.58M rows/min as it passed 4 GB.
+
+  The existing row groups are now neither read nor moved: the new blocks and a
+  rebuilt index are written past the container's trailer and the header is
+  patched last, exactly as `along = "cols"` already worked. The index entries
+  describing the existing row groups are carried over verbatim, which is sound
+  because nothing before the old trailer moves. On the same measurement,
+  per-call time is now flat -- 0.28 s with 4 MB on disk, 0.28 s with 112 MB,
+  slope 0.00006 s/MB -- so building a store by appending costs one pass over the
+  rows written, however many calls it takes.
+
+  Two consequences follow. A row append is now interruption-safe: everything is
+  written past the existing data and the header last, so a crash leaves the
+  store readable exactly as it was, where the old temp-file path could leave a
+  half-written file. And a store grown in place is stamped so that readers
+  predating this format refuse it rather than misread it.
+
+* `append_vtr(along = "rows")` now honours `compress`. The row path ignored the
+  argument and always re-encoded at `"fast"`, whatever the file was written
+  with.
+
+* A row append no longer rebuilds every `.vtri` the store carries. Rebuilding
+  read the whole store, which would have kept an indexed store's append
+  quadratic even with the container fix. Since a row append moves no existing
+  row group, the entries an index already holds stay true, so each index now
+  takes in only the row groups just appended.
+
+* A `.vtri` sidecar that cannot be read no longer makes the store unreadable.
+  `vtri_open()` sized the index file with `ftell()` into a `long`, which is
+  32 bits on Windows, so any index past 2 GB got a meaningless size, tripped the
+  sanity guard, and raised `corrupt .vtri: entry/slot counts exceed file size`
+  from `tbl()` -- on an intact index, and with no way to read the store at all,
+  not even by falling back to a scan. Offsets now go through the 64-bit calls
+  the rest of the package already uses.
+
+  Independently of the sizing, every way of failing to read a sidecar now
+  reports no index rather than raising: absent, superseded, written by a newer
+  vectra, stale against the store, or malformed. An index only ever saves a scan
+  work, so an unusable one costs speed and never rows, and raising turned a
+  readable store into an unopenable one. `has_index()` reports `FALSE` for these
+  and `create_index()` rebuilds.
+
 # vectra 0.11.8
 
 ## Bug fixes

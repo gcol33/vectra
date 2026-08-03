@@ -54,19 +54,33 @@ extern "C" {
 #define TDC_CONTAINER_VERSION 1
 
 /*
- * Version stamped on a container whose schema has been RELOCATED to the
- * tail, which is how a heterogeneous container gains columns without its
- * body being rewritten (tdc_stream_encoder_open_widen).
+ * Version stamped on a container that has been GROWN IN PLACE: reopened and
+ * added to without its existing body being read or rewritten. Two operations
+ * produce one, along the two axes --
  *
- * The schema section of a v1 container sits at offset 64, immediately
- * before the first block record, so it cannot grow in place. A widen pass
- * therefore appends the new column blocks and a full replacement schema
- * past the end of the existing data and points the header at them.
+ *   tdc_stream_encoder_open_widen   adds columns to the existing row groups
+ *   tdc_stream_encoder_open_extend  adds row groups
  *
- * This is a deliberate one-way version bump: a v1-only reader must REFUSE
- * a widened container rather than read the stale schema still sitting at
- * offset 64. Containers that are never widened stay v1 and are unchanged
- * byte-for-byte.
+ * Both write past the container's trailing index and patch the header last,
+ * which is what makes an interrupted run harmless. Two consequences follow,
+ * and this stamp is what warns a reader about them:
+ *
+ *   1. The superseded index is left behind as a GAP between the old blocks
+ *      and the new ones. Blocks are located solely by the trailing index, so
+ *      random access is unaffected, but walking the blocks region
+ *      sequentially is no longer meaningful and is refused outright rather
+ *      than allowed to read the stale index as a block record.
+ *   2. The schema is located by an explicit header field rather than by
+ *      position. A v1 schema sits at offset 64, immediately before the first
+ *      block record, so it cannot grow in place: widening writes a full
+ *      replacement at the tail and points the header there. Extending does
+ *      not change the schema and leaves it where it is, recording the address
+ *      it already had. Either way the header, not the layout, is authoritative.
+ *
+ * This is a deliberate one-way version bump: a v1-only reader must REFUSE such
+ * a container rather than walk a gapped blocks region or read a schema the
+ * header no longer points at. Containers that are never reopened stay v1 and
+ * are unchanged byte-for-byte.
  */
 #define TDC_CONTAINER_VERSION_WIDENED 2
 

@@ -38,13 +38,16 @@ row, so an index over a column with few distinct values stays small however
 many rows the store holds -- which is what keeps a lookup off the size of the
 store.
 
-\code{\link[=append_vtr]{append_vtr()}} with \code{along = "rows"} rewrites every row group, which moves
-the rows a key sits in; it rebuilds each of the store's indexes for that
-reason. An index left behind by any other change of the store is reported as
-absent by \code{has_index()} and ignored by queries rather than pruning row groups
-that may now hold matching rows. Indexes written by vectra 0.11.7 and earlier
-are superseded and read as absent; call \code{create_index()} again to rebuild
-them.
+\code{\link[=append_vtr]{append_vtr()}} leaves the existing row groups where they are, so an index
+stays valid across an append: it takes in the row groups just appended and
+keeps the rest, reading only the new data rather than the whole store.
+
+An index left behind by any other change of the store is reported as absent
+by \code{has_index()} and ignored by queries rather than pruning row groups that
+may now hold matching rows. The same goes for one that cannot be read at all:
+an index only ever saves a scan work, so an unusable one costs speed and
+never rows. Indexes written by vectra 0.11.7 and earlier are superseded and
+read as absent; call \code{create_index()} again to rebuild them.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")

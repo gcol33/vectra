@@ -386,15 +386,25 @@ Vtr1TdcWriter *vtr1_open_tdc_writer(const char *path, const VecSchema *schema) {
     return w;
 }
 
-void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
-                             const VecBatch        *batch,
-                             int                    comp_level,
-                             const VtrQuantizeSpec *qspecs,
-                             const VtrSpatialSpec  *sspecs) {
-    if (!w || !batch) vectra_error("vtr1_write_rowgroup_tdc: NULL handle/batch");
-    if (batch->n_cols != w->schema.n_cols) {
+/* Encode one row group's columns onto `enc`, attach its stats, and close the
+ * group.
+ *
+ * Shared by the writer (building a container) and the extender (appending row
+ * groups to one): a row group is the same thing either way -- one block per
+ * schema column, in schema order, then stats, then end_rowgroup -- and the two
+ * differ only in which encoder they hold. Keeping one body means an appended
+ * row group cannot drift from a written one in compression, stats or ordering,
+ * which is what lets an appended store read back identically to a rewritten
+ * one. */
+static void vtr1_tdc_emit_rowgroup(tdc_stream_encoder    *enc,
+                                   const VecSchema       *schema,
+                                   const VecBatch        *batch,
+                                   int                    comp_level,
+                                   const VtrQuantizeSpec *qspecs,
+                                   const VtrSpatialSpec  *sspecs) {
+    if (batch->n_cols != schema->n_cols) {
         vectra_error("rowgroup n_cols=%d mismatches schema n_cols=%d",
-                     batch->n_cols, w->schema.n_cols);
+                     batch->n_cols, schema->n_cols);
     }
 
     int n_cols = batch->n_cols;
@@ -404,10 +414,10 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
     trial.realloc_fn = vtr1_tdc_realloc;
     for (int c = 0; c < n_cols; c++) {
         const VecArray *col = &batch->columns[c];
-        if (col->type != w->schema.col_types[c]) {
+        if (col->type != schema->col_types[c]) {
             if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
             vectra_error("rowgroup col %d type=%d mismatches schema type=%d",
-                         c, (int)col->type, (int)w->schema.col_types[c]);
+                         c, (int)col->type, (int)schema->col_types[c]);
         }
 
         const VtrQuantizeSpec *qs = (qspecs && qspecs[c].enabled) ? &qspecs[c] : NULL;
@@ -441,7 +451,7 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
                                          spatial_active, &trial);
         }
 
-        st = tdc_stream_encoder_write_block(w->enc, &req.block, &req.spec);
+        st = tdc_stream_encoder_write_block(enc, &req.block, &req.spec);
         vtr_codec_tdc_release_request(&req, vtr1_tdc_realloc, NULL);
         if (st != TDC_OK) {
             if (trial.data) vtr1_tdc_realloc(NULL, trial.data, 0);
@@ -461,7 +471,7 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         int any = vtr1_tdc_compute_rowgroup_stats(batch, stats, qspecs);
         if (any) {
             tdc_status sst = tdc_stream_encoder_set_rowgroup_stats(
-                w->enc, stats, (uint16_t)n_cols);
+                enc, stats, (uint16_t)n_cols);
             free(stats);
             if (sst != TDC_OK) {
                 vectra_error("tdc_stream_encoder_set_rowgroup_stats failed: status=%d",
@@ -472,10 +482,19 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
         }
     }
 
-    tdc_status st = tdc_stream_encoder_end_rowgroup(w->enc, (uint64_t)batch->n_rows);
+    tdc_status st = tdc_stream_encoder_end_rowgroup(enc, (uint64_t)batch->n_rows);
     if (st != TDC_OK) {
         vectra_error("tdc_stream_encoder_end_rowgroup failed: status=%d", (int)st);
     }
+}
+
+void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
+                             const VecBatch        *batch,
+                             int                    comp_level,
+                             const VtrQuantizeSpec *qspecs,
+                             const VtrSpatialSpec  *sspecs) {
+    if (!w || !batch) vectra_error("vtr1_write_rowgroup_tdc: NULL handle/batch");
+    vtr1_tdc_emit_rowgroup(w->enc, &w->schema, batch, comp_level, qspecs, sspecs);
 }
 
 void vtr1_close_tdc_writer(Vtr1TdcWriter *w) {
@@ -668,6 +687,110 @@ void vtr1_close_tdc_widener(Vtr1TdcWidener *w) {
     vec_schema_free(&w->schema);
     if (w->fp) fclose(w->fp);
     free(w);
+}
+
+/* =========================================================== extender === */
+
+/*
+ * Appends row groups to an existing container in place: the widener's other
+ * axis, on the same bargain. The row groups already in the file are never read,
+ * decoded or moved -- tdc writes the new blocks and a rebuilt index past the
+ * old trailer and patches the 64-byte header last -- so an append costs the
+ * rows being appended rather than the size of the store, and growing a store by
+ * repeated appends is linear rather than quadratic.
+ *
+ * The schema is not rewritten, only re-addressed, since appended row groups
+ * carry the columns the container already declares.
+ *
+ * Existing row-group boundaries and block offsets are unchanged, so a `.vtri`
+ * sidecar's entries still name the row groups its keys actually sit in. What
+ * does change is the store's row and row-group counts, which the sidecar stamps
+ * and vtri_open checks -- so an index must still be brought up to date after an
+ * append, but only by taking in the appended row groups rather than by being
+ * rebuilt from the whole store (see .extend_indexes in R/index.R).
+ */
+
+struct Vtr1TdcExtender {
+    FILE               *fp;
+    tdc_stream_encoder *enc;
+    VecSchema           schema;     /* the container's own schema, deep-copied */
+    int64_t             orig_size;  /* file length before any extend write */
+};
+
+Vtr1TdcExtender *vtr1_open_tdc_extender(const char *path,
+                                        const VecSchema *schema) {
+    if (!path || !schema || schema->n_cols <= 0) {
+        vectra_error("vtr1_open_tdc_extender: invalid arguments");
+    }
+
+    FILE *fp = fopen(path, "r+b");
+    if (!fp) vectra_error("cannot open file for appending: %s", path);
+
+    Vtr1TdcExtender *x = (Vtr1TdcExtender *)calloc(1, sizeof(*x));
+    if (!x) { fclose(fp); vectra_error("alloc failed for Vtr1TdcExtender"); }
+    x->fp        = fp;
+    x->schema    = vec_schema_copy(schema);
+    x->orig_size = vtr_file_size(fp);
+
+    /* No schema is handed over: tdc reuses the container's own, and checks
+     * every appended row group against the column count it declares. */
+    tdc_stream_encoder_extend_config cfg = {0};
+    cfg.io.write_fn = vtr1_tdc_io_write;
+    cfg.io.read_fn  = vtr1_tdc_io_read;
+    cfg.io.seek_fn  = vtr1_tdc_io_seek;
+    cfg.io.ctx      = fp;
+    cfg.realloc_fn  = vtr1_tdc_realloc;
+    cfg.alloc_user  = NULL;
+
+    tdc_status st = tdc_stream_encoder_open_extend(&cfg, &x->enc);
+    if (st != TDC_OK) {
+        vec_schema_free(&x->schema);
+        free(x);
+        fclose(fp);
+        vectra_error("tdc_stream_encoder_open_extend failed: status=%d", (int)st);
+    }
+    return x;
+}
+
+void vtr1_extend_rowgroup_tdc(Vtr1TdcExtender       *x,
+                              const VecBatch        *batch,
+                              int                    comp_level,
+                              const VtrQuantizeSpec *qspecs,
+                              const VtrSpatialSpec  *sspecs) {
+    if (!x || !batch) vectra_error("vtr1_extend_rowgroup_tdc: NULL handle/batch");
+    vtr1_tdc_emit_rowgroup(x->enc, &x->schema, batch, comp_level, qspecs, sspecs);
+}
+
+/* Free the extender without committing: no index, no header patch. The
+ * container is left exactly as it was found, and the bytes written past its
+ * trailer -- referenced by nothing -- are truncated away so a repeatedly
+ * failing append cannot grow the file without bound. */
+void vtr1_abort_tdc_extender(Vtr1TdcExtender *x) {
+    if (!x) return;
+    if (x->enc) tdc_stream_encoder_abort(&x->enc);
+    if (x->fp) {
+        fflush(x->fp);
+        vtr_file_truncate(x->fp, x->orig_size);
+    }
+    vec_schema_free(&x->schema);
+    if (x->fp) fclose(x->fp);
+    free(x);
+}
+
+void vtr1_close_tdc_extender(Vtr1TdcExtender *x) {
+    if (!x) return;
+    if (x->enc) {
+        tdc_status st = tdc_stream_encoder_close(&x->enc);
+        if (st != TDC_OK) {
+            vec_schema_free(&x->schema);
+            if (x->fp) fclose(x->fp);
+            free(x);
+            vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
+        }
+    }
+    vec_schema_free(&x->schema);
+    if (x->fp) fclose(x->fp);
+    free(x);
 }
 
 /* ============================================================ reader === */

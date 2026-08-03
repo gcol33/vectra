@@ -394,9 +394,21 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
 #' # Appending rows
 #'
 #' The schema of `x` must exactly match the schema of the target file (same
-#' column names and types, in the same order). Existing row groups are
-#' restreamed through a fresh writer, so a row append costs a pass over the
-#' file.
+#' column names and types, in the same order). The row groups already in the
+#' store are neither read nor rewritten -- the new ones are encoded and
+#' attached on their own -- so the cost tracks the rows being appended rather
+#' than the size of the store.
+#'
+#' That is what lets a table too long to hold in memory be built a batch at a
+#' time: write the first batch with [write_vtr()], then append each later one
+#' as it is produced, with a peak of one batch rather than the whole table.
+#' Building a store this way costs one pass over the rows written, however
+#' many calls it takes.
+#'
+#' Existing row groups keep their positions, so any `.vtri` index built with
+#' [create_index()] stays valid across a row append: each one takes in the
+#' appended row groups and keeps the rest, rather than being rebuilt from the
+#' whole store.
 #'
 #' # Appending columns
 #'
@@ -416,18 +428,23 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
 #' `.vtri` index built with [create_index()] over the original columns stays
 #' valid across a column append.
 #'
-#' A column append rewrites the file header last, and everything before that
-#' is written past the end of the existing data, so an interruption leaves
-#' the store readable exactly as it was. A row append has no such property:
-#' interrupted after the new row groups are written but before the header is
-#' patched, the file is left corrupted. Use [write_vtr()] for
-#' safety-critical write-once workloads.
+#' # Interruption
+#'
+#' Either direction writes everything past the end of the existing data and
+#' rewrites the file header last, so an interruption -- a crash, a full disk,
+#' a killed process -- leaves the store readable exactly as it was before the
+#' call. The appended bytes are referenced by nothing and the next append
+#' writes over them.
+#'
+#' The trade is that a store grown in place is stamped so that readers
+#' predating this format refuse it rather than misread it, and is
+#' random-access only, which is how vectra reads a `.vtr` anyway.
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path of an existing `.vtr` file to append to.
 #' @param along `"rows"` to add rows (default), `"cols"` to add columns.
-#' @param compress Compression for the appended columns: `"fast"`,
-#'   `"small"`, or `"none"`. `along = "cols"` only.
+#' @param compress Compression for the appended rows or columns: `"fast"`,
+#'   `"small"`, or `"none"`.
 #' @param ... Additional arguments passed to methods.
 #'
 #' @return Invisible `NULL`.
@@ -467,10 +484,12 @@ append_vtr.vectra_node <- function(x, path, along = c("rows", "cols"),
   if (along == "cols") {
     .Call(C_append_cols_vtr, x$.node, path, .check_compress(compress))
   } else {
-    .Call(C_append_vtr, x$.node, path)
-    # Every row group is rewritten, so each index now maps its keys to row groups
-    # that have moved: rebuild them against the store as it now stands.
-    .rebuild_indexes(path)
+    .Call(C_append_vtr, x$.node, path, .check_compress(compress))
+    # The existing row groups have not moved, so each index still maps its keys
+    # to the row groups they sit in; what it does not yet cover is the row
+    # groups just appended. Take those in rather than rebuilding from the whole
+    # store, so an indexed store's append stays off the store's size.
+    .extend_indexes(path)
   }
   invisible(NULL)
 }
