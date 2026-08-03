@@ -689,6 +689,18 @@ serialize_expr <- function(expr, env = parent.frame(), cols = NULL) {
   if (!is.call(expr))
     stop(sprintf("unsupported expression type: %s", typeof(expr)))
 
+  # A signed constant is a constant. R parses -1 as a call to `-`, and everything
+  # that reads a literal reads only a literal: zone-map pruning and the hash
+  # index both give up on `x == -1` and scan, while `x == 1` is answered from
+  # metadata.
+  if (length(expr) == 2L && is.name(expr[[1L]]) &&
+      as.character(expr[[1L]]) %in% c("-", "+") &&
+      is.numeric(expr[[2L]]) && length(expr[[2L]]) == 1L &&
+      !is.na(expr[[2L]])) {
+    value <- if (as.character(expr[[1L]]) == "-") -expr[[2L]] else expr[[2L]]
+    return(serialize_expr(value, env, cols))
+  }
+
   # .env$varname or .env[["varname"]] — evaluate in caller's environment
   if (length(expr) == 3) {
     op <- expr[[1]]
