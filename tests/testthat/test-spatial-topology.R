@@ -81,6 +81,55 @@ test_that("line_merge keeps disconnected chains separate", {
   expect_equal(sort(as.numeric(sf::st_length(d))), c(1, 2), tolerance = 1e-9)
 })
 
+test_that("line_merge handles a group whose union is a single line", {
+  # One segment per group: the union is a LINESTRING, not a MULTILINESTRING.
+  seg <- sf::st_sfc(
+    sf::st_linestring(rbind(c(0, 0), c(1, 0))),
+    sf::st_linestring(rbind(c(5, 5), c(6, 5))))
+  x <- sf::st_sf(grp = c("a", "b"), geometry = seg)
+  f <- vtr_from(x); on.exit(unlink(f))
+  d <- tbl(f) |> spatial_line_merge(by = "grp") |> collect_sf()
+  expect_equal(nrow(d), 2L)
+  expect_setequal(d$grp, c("a", "b"))
+  expect_equal(as.numeric(sf::st_length(d)), c(1, 1), tolerance = 1e-9)
+})
+
+test_that("union-then-merge returns one maximal geometry for every union type", {
+  # st_union of lines yields a LINESTRING, a MULTILINESTRING or a
+  # GEOMETRYCOLLECTION depending on the input and the GEOS version; all three
+  # must reduce to a single geometry carrying the full linework.
+  merge_len <- function(g) {
+    m <- vectra:::.sf_union_line_merge(g)
+    expect_length(m, 1L)
+    sum(as.numeric(sf::st_length(m)))
+  }
+  one <- sf::st_sfc(sf::st_linestring(rbind(c(0, 0), c(1, 0))))
+  expect_equal(merge_len(one), 1, tolerance = 1e-9)
+
+  chain <- sf::st_sfc(
+    sf::st_linestring(rbind(c(0, 0), c(1, 0))),
+    sf::st_linestring(rbind(c(1, 0), c(2, 0))))
+  expect_equal(merge_len(chain), 2, tolerance = 1e-9)
+
+  apart <- sf::st_sfc(
+    sf::st_linestring(rbind(c(0, 0), c(1, 0))),
+    sf::st_linestring(rbind(c(5, 5), c(6, 5))))
+  expect_equal(merge_len(apart), 2, tolerance = 1e-9)
+
+  # A collection whose linear parts are the mergeable ones.
+  mixed <- sf::st_sfc(sf::st_geometrycollection(list(
+    sf::st_point(c(9, 9)),
+    sf::st_linestring(rbind(c(0, 0), c(1, 0))),
+    sf::st_linestring(rbind(c(1, 0), c(2, 0))))))
+  expect_equal(merge_len(mixed), 2, tolerance = 1e-9)
+
+  # Geographic coordinates route the union through s2, which merges eagerly.
+  geo <- sf::st_sfc(
+    sf::st_linestring(rbind(c(0, 0), c(1, 0))),
+    sf::st_linestring(rbind(c(1, 0), c(2, 0))), crs = 4326)
+  expect_length(vectra:::.sf_union_line_merge(geo), 1L)
+})
+
 # -- simplify (coverage-preserving) -------------------------------------------
 
 test_that("coverage simplify keeps neighbours edge-matched and attributes", {

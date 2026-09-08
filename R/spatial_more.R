@@ -775,8 +775,7 @@ contours <- function(x, levels, band = 1L, merge = TRUE, crs = NA,
   geo <- sf::st_geometry(sb)
   parts <- split(seq_len(nrow(df)), df$level)
   out_lev <- as.numeric(names(parts))
-  merged <- lapply(parts, function(ix)
-    sf::st_line_merge(sf::st_union(geo[ix])))
+  merged <- lapply(parts, function(ix) .sf_union_line_merge(geo[ix]))
   acc2 <- .run_accumulator(fr)
   for (j in seq_along(merged))
     acc2$push(.sf_encode_result(

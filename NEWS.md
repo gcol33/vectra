@@ -1,3 +1,21 @@
+# vectra 0.12.0
+
+## Bug fixes
+
+* `spatial_line_merge()`, `spatial_centerline()` and `contours(merge = TRUE)` no
+  longer fail when a group's linework unions to a single chain.
+  `sf::st_line_merge()` accepts only a `MULTILINESTRING`, and the union of a set
+  of lines carries that type only while it has more than one part: a group of one
+  segment, or of segments that GEOS collapses to one chain, unions to a
+  `LINESTRING` and tripped the assertion with
+  `inherits(x, "sfc_MULTILINESTRING") is not TRUE`. Which of the two a given
+  input yields depends on the GEOS build and on whether the union runs through
+  `s2`, as it does for geographic coordinates, so the union type is now
+  dispatched on rather than assumed, and a union that is already maximal is
+  passed through. A union that leaves non-linear parts
+  (`GEOMETRYCOLLECTION`) has its linear parts extracted and merged. Results are
+  unchanged wherever the union was a `MULTILINESTRING`.
+
 # vectra 0.11.9
 
 ## Bug fixes

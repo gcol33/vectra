@@ -169,6 +169,23 @@
   .coerce_for_vtr(df)
 }
 
+# Union a set of lines and sew the parts into maximal chains, returning one
+# geometry. `sf::st_line_merge()` accepts only a MULTILINESTRING, but a union of
+# lines carries that type only while it has more than one part: GEOS returns a
+# LINESTRING once the parts collapse to a single chain (already maximal, so the
+# merge is a no-op), and a GEOMETRYCOLLECTION when noding leaves non-linear
+# parts, whose linear parts are mergeable once extracted. Which of the three a
+# given input yields depends on the GEOS version, so the type is dispatched on
+# rather than assumed.
+.sf_union_line_merge <- function(g) {
+  u <- sf::st_union(g)
+  if (!length(u) || all(sf::st_is_empty(u))) return(u)
+  if (inherits(u, "sfc_GEOMETRYCOLLECTION"))
+    u <- sf::st_collection_extract(u, "LINESTRING")
+  if (length(u) > 1L) u <- sf::st_combine(u)
+  if (inherits(u, "sfc_MULTILINESTRING")) sf::st_line_merge(u) else u
+}
+
 # -- native libgeos compute paths ---------------------------------------------
 
 # Worker count for the per-batch GEOS loops, mirroring the overlay convention.

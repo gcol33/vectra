@@ -92,7 +92,7 @@ spatial_polygonize <- function(x, by = NULL, geom = "geometry", crs = NA,
 # one row, carrying the group's `by` values.
 .line_merge_fn <- function(by, geom, crs) function(df) {
   sb   <- .sf_decode_chunk(df, geom, NULL, crs)
-  m    <- sf::st_line_merge(sf::st_union(sf::st_geometry(sb)))
+  m    <- .sf_union_line_merge(sf::st_geometry(sb))
   segs <- sf::st_cast(m, "LINESTRING", warn = FALSE)
   segs <- segs[!sf::st_is_empty(segs)]
   if (!length(segs)) return(NULL)
@@ -399,8 +399,7 @@ spatial_locate <- function(x, line, geom = "geometry", coords = NULL, crs = NA,
   inside <- lengths(sf::st_within(mid, sf::st_buffer(gs, -d * 0.01))) > 0
   ce <- edges[inside]
   if (!length(ce)) return(gs)
-  m <- sf::st_cast(sf::st_line_merge(sf::st_union(ce)), "LINESTRING",
-                   warn = FALSE)
+  m <- sf::st_cast(.sf_union_line_merge(ce), "LINESTRING", warn = FALSE)
   if (prune > 0) {
     keep <- as.numeric(sf::st_length(m)) >= prune
     if (any(keep)) m <- m[keep]
