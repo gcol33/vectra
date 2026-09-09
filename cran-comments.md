@@ -94,4 +94,6 @@ ERRORs notified on 2026-09-08, which asked for a fix before 2026-09-29.
 
 ## Reverse dependencies
 
-vectra has no reverse dependencies on CRAN.
+taxify imports vectra. It calls the query verbs and the format readers and
+writers, none of the linework or index paths this release changes, and its
+test suite passes in full against 0.12.0 (checked at taxify 0.5.2).
