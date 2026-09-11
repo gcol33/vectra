@@ -228,6 +228,10 @@ static VecBatch *tombstone_filter_batch(VecBatch *batch,
 /*  Binary search on sorted row groups                                */
 /* ------------------------------------------------------------------ */
 
+/* 2^53: a whole-number double of smaller magnitude names exactly one int64, and
+   every double past it stands for several. */
+#define SCAN_DBL_INT_EXACT 9007199254740992.0
+
 /* Extract a simple predicate of the form col <op> literal.
    Returns 1 if extraction succeeded, 0 otherwise.
    Sets *col_idx (in file schema), *op, *op2, and literal value. */
@@ -277,7 +281,18 @@ static int extract_simple_pred(const VecExpr *pred, const VecSchema *schema,
         *lit_dbl = (double)lit_expr->lit_i64;
     } else if (lit_expr->kind == EXPR_LIT_DOUBLE) {
         *lit_dbl = lit_expr->lit_dbl;
-        *lit_i64 = (int64_t)lit_expr->lit_dbl;
+        *lit_i64 = 0;
+        if (vec_type_is_int(*col_type)) {
+            double t = lit_expr->lit_dbl;
+            /* NaN compares NA for every row, and past 2^53 a double stands for
+               several int64 values that all compare equal to it once the column is
+               promoted, so no single integer bound is conservative (and past 2^63
+               none is representable). Leave the search off; the filter still
+               decides every row. */
+            if (t != t || t < -SCAN_DBL_INT_EXACT || t > SCAN_DBL_INT_EXACT)
+                return 0;
+            *lit_i64 = (int64_t)t;
+        }
         /* Integer column compared against a *fractional* double: the integer-space
            binary search uses *lit_i64 as a hard row-group cutoff. Truncation
            toward zero rounds the wrong way for half the operators (and for all
@@ -483,7 +498,7 @@ static VtrIndex *scan_open_col_index(ScanNode *sn, const char *col_name,
 static int int_probe_key(double d, int64_t *out) {
     if (d != d) return PROBE_KEY_NO_MATCH;
     if (d != floor(d)) return PROBE_KEY_NO_MATCH;
-    if (d < -9007199254740992.0 || d > 9007199254740992.0)
+    if (d < -SCAN_DBL_INT_EXACT || d > SCAN_DBL_INT_EXACT)
         return PROBE_KEY_UNSAFE;
     *out = (int64_t)d;
     return PROBE_KEY_OK;
@@ -797,7 +812,25 @@ static void try_composite_index(ScanNode *sn) {
                 ? vtri_fnv1a_ci(le->lit_str, (int64_t)strlen(le->lit_str))
                 : vtri_fnv1a((const uint8_t *)le->lit_str, (int64_t)strlen(le->lit_str));
         } else if (vec_type_is_int(ct)) {
-            int64_t key = le->kind == EXPR_LIT_INT64 ? le->lit_i64 : (int64_t)le->lit_dbl;
+            int64_t key = 0;
+            int kind = PROBE_KEY_UNSAFE;
+            if (le->kind == EXPR_LIT_INT64) {
+                key = le->lit_i64;
+                kind = PROBE_KEY_OK;
+            } else if (le->kind == EXPR_LIT_DOUBLE) {
+                kind = int_probe_key(le->lit_dbl, &key);
+            }
+            if (kind == PROBE_KEY_NO_MATCH) {
+                /* One conjunct matches no row, so neither does the predicate. */
+                vtri_close(cidx);
+                uint8_t *none = (uint8_t *)calloc(vtr1_tdc_n_rowgroups(sn->file), 1);
+                if (none) sn->rg_bitmap = none;
+                return;
+            }
+            if (kind != PROBE_KEY_OK) {
+                vtri_close(cidx);
+                return;
+            }
             col_hashes[c] = vtri_hash_int64(key);
         } else if (ct == VEC_DOUBLE) {
             double key = le->kind == EXPR_LIT_DOUBLE ? le->lit_dbl : (double)le->lit_i64;

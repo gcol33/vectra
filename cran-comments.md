@@ -1,99 +1,42 @@
 ## Submission
 
-This release corrects the ERRORs currently shown for vectra on the Debian
-flavors, in examples, tests and vignette rebuild:
+This release corrects the clang-UBSAN issue shown for vectra 0.12.0 under
+'Additional issues':
 
-    Error in st_line_merge.sfc(sf::st_union(geo[ix])) :
-      inherits(x, "sfc_MULTILINESTRING") is not TRUE
+    scan.c:280:20: runtime error: 1e+300 is outside the range of representable
+    values of type 'long'
 
-`sf::st_line_merge()` accepts only a MULTILINESTRING, but the union of a set of
-lines carries that type only while it has more than one part. A group of one
-segment, or of segments whose union already collapses into a single chain,
-yields a LINESTRING and trips the assertion. The three functions that merge
-linework (`contours(merge = TRUE)`, `spatial_line_merge()`,
-`spatial_centerline()`) now dispatch on the type the union actually returned: a
-LINESTRING is already maximal and passes through, a GEOMETRYCOLLECTION has its
-linear parts extracted and recombined, and a MULTILINESTRING merges as before,
-so results are unchanged wherever the previous path worked.
+When a filter compares an integer column with a double literal, the scan
+converts the literal to a 64-bit integer to search sorted row groups, and did
+so also when the value lay outside the int64 range or was NaN. Such a literal
+now leaves the search off and the filter decides every row. The
+composite-index probe goes through the same range check the single-column probe
+already used. On x86-64 the conversion also gave wrong results:
+`filter(k < 1e300)` on a sorted integer column returned no rows. New tests
+check these comparisons against base R subsetting.
 
-The failure is not specific to one GEOS build. It is reachable on GEOS 3.14.1
-with a single segment in a group, and through s2 on geographic coordinates; the
-system upgrade on the check machines appears to have made the collapsing case
-common enough to reach the examples and tests.
-
-Version 0.11.9 was prepared but never submitted, so this release carries its
-fixes as well. One of them affects results on ordinary input:
-
-* `filter()` drops rows when a `%in%` predicate runs against an indexed column.
-  The scan probed the `.vtri` sidecar with whichever representation the
-  predicate happened to carry and contributed nothing when none matched the
-  column's own type, so the row-group bitmap came back empty and every row group
-  was pruned. `filter(k %in% c(5, 9))` on an integer column returns zero rows
-  where the same data without an index returns all of them, with no error or
-  warning. Since R writes a bare numeric literal as a double whatever the column
-  holds, that is the ordinary way of writing the predicate rather than a corner
-  case; the same went for a logical column and for an `NA` in the set. Every set
-  element is now probed by the column's type, and a key that cannot be probed
-  leaves the scan unpruned rather than being passed over. The test file answers
-  21 predicate shapes against both an indexed store and a plain copy of the same
-  data and requires the two to agree.
-
-The remaining 0.11.9 fixes are to memory and cost:
-
-* Reading a `.vtri` index larger than 2 GB raised `corrupt .vtri: entry/slot
-  counts exceed file size` from `tbl()` on an intact index, leaving no way to
-  open the store at all, not even by falling back to a scan. `ftell()` into a
-  `long` is 32 bits on Windows and gave a meaningless size; offsets now go
-  through the 64-bit calls used elsewhere in the package. Independently, every
-  way of failing to read a sidecar now reports no index rather than raising. An
-  index only ever saves a scan work, so an unusable one costs speed and never
-  rows.
-
-* `append_vtr(along = "rows")` restreamed every existing row group through a
-  fresh writer on each call, so building a store by repeated appends was
-  quadratic in the number of calls and degraded invisibly as the store grew. New
-  rows are now written past the container trailer with the header patched last,
-  which also leaves an interrupted append readable exactly as it was.
-
-* Building a `.vtri` held the whole index in memory, so an index too large for
-  memory could be read but not made. Entries are sorted rather than chained now
-  and written in a single forward pass against the same streaming budget the
-  rest of the package spills against. Opening a large sidecar no longer copies
-  it: past 4 MB it is mapped read-only and probed in place.
-
-`NEWS.md` lists the full set.
-
-Two format notes. `.vtri` sidecars written by earlier versions read as absent,
-so queries and `has_index()` behave as though the store has no index until
-`create_index()` is called again. A store grown in place by `append_vtr()`
-carries a stamp that readers predating this format refuse rather than misread.
-The `.vtr` data format is otherwise unchanged, and there are no breaking API
-changes.
+The ERRORs shown for r-patched-linux-x86_64 are from 0.11.8 and were corrected
+in 0.12.0.
 
 ## Test environments
 
 * Local: Windows 11, R 4.6.0, `R CMD check --as-cran` -- 0 errors | 0 warnings |
-  0 notes
-* win-builder: R-devel (2026-09-08 r90509 ucrt) -- 0 errors | 0 warnings |
   1 note
-* GitHub Actions: ubuntu-latest (R-devel, R-release, R-oldrel-1),
-  macOS-release, windows-release -- all OK; ASAN/UBSAN clean
-
-The OpenMP team size is capped at two cores when `_R_CHECK_LIMIT_CORES_` is set
-(`R_init_vectra`), so the parallel string, fuzzy-join, and spatial kernels stay
-within the check farm's two-core limit.
+* Local: Windows 11, R 4.6.0, built with gcc
+  `-fsanitize=float-cast-overflow -fsanitize-undefined-trap-on-error`: the full
+  test suite passes (3716 expectations); the same build of 0.12.0 traps in
+  `tests/testthat/test-index.R`.
 
 ## R CMD check results
 
 0 errors | 0 warnings | 1 note
 
-The note is from the incoming feasibility check and reports nine updates in
-the past six months. Most of those are the memory-boundedness work the
-package has been through since spring; this one is a correction of the check
-ERRORs notified on 2026-09-08, which asked for a fix before 2026-09-29.
+The note is from the incoming feasibility check and reports two days since the
+last update and ten updates in the past six months. This update is the
+correction of the issue notified on 2026-09-11, which asked for a fix before
+2026-10-02.
 
 ## Reverse dependencies
 
-taxify imports vectra. It calls the query verbs and the format readers and
-writers, none of the linework or index paths this release changes, and its
-test suite passes in full against 0.12.0 (checked at taxify 0.5.2).
+taxify imports vectra. Its test suite passes in full against this fix (taxify
+0.5.2: 7577 tests, 0 failures).

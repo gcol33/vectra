@@ -600,6 +600,52 @@ test_that("an indexed store answers every prunable predicate as a plain one does
   expect_true(same(di, "k", function(t) filter(t, k %in% integer(0))))
 })
 
+test_that("a sorted integer column compared past the integer range prunes correctly", {
+  # The sorted-column search cuts row groups at an integer bound derived from
+  # the literal. A double past 2^53, past the int64 range, or NaN has no such
+  # bound, so every answer here is checked against plain R subsetting.
+  d <- data.frame(k = rep(1:20L, each = 10L), v = seq_len(200L))
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(d, f, batch_size = 20L)
+  got <- function(q) as.numeric(collect(q)$v)
+  want <- function(keep) as.numeric(d$v[which(keep)])
+
+  expect_equal(got(filter(tbl(f), k < 1e300)),   want(d$k < 1e300))
+  expect_equal(got(filter(tbl(f), k <= 1e300)),  want(d$k <= 1e300))
+  expect_equal(got(filter(tbl(f), k > -1e300)),  want(d$k > -1e300))
+  expect_equal(got(filter(tbl(f), k >= -1e300)), want(d$k >= -1e300))
+  expect_equal(got(filter(tbl(f), k > 1e300)),   want(d$k > 1e300))
+  expect_equal(got(filter(tbl(f), k < -1e300)),  want(d$k < -1e300))
+  expect_equal(got(filter(tbl(f), k == 1e300)),  want(d$k == 1e300))
+  expect_equal(got(filter(tbl(f), k < 2^60)),    want(d$k < 2^60))
+  expect_equal(got(filter(tbl(f), k > NaN)),     want(d$k > NaN))
+  expect_equal(got(filter(tbl(f), k <= NaN)),    want(d$k <= NaN))
+  expect_equal(got(filter(tbl(f), k > 5.5, k < 1e300)),
+               want(d$k > 5.5 & d$k < 1e300))
+})
+
+test_that("a composite index probed with an unrepresentable integer key", {
+  d <- data.frame(a = rep(1:10L, each = 20L), b = rep(1:4L, times = 50L),
+                  v = seq_len(200L))
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, paste0(f, ".a_b.vtri"))))
+  write_vtr(d, f, batch_size = 20L)
+  write_vtr(d, g, batch_size = 20L)
+  create_index(f, c("a", "b"))
+
+  both <- function(fe) {
+    expect_equal(collect(fe(tbl(f))), collect(fe(tbl(g))))
+    nrow(collect(fe(tbl(f))))
+  }
+  expect_gt(both(function(t) filter(t, a == 5, b == 3)), 0L)
+  expect_equal(both(function(t) filter(t, a == 1e300, b == 3)), 0L)
+  expect_equal(both(function(t) filter(t, a == 5.5, b == 3)), 0L)
+  expect_equal(both(function(t) filter(t, a == NaN, b == 3)), 0L)
+  expect_equal(both(function(t) filter(t, a == 2^60, b == 3)), 0L)
+})
+
 # ── building an index is bounded ──────────────────────────────────────────────
 
 test_that("a build that spills writes the same index as one that does not", {

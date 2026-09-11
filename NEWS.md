@@ -1,3 +1,17 @@
+# vectra 0.12.1
+
+## Bug fixes
+
+* `filter()` on a sorted integer column no longer drops rows when the literal it
+  is compared with lies outside the integer range. The scan converted the
+  literal to a 64-bit integer to search the sorted row groups, and a value past
+  that range has no integer to convert to: `filter(k < 1e300)` returned zero
+  rows where every row matches. A double literal past 2^53, or `NaN`, now leaves
+  the search off and the filter decides every row. The composite-index probe
+  applies the same range check the single-column probe already did. The
+  conversion was reported by the clang-UBSAN check as
+  `1e+300 is outside the range of representable values of type 'long'`.
+
 # vectra 0.12.0
 
 ## Bug fixes
