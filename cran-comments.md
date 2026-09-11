@@ -26,6 +26,10 @@ in 0.12.0.
   `-fsanitize=float-cast-overflow -fsanitize-undefined-trap-on-error`: the full
   test suite passes (3716 expectations); the same build of 0.12.0 traps in
   `tests/testthat/test-index.R`.
+* win-builder: R-devel (2026-09-10 r90519 ucrt) -- 0 errors | 0 warnings |
+  1 note
+* GitHub Actions: R-CMD-check, ASAN/UBSAN (now including
+  `-fsanitize=float-cast-overflow`) -- all OK
 
 ## R CMD check results
 
