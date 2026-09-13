@@ -241,7 +241,13 @@ jobs:
             echo "no sanitizer reports"
             exit 0
           fi
-          grep -h 'runtime error' "${files[@]}" \
-            | sed -E 's/:[0-9]+:[0-9]+:/:/' | sort | uniq -c | sort -rn
+          grep -h 'runtime error' "${files[@]}" | sort | uniq -c | sort -rn
           if grep -qh 'runtime error' "${files[@]}"; then exit 1; fi
         shell: bash
+
+      - name: Upload sanitizer reports
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: clang-ubsan-reports
+          path: /tmp/ubsan/
