@@ -3,7 +3,7 @@
 # Feature lines become rows with the standard BED columns; coordinates are read
 # faithfully (0-based start, half-open end). Recovery-tested against a hand-built
 # fixture whose columns are known exactly, and -- the headline of phase A4 --
-# against GenomicRanges::findOverlaps for the interval-overlap use case that
+# against an all-pairs overlap reference for the interval-overlap use case that
 # tbl_bed + interval_join is meant to serve. Half-open / 0-based boundary cases
 # (the classic BED off-by-one) are exercised explicitly.
 
@@ -146,12 +146,13 @@ test_that("a feature line with fewer than three fields is a loud error", {
   expect_error(tbl_bed(f, quiet = TRUE) |> collect(), "at least 3")
 })
 
-# ---- interval overlap: recovery vs GenomicRanges (the A4 headline) ---------
+# ---- interval overlap: recovery vs all-pairs reference (the A4 headline) ----
 
-# BED is 0-based half-open; a GRanges built from it is 1-based closed
-# (start + 1, end). interval_join(closed = FALSE) requires a strictly positive
-# overlap, which is exactly "share at least one base" for half-open intervals,
-# so its matched pairs must equal findOverlaps() on the GRanges.
+# BED is 0-based half-open. interval_join(closed = FALSE) requires a strictly
+# positive overlap, which is exactly "share at least one base" for half-open
+# intervals: [xs, xe) and [ys, ye) on the same chrom share a base iff
+# xs < ye and ys < xe. This is the relation GenomicRanges::findOverlaps()
+# computes on the 1-based closed ranges (start + 1, end).
 bed_pairs_from_join <- function(xb, yb, closed) {
   r <- interval_join(tbl_bed(xb, quiet = TRUE), tbl_bed(yb, quiet = TRUE),
                      start = "start", end = "end", by = "chrom",
@@ -160,10 +161,7 @@ bed_pairs_from_join <- function(xb, yb, closed) {
   sort(paste(r$name, r$name.y, sep = "|"))
 }
 
-test_that("interval_join(closed = FALSE) over BED matches findOverlaps", {
-  skip_if_not_installed("GenomicRanges")
-  skip_if_not_installed("IRanges")
-
+test_that("interval_join(closed = FALSE) over BED matches all-pairs overlap", {
   set.seed(11)
   mk <- function(prefix, n) {
     chrom <- paste0("chr", sample(1:3, n, replace = TRUE))
@@ -180,15 +178,13 @@ test_that("interval_join(closed = FALSE) over BED matches findOverlaps", {
 
   ours <- bed_pairs_from_join(xb, yb, closed = FALSE)
 
-  gx <- GenomicRanges::GRanges(X$chrom,
-          IRanges::IRanges(start = X$start + 1L, end = X$end))
-  gy <- GenomicRanges::GRanges(Y$chrom,
-          IRanges::IRanges(start = Y$start + 1L, end = Y$end))
-  hits <- GenomicRanges::findOverlaps(gx, gy)
-  gr <- sort(paste(X$name[S4Vectors::queryHits(hits)],
-                   Y$name[S4Vectors::subjectHits(hits)], sep = "|"))
+  ij <- expand.grid(i = seq_len(nrow(X)), j = seq_len(nrow(Y)))
+  hit <- X$chrom[ij$i] == Y$chrom[ij$j] &
+    X$start[ij$i] < Y$end[ij$j] & Y$start[ij$j] < X$end[ij$i]
+  ref <- sort(paste(X$name[ij$i[hit]], Y$name[ij$j[hit]], sep = "|"))
 
-  expect_equal(ours, gr)
+  expect_gt(length(ref), 0)
+  expect_equal(ours, ref)
 })
 
 test_that("half-open overlap: abutting features do not pair, one shared base does", {

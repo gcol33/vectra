@@ -155,8 +155,8 @@ x BED, BED x annotation), keyed on `chrom`. Shipped in 0.10.3.
 - **Files:** `src/bed_scan.c` / `.h` (whitespace dialect, fixed BED schema by
   column count, comment/track/browser skipping) over the shared `byte_reader`
   (gzip free), entry point in `src/r_bridge_io.c`, `tbl_bed()` in `R/tbl.R`.
-- **Tests:** `tests/testthat/test-bed-scan.R` -- overlap result matches
-  `GenomicRanges::findOverlaps` on a random fixture; half-open / 0-based boundary
+- **Tests:** `tests/testthat/test-bed-scan.R` -- overlap result matches an
+  all-pairs half-open overlap reference on a random fixture; half-open / 0-based boundary
   cases explicit (abutting features do not pair under `closed = FALSE`); schema /
   types / faithful coordinates, dialect, gzip, streaming invariance, and loud
   failure on malformed lines.

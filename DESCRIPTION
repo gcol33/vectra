@@ -1,6 +1,6 @@
 Package: vectra
 Title: Columnar Query Engine for Larger-than-RAM Data
-Version: 0.12.2
+Version: 0.12.3
 Authors@R: person("Gilles", "Colling", email = "gilles.colling051@gmail.com",
     role = c("aut", "cre", "cph"),
     comment = c(ORCID = "0000-0003-3070-6066"))
@@ -36,14 +36,11 @@ Suggests:
     Biostrings,
     bit64,
     DBI,
-    GenomicRanges,
     igraph,
-    IRanges,
     knitr,
     openxlsx2,
     rmarkdown,
     RSQLite,
-    S4Vectors,
     sf,
     ShortRead,
     stringdist,

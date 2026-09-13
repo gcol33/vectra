@@ -1,3 +1,11 @@
+# vectra 0.12.3
+
+## Tests
+
+* The BED interval-overlap test checks `interval_join()` against an all-pairs
+  overlap computed in base R instead of `GenomicRanges::findOverlaps()`, so
+  GenomicRanges, IRanges and S4Vectors are no longer suggested.
+
 # vectra 0.12.2
 
 ## Bug fixes
