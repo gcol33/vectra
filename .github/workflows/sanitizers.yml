@@ -123,3 +123,125 @@ jobs:
           path: |
             /tmp/*.log
             /tmp/Rtmp*
+
+  # clang UBSAN, including -fsanitize=function, which gcc does not implement.
+  # The check compares the type a function is called through with the type it
+  # was defined with, and the callee only carries that type if it was compiled
+  # with the sanitizer too, so libgeos is rebuilt from source here instead of
+  # installed as a binary. Every runtime error report fails the job, as CRAN's
+  # clang-san post-processing does.
+  sanitize-clang:
+    runs-on: ubuntu-24.04
+    name: Linux clang UBSAN (incl. function)
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      TDC: ${{ github.workspace }}/tdc
+      MAKEFLAGS: -j4
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=0:log_path=/tmp/ubsan/report
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        with:
+          repository: gcol33/tdc
+          token: ${{ secrets.TDC_TOKEN }}
+          path: tdc
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+
+      - name: Install clang and locate the UBSAN runtime
+        id: ubsan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libomp-18-dev
+          RT=$(find /usr/lib/llvm-18 -name 'libclang_rt.ubsan_standalone*.so' | grep x86_64 | head -1)
+          test -n "$RT"
+          echo "lib=$RT" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/ubsan
+        shell: bash
+
+      - name: Configure clang sanitizer build flags
+        run: |
+          mkdir -p ~/.R
+          cat > ~/.R/Makevars <<'EOF'
+          SAN = -fsanitize=undefined,function -fno-omit-frame-pointer
+          CC = clang-18
+          CXX = clang++-18
+          CXX11 = clang++-18
+          CXX14 = clang++-18
+          CXX17 = clang++-18
+          CXX20 = clang++-18
+          CFLAGS = -O1 -g -Wall -pedantic $(SAN)
+          CXXFLAGS = -O1 -g -Wall $(SAN)
+          CXX11FLAGS = -O1 -g -Wall $(SAN)
+          CXX14FLAGS = -O1 -g -Wall $(SAN)
+          CXX17FLAGS = -O1 -g -Wall $(SAN)
+          CXX20FLAGS = -O1 -g -Wall $(SAN)
+          SHLIB_OPENMP_CFLAGS = -fopenmp=libomp
+          SHLIB_OPENMP_CXXFLAGS = -fopenmp=libomp
+          EOF
+          cat ~/.R/Makevars
+        shell: bash
+
+      - name: Rebuild libgeos from source under the sanitizer
+        env:
+          LD_PRELOAD: ${{ steps.ubsan.outputs.lib }}
+        run: |
+          install.packages("libgeos", type = "source",
+                           repos = "https://cloud.r-project.org")
+        shell: Rscript {0}
+
+      - name: Install vectra under the sanitizer
+        env:
+          LD_PRELOAD: ${{ steps.ubsan.outputs.lib }}
+        run: |
+          install.packages(".", repos = NULL, type = "source",
+                           INSTALL_opts = "--no-multiarch")
+        shell: Rscript {0}
+
+      - name: Run package examples
+        env:
+          LD_PRELOAD: ${{ steps.ubsan.outputs.lib }}
+        run: |
+          out_dir <- tempfile("ex"); dir.create(out_dir)
+          tools::testInstalledPackage("vectra", outDir = out_dir,
+                                      types = "examples",
+                                      errorsAreFatal = TRUE)
+        shell: Rscript {0}
+
+      - name: Run tests
+        if: always()
+        env:
+          LD_PRELOAD: ${{ steps.ubsan.outputs.lib }}
+        run: |
+          library(testthat)
+          library(vectra)
+          res <- test_dir("tests/testthat", reporter = "summary",
+                          package = "vectra", load_package = "none",
+                          stop_on_failure = FALSE)
+          if (any(as.data.frame(res)$failed > 0)) quit(status = 1)
+        shell: Rscript {0}
+
+      - name: Fail on any sanitizer report
+        if: always()
+        run: |
+          shopt -s nullglob
+          files=(/tmp/ubsan/report*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no sanitizer reports"
+            exit 0
+          fi
+          grep -h 'runtime error' "${files[@]}" \
+            | sed -E 's/:[0-9]+:[0-9]+:/:/' | sort | uniq -c | sort -rn
+          if grep -qh 'runtime error' "${files[@]}"; then exit 1; fi
+        shell: bash
