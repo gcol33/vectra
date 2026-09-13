@@ -11,6 +11,13 @@
   them by name. That one check is now turned off for the code calling GEOS, and
   a clang job building libgeos and vectra under the sanitizer runs in CI.
 
+* A string column whose values are all empty no longer reaches pointer
+  arithmetic on a NULL buffer. Reading one from a `.vtr` store gave the column
+  no string data, which a fuzzy join then offset, and the tdc dictionary encoder
+  did the same when writing one. Both were undefined behaviour in C reported by
+  clang's UBSAN (`applying zero offset to null pointer`); results were not
+  affected.
+
 # vectra 0.12.1
 
 ## Bug fixes

@@ -322,6 +322,69 @@ static void process_tile(GEOSContextHandle_t ctx, GEOSWKBWriter *writer,
 
 /* ---- partition: clean + bbox + components -------------------------------- */
 
+/* Parse of one C_overlay_parse chunk, shared by the team. */
+typedef struct {
+    const unsigned char **ptrs;
+    const size_t *lens;
+    int n;
+    double grid;                 /* snapping grid, 0 for none                    */
+    double *bb;                  /* out: n x 4 bounding boxes                    */
+    unsigned char **cbuf;        /* out: cleaned WKB per feature                 */
+    size_t *clen;
+    volatile int *parse_oom;     /* set by a worker on malloc failure            */
+} OverlayParseJob;
+
+/* One thread's share of the parse: make valid, keep the areal part, snap. */
+static void overlay_parse_worker(const OverlayParseJob *job) {
+    const unsigned char **ptrs = job->ptrs;
+    const size_t *lens = job->lens;
+    int n = job->n;
+    double grid = job->grid;
+    double *bb = job->bb;
+    unsigned char **cbuf = job->cbuf;
+    size_t *clen = job->clen;
+    volatile int *parse_oom = job->parse_oom;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
+    GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
+    GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 256)
+#endif
+    for (int i = 0; i < n; i++) {
+        GEOSGeometry *g0 = GEOSWKBReader_read_r(ctx, reader, ptrs[i], lens[i]);
+        if (g0 == NULL) continue;
+        GEOSGeometry *gv = GEOSMakeValid_r(ctx, g0);
+        GEOSGeom_destroy_r(ctx, g0);
+        if (gv == NULL) continue;
+        GEOSGeometry *g = areal_only(ctx, gv);
+        GEOSGeom_destroy_r(ctx, gv);
+        if (g != NULL && grid > 0.0) {
+            GEOSGeometry *gs = GEOSGeom_setPrecision_r(ctx, g, grid, 0);
+            GEOSGeom_destroy_r(ctx, g);
+            g = (gs != NULL) ? areal_only(ctx, gs) : NULL;
+            if (gs != NULL) GEOSGeom_destroy_r(ctx, gs);
+        }
+        if (g == NULL) continue;
+        double xmin, ymin, xmax, ymax;
+        if (GEOSGeom_getExtent_r(ctx, g, &xmin, &ymin, &xmax, &ymax)) {
+            bb[i] = xmin; bb[i+n] = ymin; bb[i+2*n] = xmax; bb[i+3*n] = ymax;
+        }
+        size_t len = 0;
+        unsigned char *buf = GEOSWKBWriter_write_r(ctx, writer, g, &len);
+        if (buf != NULL) {
+            cbuf[i] = (unsigned char *) malloc(len);
+            if (cbuf[i] != NULL) { memcpy(cbuf[i], buf, len); clen[i] = len; }
+            else *parse_oom = 1;  /* do not silently drop the feature */
+            GEOSFree_r(ctx, buf);
+        }
+        GEOSGeom_destroy_r(ctx, g);
+    }
+    GEOSWKBReader_destroy_r(ctx, reader);
+    GEOSWKBWriter_destroy_r(ctx, writer);
+    GEOS_finish_r(ctx);
+}
+
 /* C_overlay_parse(wkb_list, grid, n_threads) -> VECSXP(2):
  *   [[1]] REALSXP matrix n x 4 (xmin, ymin, xmax, ymax), NA row on parse failure
  *   [[2]] VECSXP  cleaned WKB (raw) per feature: repaired, areal, snapped to grid
@@ -362,50 +425,13 @@ SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
 #endif
 
     /* parallel: parse -> make valid -> areal -> snap; record bbox + cleaned WKB */
+    OverlayParseJob pjob = { .ptrs = ptrs, .lens = lens, .n = n, .grid = grid,
+                             .bb = bb, .cbuf = cbuf, .clen = clen,
+                             .parse_oom = &parse_oom };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nthreads)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
-        GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 256)
-#endif
-        for (int i = 0; i < n; i++) {
-            GEOSGeometry *g0 = GEOSWKBReader_read_r(ctx, reader, ptrs[i], lens[i]);
-            if (g0 == NULL) continue;
-            GEOSGeometry *gv = GEOSMakeValid_r(ctx, g0);
-            GEOSGeom_destroy_r(ctx, g0);
-            if (gv == NULL) continue;
-            GEOSGeometry *g = areal_only(ctx, gv);
-            GEOSGeom_destroy_r(ctx, gv);
-            if (g != NULL && grid > 0.0) {
-                GEOSGeometry *gs = GEOSGeom_setPrecision_r(ctx, g, grid, 0);
-                GEOSGeom_destroy_r(ctx, g);
-                g = (gs != NULL) ? areal_only(ctx, gs) : NULL;
-                if (gs != NULL) GEOSGeom_destroy_r(ctx, gs);
-            }
-            if (g == NULL) continue;
-            double xmin, ymin, xmax, ymax;
-            if (GEOSGeom_getExtent_r(ctx, g, &xmin, &ymin, &xmax, &ymax)) {
-                bb[i] = xmin; bb[i+n] = ymin; bb[i+2*n] = xmax; bb[i+3*n] = ymax;
-            }
-            size_t len = 0;
-            unsigned char *buf = GEOSWKBWriter_write_r(ctx, writer, g, &len);
-            if (buf != NULL) {
-                cbuf[i] = (unsigned char *) malloc(len);
-                if (cbuf[i] != NULL) { memcpy(cbuf[i], buf, len); clen[i] = len; }
-                else parse_oom = 1;  /* do not silently drop the feature */
-                GEOSFree_r(ctx, buf);
-            }
-            GEOSGeom_destroy_r(ctx, g);
-        }
-        GEOSWKBReader_destroy_r(ctx, reader);
-        GEOSWKBWriter_destroy_r(ctx, writer);
-        GEOS_finish_r(ctx);
-    }
+    overlay_parse_worker(&pjob);
 
     if (parse_oom) {
         for (int i = 0; i < n; i++) free(cbuf[i]);
@@ -532,6 +558,88 @@ SEXP C_overlay_group(SEXP wkb_list) {
 
 /* ---- run one batch of jobs ----------------------------------------------- */
 
+/* Decode of the distinct features of one C_overlay_run chunk, shared by the
+ * team. */
+typedef struct {
+    const unsigned char **ptrs;
+    const size_t *lens;
+    const int *rep;              /* chunk position holding each distinct feature */
+    int nuniq;
+    GEOSGeometry **base;         /* out: shared read-only base geometries        */
+    double *base_area;
+} OverlayDecodeJob;
+
+/* One thread's share of the decode: parse, keep the areal part, warm the
+ * envelope and record the area. */
+static void overlay_decode_worker(const OverlayDecodeJob *job) {
+    const unsigned char **ptrs = job->ptrs;
+    const size_t *lens = job->lens;
+    const int *rep = job->rep;
+    int nuniq = job->nuniq;
+    GEOSGeometry **base = job->base;
+    double *base_area = job->base_area;
+    GEOSContextHandle_t dctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(dctx, overlay_error_handler, NULL);
+    GEOSWKBReader *dreader = GEOSWKBReader_create_r(dctx);
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 64)
+#endif
+    for (int u = 0; u < nuniq; u++) {
+        int i = rep[u];
+        GEOSGeometry *g0 = GEOSWKBReader_read_r(dctx, dreader, ptrs[i], lens[i]);
+        GEOSGeometry *g = (g0 != NULL) ? areal_only(dctx, g0) : NULL;
+        if (g0 != NULL) GEOSGeom_destroy_r(dctx, g0);
+        if (g != NULL) {
+            double xmin, ymin, xmax, ymax;
+            GEOSGeom_getExtent_r(dctx, g, &xmin, &ymin, &xmax, &ymax);  /* warm envelope */
+            base_area[u] = areal_area(dctx, g);
+        }
+        base[u] = g;
+    }
+    GEOSWKBReader_destroy_r(dctx, dreader);
+    GEOS_finish_r(dctx);
+}
+
+/* The tile jobs of one C_overlay_run chunk, shared by the team. */
+typedef struct {
+    GEOSGeometry * const *base;
+    const double *base_area;
+    const int *uniq;
+    int **jmemb;                 /* chunk positions per job                      */
+    const int *jsize;
+    int njobs;
+    const double *rects;         /* 4 per job, NULL when no job is clipped       */
+    OutList *worker;             /* per-thread output lists                      */
+    double *inarea;
+    int *g_face;                 /* dense piece-id source across threads         */
+    double prec;
+    int pip;
+} OverlayTileJob;
+
+/* One thread's share of the tile jobs, writing to its own output list. */
+static void overlay_tile_worker(const OverlayTileJob *job) {
+#ifdef _OPENMP
+    int tid = omp_get_thread_num();
+#else
+    int tid = 0;
+#endif
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
+    GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 1)
+#endif
+    for (int j = 0; j < job->njobs; j++) {
+        const double *rect = NULL;
+        if (job->rects != NULL && !ISNA(job->rects[4 * j])) rect = &job->rects[4 * j];
+        process_tile(ctx, writer, job->base, job->base_area, job->uniq,
+                     job->jmemb[j], job->jsize[j], rect, &job->worker[tid],
+                     job->inarea, job->g_face, job->prec, job->pip);
+    }
+    GEOSWKBWriter_destroy_r(ctx, writer);
+    GEOS_finish_r(ctx);
+}
+
 /* C_overlay_run(wkb_chunk, job_chunk, rects, n_threads)
  *   wkb_chunk : VECSXP of RAWSXP cleaned WKB (a feature may repeat across tiles)
  *   job_chunk : INTSXP job id per chunk input (1..njobs, dense)
@@ -619,67 +727,25 @@ SEXP C_overlay_run(SEXP wkb_chunk, SEXP job_chunk, SEXP rects_sexp, SEXP nthread
     GEOSGeometry **base = (GEOSGeometry **) R_Calloc((size_t) (nuniq > 0 ? nuniq : 1), GEOSGeometry *);
     double *base_area = (double *) R_Calloc((size_t) (nuniq > 0 ? nuniq : 1), double);
     int dthreads = cap; if (dthreads > nuniq) dthreads = nuniq > 0 ? nuniq : 1;
+    OverlayDecodeJob djob = { .ptrs = ptrs, .lens = lens, .rep = rep, .nuniq = nuniq,
+                              .base = base, .base_area = base_area };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(dthreads)
 #endif
-    {
-        GEOSContextHandle_t dctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(dctx, overlay_error_handler, NULL);
-        GEOSWKBReader *dreader = GEOSWKBReader_create_r(dctx);
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 64)
-#endif
-        for (int u = 0; u < nuniq; u++) {
-            int i = rep[u];
-            GEOSGeometry *g0 = GEOSWKBReader_read_r(dctx, dreader, ptrs[i], lens[i]);
-            GEOSGeometry *g = (g0 != NULL) ? areal_only(dctx, g0) : NULL;
-            if (g0 != NULL) GEOSGeom_destroy_r(dctx, g0);
-            if (g != NULL) {
-                double xmin, ymin, xmax, ymax;
-                GEOSGeom_getExtent_r(dctx, g, &xmin, &ymin, &xmax, &ymax);  /* warm envelope */
-                base_area[u] = areal_area(dctx, g);
-            }
-            base[u] = g;
-        }
-        GEOSWKBReader_destroy_r(dctx, dreader);
-        GEOS_finish_r(dctx);
-    }
+    overlay_decode_worker(&djob);
     OutList *worker = (OutList *) R_alloc((size_t) nw, sizeof(OutList));
     for (int t = 0; t < nw; t++) ol_init(&worker[t]);
     int g_face = 0;   /* dense piece-id source, shared across jobs/threads */
 
+    OverlayTileJob tjob = { .base = base, .base_area = base_area, .uniq = uniq,
+                            .jmemb = jmemb, .jsize = jsize, .njobs = njobs,
+                            .rects = have_rects ? rects : NULL, .worker = worker,
+                            .inarea = inarea, .g_face = &g_face, .prec = prec,
+                            .pip = pip };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nthreads)
-    {
-        int tid = omp_get_thread_num();
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
-        GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
-        #pragma omp for schedule(dynamic, 1)
-        for (int j = 0; j < njobs; j++) {
-            const double *rect = NULL;
-            if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
-            process_tile(ctx, writer, base, base_area, uniq, jmemb[j], jsize[j],
-                         rect, &worker[tid], inarea, &g_face, prec, pip);
-        }
-        GEOSWKBWriter_destroy_r(ctx, writer);
-        GEOS_finish_r(ctx);
-    }
-#else
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, overlay_error_handler, NULL);
-        GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
-        for (int j = 0; j < njobs; j++) {
-            const double *rect = NULL;
-            if (have_rects && !ISNA(rects[4 * j])) rect = &rects[4 * j];
-            process_tile(ctx, writer, base, base_area, uniq, jmemb[j], jsize[j],
-                         rect, &worker[0], inarea, &g_face, prec, pip);
-        }
-        GEOSWKBWriter_destroy_r(ctx, writer);
-        GEOS_finish_r(ctx);
-    }
 #endif
+    overlay_tile_worker(&tjob);
 
     {   /* free the shared base geometries (any context may destroy them) */
         GEOSContextHandle_t fctx = GEOS_init_r();

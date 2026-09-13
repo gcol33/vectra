@@ -150,6 +150,132 @@ static const unsigned char *hex_at(const VecArray *a, int64_t i, size_t *len) {
     return (const unsigned char *) (a->buf.str.data + s);
 }
 
+/* Inputs and outputs of one geometry expression, shared by the team. */
+typedef struct {
+    const VecArray *g;        /* hex-WKB geometry column                     */
+    const VecArray *rarr;     /* binary: second geometry column / literal    */
+    const VecArray *parr;     /* param: buffer distance / simplify tolerance */
+    GEOSGeometry *cgeom;      /* constant second geometry, shared read-only  */
+    char fn;
+    GeomCat cat;
+    int is_binary, is_param, r_is_const;
+    int64_t n;
+    VecArray *out;            /* double / bool results                       */
+    char **strs;              /* string / geometry results, per row          */
+    int64_t *slens;
+    unsigned char *ok;
+    volatile int *oom;        /* set by a worker on alloc failure            */
+} GeomJob;
+
+/* One thread's share of the rows, with its own GEOS context, reader and
+ * writer. Runs inside the parallel region; its loop is an orphaned worksharing
+ * construct, so the team divides the rows as an inline loop would. */
+static void geom_worker(const GeomJob *job) {
+    const VecArray *g = job->g, *rarr = job->rarr, *parr = job->parr;
+    GEOSGeometry *cgeom = job->cgeom;
+    char fn = job->fn;
+    GeomCat cat = job->cat;
+    int is_binary = job->is_binary, is_param = job->is_param;
+    int r_is_const = job->r_is_const;
+    int64_t n = job->n;
+    VecArray *out = job->out;
+    char **strs = job->strs;
+    int64_t *slens = job->slens;
+    unsigned char *ok = job->ok;
+    volatile int *oom = job->oom;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
+    GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
+    GEOSWKBWriter *writer = (cat == GC_GEOM) ? GEOSWKBWriter_create_r(ctx) : NULL;
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, GEOM_CHUNK)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        size_t hl; const unsigned char *hx = hex_at(g, i, &hl);
+        if (!hx) continue;  /* NA geometry -> NA output (already zeroed) */
+        GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hx, hl);
+        if (!xg) continue;
+
+        if (cat == GC_DOUBLE && fn == 'D') {
+            /* distance to the second geometry */
+            GEOSGeometry *bg = cgeom; GEOSGeometry *bfree = NULL;
+            if (!r_is_const) {
+                size_t bl; const unsigned char *bh = hex_at(rarr, i, &bl);
+                if (bh) { bg = bfree = GEOSWKBReader_readHEX_r(ctx, reader, bh, bl); }
+                else bg = NULL;
+            }
+            double d;
+            if (bg && GEOSDistance_r(ctx, xg, bg, &d)) {
+                out->buf.dbl[i] = d; vec_array_set_valid(out, i);
+            }
+            if (bfree) GEOSGeom_destroy_r(ctx, bfree);
+        } else if (cat == GC_DOUBLE) {
+            double v;
+            if (geom_measure(ctx, fn, xg, &v)) {
+                out->buf.dbl[i] = v; vec_array_set_valid(out, i);
+            }
+        } else if (cat == GC_BOOL) {
+            char res;
+            if (is_binary) {
+                GEOSGeometry *bg = cgeom; GEOSGeometry *bfree = NULL;
+                if (!r_is_const) {
+                    size_t bl; const unsigned char *bh = hex_at(rarr, i, &bl);
+                    if (bh) { bg = bfree = GEOSWKBReader_readHEX_r(ctx, reader, bh, bl); }
+                    else bg = NULL;
+                }
+                res = bg ? geom_binary_pred(ctx, fn, xg, bg) : 2;
+                if (bfree) GEOSGeom_destroy_r(ctx, bfree);
+            } else {
+                res = geom_unary_pred(ctx, fn, xg);
+            }
+            if (res == 0 || res == 1) {
+                out->buf.bln[i] = (uint8_t) res; vec_array_set_valid(out, i);
+            }
+        } else if (cat == GC_STRING) {
+            /* geometry type name */
+            char *t = GEOSGeomType_r(ctx, xg);
+            if (t) {
+                int64_t tl = (int64_t) strlen(t);
+                char *s = (char *) malloc((size_t) (tl > 0 ? tl : 1));
+                if (!s) { GEOSFree_r(ctx, t); GEOSGeom_destroy_r(ctx, xg);
+                          #pragma omp atomic write
+                          *oom = 1;
+                          continue; }  /* xg freed here; skip loop-end free */
+                memcpy(s, t, (size_t) tl);
+                GEOSFree_r(ctx, t);
+                strs[i] = s; slens[i] = tl; ok[i] = 1;
+            }
+        } else { /* GC_GEOM: derived geometry as hex-WKB */
+            double param = 0.0; int param_na = 0;
+            if (is_param) {
+                if (vec_array_is_valid(parr, i)) param = parr->buf.dbl[i];
+                else param_na = 1;
+            }
+            GEOSGeometry *rg = param_na ? NULL : geom_transform(ctx, fn, xg, param);
+            if (rg) {
+                size_t wl = 0;
+                unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, rg, &wl);
+                if (buf) {
+                    char *s = (char *) malloc(wl > 0 ? wl : 1);
+                    if (!s) { GEOSFree_r(ctx, buf); GEOSGeom_destroy_r(ctx, rg);
+                              GEOSGeom_destroy_r(ctx, xg);
+                              #pragma omp atomic write
+                              *oom = 1;
+                              continue; }  /* rg+xg freed here; skip loop-end */
+                    memcpy(s, buf, wl);
+                    GEOSFree_r(ctx, buf);
+                    strs[i] = s; slens[i] = (int64_t) wl; ok[i] = 1;
+                }
+                GEOSGeom_destroy_r(ctx, rg);
+            }
+        }
+        GEOSGeom_destroy_r(ctx, xg);
+    }
+    if (writer) GEOSWKBWriter_destroy_r(ctx, writer);
+    GEOSWKBReader_destroy_r(ctx, reader);
+    GEOS_finish_r(ctx);
+}
+
 VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch) {
     vtr_geos_ensure_api();
     char fn = expr->geom_fn;
@@ -219,102 +345,15 @@ VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch) {
 
     int do_par = (n > GEOM_PAR_THRESHOLD);
     volatile int oom = 0;   /* set by a worker on alloc failure; raised on master */
+    GeomJob job = {
+        .g = g, .rarr = rarr, .parr = parr, .cgeom = cgeom, .fn = fn, .cat = cat,
+        .is_binary = is_binary, .is_param = is_param, .r_is_const = r_is_const,
+        .n = n, .out = out, .strs = strs, .slens = slens, .ok = ok, .oom = &oom
+    };
 #ifdef _OPENMP
     #pragma omp parallel if(do_par)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
-        GEOSWKBWriter *writer = (cat == GC_GEOM) ? GEOSWKBWriter_create_r(ctx) : NULL;
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, GEOM_CHUNK)
-#endif
-        for (int64_t i = 0; i < n; i++) {
-            size_t hl; const unsigned char *hx = hex_at(g, i, &hl);
-            if (!hx) continue;  /* NA geometry -> NA output (already zeroed) */
-            GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hx, hl);
-            if (!xg) continue;
-
-            if (cat == GC_DOUBLE && fn == 'D') {
-                /* distance to the second geometry */
-                GEOSGeometry *bg = cgeom; GEOSGeometry *bfree = NULL;
-                if (!r_is_const) {
-                    size_t bl; const unsigned char *bh = hex_at(rarr, i, &bl);
-                    if (bh) { bg = bfree = GEOSWKBReader_readHEX_r(ctx, reader, bh, bl); }
-                    else bg = NULL;
-                }
-                double d;
-                if (bg && GEOSDistance_r(ctx, xg, bg, &d)) {
-                    out->buf.dbl[i] = d; vec_array_set_valid(out, i);
-                }
-                if (bfree) GEOSGeom_destroy_r(ctx, bfree);
-            } else if (cat == GC_DOUBLE) {
-                double v;
-                if (geom_measure(ctx, fn, xg, &v)) {
-                    out->buf.dbl[i] = v; vec_array_set_valid(out, i);
-                }
-            } else if (cat == GC_BOOL) {
-                char res;
-                if (is_binary) {
-                    GEOSGeometry *bg = cgeom; GEOSGeometry *bfree = NULL;
-                    if (!r_is_const) {
-                        size_t bl; const unsigned char *bh = hex_at(rarr, i, &bl);
-                        if (bh) { bg = bfree = GEOSWKBReader_readHEX_r(ctx, reader, bh, bl); }
-                        else bg = NULL;
-                    }
-                    res = bg ? geom_binary_pred(ctx, fn, xg, bg) : 2;
-                    if (bfree) GEOSGeom_destroy_r(ctx, bfree);
-                } else {
-                    res = geom_unary_pred(ctx, fn, xg);
-                }
-                if (res == 0 || res == 1) {
-                    out->buf.bln[i] = (uint8_t) res; vec_array_set_valid(out, i);
-                }
-            } else if (cat == GC_STRING) {
-                /* geometry type name */
-                char *t = GEOSGeomType_r(ctx, xg);
-                if (t) {
-                    int64_t tl = (int64_t) strlen(t);
-                    char *s = (char *) malloc((size_t) (tl > 0 ? tl : 1));
-                    if (!s) { GEOSFree_r(ctx, t); GEOSGeom_destroy_r(ctx, xg);
-                              #pragma omp atomic write
-                              oom = 1;
-                              continue; }  /* xg freed here; skip loop-end free */
-                    memcpy(s, t, (size_t) tl);
-                    GEOSFree_r(ctx, t);
-                    strs[i] = s; slens[i] = tl; ok[i] = 1;
-                }
-            } else { /* GC_GEOM: derived geometry as hex-WKB */
-                double param = 0.0; int param_na = 0;
-                if (is_param) {
-                    if (vec_array_is_valid(parr, i)) param = parr->buf.dbl[i];
-                    else param_na = 1;
-                }
-                GEOSGeometry *rg = param_na ? NULL : geom_transform(ctx, fn, xg, param);
-                if (rg) {
-                    size_t wl = 0;
-                    unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, rg, &wl);
-                    if (buf) {
-                        char *s = (char *) malloc(wl > 0 ? wl : 1);
-                        if (!s) { GEOSFree_r(ctx, buf); GEOSGeom_destroy_r(ctx, rg);
-                                  GEOSGeom_destroy_r(ctx, xg);
-                                  #pragma omp atomic write
-                                  oom = 1;
-                                  continue; }  /* rg+xg freed here; skip loop-end */
-                        memcpy(s, buf, wl);
-                        GEOSFree_r(ctx, buf);
-                        strs[i] = s; slens[i] = (int64_t) wl; ok[i] = 1;
-                    }
-                    GEOSGeom_destroy_r(ctx, rg);
-                }
-            }
-            GEOSGeom_destroy_r(ctx, xg);
-        }
-        if (writer) GEOSWKBWriter_destroy_r(ctx, writer);
-        GEOSWKBReader_destroy_r(ctx, reader);
-        GEOS_finish_r(ctx);
-    }
+    geom_worker(&job);
 
     if (cgeom) GEOSGeom_destroy_r(cctx, cgeom);
     if (cctx)  GEOS_finish_r(cctx);

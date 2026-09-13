@@ -24,7 +24,12 @@ void vtr_geos_quiet_handler(const char *message, void *userdata);
  * clang's -fsanitize=function compares the type names and reports every call.
  * No C declaration can name the C++ types, so the function-type check alone is
  * turned off for the functions defined between these markers; every other
- * sanitizer check still applies to them. */
+ * sanitizer check still applies to them.
+ *
+ * The body of an OpenMP parallel region is compiled into a separate function
+ * that does not carry the attribute, so a region never calls GEOS directly: it
+ * calls a named worker function defined between the markers, whose loop is an
+ * orphaned `omp for`. */
 #if defined(__clang__)
 # define VTR_GEOS_CALLS_BEGIN \
     _Pragma("clang attribute push(__attribute__((no_sanitize(\"function\"))), apply_to = function)")

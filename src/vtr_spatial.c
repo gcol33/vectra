@@ -254,6 +254,79 @@ static int row_relate(GEOSContextHandle_t ctx, GeosLocator *loc,
 
 /* ---- filter -------------------------------------------------------------- */
 
+/* Inputs and outputs of one batch-parallel spatial verb, shared by the team.
+ * Each verb reads the fields it needs; the rest stay zero. Every verb runs
+ * its per-thread work in a named worker function called from the parallel
+ * region (see VTR_GEOS_CALLS_BEGIN in vtr_geos.h). */
+typedef struct {
+    GeosLocator *loc;                 /* resident locator                      */
+    const GEOSGeometry *mask;         /* clip / erase mask                     */
+    const unsigned char **hex;        /* batch geometries as hex-WKB           */
+    const size_t *hexlen;
+    const double *xs, *ys;            /* raw point coordinates (locate_xy)     */
+    int m;                            /* batch rows                            */
+    int pred, negate, want_all, erase;
+    double dist;
+    int *res;                         /* per-row flag / first match            */
+    int **mptr;                       /* per-row match arrays (1-based)        */
+    int *mlen;
+    char *disp;                       /* clip: 0 drop, 1 cut, 2 keep           */
+    char **cut;                       /* clip: cut hex-WKB                     */
+    volatile int *oom;                /* set by a worker on alloc failure      */
+} GeosBatchJob;
+
+/* One thread's share of the filter. */
+static void filter_worker(const GeosBatchJob *job) {
+    GeosLocator *loc = job->loc;
+    const unsigned char **hex = job->hex;
+    const size_t *hexlen = job->hexlen;
+    int m = job->m, pred = job->pred, negate = job->negate;
+    double dist = job->dist;
+    int *res = job->res;
+    volatile int *oom = job->oom;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
+    GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
+    /* per-thread prepared geometries over the shared resident geoms, built
+     * lazily so only candidates ever touched are prepared */
+    const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
+        calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
+    IntVec cand = {0};
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 256)
+#endif
+    for (int r = 0; r < m; r++) {
+        if (*oom) continue;
+        int hit = 0;
+        if (hex[r] != NULL) {
+            GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
+            if (xg != NULL) {
+                if (pred == VTR_PRED_DISJOINT) {
+                    int ni = row_relate(ctx, loc, prep, &cand, xg,
+                                        VTR_PRED_INTERSECTS, 0.0, 0, NULL);
+                    hit = ni < loc->n_live;
+                } else {
+                    hit = row_relate(ctx, loc, prep, &cand, xg, pred, dist,
+                                     1, NULL) > 0;
+                }
+                GEOSGeom_destroy_r(ctx, xg);
+            }
+            if (cand.oom) {
+                #pragma omp atomic write
+                *oom = 1;
+                continue;
+            }
+        }
+        res[r] = negate ? !hit : hit;
+    }
+    for (int k = 0; k < loc->n; k++)
+        if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
+    free((void *) prep);
+    free(cand.idx);
+    GEOSWKBReader_destroy_r(ctx, reader);
+    GEOS_finish_r(ctx);
+}
+
 /* C_geos_filter(loc_ptr, batch_hex, pred, negate, dist, nthreads) -> LGLSXP(m):
  * TRUE where the batch geometry relates to any resident feature under `pred`
  * (XOR `negate`). For disjoint, a row matches when it is disjoint from at least
@@ -279,52 +352,12 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
     int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
+    GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .m = m, .pred = pred,
+                          .negate = negate, .dist = dist, .res = res, .oom = &oom };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
-        /* per-thread prepared geometries over the shared resident geoms, built
-         * lazily so only candidates ever touched are prepared */
-        const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
-            calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
-        IntVec cand = {0};
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 256)
-#endif
-        for (int r = 0; r < m; r++) {
-            if (oom) continue;
-            int hit = 0;
-            if (hex[r] != NULL) {
-                GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
-                if (xg != NULL) {
-                    if (pred == VTR_PRED_DISJOINT) {
-                        int ni = row_relate(ctx, loc, prep, &cand, xg,
-                                            VTR_PRED_INTERSECTS, 0.0, 0, NULL);
-                        hit = ni < loc->n_live;
-                    } else {
-                        hit = row_relate(ctx, loc, prep, &cand, xg, pred, dist,
-                                         1, NULL) > 0;
-                    }
-                    GEOSGeom_destroy_r(ctx, xg);
-                }
-                if (cand.oom) {
-                    #pragma omp atomic write
-                    oom = 1;
-                    continue;
-                }
-            }
-            res[r] = negate ? !hit : hit;
-        }
-        for (int k = 0; k < loc->n; k++)
-            if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
-        free((void *) prep);
-        free(cand.idx);
-        GEOSWKBReader_destroy_r(ctx, reader);
-        GEOS_finish_r(ctx);
-    }
+    filter_worker(&job);
 
     if (oom) error("vectra: out of memory in spatial filter");
     UNPROTECT(1);
@@ -332,6 +365,60 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
 }
 
 /* ---- join (match lists) -------------------------------------------------- */
+
+/* One thread's share of the join match lists. */
+static void join_worker(const GeosBatchJob *job) {
+    GeosLocator *loc = job->loc;
+    const unsigned char **hex = job->hex;
+    const size_t *hexlen = job->hexlen;
+    int m = job->m, pred = job->pred;
+    double dist = job->dist;
+    int **mptr = job->mptr;
+    int *mlen = job->mlen;
+    volatile int *oom = job->oom;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
+    GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
+    const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
+        calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
+    IntVec cand = {0};
+    IntVec hits = {0};
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 256)
+#endif
+    for (int r = 0; r < m; r++) {
+        if (*oom) continue;
+        if (hex[r] == NULL) continue;
+        GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
+        if (xg == NULL) continue;
+        hits.n = 0;
+        row_relate(ctx, loc, prep, &cand, xg, pred, dist, 0, &hits);
+        GEOSGeom_destroy_r(ctx, xg);
+        if (cand.oom || hits.oom) {
+            #pragma omp atomic write
+            *oom = 1;
+            continue;
+        }
+        if (hits.n > 0) {
+            qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
+            int *a = (int *) malloc((size_t) hits.n * sizeof(int));
+            if (a == NULL) {
+                #pragma omp atomic write
+                *oom = 1;
+                continue;
+            }
+            for (int j = 0; j < hits.n; j++) a[j] = hits.idx[j] + 1;
+            mptr[r] = a; mlen[r] = hits.n;
+        }
+    }
+    for (int k = 0; k < loc->n; k++)
+        if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
+    free((void *) prep);
+    free(cand.idx);
+    free(hits.idx);
+    GEOSWKBReader_destroy_r(ctx, reader);
+    GEOS_finish_r(ctx);
+}
 
 /* C_geos_join(loc_ptr, batch_hex, pred, dist, nthreads) -> VECSXP(m): for each
  * batch row an INTSXP of the 1-based resident-feature indices it relates to
@@ -359,53 +446,12 @@ SEXP C_geos_join(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
     int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
+    GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .m = m, .pred = pred,
+                          .dist = dist, .mptr = mptr, .mlen = mlen, .oom = &oom };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
-        const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
-            calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
-        IntVec cand = {0};
-        IntVec hits = {0};
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 256)
-#endif
-        for (int r = 0; r < m; r++) {
-            if (oom) continue;
-            if (hex[r] == NULL) continue;
-            GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
-            if (xg == NULL) continue;
-            hits.n = 0;
-            row_relate(ctx, loc, prep, &cand, xg, pred, dist, 0, &hits);
-            GEOSGeom_destroy_r(ctx, xg);
-            if (cand.oom || hits.oom) {
-                #pragma omp atomic write
-                oom = 1;
-                continue;
-            }
-            if (hits.n > 0) {
-                qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
-                int *a = (int *) malloc((size_t) hits.n * sizeof(int));
-                if (a == NULL) {
-                    #pragma omp atomic write
-                    oom = 1;
-                    continue;
-                }
-                for (int j = 0; j < hits.n; j++) a[j] = hits.idx[j] + 1;
-                mptr[r] = a; mlen[r] = hits.n;
-            }
-        }
-        for (int k = 0; k < loc->n; k++)
-            if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
-        free((void *) prep);
-        free(cand.idx);
-        free(hits.idx);
-        GEOSWKBReader_destroy_r(ctx, reader);
-        GEOS_finish_r(ctx);
-    }
+    join_worker(&job);
 
     if (oom) {
         for (int r = 0; r < m; r++) free(mptr[r]);
@@ -450,6 +496,33 @@ static int nearest_distfn(const void *item1, const void *item2,
     return GEOSDistance_r(nc->ctx, q, g, distance);   /* 1 on success, 0 on error */
 }
 
+/* One thread's share of the nearest-feature lookups. */
+static void nearest_worker(const GeosBatchJob *job) {
+    GeosLocator *loc = job->loc;
+    const unsigned char **hex = job->hex;
+    const size_t *hexlen = job->hexlen;
+    int m = job->m;
+    int *res = job->res;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
+    GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 256)
+#endif
+    for (int r = 0; r < m; r++) {
+        if (loc->n_live == 0 || hex[r] == NULL) continue;
+        GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
+        if (xg == NULL) continue;
+        NearestCtx nc; nc.ctx = ctx; nc.loc = loc; nc.query_item = (const void *) xg;
+        const void *hit = GEOSSTRtree_nearest_generic_r(
+            ctx, loc->tree, (const void *) xg, xg, nearest_distfn, &nc);
+        if (hit != NULL) res[r] = *(const int *) hit + 1;
+        GEOSGeom_destroy_r(ctx, xg);
+    }
+    GEOSWKBReader_destroy_r(ctx, reader);
+    GEOS_finish_r(ctx);
+}
+
 /* C_geos_nearest(loc_ptr, batch_hex, nthreads) -> INTSXP(m): the 1-based index
  * of the single resident feature nearest to each batch row (NA where the row has
  * no geometry or the tree is empty). One match per row, as st_nearest_feature. */
@@ -469,35 +542,86 @@ SEXP C_geos_nearest(SEXP loc_ptr, SEXP batch_hex, SEXP nthreads_sexp) {
     for (int r = 0; r < m; r++) res[r] = NA_INTEGER;
     int nt = resolve_threads(nthreads_sexp, m);
 
+    GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .m = m, .res = res };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 256)
-#endif
-        for (int r = 0; r < m; r++) {
-            if (loc->n_live == 0 || hex[r] == NULL) continue;
-            GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
-            if (xg == NULL) continue;
-            NearestCtx nc; nc.ctx = ctx; nc.loc = loc; nc.query_item = (const void *) xg;
-            const void *hit = GEOSSTRtree_nearest_generic_r(
-                ctx, loc->tree, (const void *) xg, xg, nearest_distfn, &nc);
-            if (hit != NULL) res[r] = *(const int *) hit + 1;
-            GEOSGeom_destroy_r(ctx, xg);
-        }
-        GEOSWKBReader_destroy_r(ctx, reader);
-        GEOS_finish_r(ctx);
-    }
+    nearest_worker(&job);
 
     UNPROTECT(1);
     return out;
 }
 
 /* ---- locate raw point coordinates ---------------------------------------- */
+
+/* One thread's share of the point locations. */
+static void locate_xy_worker(const GeosBatchJob *job) {
+    GeosLocator *loc = job->loc;
+    const double *xs = job->xs, *ys = job->ys;
+    int m = job->m, pred = job->pred, want_all = job->want_all;
+    double dist = job->dist;
+    int *res = job->res;
+    int **mptr = job->mptr;
+    int *mlen = job->mlen;
+    volatile int *oom = job->oom;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
+    const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
+        calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
+    IntVec cand = {0};
+    IntVec hits = {0};
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 256)
+#endif
+    for (int r = 0; r < m; r++) {
+        if (*oom) continue;
+        double xr = xs[r], yr = ys[r];
+        if (ISNAN(xr) || ISNAN(yr)) continue;
+        GEOSGeometry *pt = GEOSGeom_createPointFromXY_r(ctx, xr, yr);
+        if (pt == NULL) continue;
+        if (pred == VTR_PRED_NEAREST) {
+            if (!want_all && loc->n_live > 0) {
+                NearestCtx nc; nc.ctx = ctx; nc.loc = loc;
+                nc.query_item = (const void *) pt;
+                const void *hit = GEOSSTRtree_nearest_generic_r(
+                    ctx, loc->tree, (const void *) pt, pt, nearest_distfn, &nc);
+                if (hit != NULL) res[r] = *(const int *) hit + 1;
+            }
+            GEOSGeom_destroy_r(ctx, pt);
+            continue;
+        }
+        hits.n = 0;
+        row_relate(ctx, loc, prep, &cand, pt, pred, dist, 0, &hits);
+        GEOSGeom_destroy_r(ctx, pt);
+        if (cand.oom || hits.oom) {
+            #pragma omp atomic write
+            *oom = 1;
+            continue;
+        }
+        if (hits.n == 0) continue;
+        if (want_all) {
+            qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
+            int *a = (int *) malloc((size_t) hits.n * sizeof(int));
+            if (a == NULL) {
+                #pragma omp atomic write
+                *oom = 1;
+                continue;
+            }
+            for (int j = 0; j < hits.n; j++) a[j] = hits.idx[j] + 1;
+            mptr[r] = a; mlen[r] = hits.n;
+        } else {
+            int mn = hits.idx[0];
+            for (int j = 1; j < hits.n; j++) if (hits.idx[j] < mn) mn = hits.idx[j];
+            res[r] = mn + 1;
+        }
+    }
+    for (int k = 0; k < loc->n; k++)
+        if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
+    free((void *) prep);
+    free(cand.idx);
+    free(hits.idx);
+    GEOS_finish_r(ctx);
+}
 
 /* C_geos_locate_xy(loc, x, y, pred, dist, want_all, nthreads): match raw point
  * coordinates against the resident locator -- the sf-free counterpart of
@@ -541,68 +665,13 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
     int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
+    GeosBatchJob job = { .loc = loc, .xs = xs, .ys = ys, .m = m, .pred = pred,
+                          .dist = dist, .want_all = want_all, .res = res,
+                          .mptr = mptr, .mlen = mlen, .oom = &oom };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-        const GEOSPreparedGeometry **prep = (const GEOSPreparedGeometry **)
-            calloc((size_t) (loc->n > 0 ? loc->n : 1), sizeof(const GEOSPreparedGeometry *));
-        IntVec cand = {0};
-        IntVec hits = {0};
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 256)
-#endif
-        for (int r = 0; r < m; r++) {
-            if (oom) continue;
-            double xr = xs[r], yr = ys[r];
-            if (ISNAN(xr) || ISNAN(yr)) continue;
-            GEOSGeometry *pt = GEOSGeom_createPointFromXY_r(ctx, xr, yr);
-            if (pt == NULL) continue;
-            if (pred == VTR_PRED_NEAREST) {
-                if (!want_all && loc->n_live > 0) {
-                    NearestCtx nc; nc.ctx = ctx; nc.loc = loc;
-                    nc.query_item = (const void *) pt;
-                    const void *hit = GEOSSTRtree_nearest_generic_r(
-                        ctx, loc->tree, (const void *) pt, pt, nearest_distfn, &nc);
-                    if (hit != NULL) res[r] = *(const int *) hit + 1;
-                }
-                GEOSGeom_destroy_r(ctx, pt);
-                continue;
-            }
-            hits.n = 0;
-            row_relate(ctx, loc, prep, &cand, pt, pred, dist, 0, &hits);
-            GEOSGeom_destroy_r(ctx, pt);
-            if (cand.oom || hits.oom) {
-                #pragma omp atomic write
-                oom = 1;
-                continue;
-            }
-            if (hits.n == 0) continue;
-            if (want_all) {
-                qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
-                int *a = (int *) malloc((size_t) hits.n * sizeof(int));
-                if (a == NULL) {
-                    #pragma omp atomic write
-                    oom = 1;
-                    continue;
-                }
-                for (int j = 0; j < hits.n; j++) a[j] = hits.idx[j] + 1;
-                mptr[r] = a; mlen[r] = hits.n;
-            } else {
-                int mn = hits.idx[0];
-                for (int j = 1; j < hits.n; j++) if (hits.idx[j] < mn) mn = hits.idx[j];
-                res[r] = mn + 1;
-            }
-        }
-        for (int k = 0; k < loc->n; k++)
-            if (prep[k] != NULL) GEOSPreparedGeom_destroy_r(ctx, prep[k]);
-        free((void *) prep);
-        free(cand.idx);
-        free(hits.idx);
-        GEOS_finish_r(ctx);
-    }
+    locate_xy_worker(&job);
 
     if (oom) {
         if (want_all) for (int r = 0; r < m; r++) free(mptr[r]);
@@ -660,6 +729,62 @@ SEXP C_geos_points_to_hex(SEXP x_sexp, SEXP y_sexp) {
 
 /* ---- clip / erase -------------------------------------------------------- */
 
+/* One thread's share of the clip: its own context, reader, writer and
+ * prepared mask. */
+static void clip_worker(const GeosBatchJob *job) {
+    const GEOSGeometry *mask = job->mask;
+    const unsigned char **hex = job->hex;
+    const size_t *hexlen = job->hexlen;
+    int m = job->m, erase = job->erase;
+    char *disp = job->disp;
+    char **cut = job->cut;
+    volatile int *oom = job->oom;
+    GEOSContextHandle_t ctx = GEOS_init_r();
+    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
+    GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
+    GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
+    const GEOSPreparedGeometry *pm = GEOSPrepare_r(ctx, mask);
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic, 128)
+#endif
+    for (int r = 0; r < m; r++) {
+        if (*oom) continue;
+        if (hex[r] == NULL) { disp[r] = 0; continue; }
+        GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
+        if (xg == NULL) { disp[r] = 0; continue; }
+        char meets = (pm != NULL) ? GEOSPreparedIntersects_r(ctx, pm, xg) : 1;
+        GEOSGeometry *g = NULL;
+        if (erase) {
+            if (meets != 1) { disp[r] = 2; GEOSGeom_destroy_r(ctx, xg); continue; }
+            g = GEOSDifference_r(ctx, xg, mask);
+        } else {
+            if (meets != 1) { disp[r] = 0; GEOSGeom_destroy_r(ctx, xg); continue; }
+            g = GEOSIntersection_r(ctx, xg, mask);
+        }
+        GEOSGeom_destroy_r(ctx, xg);
+        if (g == NULL) { disp[r] = (erase ? 2 : 0); continue; }
+        if (GEOSisEmpty_r(ctx, g)) { GEOSGeom_destroy_r(ctx, g); disp[r] = 0; continue; }
+        size_t len = 0;
+        unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, g, &len);
+        GEOSGeom_destroy_r(ctx, g);
+        if (buf == NULL) { disp[r] = 0; continue; }
+        char *s = (char *) malloc(len + 1);
+        if (s == NULL) {
+            GEOSFree_r(ctx, buf);
+            #pragma omp atomic write
+            *oom = 1;
+            continue;
+        }
+        memcpy(s, buf, len); s[len] = '\0';
+        GEOSFree_r(ctx, buf);
+        cut[r] = s; disp[r] = 1;
+    }
+    if (pm != NULL) GEOSPreparedGeom_destroy_r(ctx, pm);
+    GEOSWKBWriter_destroy_r(ctx, writer);
+    GEOSWKBReader_destroy_r(ctx, reader);
+    GEOS_finish_r(ctx);
+}
+
 /* C_geos_clip(loc_ptr, batch_hex, erase, nthreads) -> STRSXP(m):
  * the clipped (intersection) or erased (difference) geometry as hex-WKB, with
  * NA_STRING where the row is dropped (empty result). loc must hold a single
@@ -687,55 +812,12 @@ SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_se
     int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
+    GeosBatchJob job = { .mask = mask, .hex = hex, .hexlen = hexlen, .m = m,
+                          .erase = erase, .disp = disp, .cut = cut, .oom = &oom };
 #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
 #endif
-    {
-        GEOSContextHandle_t ctx = GEOS_init_r();
-        GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-        GEOSWKBReader *reader = GEOSWKBReader_create_r(ctx);
-        GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
-        const GEOSPreparedGeometry *pm = GEOSPrepare_r(ctx, mask);
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, 128)
-#endif
-        for (int r = 0; r < m; r++) {
-            if (oom) continue;
-            if (hex[r] == NULL) { disp[r] = 0; continue; }
-            GEOSGeometry *xg = GEOSWKBReader_readHEX_r(ctx, reader, hex[r], hexlen[r]);
-            if (xg == NULL) { disp[r] = 0; continue; }
-            char meets = (pm != NULL) ? GEOSPreparedIntersects_r(ctx, pm, xg) : 1;
-            GEOSGeometry *g = NULL;
-            if (erase) {
-                if (meets != 1) { disp[r] = 2; GEOSGeom_destroy_r(ctx, xg); continue; }
-                g = GEOSDifference_r(ctx, xg, mask);
-            } else {
-                if (meets != 1) { disp[r] = 0; GEOSGeom_destroy_r(ctx, xg); continue; }
-                g = GEOSIntersection_r(ctx, xg, mask);
-            }
-            GEOSGeom_destroy_r(ctx, xg);
-            if (g == NULL) { disp[r] = (erase ? 2 : 0); continue; }
-            if (GEOSisEmpty_r(ctx, g)) { GEOSGeom_destroy_r(ctx, g); disp[r] = 0; continue; }
-            size_t len = 0;
-            unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, g, &len);
-            GEOSGeom_destroy_r(ctx, g);
-            if (buf == NULL) { disp[r] = 0; continue; }
-            char *s = (char *) malloc(len + 1);
-            if (s == NULL) {
-                GEOSFree_r(ctx, buf);
-                #pragma omp atomic write
-                oom = 1;
-                continue;
-            }
-            memcpy(s, buf, len); s[len] = '\0';
-            GEOSFree_r(ctx, buf);
-            cut[r] = s; disp[r] = 1;
-        }
-        if (pm != NULL) GEOSPreparedGeom_destroy_r(ctx, pm);
-        GEOSWKBWriter_destroy_r(ctx, writer);
-        GEOSWKBReader_destroy_r(ctx, reader);
-        GEOS_finish_r(ctx);
-    }
+    clip_worker(&job);
 
     if (oom) {
         for (int r = 0; r < m; r++) free(cut[r]);
