@@ -146,8 +146,15 @@ static tdc_status dict1d_encode(const tdc_block *in,
     /* The input must use a contiguous offsets[] starting at 0; that is
      * the standing tdc_block convention for STRING. We do not enforce
      * offsets[0] == 0 here (block_validate already passed) but we do
-     * read it as the start of the first string below. */
+     * read it as the start of the first string below. A column whose
+     * strings are all empty may carry no heap at all; it reads from a
+     * one-byte stand-in so no offset is ever applied to NULL. */
+    static const uint8_t empty_heap = 0u;
     const uint8_t *heap = (const uint8_t *)in->data;
+    if (heap == NULL) {
+        if (in->offsets[0] != 0u || in->offsets[n] != 0u) return TDC_E_INVAL;
+        heap = &empty_heap;
+    }
 
     /* ----- Hash table + dict scratch ------------------------------------ */
     /*

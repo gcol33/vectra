@@ -641,8 +641,14 @@ static tdc_status vtr_decode_string_column_tdc(VecArray       *col_out,
     free(col_out->buf.str.offsets);
     if (col_out->owns_data) free(col_out->buf.str.data);
 
+    /* An all-empty column decodes to no heap; string data is never NULL. */
+    char *heap = (char *)dst.data;
+    if (!heap) {
+        heap = (char *)malloc(1);
+        if (!heap) { free(new_offs); return TDC_E_NOMEM; }
+    }
     col_out->buf.str.offsets  = new_offs;
-    col_out->buf.str.data     = (char *)dst.data;  /* may be NULL when n==0 */
+    col_out->buf.str.data     = heap;
     col_out->buf.str.data_len = heap_bytes;
     col_out->owns_data        = 1;  /* offsets + data both came via malloc */
 
@@ -888,8 +894,8 @@ SEXP C_tdc_dict_roundtrip(SEXP x_sexp) {
     }
     offsets[n] = total;
 
-    char *data = (char *)((total > 0) ? malloc((size_t)total) : NULL);
-    if (total > 0 && !data) Rf_error("C_tdc_dict_roundtrip: alloc failed");
+    char *data = (char *)malloc((size_t)(total > 0 ? total : 1));
+    if (!data) Rf_error("C_tdc_dict_roundtrip: alloc failed");
     for (int64_t i = 0; i < n; ++i) {
         SEXP e = STRING_ELT(x_sexp, i);
         if (e == NA_STRING) continue;
@@ -932,8 +938,8 @@ SEXP C_tdc_dict_roundtrip(SEXP x_sexp) {
     for (uint32_t d = 0; d < dict.dict_count; ++d) {
         uint32_t s = dict.dict_offsets[d];
         uint32_t e = dict.dict_offsets[d + 1];
-        dict_cs[d] = Rf_mkCharLenCE((const char *)dict.dict_data + s,
-                                    (int)(e - s), CE_UTF8);
+        const char *sp = (e > s) ? (const char *)dict.dict_data + s : "";
+        dict_cs[d] = Rf_mkCharLenCE(sp, (int)(e - s), CE_UTF8);
     }
     for (int64_t i = 0; i < dict.n; ++i) {
         SET_STRING_ELT(out, (R_xlen_t)i, dict_cs[dict.indices[i]]);
