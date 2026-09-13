@@ -38,6 +38,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+VTR_GEOS_CALLS_BEGIN
+
 /* Below this row count the per-thread GEOS context setup is not worth it. */
 #define GEOM_PAR_THRESHOLD 128
 /* Chunk is a multiple of 8 so per-thread validity bytes never overlap. */
@@ -358,3 +360,5 @@ VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch) {
     if (parr) { vec_array_free(parr); free(parr); }
     return out;
 }
+
+VTR_GEOS_CALLS_END

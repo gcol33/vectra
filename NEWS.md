@@ -1,3 +1,16 @@
+# vectra 0.12.2
+
+## Bug fixes
+
+* The geometry expressions (`st_area()`, `st_intersects()`, ...), the streamed
+  spatial verbs and `spatial_overlay()` no longer trigger clang's
+  `-fsanitize=function` on every GEOS call. vectra calls the GEOS C API through
+  the function pointers libgeos hands out, declared in C with opaque struct
+  handles; GEOS defines the same functions in C++ with class handles. The types
+  are ABI-identical, so results were never affected, but the sanitizer compares
+  them by name. That one check is now turned off for the code calling GEOS, and
+  a clang job building libgeos and vectra under the sanitizer runs in CI.
+
 # vectra 0.12.1
 
 ## Bug fixes

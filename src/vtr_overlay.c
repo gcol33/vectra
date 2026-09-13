@@ -34,6 +34,8 @@
 
 #include "vec_omp.h"
 
+VTR_GEOS_CALLS_BEGIN
+
 #define overlay_geos_init      vtr_geos_ensure_api
 #define overlay_error_handler  vtr_geos_quiet_handler
 
@@ -738,3 +740,5 @@ SEXP C_geos_version(void) {
     overlay_geos_init();
     return mkString(GEOSversion());
 }
+
+VTR_GEOS_CALLS_END

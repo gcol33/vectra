@@ -34,6 +34,8 @@
 
 #include "vec_omp.h"
 
+VTR_GEOS_CALLS_BEGIN
+
 /* ---- predicate codes (x relates to resident y) --------------------------- */
 /* Each is evaluated with a prepared geometry on the resident y side, so the
  * direction is expressed through y: e.g. "x within y" is "y contains x".
@@ -802,3 +804,5 @@ SEXP C_geos_union_hex(SEXP batch_hex) {
     UNPROTECT(1);
     return out;
 }
+
+VTR_GEOS_CALLS_END

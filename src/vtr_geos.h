@@ -17,4 +17,21 @@ void vtr_geos_ensure_api(void);
 /* Error handler that discards GEOS messages (errors become guarded NULLs). */
 void vtr_geos_quiet_handler(const char *message, void *userdata);
 
+/* Bracket the code that calls the GEOS C API through the libgeos function
+ * pointers. GEOS defines that API in C++, where the opaque handles
+ * (GEOSGeometry, GEOSWKBReader, ...) are pointers to C++ classes; here they are
+ * pointers to incomplete C structs. The two types are ABI-identical, but
+ * clang's -fsanitize=function compares the type names and reports every call.
+ * No C declaration can name the C++ types, so the function-type check alone is
+ * turned off for the functions defined between these markers; every other
+ * sanitizer check still applies to them. */
+#if defined(__clang__)
+# define VTR_GEOS_CALLS_BEGIN \
+    _Pragma("clang attribute push(__attribute__((no_sanitize(\"function\"))), apply_to = function)")
+# define VTR_GEOS_CALLS_END _Pragma("clang attribute pop")
+#else
+# define VTR_GEOS_CALLS_BEGIN
+# define VTR_GEOS_CALLS_END
+#endif
+
 #endif
