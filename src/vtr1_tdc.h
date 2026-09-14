@@ -73,8 +73,10 @@ void vtr1_close_tdc_writer(Vtr1TdcWriter *w);
  * The container is stamped as widened, which older readers refuse rather
  * than misread; the superseded index stays behind as a gap in the blocks
  * region, so a widened container is random-access only. Existing row-group
- * boundaries and block offsets are unchanged, so any `.vtri` sidecar index
- * over the original columns stays valid.
+ * boundaries and block offsets are unchanged, so the entries of any `.vtri`
+ * sidecar index over the original columns stay true; only the store's
+ * fingerprint changes, which the sidecar stamps, so each one is restamped
+ * after the widen (see .extend_indexes in R/index.R).
  */
 
 typedef struct Vtr1TdcWidener Vtr1TdcWidener;
@@ -118,8 +120,8 @@ void vtr1_abort_tdc_widener(Vtr1TdcWidener *w);
  * refuse it rather than misread it) and the superseded index stays behind as a
  * gap, so it is random-access only. Existing row-group boundaries and block
  * offsets are unchanged, so a `.vtri` sidecar's entries still name the row
- * groups its keys sit in; only the store's row/row-group counts change, which
- * the sidecar stamps.
+ * groups its keys sit in; only the store's row/row-group counts and its
+ * fingerprint change, which the sidecar stamps.
  */
 
 typedef struct Vtr1TdcExtender Vtr1TdcExtender;
@@ -249,5 +251,54 @@ VecBatch **vtr1_read_parallel_tdc_defer_into(Vtr1TdcFile *file,
                                        uint32_t *out_count);
 
 void vtr1_close_tdc(Vtr1TdcFile *file);
+
+/* ---------- store identity ------------------------------------------------ */
+
+/*
+ * A .vtr file is a tdc container followed by a 24-byte vectra trailer that
+ * records a digest of the container's bytes:
+ *
+ *   container_len: u64   (bytes before the trailer)
+ *   digest:        u64   (VtrDigest over every byte the writer emitted)
+ *   version:       u32   (VTR1_TRAILER_VERSION)
+ *   magic:         "VTRD"
+ *
+ * The writer feeds every byte it hands to tdc through the digest, including
+ * the header it patches at close, and appends the trailer once the container
+ * is complete. Growing a store in place (the extender and the widener) seeds
+ * the digest with the store's fingerprint before the append and feeds it the
+ * bytes the append writes, then rewrites the trailer past the new end; an
+ * aborted append puts the old trailer back.
+ *
+ * The trailer sits past everything tdc addresses -- the decoder reads the
+ * header, the schema and the row-group index at the offsets the header names
+ * and never looks at the file's length -- so readers that predate it read the
+ * store unchanged. A trailer is honoured only when it ends the file exactly
+ * where the container does (container_len equals both the file length less the
+ * trailer and the end of the row-group index), so leftover bytes from an
+ * interrupted append, or a store grown by a reader that does not know the
+ * trailer, read as a store without one.
+ */
+
+#define VTR1_TRAILER_SIZE    24
+#define VTR1_TRAILER_VERSION 1
+
+/*
+ * The store's fingerprint: a digest of its trailer digest (or its absence),
+ * its column types, and its whole row-group index -- per row group the row
+ * count, per column the block offset and size and the min/max/null-count
+ * statistics. Computed on first call from what the file already holds in
+ * memory and cached, so it costs the size of the store's metadata, never of
+ * its data.
+ *
+ * A store carrying a trailer is identified by its bytes. A store without one
+ * (written by a vectra that predates the trailer) is identified by its layout
+ * alone, which tells apart stores whose blocks differ in size or statistics
+ * but not two whose blocks happen to agree on both.
+ */
+uint64_t vtr1_tdc_fingerprint(Vtr1TdcFile *file);
+
+/* 1 when the store carries a valid trailer digest. */
+int vtr1_tdc_has_digest(const Vtr1TdcFile *file);
 
 #endif /* VECTRA_VTR1_TDC_H */

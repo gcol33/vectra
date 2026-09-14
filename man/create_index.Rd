@@ -45,13 +45,25 @@ a store larger than memory costs disk rather than RAM.
 \code{\link[=append_vtr]{append_vtr()}} leaves the existing row groups where they are, so an index
 stays valid across an append: it takes in the row groups just appended and
 keeps the rest, reading only the new data rather than the whole store.
+\code{\link[=write_vtr]{write_vtr()}} replaces a store, and removes the indexes of the store it
+replaces.
 
-An index left behind by any other change of the store is reported as absent
-by \code{has_index()} and ignored by queries rather than pruning row groups that
-may now hold matching rows. The same goes for one that cannot be read at all:
-an index only ever saves a scan work, so an unusable one costs speed and
-never rows. Indexes written by vectra 0.11.8 and earlier are superseded and
-read as absent; call \code{create_index()} again to rebuild them.
+An index records the store it was built on, by the store's row and row-group
+counts and a fingerprint of its bytes. An index left behind by any other
+change of the store -- including a store replaced outside vectra by one of
+the same shape, such as a download or a file renamed over the old path -- is
+reported as absent by \code{has_index()} and ignored by queries rather than
+pruning row groups that may now hold matching rows. The same goes for one
+that cannot be read at all: an index only ever saves a scan work, so an
+unusable one costs speed and never rows. Indexes written by vectra 0.12.3
+and earlier are superseded and read as absent; call \code{create_index()} again
+to rebuild them.
+
+A store written by vectra 0.12.3 or earlier carries no digest of its bytes,
+so its fingerprint covers its layout (row-group sizes, block sizes and
+column statistics) only. Such a store cannot be told apart from a
+replacement whose blocks agree with it on all of those; rewriting it with
+\code{write_vtr()} gives it a digest.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")

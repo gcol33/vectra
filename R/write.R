@@ -306,6 +306,9 @@ write_tiff.data.frame <- function(x, path, compress = FALSE,
 #'
 #' For `data.frame` inputs, the data is written directly from memory.
 #'
+#' Writing over an existing `.vtr` replaces it, and removes the `.vtri` indexes
+#' built on the store it replaces (see [create_index()]).
+#'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path for the output .vtr file.
 #' @param compress Compression level: `"fast"` (default, byte-shuffle + greedy
@@ -368,6 +371,7 @@ write_vtr.vectra_node <- function(x, path, compress = c("fast", "small", "none")
   path <- normalizePath(path, mustWork = FALSE)
   compress <- .check_compress(compress)
   bs <- if (!is.null(batch_size)) as.double(batch_size) else NULL
+  .drop_indexes(path)
   .Call(C_write_vtr_node, x$.node, path, bs, compress, col_types, quantize,
         spatial)
   invisible(NULL)
@@ -380,6 +384,7 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
   check_scalar_string(path)
   path <- normalizePath(path, mustWork = FALSE)
   compress <- .check_compress(compress)
+  .drop_indexes(path)
   .Call(C_write_vtr, x, path, as.integer(batch_size), compress, col_types,
         quantize, spatial)
   invisible(NULL)
@@ -426,7 +431,8 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
 #'
 #' Existing row-group boundaries and column data are untouched, so any
 #' `.vtri` index built with [create_index()] over the original columns stays
-#' valid across a column append.
+#' valid across a column append: it is restamped for the grown store without
+#' being rebuilt.
 #'
 #' # Interruption
 #'
@@ -481,16 +487,19 @@ append_vtr.vectra_node <- function(x, path, along = c("rows", "cols"),
   # and the r+b open in the column path, otherwise fail with a sharing
   # violation.
   gc(verbose = FALSE)
+  indexed <- length(.index_files(path)) > 0L
+  pre <- if (indexed) .store_fingerprint(path)
   if (along == "cols") {
     .Call(C_append_cols_vtr, x$.node, path, .check_compress(compress))
   } else {
     .Call(C_append_vtr, x$.node, path, .check_compress(compress))
-    # The existing row groups have not moved, so each index still maps its keys
-    # to the row groups they sit in; what it does not yet cover is the row
-    # groups just appended. Take those in rather than rebuilding from the whole
-    # store, so an indexed store's append stays off the store's size.
-    .extend_indexes(path)
   }
+  # The existing row groups have not moved, so each index still maps its keys
+  # to the row groups they sit in; what it does not yet cover is the row groups
+  # just appended, and the store's new fingerprint. Take those in rather than
+  # rebuilding from the whole store, so an indexed store's append stays off the
+  # store's size.
+  if (indexed) .extend_indexes(path, pre)
   invisible(NULL)
 }
 

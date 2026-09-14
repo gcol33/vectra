@@ -86,14 +86,16 @@ test_that("append_vtr rejects a column-type mismatch", {
 
 # ── append_vtr(along = "cols") ────────────────────────────────────────────────
 
-# Helper: the bytes of a .vtr below the 64-byte container header. A column
-# append must leave every one of them exactly where it found them -- that is
-# the property that makes the operation cost the appended columns rather
-# than the size of the store.
+# Helper: the bytes of a .vtr between the 64-byte container header and the
+# 24-byte trailer. A column append must leave every one of them exactly where it
+# found them -- that is the property that makes the operation cost the appended
+# columns rather than the size of the store. The header and the trailer are the
+# two parts an append rewrites.
+vtr_trailer_bytes <- 24L
 vtr_body <- function(path) {
   n <- file.size(path)
   raw_all <- readBin(path, "raw", n = n)
-  raw_all[65:n]
+  raw_all[65:(n - vtr_trailer_bytes)]
 }
 
 test_that("append_vtr(along = 'cols') attaches columns without touching existing bytes", {
@@ -219,6 +221,7 @@ test_that("append_vtr(along = 'cols') rejects a row-count mismatch and leaves th
   write_vtr(data.frame(id = 1:n, v = as.double(1:n)), f, batch_size = 32L)
   before <- tbl(f) |> collect()
   body_before <- vtr_body(f)
+  file_before <- readBin(f, "raw", file.size(f))
 
   # Too few rows.
   expect_error(append_vtr(data.frame(w = 1:10), f, along = "cols"),
@@ -231,8 +234,9 @@ test_that("append_vtr(along = 'cols') rejects a row-count mismatch and leaves th
   expect_identical(tbl(f) |> collect(), before)
 
   # An aborted append truncates what it wrote, so repeated failures cannot
-  # grow the file.
+  # grow the file, and puts back the trailer the appended bytes overwrote.
   expect_identical(vtr_body(f), body_before)
+  expect_identical(readBin(f, "raw", file.size(f)), file_before)
 })
 
 test_that("append_vtr(along = 'cols') rejects colliding and duplicated names", {
@@ -487,8 +491,9 @@ test_that("diff_vtr handles all rows deleted (new is empty subset)", {
 test_that("a row append leaves the bytes already written where they are", {
   # The claim the in-place append rests on: existing row groups are neither
   # read nor moved, so the call costs the rows being appended rather than the
-  # size of the store. Everything past the 64-byte container header must
-  # therefore survive verbatim -- only the header is rewritten, last.
+  # size of the store. Everything between the 64-byte container header and the
+  # 24-byte trailer must therefore survive verbatim -- only the header is
+  # rewritten, last, and the trailer moves to the new end.
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))
 
@@ -499,9 +504,9 @@ test_that("a row append leaves the bytes already written where they are", {
   after <- readBin(f, "raw", file.size(f))
 
   hdr <- 64L
+  kept <- length(before) - vtr_trailer_bytes
   expect_gt(length(after), length(before))
-  expect_identical(after[(hdr + 1L):length(before)],
-                   before[(hdr + 1L):length(before)])
+  expect_identical(after[(hdr + 1L):kept], before[(hdr + 1L):kept])
 
   result <- tbl(f) |> collect()
   expect_equal(nrow(result), 1100L)
@@ -524,7 +529,8 @@ test_that("repeated row appends never move the rows already written", {
 
   after <- readBin(f, "raw", file.size(f))
   hdr <- 64L
-  expect_identical(after[(hdr + 1L):length(base)], base[(hdr + 1L):length(base)])
+  kept <- length(base) - vtr_trailer_bytes
+  expect_identical(after[(hdr + 1L):kept], base[(hdr + 1L):kept])
 
   expect_equal(tbl(f) |> collect() |> nrow(), 1100L)
   expect_equal(tbl(f) |> collect() |> getElement("x"), as.double(1:1100))

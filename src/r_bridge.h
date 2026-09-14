@@ -70,6 +70,7 @@ SEXP C_interval_join_node(SEXP probe_xptr, SEXP build_xptr,
 SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci, SEXP mem);
 SEXP C_has_index(SEXP path, SEXP col_name);
 SEXP C_index_spec(SEXP path, SEXP vtri_path);
-SEXP C_extend_index(SEXP path, SEXP vtri_path, SEXP mem);
+SEXP C_extend_index(SEXP path, SEXP vtri_path, SEXP pre_fingerprint, SEXP mem);
+SEXP C_store_fingerprint(SEXP path);
 
 #endif /* VECTRA_R_BRIDGE_H */

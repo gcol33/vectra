@@ -270,26 +270,19 @@ static void w_u16(Writer *w, uint16_t v) { w_bytes(w, &v, 2); }
 static void w_u32(Writer *w, uint32_t v) { w_bytes(w, &v, 4); }
 static void w_u64(Writer *w, uint64_t v) { w_bytes(w, &v, 8); }
 
-static uint8_t read_u8_f(FILE *fp) {
-    uint8_t v = 0;
-    if (fread(&v, 1, 1, fp) != 1) vectra_error("vtri: unexpected EOF");
-    return v;
+/* Reads carry an ok flag that latches on a short read, so a truncated header
+   reports as an unusable index -- checked once per field group -- instead of
+   raising out of vtri_open. */
+typedef struct { FILE *fp; int ok; } Reader;
+
+static void r_bytes(Reader *r, void *p, size_t n) {
+    if (!r->ok) { memset(p, 0, n); return; }
+    if (fread(p, 1, n, r->fp) != n) { memset(p, 0, n); r->ok = 0; }
 }
-static uint16_t read_u16_f(FILE *fp) {
-    uint16_t v = 0;
-    if (fread(&v, 2, 1, fp) != 1) vectra_error("vtri: unexpected EOF");
-    return v;
-}
-static uint32_t read_u32_f(FILE *fp) {
-    uint32_t v = 0;
-    if (fread(&v, 4, 1, fp) != 1) vectra_error("vtri: unexpected EOF");
-    return v;
-}
-static uint64_t read_u64_f(FILE *fp) {
-    uint64_t v = 0;
-    if (fread(&v, 8, 1, fp) != 1) vectra_error("vtri: unexpected EOF");
-    return v;
-}
+static uint8_t  r_u8(Reader *r)  { uint8_t v;  r_bytes(r, &v, 1); return v; }
+static uint16_t r_u16(Reader *r) { uint16_t v; r_bytes(r, &v, 2); return v; }
+static uint32_t r_u32(Reader *r) { uint32_t v; r_bytes(r, &v, 4); return v; }
+static uint64_t r_u64(Reader *r) { uint64_t v; r_bytes(r, &v, 8); return v; }
 
 /* ------------------------------------------------------------------ */
 /*  vtri_build: build and write a .vtri index                          */
@@ -351,12 +344,13 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     }
 
     uint32_t n_rg = vtr1_tdc_n_rowgroups(file);
-    int64_t total_rows = 0, max_rg_rows = 0;
+    int64_t max_rg_rows = 0;
     for (uint32_t rg = 0; rg < n_rg; rg++) {
         int64_t r = vtr1_tdc_rowgroup_n_rows(file, rg);
-        total_rows += r;
         if (r > max_rg_rows) max_rg_rows = r;
     }
+    VtriStamp stamp;
+    vtri_store_stamp(file, &stamp);
 
     /* Read only the indexed columns */
     int *col_mask = (int *)calloc((size_t)schema->n_cols, sizeof(int));
@@ -463,8 +457,9 @@ static void vtri_build_core(const char *vtr_path, const char **col_names,
     w_u16(&w, (uint16_t)n_cols);
     w_u8(&w, (uint8_t)ci);
     for (int c = 0; c < n_cols; c++) w_u16(&w, (uint16_t)col_idx[c]);
-    w_u64(&w, (uint64_t)total_rows);
+    w_u64(&w, (uint64_t)stamp.n_rows);
     w_u32(&w, n_rg);
+    w_u64(&w, stamp.fingerprint);
     w_u64(&w, (uint64_t)n_entries);
     w_u8(&w, (uint8_t)dir_bits);
 
@@ -554,13 +549,21 @@ void vtri_build(const char *vtr_path, const char **col_names, int n_cols,
 /* ------------------------------------------------------------------ */
 
 int vtri_extend(const char *vtr_path, const char *vtri_path,
+                uint64_t pre_fingerprint,
                 int64_t mem_budget, const char *temp_dir) {
     /* Opened with the stamp check skipped: the store has already grown past
        what this index was built against, which is precisely the case being
-       handled. The stamp is then checked by hand, against the store's shape
+       handled. The stamp is then checked by hand, against the store as it was
        BEFORE the append rather than after. */
-    VtrIndex *idx = vtri_open(vtri_path, NULL, -1, -1);
+    VtrIndex *idx = vtri_open(vtri_path, NULL, NULL);
     if (!idx) return 0;
+
+    /* An index that did not describe the store before the append describes
+       nothing the append left behind either: its entries are for other bytes. */
+    if (idx->src_fingerprint != pre_fingerprint) {
+        vtri_close(idx);
+        return 0;
+    }
 
     Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
     if (!file) { vtri_close(idx); return 0; }
@@ -602,9 +605,9 @@ int vtri_extend(const char *vtr_path, const char *vtri_path,
         return 0;
     }
 
-    /* Nothing new to take in: the index already covers the store. Rewrite it
-       anyway, so its stamp matches a store whose row count changed without
-       gaining a row group (an appended empty batch). */
+    /* When no row group is new -- a column append, or an appended empty batch --
+       the index already covers the store. It is rewritten anyway, so its stamp
+       carries the store's new fingerprint and row count. */
     uint32_t first_rg = (uint32_t)idx->src_n_rowgroups;
 
     int n_idx_cols = idx->n_cols;
@@ -667,7 +670,7 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices,
         }
         out_col_indices[0] = first;
         n_cols = 1;
-    } else if (version == 2 || version == 3 || version == VTRI_VERSION) {
+    } else if (version >= 2 && version <= VTRI_VERSION) {
         uint16_t nc = 0;
         if (fread(&nc, 2, 1, fp) != 1 || fread(&ci, 1, 1, fp) != 1 ||
             nc < 1 || nc > VTRI_MAX_COLS) {
@@ -690,6 +693,20 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices,
 }
 
 /* ------------------------------------------------------------------ */
+/*  vtri_store_stamp: what an index records about its store            */
+/* ------------------------------------------------------------------ */
+
+void vtri_store_stamp(Vtr1TdcFile *file, VtriStamp *out) {
+    uint32_t n_rg = vtr1_tdc_n_rowgroups(file);
+    int64_t total = 0;
+    for (uint32_t rg = 0; rg < n_rg; rg++)
+        total += vtr1_tdc_rowgroup_n_rows(file, rg);
+    out->n_rows = total;
+    out->n_rowgroups = (int64_t)n_rg;
+    out->fingerprint = vtr1_tdc_fingerprint(file);
+}
+
+/* ------------------------------------------------------------------ */
 /*  vtri_open: read a .vtri index                                      */
 /* ------------------------------------------------------------------ */
 
@@ -705,7 +722,7 @@ int vtri_read_spec(const char *vtri_path, uint16_t *out_col_indices,
    Allocation failure is the one exception, and a different kind of thing: it
    says nothing about the index, so it is raised rather than swallowed. */
 VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
-                    int64_t src_n_rows, int64_t src_n_rowgroups) {
+                    const VtriStamp *stamp) {
     FILE *fp = fopen(vtri_path, "rb");
     if (!fp) return NULL;
 
@@ -716,12 +733,15 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
         return NULL;
     }
 
-    uint16_t version = read_u16_f(fp);
-    if (version != VTRI_VERSION) {
-        /* Versions 1 to 3 are superseded (1 and 2 hold one entry per row and no
+    Reader rd = { fp, 1 };
+    uint16_t version = r_u16(&rd);
+    if (!rd.ok || version != VTRI_VERSION) {
+        /* Versions 1 to 4 are superseded (1 and 2 hold one entry per row and no
            build stamp, so they can neither be verified against the store nor
            opened cheaply; 3 chains its entries, which is the layout a bounded
-           build cannot write); a version above this build's is from a newer
+           build cannot write; 4 stamps only the store's shape, so it cannot be
+           told apart from a same-shape store that replaced the one it was built
+           on); a version above this build's is from a newer
            vectra and its layout is unknown. Either way there is no index to
            probe, and create_index() rebuilds in the current format. */
         fclose(fp);
@@ -731,9 +751,10 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
     VtrIndex *idx = (VtrIndex *)calloc(1, sizeof(VtrIndex));
     if (!idx) { fclose(fp); vectra_error("alloc failed for VtrIndex"); }
 
-    idx->n_cols = read_u16_f(fp);
-    idx->ci     = read_u8_f(fp);
-    if (idx->n_cols < 1 || idx->n_cols > VTRI_MAX_COLS) {
+    idx->n_cols = r_u16(&rd);
+    idx->ci     = r_u8(&rd);
+    if (!rd.ok || idx->n_cols < 1 || idx->n_cols > VTRI_MAX_COLS) {
+        idx->n_cols = 0;
         fclose(fp); vtri_close(idx);
         return NULL;
     }
@@ -744,7 +765,7 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
         vectra_error("alloc failed reading vtri index");
     }
     for (int c = 0; c < idx->n_cols; c++) {
-        idx->col_indices[c] = read_u16_f(fp);
+        idx->col_indices[c] = r_u16(&rd);
         if (schema && idx->col_indices[c] < (uint16_t)schema->n_cols) {
             const char *nm = schema->col_names[idx->col_indices[c]];
             idx->col_names[c] = (char *)malloc(strlen(nm) + 1);
@@ -757,22 +778,35 @@ VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
         if (idx->col_name) strcpy(idx->col_name, idx->col_names[0]);
     }
 
-    idx->src_n_rows      = (int64_t)read_u64_f(fp);
-    idx->src_n_rowgroups = (int64_t)read_u32_f(fp);
-
-    /* A row append rewrites every row group, so an index built before it points
-       at row groups that have moved. Probing it would prune groups that now hold
-       matching rows, which silently drops them from the result: report no index
-       instead, and leave the scan to read the store. */
-    if ((src_n_rows >= 0 && idx->src_n_rows != src_n_rows) ||
-        (src_n_rowgroups >= 0 && idx->src_n_rowgroups != src_n_rowgroups)) {
+    idx->src_n_rows      = (int64_t)r_u64(&rd);
+    idx->src_n_rowgroups = (int64_t)r_u32(&rd);
+    idx->src_fingerprint = r_u64(&rd);
+    if (!rd.ok) {
         fclose(fp);
         vtri_close(idx);
         return NULL;
     }
 
-    idx->n_entries = (int64_t)read_u64_f(fp);
-    idx->dir_bits  = (int)read_u8_f(fp);
+    /* An index built against other bytes -- a store since appended to, or
+       replaced by another -- maps keys to row groups that no longer hold them.
+       Probing it would prune groups that now hold matching rows, which silently
+       drops them from the result: report no index instead, and leave the scan
+       to read the store. */
+    if (stamp && (idx->src_n_rows      != stamp->n_rows ||
+                  idx->src_n_rowgroups != stamp->n_rowgroups ||
+                  idx->src_fingerprint != stamp->fingerprint)) {
+        fclose(fp);
+        vtri_close(idx);
+        return NULL;
+    }
+
+    idx->n_entries = (int64_t)r_u64(&rd);
+    idx->dir_bits  = (int)r_u8(&rd);
+    if (!rd.ok) {
+        fclose(fp);
+        vtri_close(idx);
+        return NULL;
+    }
 
     int64_t ne = idx->n_entries;
 

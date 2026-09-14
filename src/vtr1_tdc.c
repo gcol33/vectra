@@ -25,6 +25,7 @@
 #include "vtr1_tdc.h"
 #include "vtr_codec_tdc.h"
 #include "vtr_fileops.h"
+#include "vtr_digest.h"
 #include "schema.h"
 #include "batch.h"
 #include "array.h"
@@ -80,6 +81,159 @@ static tdc_status vtr1_tdc_io_seek(void *ctx, int64_t offset, int whence) {
     if (fseeko(fp, (off_t)offset, sw) != 0) return TDC_E_IO;
 #endif
     return TDC_OK;
+}
+
+/* ---------- digesting sink ----------------------------------------------- */
+
+/* The writers hand tdc a sink rather than a bare FILE*, so every byte the
+ * encoder writes -- blocks, schema, index, and the header it patches last --
+ * also passes through the store digest recorded in the trailer. Reads and
+ * seeks (the extender and widener read the existing header and index back)
+ * go straight to the file and are not digested. */
+
+typedef struct {
+    FILE     *fp;
+    VtrDigest dg;
+} Vtr1TdcSink;
+
+static tdc_status vtr1_sink_write(void *ctx, const void *data, size_t size) {
+    Vtr1TdcSink *s = (Vtr1TdcSink *)ctx;
+    tdc_status st = vtr1_tdc_io_write(s->fp, data, size);
+    if (st == TDC_OK) vtr_digest_update(&s->dg, data, size);
+    return st;
+}
+
+static tdc_status vtr1_sink_read(void *ctx, void *buf, size_t size,
+                                 size_t *bytes_read) {
+    return vtr1_tdc_io_read(((Vtr1TdcSink *)ctx)->fp, buf, size, bytes_read);
+}
+
+static tdc_status vtr1_sink_seek(void *ctx, int64_t offset, int whence) {
+    return vtr1_tdc_io_seek(((Vtr1TdcSink *)ctx)->fp, offset, whence);
+}
+
+static void vtr1_sink_io(Vtr1TdcSink *s, tdc_io *io) {
+    io->write_fn = vtr1_sink_write;
+    io->read_fn  = vtr1_sink_read;
+    io->seek_fn  = vtr1_sink_seek;
+    io->ctx      = s;
+}
+
+/* ---------- trailer ------------------------------------------------------ */
+
+static const char VTR1_TRAILER_MAGIC[4] = { 'V', 'T', 'R', 'D' };
+
+/* Where the container ends according to its own header: the end of the
+ * row-group index, or, for a container without one, the end of the schema
+ * that directly follows the header. 0 when the header names no end (a
+ * relocated layout without an index, which no writer produces). */
+static uint64_t vtr1_container_end(const tdc_container_header *hdr) {
+    if (hdr->index_offset > 0 && hdr->index_size > 0)
+        return hdr->index_offset + hdr->index_size;
+    if (hdr->version == TDC_CONTAINER_VERSION)
+        return (uint64_t)TDC_CONTAINER_HEADER_SIZE + hdr->schema_size;
+    return 0;
+}
+
+static int vtr1_read_header(FILE *fp, tdc_container_header *hdr) {
+    return vtr1_tdc_io_seek(fp, 0, TDC_SEEK_SET) == TDC_OK &&
+           fread(hdr, 1, TDC_CONTAINER_HEADER_SIZE, fp) ==
+               TDC_CONTAINER_HEADER_SIZE &&
+           hdr->magic == TDC_CONTAINER_MAGIC;
+}
+
+/* Read the trailer of an open store. Returns 1 and fills *digest (and `raw`,
+ * when given, with the trailer's bytes) when the file ends in a trailer that
+ * closes the container its header describes; 0 otherwise. Leaves the stream
+ * position unspecified. */
+static int vtr1_read_trailer(FILE *fp, const tdc_container_header *hdr,
+                             uint64_t *digest, uint8_t *raw) {
+    int64_t size = vtr_file_size(fp);
+    if (size < (int64_t)(TDC_CONTAINER_HEADER_SIZE + VTR1_TRAILER_SIZE))
+        return 0;
+    uint64_t clen = (uint64_t)size - VTR1_TRAILER_SIZE;
+    if (vtr1_container_end(hdr) != clen) return 0;
+
+    uint8_t buf[VTR1_TRAILER_SIZE];
+    if (vtr1_tdc_io_seek(fp, (int64_t)clen, TDC_SEEK_SET) != TDC_OK ||
+        fread(buf, 1, VTR1_TRAILER_SIZE, fp) != VTR1_TRAILER_SIZE)
+        return 0;
+
+    uint64_t rec_len, rec_digest;
+    uint32_t version;
+    memcpy(&rec_len, buf, 8);
+    memcpy(&rec_digest, buf + 8, 8);
+    memcpy(&version, buf + 16, 4);
+    if (memcmp(buf + 20, VTR1_TRAILER_MAGIC, 4) != 0 ||
+        version != VTR1_TRAILER_VERSION || rec_len != clen)
+        return 0;
+
+    *digest = rec_digest;
+    if (raw) memcpy(raw, buf, VTR1_TRAILER_SIZE);
+    return 1;
+}
+
+/* Close a finished container with its trailer: placed where the header says
+ * the container ends, and the file cut to end with it. Returns 1 on success. */
+static int vtr1_write_trailer(FILE *fp, uint64_t digest) {
+    if (fflush(fp) != 0) return 0;
+    tdc_container_header hdr;
+    if (!vtr1_read_header(fp, &hdr)) return 0;
+    uint64_t end = vtr1_container_end(&hdr);
+    if (end == 0) return 0;
+
+    uint8_t buf[VTR1_TRAILER_SIZE];
+    uint32_t version = VTR1_TRAILER_VERSION;
+    memcpy(buf, &end, 8);
+    memcpy(buf + 8, &digest, 8);
+    memcpy(buf + 16, &version, 4);
+    memcpy(buf + 20, VTR1_TRAILER_MAGIC, 4);
+
+    if (vtr1_tdc_io_seek(fp, (int64_t)end, TDC_SEEK_SET) != TDC_OK ||
+        fwrite(buf, 1, VTR1_TRAILER_SIZE, fp) != VTR1_TRAILER_SIZE ||
+        fflush(fp) != 0)
+        return 0;
+    int64_t want = (int64_t)(end + VTR1_TRAILER_SIZE);
+    if (vtr_file_size(fp) > want && vtr_file_truncate(fp, want) != 0)
+        return 0;
+    return 1;
+}
+
+/* The store a grow-in-place operation starts from: its fingerprint seeds the
+ * digest of the grown store, and its trailer bytes are kept so an aborted
+ * append can put them back where the appended blocks overwrote them. */
+typedef struct {
+    uint64_t seed;
+    int      had_trailer;
+    uint8_t  trailer[VTR1_TRAILER_SIZE];
+} Vtr1PreStore;
+
+static void vtr1_capture_pre_store(const char *path, FILE *fp,
+                                   Vtr1PreStore *pre) {
+    memset(pre, 0, sizeof(*pre));
+    Vtr1TdcFile *f = vtr1_open_tdc(path);
+    if (f) {
+        pre->seed = vtr1_tdc_fingerprint(f);
+        vtr1_close_tdc(f);
+    }
+    tdc_container_header hdr;
+    uint64_t digest;
+    if (vtr1_read_header(fp, &hdr))
+        pre->had_trailer = vtr1_read_trailer(fp, &hdr, &digest, pre->trailer);
+    vtr1_tdc_io_seek(fp, 0, TDC_SEEK_SET);
+}
+
+/* Undo an uncommitted grow-in-place: cut the file back to its length before
+ * the append, then restore the trailer the appended bytes wrote over. */
+static void vtr1_restore_pre_store(FILE *fp, int64_t orig_size,
+                                   const Vtr1PreStore *pre) {
+    fflush(fp);
+    vtr_file_truncate(fp, orig_size);
+    if (pre->had_trailer && orig_size >= VTR1_TRAILER_SIZE &&
+        vtr1_tdc_io_seek(fp, orig_size - VTR1_TRAILER_SIZE, TDC_SEEK_SET) == TDC_OK) {
+        fwrite(pre->trailer, 1, VTR1_TRAILER_SIZE, fp);
+        fflush(fp);
+    }
 }
 
 /* ---------- schema mapping ----------------------------------------------- */
@@ -284,7 +438,7 @@ static int vtr1_tdc_compute_rowgroup_stats(const VecBatch *batch,
 /* ============================================================ writer === */
 
 struct Vtr1TdcWriter {
-    FILE                *fp;
+    Vtr1TdcSink          sink;
     tdc_stream_encoder  *enc;
     VecSchema            schema;       /* deep-copied */
     tdc_column_desc     *desc_buf;     /* sized n_cols, freed at close */
@@ -345,12 +499,15 @@ Vtr1TdcWriter *vtr1_open_tdc_writer(const char *path, const VecSchema *schema) {
         vectra_error("vtr1_open_tdc_writer: invalid arguments");
     }
 
-    FILE *fp = fopen(path, "wb");
+    /* Update mode: the trailer is placed by reading back the header tdc
+     * patched at close. */
+    FILE *fp = fopen(path, "w+b");
     if (!fp) vectra_error("cannot open file for writing: %s", path);
 
     Vtr1TdcWriter *w = (Vtr1TdcWriter *)calloc(1, sizeof(*w));
     if (!w) { fclose(fp); vectra_error("alloc failed for Vtr1TdcWriter"); }
-    w->fp = fp;
+    w->sink.fp = fp;
+    vtr_digest_init(&w->sink.dg, 0);
     w->schema = vec_schema_copy(schema);
     w->n_cols = schema->n_cols;
 
@@ -365,10 +522,7 @@ Vtr1TdcWriter *vtr1_open_tdc_writer(const char *path, const VecSchema *schema) {
     sch.columns   = w->desc_buf;
 
     tdc_stream_encoder_config cfg = {0};
-    cfg.io.write_fn = vtr1_tdc_io_write;
-    cfg.io.read_fn  = vtr1_tdc_io_read;
-    cfg.io.seek_fn  = vtr1_tdc_io_seek;
-    cfg.io.ctx      = fp;
+    vtr1_sink_io(&w->sink, &cfg.io);
     cfg.flags       = TDC_CONTAINER_FLAG_HETEROGENEOUS;
     cfg.schema      = &sch;
     cfg.realloc_fn  = vtr1_tdc_realloc;
@@ -499,24 +653,20 @@ void vtr1_write_rowgroup_tdc(Vtr1TdcWriter        *w,
 
 void vtr1_close_tdc_writer(Vtr1TdcWriter *w) {
     if (!w) return;
-    if (w->enc) {
-        tdc_status st = tdc_stream_encoder_close(&w->enc);
-        if (st != TDC_OK) {
-            /* Don't leak fp/schema even on failure. Surface the error
-             * to R after cleanup. */
-            vtr1_tdc_writer_free_ann(w);
-            free(w->desc_buf);
-            vec_schema_free(&w->schema);
-            if (w->fp) fclose(w->fp);
-            free(w);
-            vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
-        }
-    }
+    tdc_status st = TDC_OK;
+    if (w->enc) st = tdc_stream_encoder_close(&w->enc);
+    int trailer_ok = (st != TDC_OK) ||
+        vtr1_write_trailer(w->sink.fp, vtr_digest_final(&w->sink.dg));
+    /* Don't leak fp/schema on failure; surface the error to R after cleanup. */
     vtr1_tdc_writer_free_ann(w);
     free(w->desc_buf);
     vec_schema_free(&w->schema);
-    if (w->fp) fclose(w->fp);
+    if (w->sink.fp) fclose(w->sink.fp);
     free(w);
+    if (st != TDC_OK)
+        vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
+    if (!trailer_ok)
+        vectra_error("failed writing the store trailer");
 }
 
 /* ============================================================ widener === */
@@ -531,7 +681,8 @@ void vtr1_close_tdc_writer(Vtr1TdcWriter *w) {
  */
 
 struct Vtr1TdcWidener {
-    FILE               *fp;
+    Vtr1TdcSink         sink;
+    Vtr1PreStore        pre;
     tdc_stream_encoder *enc;
     VecSchema           schema;     /* the FULL widened schema, deep-copied */
     tdc_column_desc    *desc_buf;
@@ -554,11 +705,13 @@ Vtr1TdcWidener *vtr1_open_tdc_widener(const char *path,
 
     Vtr1TdcWidener *w = (Vtr1TdcWidener *)calloc(1, sizeof(*w));
     if (!w) { fclose(fp); vectra_error("alloc failed for Vtr1TdcWidener"); }
-    w->fp     = fp;
+    w->sink.fp = fp;
     w->schema = vec_schema_copy(widened_schema);
     w->n_cols = widened_schema->n_cols;
     w->n_new  = n_new_cols;
     w->orig_size = vtr_file_size(fp);
+    vtr1_capture_pre_store(path, fp, &w->pre);
+    vtr_digest_init(&w->sink.dg, w->pre.seed);
 
     if (!vtr1_tdc_build_desc(&w->schema, &w->desc_buf, &w->ann_buf)) {
         vec_schema_free(&w->schema); free(w); fclose(fp);
@@ -570,10 +723,7 @@ Vtr1TdcWidener *vtr1_open_tdc_widener(const char *path,
     sch.columns   = w->desc_buf;
 
     tdc_stream_encoder_widen_config cfg = {0};
-    cfg.io.write_fn = vtr1_tdc_io_write;
-    cfg.io.read_fn  = vtr1_tdc_io_read;
-    cfg.io.seek_fn  = vtr1_tdc_io_seek;
-    cfg.io.ctx      = fp;
+    vtr1_sink_io(&w->sink, &cfg.io);
     cfg.schema      = &sch;
     cfg.realloc_fn  = vtr1_tdc_realloc;
     cfg.alloc_user  = NULL;
@@ -661,32 +811,27 @@ void vtr1_widen_rowgroup_tdc(Vtr1TdcWidener *w, uint32_t rg_idx,
 void vtr1_abort_tdc_widener(Vtr1TdcWidener *w) {
     if (!w) return;
     if (w->enc) tdc_stream_encoder_abort(&w->enc);
-    if (w->fp) {
-        fflush(w->fp);
-        vtr_file_truncate(w->fp, w->orig_size);
-    }
+    if (w->sink.fp) vtr1_restore_pre_store(w->sink.fp, w->orig_size, &w->pre);
     vtr1_tdc_free_desc(w->desc_buf, w->ann_buf, w->n_cols);
     vec_schema_free(&w->schema);
-    if (w->fp) fclose(w->fp);
+    if (w->sink.fp) fclose(w->sink.fp);
     free(w);
 }
 
 void vtr1_close_tdc_widener(Vtr1TdcWidener *w) {
     if (!w) return;
-    if (w->enc) {
-        tdc_status st = tdc_stream_encoder_close(&w->enc);
-        if (st != TDC_OK) {
-            vtr1_tdc_free_desc(w->desc_buf, w->ann_buf, w->n_cols);
-            vec_schema_free(&w->schema);
-            if (w->fp) fclose(w->fp);
-            free(w);
-            vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
-        }
-    }
+    tdc_status st = TDC_OK;
+    if (w->enc) st = tdc_stream_encoder_close(&w->enc);
+    int trailer_ok = (st != TDC_OK) ||
+        vtr1_write_trailer(w->sink.fp, vtr_digest_final(&w->sink.dg));
     vtr1_tdc_free_desc(w->desc_buf, w->ann_buf, w->n_cols);
     vec_schema_free(&w->schema);
-    if (w->fp) fclose(w->fp);
+    if (w->sink.fp) fclose(w->sink.fp);
     free(w);
+    if (st != TDC_OK)
+        vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
+    if (!trailer_ok)
+        vectra_error("failed writing the store trailer");
 }
 
 /* =========================================================== extender === */
@@ -704,14 +849,16 @@ void vtr1_close_tdc_widener(Vtr1TdcWidener *w) {
  *
  * Existing row-group boundaries and block offsets are unchanged, so a `.vtri`
  * sidecar's entries still name the row groups its keys actually sit in. What
- * does change is the store's row and row-group counts, which the sidecar stamps
- * and vtri_open checks -- so an index must still be brought up to date after an
- * append, but only by taking in the appended row groups rather than by being
- * rebuilt from the whole store (see .extend_indexes in R/index.R).
+ * does change is the store's row and row-group counts and its fingerprint,
+ * which the sidecar stamps and vtri_open checks -- so an index must still be
+ * brought up to date after an append, but only by taking in the appended row
+ * groups rather than by being rebuilt from the whole store (see
+ * .extend_indexes in R/index.R).
  */
 
 struct Vtr1TdcExtender {
-    FILE               *fp;
+    Vtr1TdcSink         sink;
+    Vtr1PreStore        pre;
     tdc_stream_encoder *enc;
     VecSchema           schema;     /* the container's own schema, deep-copied */
     int64_t             orig_size;  /* file length before any extend write */
@@ -728,17 +875,16 @@ Vtr1TdcExtender *vtr1_open_tdc_extender(const char *path,
 
     Vtr1TdcExtender *x = (Vtr1TdcExtender *)calloc(1, sizeof(*x));
     if (!x) { fclose(fp); vectra_error("alloc failed for Vtr1TdcExtender"); }
-    x->fp        = fp;
+    x->sink.fp   = fp;
     x->schema    = vec_schema_copy(schema);
     x->orig_size = vtr_file_size(fp);
+    vtr1_capture_pre_store(path, fp, &x->pre);
+    vtr_digest_init(&x->sink.dg, x->pre.seed);
 
     /* No schema is handed over: tdc reuses the container's own, and checks
      * every appended row group against the column count it declares. */
     tdc_stream_encoder_extend_config cfg = {0};
-    cfg.io.write_fn = vtr1_tdc_io_write;
-    cfg.io.read_fn  = vtr1_tdc_io_read;
-    cfg.io.seek_fn  = vtr1_tdc_io_seek;
-    cfg.io.ctx      = fp;
+    vtr1_sink_io(&x->sink, &cfg.io);
     cfg.realloc_fn  = vtr1_tdc_realloc;
     cfg.alloc_user  = NULL;
 
@@ -768,29 +914,25 @@ void vtr1_extend_rowgroup_tdc(Vtr1TdcExtender       *x,
 void vtr1_abort_tdc_extender(Vtr1TdcExtender *x) {
     if (!x) return;
     if (x->enc) tdc_stream_encoder_abort(&x->enc);
-    if (x->fp) {
-        fflush(x->fp);
-        vtr_file_truncate(x->fp, x->orig_size);
-    }
+    if (x->sink.fp) vtr1_restore_pre_store(x->sink.fp, x->orig_size, &x->pre);
     vec_schema_free(&x->schema);
-    if (x->fp) fclose(x->fp);
+    if (x->sink.fp) fclose(x->sink.fp);
     free(x);
 }
 
 void vtr1_close_tdc_extender(Vtr1TdcExtender *x) {
     if (!x) return;
-    if (x->enc) {
-        tdc_status st = tdc_stream_encoder_close(&x->enc);
-        if (st != TDC_OK) {
-            vec_schema_free(&x->schema);
-            if (x->fp) fclose(x->fp);
-            free(x);
-            vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
-        }
-    }
+    tdc_status st = TDC_OK;
+    if (x->enc) st = tdc_stream_encoder_close(&x->enc);
+    int trailer_ok = (st != TDC_OK) ||
+        vtr1_write_trailer(x->sink.fp, vtr_digest_final(&x->sink.dg));
     vec_schema_free(&x->schema);
-    if (x->fp) fclose(x->fp);
+    if (x->sink.fp) fclose(x->sink.fp);
     free(x);
+    if (st != TDC_OK)
+        vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
+    if (!trailer_ok)
+        vectra_error("failed writing the store trailer");
 }
 
 /* ============================================================ reader === */
@@ -824,6 +966,13 @@ struct Vtr1TdcFile {
     /* Per-column sorted flag across row groups, length schema.n_cols.
      * NULL when n_rowgroups < 2 or alloc failed. See vtr1_tdc_col_sorted. */
     uint8_t          *col_sorted;
+    /* Trailer digest (has_digest = 0 when the store carries none), and the
+     * fingerprint derived from it and the row-group index, computed on first
+     * request. */
+    int               has_digest;
+    uint64_t          digest;
+    int               fingerprint_ready;
+    uint64_t          fingerprint;
 };
 
 static void vtr1_tdc_file_destroy(Vtr1TdcFile *f) {
@@ -1062,6 +1211,9 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
         }
     }
 
+    const tdc_container_header *hdr = tdc_stream_decoder_header(dec);
+    if (hdr) f->has_digest = vtr1_read_trailer(fp, hdr, &f->digest, NULL);
+
     tdc_stream_decoder_close(&dec);
     /* Index is fully in memory now; drop the OS handle. Reads reopen f->path. */
     fclose(f->fp);
@@ -1071,6 +1223,54 @@ Vtr1TdcFile *vtr1_open_tdc(const char *path) {
 
 const VecSchema *vtr1_tdc_schema(const Vtr1TdcFile *file) {
     return file ? &file->schema : NULL;
+}
+
+int vtr1_tdc_has_digest(const Vtr1TdcFile *file) {
+    return file ? file->has_digest : 0;
+}
+
+uint64_t vtr1_tdc_fingerprint(Vtr1TdcFile *f) {
+    if (!f) return 0;
+    if (f->fingerprint_ready) return f->fingerprint;
+
+    VtrDigest d;
+    vtr_digest_init(&d, 0);
+    uint8_t has = (uint8_t)(f->has_digest ? 1 : 0);
+    vtr_digest_update(&d, &has, 1);
+    vtr_digest_u64(&d, f->has_digest ? f->digest : 0);
+
+    int n_cols = f->schema.n_cols;
+    vtr_digest_u64(&d, (uint64_t)n_cols);
+    for (int c = 0; c < n_cols; c++)
+        vtr_digest_u64(&d, (uint64_t)f->schema.col_types[c]);
+
+    vtr_digest_u64(&d, (uint64_t)f->n_rowgroups);
+    for (uint32_t r = 0; r < f->n_rowgroups; r++) {
+        const Vtr1TdcRowgroup *rg = &f->rowgroups[r];
+        vtr_digest_u64(&d, (uint64_t)rg->n_rows);
+        for (int c = 0; c < n_cols; c++) {
+            vtr_digest_u64(&d, rg->block_offset[c]);
+            vtr_digest_u64(&d, rg->block_total[c]);
+        }
+        uint8_t has_stats = (uint8_t)(rg->col_stats ? 1 : 0);
+        vtr_digest_update(&d, &has_stats, 1);
+        if (!rg->col_stats) continue;
+        for (int c = 0; c < n_cols; c++) {
+            const Vtr1ColStat *st = &rg->col_stats[c];
+            uint8_t hs = st->has_stats;
+            uint8_t val[16];
+            /* The value union is zero-filled before it is decoded, so its
+               bytes are a function of the statistics alone. */
+            memcpy(val, &st->i64, sizeof(val));
+            vtr_digest_update(&d, &hs, 1);
+            vtr_digest_update(&d, val, sizeof(val));
+            vtr_digest_u64(&d, st->null_count);
+        }
+    }
+
+    f->fingerprint = vtr_digest_final(&d);
+    f->fingerprint_ready = 1;
+    return f->fingerprint;
 }
 
 uint32_t vtr1_tdc_n_rowgroups(const Vtr1TdcFile *file) {

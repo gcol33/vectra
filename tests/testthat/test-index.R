@@ -708,3 +708,238 @@ test_that("an index costs a flat number of bytes per entry", {
 
   expect_lt(file.size(idx) / n, 16)
 })
+
+# ── an index belongs to the bytes it was built on ─────────────────────────────
+
+# Two stores of the same shape: the same row count, row groups, column layout
+# and string lengths, holding different keys. A stamp of the store's shape alone
+# cannot tell them apart.
+same_shape_pair <- function() {
+  list(
+    old = data.frame(id = sprintf("old%03d", 1:100), val = 1:100,
+                     stringsAsFactors = FALSE),
+    new = data.frame(id = sprintf("new%03d", 1:100), val = 1:100,
+                     stringsAsFactors = FALSE)
+  )
+}
+
+index_path <- function(f, cols) paste0(f, ".", paste(cols, collapse = "_"), ".vtri")
+
+test_that("write_vtr over an indexed store removes its indexes", {
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, index_path(f, "id"), index_path(f, c("id", "val")))))
+
+  write_vtr(d$old, f)
+  create_index(f, "id")
+  create_index(f, c("id", "val"))
+  write_vtr(d$new, f)
+
+  expect_false(file.exists(index_path(f, "id")))
+  expect_false(file.exists(index_path(f, c("id", "val"))))
+  expect_false(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "new042"))), 1L)
+
+  # The node writer takes the same route.
+  create_index(f, "id")
+  write_vtr(tbl(f) |> filter(val <= 50), f)
+  expect_false(file.exists(index_path(f, "id")))
+  expect_equal(nrow(collect(tbl(f))), 50L)
+})
+
+test_that("an index put back beside a same-shape store is not probed", {
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  ix <- index_path(f, "id")
+  on.exit(unlink(c(f, ix)))
+
+  write_vtr(d$old, f)
+  create_index(f, "id")
+  saved <- readBin(ix, "raw", file.size(ix))
+  write_vtr(d$new, f)
+  writeBin(saved, ix)
+
+  expect_false(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "new042"))), 1L)
+  expect_equal(nrow(collect(filter(tbl(f), id == "old042"))), 0L)
+  expect_false(grepl("hash index", paste(capture.output(
+    explain(filter(tbl(f), id == "new042"))), collapse = " "), fixed = TRUE))
+})
+
+test_that("a store replaced outside vectra by a same-shape one drops its index", {
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  ix <- index_path(f, "id")
+  on.exit(unlink(c(f, g, ix)))
+
+  write_vtr(d$old, f)
+  create_index(f, "id")
+  write_vtr(d$new, g)
+  expect_identical(file.size(f), file.size(g))
+  expect_true(file.rename(g, f))
+
+  expect_true(file.exists(ix))
+  expect_false(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "new042"))), 1L)
+  expect_equal(nrow(collect(filter(tbl(f), id %in% c("new001", "new100")))), 2L)
+
+  create_index(f, "id")
+  expect_true(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "new042"))), 1L)
+})
+
+test_that("a replaced store drops its composite and case-insensitive indexes", {
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, index_path(f, "id"), index_path(f, c("id", "val")))))
+
+  write_vtr(d$old, f, batch_size = 10L)
+  create_index(f, c("id", "val"))
+  write_vtr(d$new, g, batch_size = 10L)
+  file.copy(g, f, overwrite = TRUE)
+
+  expect_false(has_index(f, c("id", "val")))
+  expect_equal(nrow(collect(filter(tbl(f), id == "new042", val == 42L))), 1L)
+
+  unlink(index_path(f, c("id", "val")))
+  write_vtr(d$old, f, batch_size = 10L)
+  create_index(f, "id", ci = TRUE)
+  file.copy(g, f, overwrite = TRUE)
+
+  expect_false(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "new042"))), 1L)
+})
+
+test_that("an unchanged store keeps its index", {
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, index_path(f, "id"), index_path(g, "id"))))
+
+  write_vtr(d$old, f, batch_size = 25L)
+  create_index(f, "id")
+  for (i in 1:3) {
+    expect_true(has_index(f, "id"))
+    expect_equal(nrow(collect(filter(tbl(f), id == "old042"))), 1L)
+  }
+  expect_match(paste(capture.output(explain(filter(tbl(f), id == "old042"))),
+                     collapse = " "), "hash index (id)", fixed = TRUE)
+
+  # A byte-identical copy of the store, with its index, is the same store.
+  file.copy(f, g)
+  file.copy(index_path(f, "id"), index_path(g, "id"))
+  expect_true(has_index(g, "id"))
+
+  # So is the store written again from the same data.
+  write_vtr(d$old, g, batch_size = 25L)
+  expect_identical(vectra:::.store_fingerprint(g), vectra:::.store_fingerprint(f))
+  file.copy(index_path(f, "id"), index_path(g, "id"))
+  expect_true(has_index(g, "id"))
+})
+
+test_that("an append does not carry forward an index that was already stale", {
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g, index_path(f, "id"))))
+
+  for (along in c("rows", "cols")) {
+    write_vtr(d$old, f, batch_size = 25L)
+    create_index(f, "id")
+    write_vtr(d$new, g, batch_size = 25L)
+    file.copy(g, f, overwrite = TRUE)
+    expect_false(has_index(f, "id"))
+
+    if (along == "rows") {
+      append_vtr(data.frame(id = "extra", val = 101L, stringsAsFactors = FALSE), f)
+    } else {
+      append_vtr(data.frame(w = seq_len(100)), f, along = "cols")
+    }
+
+    expect_true(has_index(f, "id"))
+    expect_equal(nrow(collect(filter(tbl(f), id == "new042"))), 1L)
+    expect_equal(nrow(collect(filter(tbl(f), id == "old042"))), 0L)
+  }
+})
+
+test_that("a column append keeps an index's entries and restamps it", {
+  f <- tempfile(fileext = ".vtr")
+  ix <- index_path(f, "k")
+  on.exit(unlink(c(f, ix)))
+
+  write_vtr(data.frame(k = sprintf("k%03d", 1:200), v = 1:200,
+                       stringsAsFactors = FALSE), f, batch_size = 20L)
+  create_index(f, "k")
+  before <- readBin(ix, "raw", file.size(ix))
+  fp_before <- vectra:::.store_fingerprint(f)
+
+  append_vtr(data.frame(w = as.double(1:200)), f, along = "cols")
+  after <- readBin(ix, "raw", file.size(ix))
+
+  expect_false(identical(vectra:::.store_fingerprint(f), fp_before))
+  expect_true(has_index(f, "k"))
+  # The entries and directory are untouched; only the stamp moved.
+  n_hdr <- 4L + 2L + 2L + 1L + 2L + 8L + 4L + 8L
+  expect_identical(length(after), length(before))
+  expect_identical(after[-seq_len(n_hdr)], before[-seq_len(n_hdr)])
+  expect_false(identical(after[1:n_hdr], before[1:n_hdr]))
+  expect_equal(nrow(collect(filter(tbl(f), k == "k150"))), 1L)
+})
+
+test_that("a version-4 index, stamped with the store's shape only, reads as absent", {
+  f <- tempfile(fileext = ".vtr")
+  ix <- index_path(f, "k")
+  on.exit(unlink(c(f, ix)))
+
+  write_vtr(data.frame(k = letters, v = 1:26, stringsAsFactors = FALSE), f)
+  create_index(f, "k")
+  raw <- readBin(ix, "raw", file.size(ix))
+
+  # Version 4 is version 5 without the 8-byte fingerprint after the row-group
+  # count: magic(4) version(2) n_cols(2) ci(1) col_indices(2) rows(8) rgs(4).
+  shape_end <- 4L + 2L + 2L + 1L + 2L + 8L + 4L
+  v4 <- c(raw[1:4], as.raw(c(4L, 0L)), raw[7:shape_end],
+          raw[(shape_end + 9L):length(raw)])
+  writeBin(v4, ix)
+
+  expect_false(has_index(f, "k"))
+  expect_equal(nrow(collect(filter(tbl(f), k == "m"))), 1L)
+  expect_identical(vectra:::.index_specs(f)[[1]]$columns, "k")
+
+  vectra:::.rebuild_indexes(f)
+  expect_true(has_index(f, "k"))
+  expect_equal(nrow(collect(filter(tbl(f), k == "m"))), 1L)
+})
+
+test_that("a store without a trailer reads and indexes as before", {
+  # A store written before the trailer existed ends at its row-group index. It
+  # reads unchanged, and its indexes are stamped with its layout.
+  d <- same_shape_pair()
+  f <- tempfile(fileext = ".vtr")
+  ix <- index_path(f, "id")
+  on.exit(unlink(c(f, ix)))
+
+  write_vtr(d$old, f, batch_size = 25L)
+  full <- readBin(f, "raw", file.size(f))
+  expect_identical(rawToChar(full[(length(full) - 3L):length(full)]), "VTRD")
+  with_trailer <- vectra:::.store_fingerprint(f)
+
+  writeBin(full[seq_len(length(full) - 24L)], f)
+  got <- collect(tbl(f))
+  expect_identical(got$id, d$old$id)
+  expect_equal(got$val, as.double(d$old$val))
+  expect_false(identical(vectra:::.store_fingerprint(f), with_trailer))
+
+  create_index(f, "id")
+  expect_true(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "old042"))), 1L)
+
+  # Growing it in place gives it a trailer, and its index follows.
+  append_vtr(data.frame(id = "old101", val = 101L, stringsAsFactors = FALSE), f)
+  grown <- readBin(f, "raw", file.size(f))
+  expect_identical(rawToChar(grown[(length(grown) - 3L):length(grown)]), "VTRD")
+  expect_true(has_index(f, "id"))
+  expect_equal(nrow(collect(filter(tbl(f), id == "old101"))), 1L)
+})

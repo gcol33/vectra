@@ -602,9 +602,9 @@ are canonicalized to schema order, so they may be named in any order.
 
 The `.vtri` format is a sorted array of (key hash, row group) entries. One
 layout covers both cases: a header with the indexed column indices, a
-case-insensitive flag, and the row and row-group counts of the store at build
-time, followed by the entries in ascending hash order and a directory giving the
-first entry for each range of leading hash bits.
+case-insensitive flag, and the row count, row-group count and fingerprint of the
+store at build time, followed by the entries in ascending hash order and a
+directory giving the first entry for each range of leading hash bits.
 
 Sorting the entries rather than chaining them is what lets an index be built in
 one forward pass through a fixed memory budget, since a chained table has to
@@ -617,12 +617,18 @@ ASCII uppercase to lowercase before hashing. A composite key combines the
 per-column FNV-1a hashes by XOR and multiplication with the FNV prime, giving
 one 64-bit hash per entry.
 
-The stored row and row-group counts are what make an index safe to leave on
-disk. `vtri_open()` compares them with the store being queried and reports no
-index when they disagree, so an index that no longer describes its store is
-ignored rather than used to prune row groups that have moved. Formats written
-before 0.11.8 lack the counts and read as absent; `create_index()` rebuilds
-them.
+The stored stamp is what makes an index safe to leave on disk. `vtri_open()`
+compares it with the store being queried and reports no index when any part
+disagrees, so an index that no longer describes its store is ignored rather than
+used to prune row groups that have moved or now hold other keys. The counts
+catch an append; the fingerprint catches a store replaced by another of the same
+shape, whether by `write_vtr()`, a download or a rename. It digests the store's
+row-group index together with a digest of the store's bytes, which the writers
+compute as they write and record in a 24-byte trailer after the container, so
+checking it costs the store's metadata rather than its data. A store written
+before 0.12.4 has no trailer, and its fingerprint covers its layout only.
+Index formats written before 0.12.4 lack the fingerprint and read as absent;
+`create_index()` rebuilds them.
 
 ### How the scan uses indexes
 

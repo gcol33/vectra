@@ -1,3 +1,45 @@
+# vectra 0.12.4
+
+## Bug fixes
+
+* `filter()` no longer drops rows through a `.vtri` index left behind by a store
+  it was not built on (#13). An index stamped only the store's row count and
+  row-group count, so a store replaced by another of the same shape -- written
+  again with `write_vtr()`, downloaded, or renamed over the old path -- passed
+  the check, and a filter pruned row groups by the previous store's keys:
+  `write_vtr(old, f); create_index(f, "id"); write_vtr(new, f)` left
+  `filter(tbl(f), id == "new042")` returning zero rows and `has_index()`
+  reporting `TRUE`. Two changes close it.
+
+  `write_vtr()` removes the `.vtri` indexes of the store it replaces.
+
+  An index now also stamps a fingerprint of the store, and is ignored, and
+  reported absent by `has_index()`, whenever the store's fingerprint differs,
+  however the store came to be replaced. The fingerprint digests the store's
+  row-group index and the digest of its bytes that the store now records (see
+  below), so it costs the store's metadata to check, never its data. A row or
+  column append carries each index over and restamps it only when the index
+  described the store before the append; an index that was already stale is
+  rebuilt instead.
+
+## On-disk format
+
+* A `.vtr` file now ends in a 24-byte trailer after the tdc container: the
+  container's length, a 64-bit digest of every byte written to it, a version
+  and the magic `VTRD`. The writers compute the digest as they write, so it
+  costs no extra pass; an append seeds it with the store's fingerprint before
+  the append and moves the trailer to the new end, and an aborted append puts
+  the old one back. The trailer lies past everything the container addresses,
+  so earlier vectra versions read these files unchanged, and files without one
+  still read: their fingerprint covers their layout (row-group, block sizes and
+  column statistics) only, which does not separate two stores whose blocks
+  agree on all of those. Rewriting such a store with `write_vtr()` gives it a
+  digest.
+
+* `.vtri` indexes are format version 5, which adds the store fingerprint to the
+  header. Version 4 indexes read as absent, as earlier superseded versions do;
+  `create_index()` rebuilds them, and `append_vtr()` rebuilds any it finds.
+
 # vectra 0.12.3
 
 ## Tests

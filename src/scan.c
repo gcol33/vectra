@@ -445,18 +445,6 @@ static void binary_search_rg_range(const Vtr1TdcFile *file, int col_idx,
     #undef RG_MAX_DBL
 }
 
-/* The store's shape, as an index records it at build time. An index whose stamp
-   disagrees describes row groups that have since moved. */
-static void scan_store_stamp(const ScanNode *sn, int64_t *n_rows,
-                             int64_t *n_rowgroups) {
-    uint32_t n_rg = vtr1_tdc_n_rowgroups(sn->file);
-    int64_t total = 0;
-    for (uint32_t rg = 0; rg < n_rg; rg++)
-        total += vtr1_tdc_rowgroup_n_rows(sn->file, rg);
-    *n_rows = total;
-    *n_rowgroups = (int64_t)n_rg;
-}
-
 /* Open the single-column .vtri sidecar for one column, if it is usable.
    Opening is deferred to here rather than done when the scan is built, so a
    query pays for the index it filters on and no others -- and so filtering on
@@ -466,9 +454,9 @@ static VtrIndex *scan_open_col_index(ScanNode *sn, const char *col_name,
     if (!sn->vtr_path) return NULL;
     char *vtri_path = vtri_make_path(sn->vtr_path, col_name);
     if (!vtri_path) return NULL;
-    int64_t n_rows, n_rgs;
-    scan_store_stamp(sn, &n_rows, &n_rgs);
-    VtrIndex *idx = vtri_open(vtri_path, vtr1_tdc_schema(sn->file), n_rows, n_rgs);
+    VtriStamp stamp;
+    vtri_store_stamp(sn->file, &stamp);
+    VtrIndex *idx = vtri_open(vtri_path, vtr1_tdc_schema(sn->file), &stamp);
     free(vtri_path);
     if (!idx) return NULL;
     if (idx->n_cols != 1 || (int)idx->col_idx != col_idx) {
@@ -773,9 +761,9 @@ static VtrIndex *scan_open_composite_index(ScanNode *sn, const char **col_names,
     if (n_eq < 2 || !sn->vtr_path) return NULL;
     char *vtri_path = vtri_make_path_composite(sn->vtr_path, col_names, n_eq);
     if (!vtri_path) return NULL;
-    int64_t n_rows, n_rgs;
-    scan_store_stamp(sn, &n_rows, &n_rgs);
-    VtrIndex *idx = vtri_open(vtri_path, vtr1_tdc_schema(sn->file), n_rows, n_rgs);
+    VtriStamp stamp;
+    vtri_store_stamp(sn->file, &stamp);
+    VtrIndex *idx = vtri_open(vtri_path, vtr1_tdc_schema(sn->file), &stamp);
     free(vtri_path);
     if (idx && idx->n_cols != (uint16_t)n_eq) {
         vtri_close(idx);

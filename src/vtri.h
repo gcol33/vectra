@@ -20,20 +20,25 @@
  * store size. A row group repeats a key only once, so the entry count is
  * sum over row groups of the distinct keys in that row group.
  *
- * The header stamps the row and row-group counts the index was built against.
- * vtri_open() compares them with the store it is being opened for and reports
- * no index when they disagree: a row append rewrites every row group, so an
- * index built before it maps keys to row groups that have moved, and probing it
- * would silently drop rows.
+ * The header stamps the store the index was built against: its row count, its
+ * row-group count, and its fingerprint (vtr1_tdc_fingerprint), which digests
+ * the store's bytes through the digest its trailer records. vtri_open()
+ * compares the stamp with the store it is being opened for and reports no index
+ * when any part disagrees. An index describes the keys of particular row groups
+ * of particular bytes: a store replaced by one of the same shape -- rewritten
+ * with other keys, renamed or downloaded over the old path -- keeps the counts
+ * and changes the fingerprint, and probing the old index against it would prune
+ * row groups that now hold matching rows and silently drop them.
  *
- * File format (version 4; a single layout for one or many columns):
+ * File format (version 5; a single layout for one or many columns):
  *   "VTRI" magic (4 bytes)
- *   version: u16 (4)
+ *   version: u16 (5)
  *   n_cols: u16 (number of indexed columns)
  *   ci: u8 (case-insensitive flag)
  *   col_indices[n_cols]: u16 each (schema column indices, ascending)
  *   src_n_rows: u64 (rows in the store at build time)
  *   src_n_rowgroups: u32 (row groups in the store at build time)
+ *   src_fingerprint: u64 (the store's fingerprint at build time)
  *   n_entries: u64
  *   dir_bits: u8 (directory prefix width; 0 = no directory)
  *   entries[n_entries]: { hash u64; rg u32 } packed, 12 bytes each,
@@ -63,8 +68,10 @@
  * with the index. Past the cap the slots simply cover more entries each, and the
  * search inside a slot absorbs the difference.
  *
- * Versions 1 to 3 are superseded: vtri_open() reports no index for them, and
- * vtri_read_spec() reads their column list so they can be rebuilt.
+ * Versions 1 to 4 are superseded: vtri_open() reports no index for them, and
+ * vtri_read_spec() reads their column list so they can be rebuilt. Version 4
+ * is version 5 without the fingerprint, so it cannot tell a store from another
+ * of the same shape.
  *
  * An open index is backed one of two ways, chosen by size, and a probe reads
  * through accessors so it does not care which:
@@ -85,7 +92,7 @@
  */
 
 #define VTRI_MAX_COLS 8
-#define VTRI_VERSION  4
+#define VTRI_VERSION  5
 
 /* Bytes on disk per entry: u64 hash + u32 row group, packed. */
 #define VTRI_ENTRY_BYTES 12
@@ -110,6 +117,7 @@ typedef struct VtrIndex {
     int       dir_bits;
     int64_t   src_n_rows;      /* rows in the store at build time */
     int64_t   src_n_rowgroups; /* row groups in the store at build time */
+    uint64_t  src_fingerprint; /* the store's fingerprint at build time */
 
     /* The arrays region -- entries then directory -- however it is backed.
        `arr` points into arr_owned when the index was read, or into the mapping
@@ -187,12 +195,26 @@ static inline uint64_t vtri_hash_double(double val) {
     return vtri_fnv1a((const uint8_t *)&val, 8);
 }
 
+/* The stamp an index records for its store, and is checked against. */
+typedef struct VtriStamp {
+    int64_t  n_rows;
+    int64_t  n_rowgroups;
+    uint64_t fingerprint;
+} VtriStamp;
+
+/* The stamp of an open store as it now stands. The one definition used both to
+   write an index and to check one, so the two cannot disagree about what a
+   store is. */
+struct Vtr1TdcFile;
+void vtri_store_stamp(struct Vtr1TdcFile *file, VtriStamp *out);
+
 /* Open a .vtri sidecar index file.
 
-   src_n_rows / src_n_rowgroups describe the store the index is about to be used
-   against; the index is reported as absent (NULL) when its stamp disagrees with
-   them, which is how an index left behind by a row append is kept from pruning.
-   Pass -1 for either to skip that check.
+   `stamp` describes the store the index is about to be used against; the index
+   is reported as absent (NULL) when its own stamp disagrees with it in any
+   field, which is how an index left behind by a row append, or by a store
+   replaced with one of the same shape, is kept from pruning. Pass NULL to skip
+   the check (vtri_extend compares the stamp itself).
 
    Returns NULL whenever there is no index to probe: the file does not exist, is
    not a .vtri, was written by a superseded or newer version, does not match the
@@ -204,7 +226,7 @@ static inline uint64_t vtri_hash_double(double val) {
    not how a large index is handled, since one past
    VTRI_RESIDENT_MAX_BYTES is mapped rather than read. */
 VtrIndex *vtri_open(const char *vtri_path, const VecSchema *schema,
-                    int64_t src_n_rows, int64_t src_n_rowgroups);
+                    const VtriStamp *stamp);
 
 /* Close and free an index. */
 void vtri_close(VtrIndex *idx);
@@ -243,10 +265,18 @@ void vtri_build(const char *vtr_path, const char **col_names, int n_cols, int ci
    extend costs one sequential pass over the old sidecar plus a sort of what the
    appended row groups contribute, and holds neither in memory.
 
+   `pre_fingerprint` is the store's fingerprint before the append. The index is
+   extended only if it was valid for that store -- its stamped fingerprint is
+   that one, and the row groups it covers are an unchanged prefix of the store
+   now -- so an index that was already stale is never carried forward. Growing
+   a store by columns rather than rows goes through here too: no row group is
+   new, and the rewrite gives the index the store's new fingerprint.
+
    Returns 1 when the index was rewritten, or 0 when it cannot be extended --
    unreadable, or built against a store this one is not an extension of -- in
    which case the caller should rebuild it with vtri_build. */
 int vtri_extend(const char *vtr_path, const char *vtri_path,
+                uint64_t pre_fingerprint,
                 int64_t mem_budget, const char *temp_dir);
 
 /* Resolve index column names against a schema, sorted into schema order.

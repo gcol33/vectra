@@ -34,9 +34,9 @@ test_that("a .vtri header claiming an enormous entry count errors, not overflows
   raw <- readBin(ix$vtri, "raw", file.info(ix$vtri)$size)
   n_cols <- as.integer(raw[7]) + 256L * as.integer(raw[8])  # n_cols u16, LE
   # magic(4) version(2) n_cols(2) ci(1) col_indices(2 * n_cols) rows(8)
-  # rowgroups(4) => n_entries u64 next. Set it to 2^61 (little-endian) to force
-  # the overflow path.
-  off <- 4L + 2L + 2L + 1L + 2L * n_cols + 8L + 4L
+  # rowgroups(4) fingerprint(8) => n_entries u64 next. Set it to 2^61
+  # (little-endian) to force the overflow path.
+  off <- 4L + 2L + 2L + 1L + 2L * n_cols + 8L + 4L + 8L
   raw[(off + 1L):(off + 8L)] <- as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x20))
   writeBin(raw, ix$vtri)
   res <- probe(ix)

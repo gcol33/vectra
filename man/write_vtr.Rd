@@ -63,6 +63,9 @@ never see a partial file.
 }
 \details{
 For \code{data.frame} inputs, the data is written directly from memory.
+
+Writing over an existing \code{.vtr} replaces it, and removes the \code{.vtri} indexes
+built on the store it replaces (see \code{\link[=create_index]{create_index()}}).
 }
 \examples{
 # From a data.frame

@@ -8,19 +8,37 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Total rows and row groups of a .vtr store, for verifying an index stamp. */
-static int store_stamp(const char *vtr_path, int64_t *n_rows,
-                       int64_t *n_rowgroups) {
-    Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
-    if (!file) return 0;
-    uint32_t n_rg = vtr1_tdc_n_rowgroups(file);
-    int64_t total = 0;
-    for (uint32_t rg = 0; rg < n_rg; rg++)
-        total += vtr1_tdc_rowgroup_n_rows(file, rg);
-    vtr1_close_tdc(file);
-    *n_rows = total;
-    *n_rowgroups = (int64_t)n_rg;
+/* A fingerprint crosses into R as 16 hex digits: R has no unsigned 64-bit
+   type, and a string round-trips every bit. */
+static SEXP fingerprint_to_r(uint64_t fp) {
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)fp);
+    return Rf_mkString(buf);
+}
+
+static int fingerprint_from_r(SEXP x, uint64_t *out) {
+    if (TYPEOF(x) != STRSXP || Rf_length(x) != 1 || STRING_ELT(x, 0) == NA_STRING)
+        return 0;
+    const char *s = CHAR(STRING_ELT(x, 0));
+    if (strlen(s) != 16) return 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(s, &end, 16);
+    if (!end || *end != '\0') return 0;
+    *out = (uint64_t)v;
     return 1;
+}
+
+/* --- C_store_fingerprint(path) ---
+   The store's fingerprint as it now stands, taken before a store is grown in
+   place so its indexes can be carried over only if they described it. NULL
+   when the store cannot be opened. */
+
+SEXP C_store_fingerprint(SEXP path) {
+    Vtr1TdcFile *file = vtr1_open_tdc(CHAR(STRING_ELT(path, 0)));
+    if (!file) return R_NilValue;
+    uint64_t fp = vtr1_tdc_fingerprint(file);
+    vtr1_close_tdc(file);
+    return fingerprint_to_r(fp);
 }
 
 /* Canonical .vtri path for a set of column names: schema order, so that
@@ -69,16 +87,19 @@ SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci, SEXP mem) {
     return R_NilValue;
 }
 
-/* --- C_extend_index(path, vtri_path, mem) ---
-   Bring one sidecar up to date with a store that has just gained row groups,
-   reading only the appended ones. TRUE when it was extended; FALSE when it
-   cannot be (unreadable, or built against a store this one is not an extension
-   of), which tells the caller to rebuild it instead. */
+/* --- C_extend_index(path, vtri_path, pre_fingerprint, mem) ---
+   Bring one sidecar up to date with a store that has just been grown in place,
+   reading only the appended row groups. pre_fingerprint is the store's
+   fingerprint before the append (C_store_fingerprint). TRUE when it was
+   extended; FALSE when it cannot be (unreadable, or not built against the store
+   as it was before the append), which tells the caller to rebuild it instead. */
 
-SEXP C_extend_index(SEXP path, SEXP vtri_path, SEXP mem) {
+SEXP C_extend_index(SEXP path, SEXP vtri_path, SEXP pre_fingerprint, SEXP mem) {
     const char *vtr_p  = CHAR(STRING_ELT(path, 0));
     const char *vtri_p = CHAR(STRING_ELT(vtri_path, 0));
-    return Rf_ScalarLogical(vtri_extend(vtr_p, vtri_p,
+    uint64_t pre = 0;
+    if (!fingerprint_from_r(pre_fingerprint, &pre)) return Rf_ScalarLogical(0);
+    return Rf_ScalarLogical(vtri_extend(vtr_p, vtri_p, pre,
                                         (int64_t)Rf_asReal(mem),
                                         get_r_tempdir()));
 }
@@ -93,13 +114,16 @@ SEXP C_has_index(SEXP path, SEXP col_name) {
     char *vtri_path = canonical_index_path(vtr_path, col_name);
     if (!vtri_path) return Rf_ScalarLogical(0);
 
-    int64_t n_rows = -1, n_rgs = -1;
-    if (!store_stamp(vtr_path, &n_rows, &n_rgs)) {
+    Vtr1TdcFile *file = vtr1_open_tdc(vtr_path);
+    if (!file) {
         free(vtri_path);
         return Rf_ScalarLogical(0);
     }
+    VtriStamp stamp;
+    vtri_store_stamp(file, &stamp);
+    vtr1_close_tdc(file);
 
-    VtrIndex *idx = vtri_open(vtri_path, NULL, n_rows, n_rgs);
+    VtrIndex *idx = vtri_open(vtri_path, NULL, &stamp);
     free(vtri_path);
     if (!idx) return Rf_ScalarLogical(0);
     vtri_close(idx);

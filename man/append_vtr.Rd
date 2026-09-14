@@ -66,7 +66,8 @@ to the store's rows by position.
 
 Existing row-group boundaries and column data are untouched, so any
 \code{.vtri} index built with \code{\link[=create_index]{create_index()}} over the original columns stays
-valid across a column append.
+valid across a column append: it is restamped for the grown store without
+being rebuilt.
 }
 
 \section{Interruption}{
