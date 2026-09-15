@@ -54,6 +54,18 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
+      - name: Parse R sources in a C locale
+        shell: Rscript {0}
+        run: |
+          invisible(Sys.setlocale("LC_CTYPE", "C"))
+          files <- list.files(c("R", "tests"), pattern = "[.][Rr]$",
+                              recursive = TRUE, full.names = TRUE)
+          errs <- Filter(Negate(is.null), lapply(files, function(f) tryCatch({
+            parse(f, keep.source = FALSE)
+            NULL
+          }, error = function(e) conditionMessage(e))))
+          if (length(errs)) stop(paste(errs, collapse = "\n"), call. = FALSE)
+
       - name: Vendor tdc into src/tdc before build
         shell: bash
         run: |

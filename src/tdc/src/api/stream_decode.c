@@ -1,4 +1,4 @@
-﻿/*
+/*
  * src/api/stream_decode.c
  *
  * Streaming decoder: schema + row-group index.

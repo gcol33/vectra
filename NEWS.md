@@ -22,6 +22,11 @@
   described the store before the append; an index that was already stale is
   rebuilt instead.
 
+* A source install works in a non-UTF-8 locale again (#14). `R/verbs.R` began
+  with a UTF-8 byte-order mark, which the R parser reads as a token under
+  `LC_CTYPE=C`, so `R CMD INSTALL` from an SSH session, cron job or CI image
+  without a UTF-8 locale stopped with "unable to collate and parse R files".
+
 ## On-disk format
 
 * A `.vtr` file now ends in a 24-byte trailer after the tdc container: the
