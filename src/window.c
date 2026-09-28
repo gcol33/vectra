@@ -331,7 +331,9 @@ static void win_eval_shift(const VecArray *input, int64_t start, int64_t end,
         }
     }
     /* Parallel data copy */
+    #ifdef _OPENMP
     #pragma omp parallel for if((end - start) > VEC_OMP_THRESHOLD) schedule(static)
+    #endif
     for (int64_t i = start; i < end; i++) {
         int64_t src_row = i + direction * offset;
         if (src_row < start || src_row >= end) {

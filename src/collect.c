@@ -974,7 +974,9 @@ SEXP vec_collect(VecNode *root) {
             }
             /* Fast path: no selection vector, bulk append. Pre-validated and
                pre-reserved above, so the append contains no longjmp-capable call. */
+            #ifdef _OPENMP
             #pragma omp parallel for if(n_cols > 8) schedule(static)
+            #endif
             for (int i = 0; i < n_cols; i++)
                 vec_builder_append_array_nocheck(&builders[i], &batch->columns[i]);
         } else {

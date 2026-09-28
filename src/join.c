@@ -342,7 +342,9 @@ static void jht_build_from_rcols(JoinNode *jn, int64_t r_nrows) {
     uint64_t *build_hashes = (uint64_t *)malloc(
         (size_t)(r_nrows > 0 ? r_nrows : 1) * sizeof(uint64_t));
     if (!build_hashes) vectra_error("alloc failed for build hash array");
+    #ifdef _OPENMP
     #pragma omp parallel for if(r_nrows > VEC_OMP_THRESHOLD) schedule(static)
+    #endif
     for (int64_t r = 0; r < r_nrows; r++)
         build_hashes[r] = hash_join_key(jn->r_cols, jn->rkey_idx,
                                          jn->n_keys, r);
@@ -1065,7 +1067,9 @@ static int join_probe_load(JoinNode *jn) {
         const VecArray *pkey = &probe_cols[jn->lkey_idx[0]];
         switch (pkey->type) {
         case VEC_INT64:
+            #ifdef _OPENMP
             #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
+            #endif
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = vec_array_is_valid(pkey, pi)
@@ -1074,7 +1078,9 @@ static int join_probe_load(JoinNode *jn) {
             }
             break;
         case VEC_DOUBLE:
+            #ifdef _OPENMP
             #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
+            #endif
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = vec_array_is_valid(pkey, pi)
@@ -1083,7 +1089,9 @@ static int join_probe_load(JoinNode *jn) {
             }
             break;
         case VEC_STRING:
+            #ifdef _OPENMP
             #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
+            #endif
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = vec_array_is_valid(pkey, pi)
@@ -1094,7 +1102,9 @@ static int join_probe_load(JoinNode *jn) {
             }
             break;
         default:
+            #ifdef _OPENMP
             #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
+            #endif
             for (int64_t li = 0; li < p_logical; li++) {
                 int64_t pi = vec_batch_physical_row(pbatch, li);
                 phash[li] = hash_join_key(probe_cols, jn->lkey_idx,
@@ -1104,7 +1114,9 @@ static int join_probe_load(JoinNode *jn) {
         }
     } else {
         /* Generic composite key hash */
+        #ifdef _OPENMP
         #pragma omp parallel for if(p_logical > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t li = 0; li < p_logical; li++) {
             int64_t pi = vec_batch_physical_row(pbatch, li);
             phash[li] = hash_join_key(probe_cols, jn->lkey_idx,

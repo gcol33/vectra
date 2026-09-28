@@ -185,10 +185,12 @@ static int batch_threads(int requested, int m) {
 #endif
 }
 
+#ifdef _OPENMP
 static int resolve_threads(SEXP nthreads_sexp, int work) {
     return batch_threads(Rf_length(nthreads_sexp) > 0 ? INTEGER(nthreads_sexp)[0] : 0,
                          work);
 }
+#endif
 
 /* ---- per-row matching (shared by filter and join) ------------------------ */
 
@@ -325,7 +327,9 @@ static void filter_worker(const GeosBatchJob *job) {
                 GEOSGeom_destroy_r(ctx, xg);
             }
             if (cand.oom) {
+                #ifdef _OPENMP
                 #pragma omp atomic write
+                #endif
                 *oom = 1;
                 continue;
             }
@@ -362,13 +366,12 @@ SEXP C_geos_filter(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
 
     SEXP out = PROTECT(allocVector(LGLSXP, m));
     int *res = LOGICAL(out);
-    int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
     GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .m = m, .pred = pred,
                           .negate = negate, .dist = dist, .res = res, .oom = &oom };
 #ifdef _OPENMP
-    #pragma omp parallel num_threads(nt)
+    #pragma omp parallel num_threads(resolve_threads(nthreads_sexp, m))
 #endif
     filter_worker(&job);
 
@@ -408,7 +411,9 @@ static void join_worker(const GeosBatchJob *job) {
         row_relate(ctx, loc, prep, &cand, xg, pred, dist, 0, &hits);
         GEOSGeom_destroy_r(ctx, xg);
         if (cand.oom || hits.oom) {
+            #ifdef _OPENMP
             #pragma omp atomic write
+            #endif
             *oom = 1;
             continue;
         }
@@ -416,7 +421,9 @@ static void join_worker(const GeosBatchJob *job) {
             qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
             int *a = (int *) malloc((size_t) hits.n * sizeof(int));
             if (a == NULL) {
+                #ifdef _OPENMP
                 #pragma omp atomic write
+                #endif
                 *oom = 1;
                 continue;
             }
@@ -527,7 +534,9 @@ static void locate_xy_worker(const GeosBatchJob *job) {
         row_relate(ctx, loc, prep, &cand, pt, pred, dist, 0, &hits);
         GEOSGeom_destroy_r(ctx, pt);
         if (cand.oom || hits.oom) {
+            #ifdef _OPENMP
             #pragma omp atomic write
+            #endif
             *oom = 1;
             continue;
         }
@@ -536,7 +545,9 @@ static void locate_xy_worker(const GeosBatchJob *job) {
             qsort(hits.idx, (size_t) hits.n, sizeof(int), int_cmp);
             int *a = (int *) malloc((size_t) hits.n * sizeof(int));
             if (a == NULL) {
+                #ifdef _OPENMP
                 #pragma omp atomic write
+                #endif
                 *oom = 1;
                 continue;
             }
@@ -595,14 +606,13 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
         res = INTEGER(out_first);
         for (int r = 0; r < m; r++) res[r] = NA_INTEGER;
     }
-    int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
     GeosBatchJob job = { .loc = loc, .xs = xs, .ys = ys, .m = m, .pred = pred,
                           .dist = dist, .want_all = want_all, .res = res,
                           .mptr = mptr, .mlen = mlen, .oom = &oom };
 #ifdef _OPENMP
-    #pragma omp parallel num_threads(nt)
+    #pragma omp parallel num_threads(resolve_threads(nthreads_sexp, m))
 #endif
     locate_xy_worker(&job);
 
@@ -670,7 +680,9 @@ static void clip_worker(const GeosBatchJob *job) {
         char *s = (char *) malloc(len + 1);
         if (s == NULL) {
             GEOSFree_r(ctx, buf);
+            #ifdef _OPENMP
             #pragma omp atomic write
+            #endif
             *oom = 1;
             continue;
         }
@@ -708,13 +720,12 @@ SEXP C_geos_clip(SEXP loc_ptr, SEXP batch_hex, SEXP erase_sexp, SEXP nthreads_se
     char *disp = (char *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(char));  /* 0 drop, 1 cut, 2 keep */
     char **cut = (char **) R_alloc((size_t) (m > 0 ? m : 1), sizeof(char *));
     for (int r = 0; r < m; r++) { disp[r] = 0; cut[r] = NULL; }
-    int nt = resolve_threads(nthreads_sexp, m);
     volatile int oom = 0;
 
     GeosBatchJob job = { .mask = mask, .hex = hex, .hexlen = hexlen, .m = m,
                           .erase = erase, .disp = disp, .cut = cut, .oom = &oom };
 #ifdef _OPENMP
-    #pragma omp parallel num_threads(nt)
+    #pragma omp parallel num_threads(resolve_threads(nthreads_sexp, m))
 #endif
     clip_worker(&job);
 

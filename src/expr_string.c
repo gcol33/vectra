@@ -212,17 +212,23 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                 vectra_error("grepl: invalid regex pattern: %s", pattern);
             regfree(&re_check);
             volatile int oom = 0;
+            #ifdef _OPENMP
             #pragma omp parallel if(n > 1000)
+            #endif
             {
                 regex_t re_local;
                 regcomp(&re_local, pattern, re_flags);
                 int64_t tl_cap = 256;
                 char *tl_buf = (char *)malloc((size_t)tl_cap);
                 if (!tl_buf) {
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     oom = 1;
                 }
+                #ifdef _OPENMP
                 #pragma omp for schedule(dynamic, 64)
+                #endif
                 for (int64_t i = 0; i < n; i++) {
                     if (oom) continue;
                     if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
@@ -232,7 +238,9 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                     if (slen + 1 > tl_cap) {
                         char *nb = (char *)realloc(tl_buf, (size_t)(slen + 1));
                         if (!nb) {
+                            #ifdef _OPENMP
                             #pragma omp atomic write
+                            #endif
                             oom = 1;
                             continue;
                         }
@@ -727,7 +735,9 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             *out = vec_array_alloc(VEC_INT64, n);
         }
 
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 64) if(n > 1000)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(a, i) || (b && !vec_array_is_valid(b, i))) {
                 vec_array_set_null(out, i);
@@ -784,7 +794,9 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
             *out = vec_array_alloc(VEC_INT64, n);
         }
 
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 64) if(n > 1000)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(a, i) || (b && !vec_array_is_valid(b, i))) {
                 vec_array_set_null(out, i);
@@ -834,7 +846,9 @@ VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
         VecArray *out = (VecArray *)malloc(sizeof(VecArray));
         *out = vec_array_alloc(VEC_DOUBLE, n);
 
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 64) if(n > 1000)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             if (!vec_array_is_valid(a, i) || (b && !vec_array_is_valid(b, i))) {
                 vec_array_set_null(out, i);

@@ -120,11 +120,10 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
     *out = vec_array_alloc(VEC_DOUBLE, n);
 
     char fn = expr->vec_fn;
-    int do_par = (n > VEC_PAR_THRESHOLD);
     volatile int oom = 0;
 
 #ifdef _OPENMP
-    #pragma omp parallel if(do_par)
+    #pragma omp parallel if(n > VEC_PAR_THRESHOLD)
 #endif
     {
         float *ta = NULL, *tb = NULL;
@@ -139,7 +138,9 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
             int64_t da = hex_dim(str_len(a, i));
             if (da == 0) { vec_array_set_null(out, i); continue; }
             if (ensure_cap(&ta, &capa, da)) {
+                #ifdef _OPENMP
                 #pragma omp atomic write
+                #endif
                 oom = 1;
                 continue;
             }
@@ -154,7 +155,9 @@ VecArray *vec_expr_eval_vec(const VecExpr *expr, const VecBatch *batch) {
                 db = hex_dim(str_len(b, i));
                 if (db == 0) { vec_array_set_null(out, i); continue; }
                 if (ensure_cap(&tb, &capb, db)) {
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     oom = 1;
                     continue;
                 }

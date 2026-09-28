@@ -755,7 +755,9 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
                     double d = blk_compute_dist(method, key, key_len,
                                                 bstr, blen, max_dist);
                     if (d <= max_dist && flbuf_push(&tbufs[tid], q, r, d)) {
+                        #ifdef _OPENMP
                         #pragma omp atomic write
+                        #endif
                         oom = 1;
                         break;
                     }
@@ -790,7 +792,9 @@ SEXP C_block_fuzzy_lookup(SEXP block_xptr, SEXP match_col_name, SEXP keys,
                 double d = blk_compute_dist(method, key, key_len,
                                             bstr, blen, max_dist);
                 if (d <= max_dist && flbuf_push(&tbufs[tid], q, r, d)) {
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     oom = 1;
                     break;
                 }

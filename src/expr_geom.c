@@ -88,10 +88,18 @@ static int geom_measure(GEOSContextHandle_t ctx, char fn,
     case 'L': return GEOSLength_r(ctx, g, out);
     case 'X': return GEOSGeomGetX_r(ctx, g, out);
     case 'Y': return GEOSGeomGetY_r(ctx, g, out);
-    case 'n': { int v = GEOSGetNumCoordinates_r(ctx, g);
-                if (v < 0) return 0; *out = (double) v; return 1; }
-    case 'g': { int v = GEOSGetNumGeometries_r(ctx, g);
-                if (v < 0) return 0; *out = (double) v; return 1; }
+    case 'n': {
+        int v = GEOSGetNumCoordinates_r(ctx, g);
+        if (v < 0) return 0;
+        *out = (double) v;
+        return 1;
+    }
+    case 'g': {
+        int v = GEOSGetNumGeometries_r(ctx, g);
+        if (v < 0) return 0;
+        *out = (double) v;
+        return 1;
+    }
     default:  return 0;
     }
 }
@@ -238,7 +246,9 @@ static void geom_worker(const GeomJob *job) {
                 int64_t tl = (int64_t) strlen(t);
                 char *s = (char *) malloc((size_t) (tl > 0 ? tl : 1));
                 if (!s) { GEOSFree_r(ctx, t); GEOSGeom_destroy_r(ctx, xg);
+                          #ifdef _OPENMP
                           #pragma omp atomic write
+                          #endif
                           *oom = 1;
                           continue; }  /* xg freed here; skip loop-end free */
                 memcpy(s, t, (size_t) tl);
@@ -259,7 +269,9 @@ static void geom_worker(const GeomJob *job) {
                     char *s = (char *) malloc(wl > 0 ? wl : 1);
                     if (!s) { GEOSFree_r(ctx, buf); GEOSGeom_destroy_r(ctx, rg);
                               GEOSGeom_destroy_r(ctx, xg);
+                              #ifdef _OPENMP
                               #pragma omp atomic write
+                              #endif
                               *oom = 1;
                               continue; }  /* rg+xg freed here; skip loop-end */
                     memcpy(s, buf, wl);
@@ -343,7 +355,6 @@ VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch) {
         if (!strs || !slens || !ok) vectra_error("alloc failed in geometry op");
     }
 
-    int do_par = (n > GEOM_PAR_THRESHOLD);
     volatile int oom = 0;   /* set by a worker on alloc failure; raised on master */
     GeomJob job = {
         .g = g, .rarr = rarr, .parr = parr, .cgeom = cgeom, .fn = fn, .cat = cat,
@@ -351,7 +362,7 @@ VecArray *vec_expr_eval_geom(const VecExpr *expr, const VecBatch *batch) {
         .n = n, .out = out, .strs = strs, .slens = slens, .ok = ok, .oom = &oom
     };
 #ifdef _OPENMP
-    #pragma omp parallel if(do_par)
+    #pragma omp parallel if(n > GEOM_PAR_THRESHOLD)
 #endif
     geom_worker(&job);
 

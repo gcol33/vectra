@@ -303,7 +303,9 @@ static void fuzzy_match_batch_vs(FuzzyJoinNode *fj, VecBatch *batch,
                                     str_ptr(b_key, bi), str_len(b_key, bi),
                                     max_dist);
             if (d <= max_dist && fmbuf_push(buf, li, bi, d)) {
+                #ifdef _OPENMP
                 #pragma omp atomic write
+                #endif
                 oom = 1;
                 break;
             }

@@ -421,7 +421,7 @@ SEXP C_overlay_parse(SEXP wkb_list, SEXP grid_sexp, SEXP nthreads_sexp) {
         if (nthreads <= 0 || nthreads > cap) nthreads = cap;
     }
 #else
-    nthreads = 1;
+    (void) nthreads;
 #endif
 
     /* parallel: parse -> make valid -> areal -> snap; record bbox + cleaned WKB */

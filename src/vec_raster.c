@@ -134,24 +134,20 @@ void vecr_cast_dtype_to_doubles(const void *src, int64_t n,
                                 uint8_t dt, double *dst) {
     switch (dt) {
     case VECR_DT_F64: memcpy(dst, src, (size_t)n * sizeof(double)); break;
-    case VECR_DT_F32: { const float *p = (const float *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I8:  { const int8_t   *p = (const int8_t  *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U8:  { const uint8_t  *p = (const uint8_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I16: { const int16_t  *p = (const int16_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U16: { const uint16_t *p = (const uint16_t*)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I32: { const int32_t  *p = (const int32_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U32: { const uint32_t *p = (const uint32_t*)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_I64: { const int64_t  *p = (const int64_t *)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
-    case VECR_DT_U64: { const uint64_t *p = (const uint64_t*)src;
-        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; break; }
+#define VECR_WIDEN(T) do {                                   \
+        const T *p = (const T *)src;                         \
+        for (int64_t i = 0; i < n; ++i) dst[i] = (double)p[i]; \
+    } while (0)
+    case VECR_DT_F32: VECR_WIDEN(float);    break;
+    case VECR_DT_I8:  VECR_WIDEN(int8_t);   break;
+    case VECR_DT_U8:  VECR_WIDEN(uint8_t);  break;
+    case VECR_DT_I16: VECR_WIDEN(int16_t);  break;
+    case VECR_DT_U16: VECR_WIDEN(uint16_t); break;
+    case VECR_DT_I32: VECR_WIDEN(int32_t);  break;
+    case VECR_DT_U32: VECR_WIDEN(uint32_t); break;
+    case VECR_DT_I64: VECR_WIDEN(int64_t);  break;
+    case VECR_DT_U64: VECR_WIDEN(uint64_t); break;
+#undef VECR_WIDEN
     }
 }
 
@@ -310,10 +306,6 @@ static void vecr_codec_raw(VecrCodec *c, uint8_t dt, tdc_entropy_id e) {
         c->spec.xform[0] = TDC_XFORM_BYTE_SHUFFLE;
     }
     c->spec.entropy[0] = e;
-}
-
-static void vecr_codec_for(VecrCodec *c, uint8_t dt) {
-    vecr_codec_pred2d(c, dt, TDC_ENTROPY_LZ);
 }
 
 /* Fill a candidate set for the given compression level. cands must hold at
@@ -2426,10 +2418,8 @@ int vecr_write_pixel_cube(const char *path,
             for (int64_t tx = 0; tx < tiles_x && rc == 0; ++tx) {
                 int64_t c0 = tx * TS;
                 int64_t tw = (c0 + TS <= width) ? TS : (width - c0);
-                int64_t n_pix = tw * th;
-
                 /* Pack this spatial tile across all time steps into
-                 * tile_buf with shape (n_pix, n_time) row-major. The
+                 * tile_buf with shape (tw * th, n_time) row-major. The
                  * source pixel for (band b, time t, local pixel (lr, lc))
                  * lives at  data + t*stride_time + b*stride_band +
                  *           (r0+lr)*width + c0+lc. */

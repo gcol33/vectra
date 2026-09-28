@@ -326,7 +326,9 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             else
                 vec_array_set_null(&dst, i);
         }
+        #ifdef _OPENMP
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             if (i + VEC_PREFETCH_AHEAD < n)
                 VEC_PREFETCH_READ(&src->buf.i64[indices[i + VEC_PREFETCH_AHEAD]]);
@@ -341,7 +343,9 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             else
                 vec_array_set_null(&dst, i);
         }
+        #ifdef _OPENMP
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             dst.buf.i8[i] = src->buf.i8[indices[i]];
         }
@@ -354,7 +358,9 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             else
                 vec_array_set_null(&dst, i);
         }
+        #ifdef _OPENMP
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             dst.buf.i16[i] = src->buf.i16[indices[i]];
         }
@@ -367,7 +373,9 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             else
                 vec_array_set_null(&dst, i);
         }
+        #ifdef _OPENMP
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             dst.buf.i32[i] = src->buf.i32[indices[i]];
         }
@@ -380,7 +388,9 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             else
                 vec_array_set_null(&dst, i);
         }
+        #ifdef _OPENMP
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             if (i + VEC_PREFETCH_AHEAD < n)
                 VEC_PREFETCH_READ(&src->buf.dbl[indices[i + VEC_PREFETCH_AHEAD]]);
@@ -395,7 +405,9 @@ static VecArray gather_array(const VecArray *src, const int64_t *indices,
             else
                 vec_array_set_null(&dst, i);
         }
+        #ifdef _OPENMP
         #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t i = 0; i < n; i++) {
             dst.buf.bln[i] = src->buf.bln[indices[i]];
         }

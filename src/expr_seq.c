@@ -128,9 +128,8 @@ static VecArray *seq_eval_measure(const VecExpr *expr, const VecBatch *batch) {
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     *out = vec_array_alloc(rt, n);
 
-    int do_par = (n > SEQ_PAR_THRESHOLD);
 #ifdef _OPENMP
-    #pragma omp parallel for if(do_par) schedule(dynamic, SEQ_CHUNK)
+    #pragma omp parallel for if(n > SEQ_PAR_THRESHOLD) schedule(dynamic, SEQ_CHUNK)
 #endif
     for (int64_t i = 0; i < n; i++) {
         if (!vec_array_is_valid(s, i)) { vec_array_set_null(out, i); continue; }
@@ -220,9 +219,8 @@ static VecArray *seq_eval_transform(const VecExpr *expr, const VecBatch *batch) 
     char *data = out->buf.str.data;
 
     /* Pass 2 (parallel): fill each row's disjoint slice. */
-    int do_par = (n > SEQ_PAR_THRESHOLD);
 #ifdef _OPENMP
-    #pragma omp parallel for if(do_par) schedule(dynamic, SEQ_CHUNK)
+    #pragma omp parallel for if(n > SEQ_PAR_THRESHOLD) schedule(dynamic, SEQ_CHUNK)
 #endif
     for (int64_t i = 0; i < n; i++) {
         if (!vec_array_is_valid(out, i)) continue;
@@ -302,9 +300,8 @@ static VecArray *seq_eval_dist(const VecExpr *expr, const VecBatch *batch) {
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     *out = vec_array_alloc(VEC_INT64, n);
 
-    int do_par = (n > SEQ_PAR_THRESHOLD);
 #ifdef _OPENMP
-    #pragma omp parallel for if(do_par) schedule(dynamic, SEQ_CHUNK)
+    #pragma omp parallel for if(n > SEQ_PAR_THRESHOLD) schedule(dynamic, SEQ_CHUNK)
 #endif
     for (int64_t i = 0; i < n; i++) {
         if (!vec_array_is_valid(a, i)) { vec_array_set_null(out, i); continue; }

@@ -78,10 +78,8 @@ SEXP C_edt_strip(SEXP mat_sexp, SEXP dims_sexp, SEXP scale_sexp) {
     SEXP out = PROTECT(Rf_allocMatrix(REALSXP, in_h, W));
     double *o = REAL(out);
 
-    int parallel = (double)in_h * W > 20000.0;
-
     #ifdef _OPENMP
-    #pragma omp parallel if(parallel)
+    #pragma omp parallel if((double)in_h * W > 20000.0)
     #endif
     {
         double *f = (double *)malloc((size_t)W * sizeof(double));

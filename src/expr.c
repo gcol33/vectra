@@ -61,7 +61,9 @@ static VecArray *make_scalar_i64(int64_t val, int64_t n) {
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     *out = vec_array_alloc(VEC_INT64, n);
     vec_array_set_all_valid(out);
+    #ifdef _OPENMP
     #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+    #endif
     for (int64_t i = 0; i < n; i++) out->buf.i64[i] = val;
     return out;
 }
@@ -70,7 +72,9 @@ static VecArray *make_scalar_dbl(double val, int64_t n) {
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     *out = vec_array_alloc(VEC_DOUBLE, n);
     vec_array_set_all_valid(out);
+    #ifdef _OPENMP
     #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+    #endif
     for (int64_t i = 0; i < n; i++) out->buf.dbl[i] = val;
     return out;
 }
@@ -79,7 +83,9 @@ static VecArray *make_scalar_bln(uint8_t val, int64_t n) {
     VecArray *out = (VecArray *)malloc(sizeof(VecArray));
     *out = vec_array_alloc(VEC_BOOL, n);
     vec_array_set_all_valid(out);
+    #ifdef _OPENMP
     #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+    #endif
     for (int64_t i = 0; i < n; i++) out->buf.bln[i] = val;
     return out;
 }

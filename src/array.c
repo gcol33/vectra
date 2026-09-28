@@ -178,7 +178,6 @@ void vec_validity_copy_bits(uint8_t *dst, int64_t dst_off,
 
     /* General case: byte-level shift-and-combine.
        Read source bits in 8-bit chunks, shift to destination alignment. */
-    int64_t src_bytes = (src_off + n + 7) >> 3;
     for (int64_t i = 0; i < n; ) {
         /* How many bits until next dst byte boundary? */
         int64_t di = dst_off + i;

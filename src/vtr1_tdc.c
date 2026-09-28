@@ -1587,7 +1587,9 @@ VecBatch **vtr1_read_parallel_tdc_defer_into(Vtr1TdcFile *file,
     char err_msg[256];
     err_msg[0] = '\0';
 
+    #ifdef _OPENMP
     #pragma omp parallel
+    #endif
     {
         FILE *fp = fopen(path, "rb");
         char  terr[256];
@@ -1597,7 +1599,9 @@ VecBatch **vtr1_read_parallel_tdc_defer_into(Vtr1TdcFile *file,
         if (!fp) {
             snprintf(terr, sizeof terr,
                      "parallel TDC read: cannot open %s", path);
+            #ifdef _OPENMP
             #pragma omp critical (vtr1_tdc_read_err)
+            #endif
             {
                 if (!err_flag) {
                     err_flag = 1;
@@ -1609,13 +1613,17 @@ VecBatch **vtr1_read_parallel_tdc_defer_into(Vtr1TdcFile *file,
         if (fp) {
             setvbuf(fp, NULL, _IOFBF, 256 * 1024);
 
+            #ifdef _OPENMP
             #pragma omp for schedule(dynamic)
+            #endif
             for (int32_t r = 0; r < (int32_t)n_rg; r++) {
                 if (err_flag) continue;
                 if (fill_rg_batch(file, (uint32_t)r, col_mask, batches[r], fp,
                                   &scratch, &scratch_cap, defer_str_dict,
                                   terr, sizeof terr) != 0) {
+                    #ifdef _OPENMP
                     #pragma omp critical (vtr1_tdc_read_err)
+                    #endif
                     {
                         if (!err_flag) {
                             err_flag = 1;

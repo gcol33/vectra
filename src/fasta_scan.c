@@ -42,12 +42,6 @@ static void gbuf_append(GBuf *g, const char *s, int64_t n) {
     g->len += n;
 }
 
-/* Null-terminate and return pointer (valid until next push/append/clear). */
-static const char *gbuf_str(GBuf *g) {
-    gbuf_push(g, '\0');
-    g->len--; /* don't count terminator in logical length */
-    return g->data;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Line reading                                                       */

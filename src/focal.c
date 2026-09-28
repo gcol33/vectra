@@ -118,19 +118,19 @@ SEXP C_focal_strip(SEXP in_sexp, SEXP dims_sexp, SEXP w_sexp, SEXP kdims_sexp,
     SEXP out = PROTECT(Rf_allocMatrix(REALSXP, out_h, W));
     double *o = REAL(out);
 
-    int parallel = (double)out_h * W * kh * kw > 50000.0;
-
     /* One scratch buffer per thread (kh*kw is small and constant), NULL-checked
        via an OOM latch raised on the master after the region -- erroring from a
        worker thread would longjmp out of OpenMP. */
     volatile int oom = 0;
     #ifdef _OPENMP
-    #pragma omp parallel if(parallel)
+    #pragma omp parallel if((double)out_h * W * kh * kw > 50000.0)
     #endif
     {
     double *vals = (double *)malloc((size_t)kh * kw * sizeof(double));
     if (!vals) {
+        #ifdef _OPENMP
         #pragma omp atomic write
+        #endif
         oom = 1;
     }
     #ifdef _OPENMP
@@ -221,10 +221,8 @@ SEXP C_terrain_strip(SEXP in_sexp, SEXP dims_sexp, SEXP which_sexp,
     SEXP out = PROTECT(Rf_allocMatrix(REALSXP, out_h, W * nout));
     double *o = REAL(out);
 
-    int parallel = (double)out_h * W > 20000.0;
-
     #ifdef _OPENMP
-    #pragma omp parallel for if(parallel) schedule(static)
+    #pragma omp parallel for if((double)out_h * W > 20000.0) schedule(static)
     #endif
     for (int i = 0; i < out_h; ++i) {
         int rc = top + i;

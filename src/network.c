@@ -243,7 +243,7 @@ static void heap_push(Scratch *s, double k, int node) {
     }
 }
 
-/* pop the minimum into *outk/*outn; returns 0 when empty */
+/* pop the minimum into *outk and *outn; returns 0 when empty */
 static int heap_pop(Scratch *s, double *outk, int *outn) {
     if (s->hsize == 0) return 0;
     *outk = s->hk[0]; *outn = s->hn[0];
@@ -378,22 +378,27 @@ SEXP C_network_route(SEXP ptr, SEXP src_sexp, SEXP dst_sexp, SEXP want_path_sexp
     }
     gstart[ngroups] = mm;
 
-    int nthreads = 1;
 #ifdef _OPENMP
-    if (mm >= 256) nthreads = vec_omp_threads();
+    int nthreads = (mm >= 256) ? vec_omp_threads() : 1;
 #endif
     int alloc_fail = 0;
 
+    #ifdef _OPENMP
     #pragma omp parallel num_threads(nthreads)
+    #endif
     {
         Scratch sc;
         int ok = scratch_init(&sc, g->n_nodes);
         if (!ok) {
+            #ifdef _OPENMP
             #pragma omp atomic write
+            #endif
             alloc_fail = 1;
         }
         if (ok) {
+            #ifdef _OPENMP
             #pragma omp for schedule(dynamic, 8)
+            #endif
             for (int gi = 0; gi < ngroups; gi++) {
                 int a = gstart[gi], b = gstart[gi + 1];
                 int s = ord[a].src;
@@ -409,7 +414,9 @@ SEXP C_network_route(SEXP ptr, SEXP src_sexp, SEXP dst_sexp, SEXP want_path_sexp
 
                 dijkstra(g, &sc, s, remaining, R_PosInf);
                 if (sc.err) {
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     alloc_fail = 1;
                     continue;
                 }
@@ -426,7 +433,9 @@ SEXP C_network_route(SEXP ptr, SEXP src_sexp, SEXP dst_sexp, SEXP want_path_sexp
                             int *pe = (int *)malloc((size_t)(len ? len : 1)
                                                     * sizeof(int));
                             if (!pe) {
+                                #ifdef _OPENMP
                                 #pragma omp atomic write
+                                #endif
                                 alloc_fail = 1;
                             } else {
                                 int idx = len - 1;
@@ -513,22 +522,27 @@ SEXP C_network_service(SEXP ptr, SEXP src_sexp, SEXP budget_sexp) {
         Rf_error("network: out of memory");
     }
 
-    int nthreads = 1;
 #ifdef _OPENMP
-    if (mm >= 64) nthreads = vec_omp_threads();
+    int nthreads = (mm >= 64) ? vec_omp_threads() : 1;
 #endif
     int alloc_fail = 0;
 
+    #ifdef _OPENMP
     #pragma omp parallel num_threads(nthreads)
+    #endif
     {
         Scratch sc;
         int ok = scratch_init(&sc, g->n_nodes);
         if (!ok) {
+            #ifdef _OPENMP
             #pragma omp atomic write
+            #endif
             alloc_fail = 1;
         }
         if (ok) {
+            #ifdef _OPENMP
             #pragma omp for schedule(dynamic, 8)
+            #endif
             for (int i = 0; i < mm; i++) {
                 int s = src[i];
                 sc.cur++;
@@ -537,7 +551,9 @@ SEXP C_network_service(SEXP ptr, SEXP src_sexp, SEXP budget_sexp) {
                 int rcap = 256, nr = 0;
                 int *rbuf = (int *)malloc((size_t)rcap * sizeof(int));
                 if (!rbuf) {
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     alloc_fail = 1;
                     continue;
                 }
@@ -578,7 +594,9 @@ SEXP C_network_service(SEXP ptr, SEXP src_sexp, SEXP budget_sexp) {
                 }
                 if (failed) {
                     free(rbuf);
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     alloc_fail = 1;
                     continue;
                 }
@@ -587,7 +605,9 @@ SEXP C_network_service(SEXP ptr, SEXP src_sexp, SEXP budget_sexp) {
                                               * sizeof(double));
                 if (!cb) {
                     free(rbuf);
+                    #ifdef _OPENMP
                     #pragma omp atomic write
+                    #endif
                     alloc_fail = 1;
                     continue;
                 }

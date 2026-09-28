@@ -194,7 +194,9 @@ SEXP C_feature_knn_query(SEXP idx_ptr, SEXP query_sexp, SEXP keff_sexp,
         Rf_error("vectra: out of memory in feature-kNN query");
     }
 
+    #ifdef _OPENMP
     #pragma omp parallel num_threads(nt)
+    #endif
     {
         int tid = 0;
 #ifdef _OPENMP
@@ -204,7 +206,9 @@ SEXP C_feature_knn_query(SEXP idx_ptr, SEXP query_sexp, SEXP keff_sexp,
         double *qr = h + k;
         double *qt = qr + nv;
 
+        #ifdef _OPENMP
         #pragma omp for schedule(dynamic, 256)
+        #endif
         for (int q = 0; q < nq; q++) {
             int na = 0;
             for (int c = 0; c < nv; c++) {

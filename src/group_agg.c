@@ -97,7 +97,9 @@ static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
             (size_t)(n_logical > 0 ? n_logical : 1) * sizeof(uint64_t));
         if (!row_hashes) vectra_error("alloc failed for row hash array");
 
+        #ifdef _OPENMP
         #pragma omp parallel for if(n_logical > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
         for (int64_t li = 0; li < n_logical; li++) {
             int64_t r = vec_batch_physical_row(batch, li);
             uint64_t h = 0;

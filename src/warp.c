@@ -72,10 +72,8 @@ SEXP C_warp_strip(SEXP win_sexp, SEXP win_dims_sexp, SEXP origin_sexp,
     SEXP out = PROTECT(Rf_allocMatrix(REALSXP, out_h, out_w));
     double *o = REAL(out);
 
-    int parallel = (double)n > 20000.0;
-
     #ifdef _OPENMP
-    #pragma omp parallel for if(parallel) schedule(static)
+    #pragma omp parallel for if((double)n > 20000.0) schedule(static)
     #endif
     for (R_xlen_t k = 0; k < n; ++k) {
         double x = sx[k], y = sy[k];
