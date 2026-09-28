@@ -240,3 +240,32 @@ test_that("the example file opens", {
   d <- tbl_parquet(f) |> collect()
   expect_identical(nrow(d), 100L)
 })
+
+test_that("pruning reaches the scan through mutate(), filters and bind_rows()", {
+  f <- pq_file("plain_none_v1.parquet")
+  # The middle row group is corrupted, so each query only succeeds if the
+  # optimizer's pruning copy of the predicate reached the parquet scan.
+  bytes <- readBin(f, "raw", file.size(f))
+  tmp <- tempfile(fileext = ".parquet")
+  on.exit(unlink(tmp))
+  mid <- length(bytes) %/% 2
+  bytes[(mid - 200):(mid + 200)] <- as.raw(0xAB)
+  writeBin(bytes, tmp)
+
+  got <- tbl_parquet(tmp) |> mutate(z = id * 2) |> filter(id < 50) |>
+    select(id, z) |> collect()
+  expect_identical(got$id, 0:49)
+  expect_equal(got$z, (0:49) * 2)
+
+  got <- tbl_parquet(tmp) |> filter(id < 50) |> filter(id >= 10) |>
+    select(id) |> collect()
+  expect_identical(got$id, 10:49)
+
+  got <- bind_rows(tbl_parquet(tmp), tbl_parquet(tmp)) |> filter(id < 5) |>
+    select(id) |> collect()
+  expect_identical(got$id, c(0:4, 0:4))
+
+  plan <- paste(capture.output(explain(
+    tbl_parquet(tmp) |> mutate(z = id * 2) |> filter(id < 50))), collapse = "\n")
+  expect_match(plan, "predicate pushdown")
+})
