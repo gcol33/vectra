@@ -21,6 +21,9 @@ typedef struct {
     int        conj_order[FILTER_MAX_CONJUNCTS];  /* evaluation order */
     double     conj_selectivity[FILTER_MAX_CONJUNCTS]; /* fraction passing (0..1) */
     int64_t    conj_total_rows[FILTER_MAX_CONJUNCTS];  /* rows evaluated */
+
+    int        pushed_down;  /* 1 = optimizer already handed a pruning copy of
+                                the predicate to the scans below */
 } FilterNode;
 
 /* Create a filter node. Takes ownership of child and predicate. */

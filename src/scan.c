@@ -1005,8 +1005,7 @@ static int64_t scan_static_rows(const VecNode *self) {
 
 static void scan_free(VecNode *self) {
     ScanNode *sn = (ScanNode *)self;
-    if (sn->predicate && !sn->pred_borrowed)
-        vec_expr_free(sn->predicate);
+    vec_expr_free(sn->predicate);
     tombstone_free(sn->tombstone);
     vtr1_close_tdc(sn->file);
     free(sn->col_mask);

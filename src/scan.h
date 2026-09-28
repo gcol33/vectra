@@ -18,8 +18,7 @@ typedef struct {
     uint32_t       last_rg;        /* exclusive upper bound when last_rg_set */
     int            last_rg_set;    /* 1 = last_rg is authoritative (0 is a valid bound) */
     int            rg_range_set;   /* 1 = binary search narrowed the range */
-    VecExpr       *predicate;      /* pushed-down filter predicate (NULL = none) */
-    int            pred_borrowed;  /* 1 = don't free predicate (owned by filter node) */
+    VecExpr       *predicate;      /* owned row-group pruning predicate (NULL = none) */
     TombstoneSet  *tombstone;      /* deleted rows (NULL = no deletions) */
     int64_t        rg_row_base;    /* physical row index of first row in current rg */
     VtrIndex      *index;          /* persistent hash index (NULL = none) */

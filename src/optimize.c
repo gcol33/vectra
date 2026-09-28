@@ -11,6 +11,7 @@
 #include "concat.h"
 #include "expr.h"
 #include "schema.h"
+#include "coerce.h"
 #include "error.h"
 #include <stdlib.h>
 #include <string.h>
@@ -82,6 +83,83 @@ static void prune_scan(ScanNode *sn, const uint8_t *parent_needed,
     }
 }
 
+/* Remove the project entries the parent does not read, so the columns only they
+   referenced are no longer demanded from the child. Entries are evaluated in
+   order and an expression may name an earlier entry's output, so an entry is
+   kept when the parent needs it or a kept later expression names it (a name
+   that resolves to a child column instead only makes the entry survive
+   needlessly). At least one entry is kept so batches still carry their row
+   count: a pass-through if there is one, else the first entry, which cannot
+   depend on an earlier one. */
+static void project_drop_unneeded(ProjectNode *pn, const uint8_t *parent_needed,
+                                  int parent_ncols) {
+    int n = pn->n_entries;
+    if (n == 0 || parent_ncols != n) return;
+
+    uint8_t *keep = (uint8_t *)calloc((size_t)n, 1);
+    char **names = (char **)malloc((size_t)n * sizeof(char *));
+    for (int i = 0; i < n; i++) names[i] = pn->entries[i].output_name;
+
+    for (int i = n - 1; i >= 0; i--) {
+        if (parent_needed[i]) keep[i] = 1;
+        if (keep[i] && pn->entries[i].expr && i > 0)
+            vec_expr_collect_colrefs(pn->entries[i].expr, names, i, keep);
+    }
+    free(names);
+
+    int n_keep = 0;
+    for (int i = 0; i < n; i++) n_keep += keep[i];
+    if (n_keep == n) { free(keep); return; }
+    if (n_keep == 0) {
+        int pick = 0;
+        for (int i = 0; i < n; i++)
+            if (!pn->entries[i].expr) { pick = i; break; }
+        keep[pick] = 1;
+        n_keep = 1;
+    }
+
+    ProjEntry *kept = (ProjEntry *)malloc((size_t)n_keep * sizeof(ProjEntry));
+    char **out_names = (char **)malloc((size_t)n_keep * sizeof(char *));
+    VecType *out_types = (VecType *)malloc((size_t)n_keep * sizeof(VecType));
+    const VecSchema *old = &pn->base.output_schema;
+    int j = 0;
+    for (int i = 0; i < n; i++) {
+        if (keep[i]) {
+            kept[j] = pn->entries[i];
+            out_names[j] = pn->entries[i].output_name;
+            out_types[j] = old->col_types[i];
+            j++;
+        } else {
+            free(pn->entries[i].output_name);
+            vec_expr_free(pn->entries[i].expr);
+        }
+    }
+    VecSchema schema = vec_schema_create(n_keep, out_names, out_types);
+    vec_schema_free(&pn->base.output_schema);
+    pn->base.output_schema = schema;
+    free(pn->entries);
+    pn->entries = kept;
+    pn->n_entries = n_keep;
+    free(out_names);
+    free(out_types);
+    free(keep);
+}
+
+/* Output schema of a concat: the first child's names, types widened to the
+   common type across children, as concat_node_create builds it. */
+static void concat_sync_schema(ConcatNode *cn) {
+    VecSchema s = vec_schema_copy(&cn->children[0]->output_schema);
+    for (int i = 1; i < cn->n_children; i++) {
+        const VecSchema *cs = &cn->children[i]->output_schema;
+        for (int c = 0; c < s.n_cols && c < cs->n_cols; c++)
+            if (s.col_types[c] != cs->col_types[c])
+                s.col_types[c] = vec_common_type(s.col_types[c],
+                                                 cs->col_types[c]);
+    }
+    vec_schema_free(&cn->base.output_schema);
+    cn->base.output_schema = s;
+}
+
 static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
                             int parent_ncols) {
     const char *kind = node->kind ? node->kind : "";
@@ -124,26 +202,22 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
         return;
     }
 
-    /* ---- Project: map output needs to child column refs ---- */
+    /* ---- Project: drop unneeded entries, map the rest to child refs ---- */
     if (strcmp(kind, "ProjectNode") == 0) {
         ProjectNode *pn = (ProjectNode *)node;
+        project_drop_unneeded(pn, parent_needed, parent_ncols);
+
         const VecSchema *cs = &pn->child->output_schema;
         int cn = cs->n_cols;
         uint8_t *child_needed = (uint8_t *)calloc((size_t)cn, 1);
 
-        /* Mark child columns needed by ALL project entries.
-         * We can't skip entries because the project node will try to
-         * look up pass-through columns even if the parent doesn't need them. */
         for (int i = 0; i < pn->n_entries; i++) {
             ProjEntry *pe = &pn->entries[i];
-            if (!pe->expr) {
+            if (!pe->expr)
                 mark_needed(pe->output_name, cs, child_needed);
-            } else {
-                /* Expression entry: also mark the column if it's a col_ref
-                 * (rename case), plus any nested column references */
+            else
                 vec_expr_collect_colrefs(pe->expr, cs->col_names,
                                          cn, child_needed);
-            }
         }
 
         propagate_cols(pn->child, child_needed, cn);
@@ -277,6 +351,8 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
         for (int w = 0; w < wn->n_wins; w++) {
             if (wn->win_specs[w].input_col)
                 mark_needed(wn->win_specs[w].input_col, cs, child_needed);
+            if (wn->win_specs[w].order_col)
+                mark_needed(wn->win_specs[w].order_col, cs, child_needed);
         }
 
         propagate_cols(wn->child, child_needed, cn);
@@ -337,12 +413,8 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
         ConcatNode *cn = (ConcatNode *)node;
         for (int i = 0; i < cn->n_children; i++)
             propagate_cols(cn->children[i], parent_needed, parent_ncols);
-        /* Sync output schema with first child (children may have been pruned) */
-        if (cn->children[0]->output_schema.n_cols != cn->base.output_schema.n_cols) {
-            vec_schema_free(&cn->base.output_schema);
-            cn->base.output_schema = vec_schema_copy(
-                &cn->children[0]->output_schema);
-        }
+        if (cn->children[0]->output_schema.n_cols != cn->base.output_schema.n_cols)
+            concat_sync_schema(cn);
         return;
     }
 
@@ -351,69 +423,250 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
 
 /* ---- Predicate pushdown ----
  *
- * If a FilterNode sits directly above a ScanNode that has per-rowgroup
- * column statistics (vtr v3), attach the predicate to the scan node so
- * it can skip entire row groups.
+ * A filter keeps running where the user wrote it; what moves down is a
+ * row-group pruning copy of its predicate, handed to every .vtr scan the
+ * filter's rows come from, so zone maps, binary search and .vtri indexes apply
+ * whatever sits in between. The scan only skips row groups with it, so the copy
+ * need only be implied by the predicate, never equal to it: it keeps the parts
+ * a scan can evaluate against statistics (AND / OR of `col <cmp> literal` and
+ * `col %in% set`), drops an AND conjunct it cannot keep (dropping one weakens
+ * the predicate, which is sound) and gives up an OR or a negation it cannot
+ * keep whole.
+ *
+ * The copy descends through nodes that pass rows unchanged in value and only
+ * drop or reorder them in ways the filter above would not undo: projections
+ * (column references are renamed to the child's names; a reference to a
+ * computed column makes its conjunct unpushable), filters, sorts, and concats
+ * (one copy per input whose referenced columns carry the concat's own types).
+ * It stops at limits, top-n, windows, aggregates and joins, where removing
+ * input rows changes the rows or values that come out.
  */
+
+static int is_prunable_lit(const VecExpr *e) {
+    return e && (e->kind == EXPR_LIT_INT64 || e->kind == EXPR_LIT_DOUBLE ||
+                 e->kind == EXPR_LIT_STRING);
+}
+
+static char *dup_str(const char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char *d = (char *)malloc(n);
+    if (!d) vectra_error("alloc failed in optimizer");
+    memcpy(d, s, n);
+    return d;
+}
+
+/* Copy of one node: every scalar field, and of the owned pointers only the
+   ones a pruning node uses (column name, string literal, %in% set). Children
+   are attached by the caller. */
+static VecExpr *copy_node(const VecExpr *e) {
+    VecExpr *c = vec_expr_alloc(e->kind);
+    *c = *e;
+    c->col_name = NULL; c->lit_str = NULL;
+    c->left = c->right = c->operand = NULL;
+    c->cond = c->then_expr = c->else_expr = NULL;
+    c->set_dbl = NULL; c->set_i64 = NULL; c->set_str = NULL;
+    c->gsub_pattern = c->gsub_replacement = NULL;
+    c->children = NULL; c->n_children = 0;
+    c->paste_sep = NULL;
+
+    c->col_name = dup_str(e->col_name);
+    c->lit_str = dup_str(e->lit_str);
+    if (e->kind == EXPR_IN) {
+        size_t n = (size_t)(e->n_set > 0 ? e->n_set : 0);
+        if (e->set_dbl) {
+            c->set_dbl = (double *)malloc(n * sizeof(double) + 1);
+            if (!c->set_dbl) vectra_error("alloc failed in optimizer");
+            memcpy(c->set_dbl, e->set_dbl, n * sizeof(double));
+        }
+        if (e->set_i64) {
+            c->set_i64 = (int64_t *)malloc(n * sizeof(int64_t) + 1);
+            if (!c->set_i64) vectra_error("alloc failed in optimizer");
+            memcpy(c->set_i64, e->set_i64, n * sizeof(int64_t));
+        }
+        if (e->set_str) {
+            c->set_str = (char **)calloc(n + 1, sizeof(char *));
+            if (!c->set_str) vectra_error("alloc failed in optimizer");
+            for (size_t i = 0; i < n; i++) c->set_str[i] = dup_str(e->set_str[i]);
+        }
+    }
+    return c;
+}
+
+static VecExpr *make_bool(char op, VecExpr *l, VecExpr *r) {
+    VecExpr *a = vec_expr_alloc(EXPR_BOOL);
+    a->op = op;
+    a->result_type = VEC_BOOL;
+    a->left = l;
+    a->right = r;
+    return a;
+}
+
+/* AND of two optional predicates (NULL = no constraint). */
+static VecExpr *and_opt(VecExpr *l, VecExpr *r) {
+    if (!l) return r;
+    if (!r) return l;
+    return make_bool('&', l, r);
+}
+
+/* OR of two optional predicates: a side with no constraint makes the whole
+   disjunction unconstrained. */
+static VecExpr *or_opt(VecExpr *l, VecExpr *r) {
+    if (!l || !r) { vec_expr_free(l); vec_expr_free(r); return NULL; }
+    return make_bool('|', l, r);
+}
+
+/* The pruning copy of `e` (see above), or NULL when nothing of it survives. */
+static VecExpr *prunable_copy(const VecExpr *e) {
+    if (!e) return NULL;
+    if (e->kind == EXPR_BOOL && (e->op == '&' || e->op == '|') &&
+        e->left && e->right) {
+        VecExpr *l = prunable_copy(e->left);
+        VecExpr *r = prunable_copy(e->right);
+        return e->op == '&' ? and_opt(l, r) : or_opt(l, r);
+    }
+    if (e->kind == EXPR_CMP && e->left && e->right &&
+        ((e->left->kind == EXPR_COL_REF && is_prunable_lit(e->right)) ||
+         (e->right->kind == EXPR_COL_REF && is_prunable_lit(e->left)))) {
+        VecExpr *c = copy_node(e);
+        c->left = copy_node(e->left);
+        c->right = copy_node(e->right);
+        return c;
+    }
+    if (e->kind == EXPR_IN && e->operand && e->operand->kind == EXPR_COL_REF) {
+        VecExpr *c = copy_node(e);
+        c->operand = copy_node(e->operand);
+        return c;
+    }
+    return NULL;
+}
+
+/* The column reference inside a pruning leaf. */
+static VecExpr *leaf_colref(const VecExpr *e) {
+    if (e->kind == EXPR_IN) return e->operand;
+    return e->left->kind == EXPR_COL_REF ? e->left : e->right;
+}
+
+/* Rewrite the pruning predicate `e` (owned) into the child column names of
+   `pn`, dropping what refers to a computed column. */
+static VecExpr *through_project(VecExpr *e, const ProjectNode *pn) {
+    if (e->kind == EXPR_BOOL) {
+        VecExpr *l = through_project(e->left, pn);
+        VecExpr *r = through_project(e->right, pn);
+        char op = e->op;
+        e->left = e->right = NULL;
+        vec_expr_free(e);
+        return op == '&' ? and_opt(l, r) : or_opt(l, r);
+    }
+
+    VecExpr *ref = leaf_colref(e);
+    const ProjEntry *hit = NULL;
+    int n_hits = 0;
+    for (int i = 0; i < pn->n_entries; i++)
+        if (strcmp(pn->entries[i].output_name, ref->col_name) == 0) {
+            hit = &pn->entries[i];
+            n_hits++;
+        }
+    const char *src = NULL;
+    if (n_hits == 1) {
+        if (!hit->expr)
+            src = hit->output_name;
+        else if (hit->expr->kind == EXPR_COL_REF)
+            src = hit->expr->col_name;
+    }
+    if (!src || vec_schema_find_col(&pn->child->output_schema, src) < 0) {
+        vec_expr_free(e);
+        return NULL;
+    }
+    if (strcmp(src, ref->col_name) != 0) {
+        char *renamed = dup_str(src);
+        free(ref->col_name);
+        ref->col_name = renamed;
+    }
+    return e;
+}
+
+/* 1 when every column `e` references has the same type in `have` as in
+   `want`. */
+static int refs_same_type(const VecExpr *e, const VecSchema *want,
+                          const VecSchema *have) {
+    if (e->kind == EXPR_BOOL)
+        return refs_same_type(e->left, want, have) &&
+               refs_same_type(e->right, want, have);
+    const VecExpr *ref = leaf_colref(e);
+    int wi = vec_schema_find_col(want, ref->col_name);
+    int hi = vec_schema_find_col(have, ref->col_name);
+    return wi >= 0 && hi >= 0 && want->col_types[wi] == have->col_types[hi];
+}
+
+/* Hand the pruning predicate `pred` (owned) to the scans below `node`. */
+static void push_into(VecNode *node, VecExpr *pred) {
+    if (!pred) return;
+    const char *kind = node->kind ? node->kind : "";
+
+    if (strcmp(kind, "ScanNode") == 0) {
+        ScanNode *sn = (ScanNode *)node;
+        sn->predicate = and_opt(sn->predicate, pred);
+        return;
+    }
+    if (strcmp(kind, "ProjectNode") == 0) {
+        ProjectNode *pn = (ProjectNode *)node;
+        push_into(pn->child, through_project(pred, pn));
+        return;
+    }
+    if (strcmp(kind, "FilterNode") == 0) {
+        push_into(((FilterNode *)node)->child, pred);
+        return;
+    }
+    if (strcmp(kind, "SortNode") == 0) {
+        push_into(((SortNode *)node)->child, pred);
+        return;
+    }
+    if (strcmp(kind, "ConcatNode") == 0) {
+        ConcatNode *cn = (ConcatNode *)node;
+        for (int i = 0; i < cn->n_children; i++)
+            if (refs_same_type(pred, &cn->base.output_schema,
+                               &cn->children[i]->output_schema))
+                push_into(cn->children[i], prunable_copy(pred));
+        vec_expr_free(pred);
+        return;
+    }
+    vec_expr_free(pred);
+}
 
 static void pushdown_predicates(VecNode *node) {
     const char *kind = node->kind ? node->kind : "";
 
     if (strcmp(kind, "FilterNode") == 0) {
         FilterNode *fn = (FilterNode *)node;
-
-        /* tdc files always carry per-rowgroup column stats, so push the
-           predicate to the scan as long as it doesn't already have one. */
-        if (fn->child->kind && strcmp(fn->child->kind, "ScanNode") == 0) {
-            ScanNode *sn = (ScanNode *)fn->child;
-            if (!sn->predicate) {
-                sn->predicate = fn->predicate;
-                sn->pred_borrowed = 1;  /* don't free on scan cleanup */
-            }
+        if (!fn->pushed_down) {
+            fn->pushed_down = 1;
+            push_into(fn->child, prunable_copy(fn->predicate));
         }
-
-        /* Recurse into child */
         pushdown_predicates(fn->child);
         return;
     }
 
-    /* Recurse into children */
-    VecNode *children[16];
-    int n_children = 0;
-
     if (strcmp(kind, "ProjectNode") == 0) {
-        children[0] = ((ProjectNode *)node)->child;
-        n_children = 1;
+        pushdown_predicates(((ProjectNode *)node)->child);
     } else if (strcmp(kind, "SortNode") == 0) {
-        children[0] = ((SortNode *)node)->child;
-        n_children = 1;
+        pushdown_predicates(((SortNode *)node)->child);
     } else if (strcmp(kind, "LimitNode") == 0) {
-        children[0] = ((LimitNode *)node)->child;
-        n_children = 1;
+        pushdown_predicates(((LimitNode *)node)->child);
     } else if (strcmp(kind, "TopNNode") == 0) {
-        children[0] = ((TopNNode *)node)->child;
-        n_children = 1;
+        pushdown_predicates(((TopNNode *)node)->child);
     } else if (strcmp(kind, "GroupAggNode") == 0) {
-        children[0] = ((GroupAggNode *)node)->child;
-        n_children = 1;
+        pushdown_predicates(((GroupAggNode *)node)->child);
     } else if (strcmp(kind, "WindowNode") == 0) {
-        children[0] = ((WindowNode *)node)->child;
-        n_children = 1;
+        pushdown_predicates(((WindowNode *)node)->child);
     } else if (strcmp(kind, "JoinNode") == 0) {
-        JoinNode *jn = (JoinNode *)node;
-        children[0] = jn->left;
-        children[1] = jn->right;
-        n_children = 2;
+        pushdown_predicates(((JoinNode *)node)->left);
+        pushdown_predicates(((JoinNode *)node)->right);
     } else if (strcmp(kind, "ConcatNode") == 0) {
         ConcatNode *cn = (ConcatNode *)node;
-        int show = cn->n_children < 16 ? cn->n_children : 16;
-        for (int i = 0; i < show; i++)
-            children[i] = cn->children[i];
-        n_children = show;
+        for (int i = 0; i < cn->n_children; i++)
+            pushdown_predicates(cn->children[i]);
     }
-
-    for (int i = 0; i < n_children; i++)
-        pushdown_predicates(children[i]);
 }
 
 void vec_optimize(VecNode *root) {
