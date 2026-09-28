@@ -1,0 +1,489 @@
+---
+title: "vectra: Larger-than-Memory Tabular and Spatial Analysis in R"
+date: "2026-09-28"
+abstract: >
+  Many analyses in ecology and other data-rich fields start from tables that
+  do not fit in the memory of the computer running R, and end with a model or
+  summary small enough to inspect. The \CRANpkg{vectra} package connects the
+  two within R. It combines a pull-based columnar query engine written in C,
+  a compressed on-disk format with per-row-group statistics, streaming spatial
+  operations built on GEOS, and interfaces that pass query results to R
+  functions and model-fitting routines one batch or one partition at a time.
+  This paper describes how the engine executes a query and states, for each
+  class of operation, what it holds in memory and what it writes to disk. It
+  then measures elapsed time, peak memory, and temporary disk use against
+  \CRANpkg{arrow}, \CRANpkg{duckdb}, and \CRANpkg{data.table} as workloads
+  grow. A case study follows 401 million European vascular-plant occurrence
+  records from GBIF through cleaning, a join to climate data, and per-region
+  models of how geographical range size relates to climatic niche breadth.
+draft: true
+author:
+  - name: Gilles Colling
+    affiliation: University of Vienna
+    address:
+    - Department of Botany and Biodiversity Research
+    - Division of BioInvasions, Global Change & Macroecology
+    - Rennweg 14, 1030 Vienna, Austria
+    url: https://gillescolling.com
+    orcid: 0000-0003-3070-6066
+    email: gilles.colling051@gmail.com
+type: package
+output:
+  rjtools::rjournal_article:
+    self_contained: yes
+    toc: no
+bibliography: vectra.bib
+header-includes:
+  - \renewcommand{\thesection}{\arabic{section}}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = "center", out.width = "100%")
+library(ggplot2)
+knitr::opts_knit$set(root.dir = normalizePath("."))
+source("scripts/results.R")   # loads the measured results; defines B(), fmt()
+```
+
+# Introduction {#sec:intro}
+
+Occurrence records, vegetation plots, telemetry fixes, and remote-sensing
+extracts share a practical property: the raw table is large, the analytical
+result is small, and most of the work between them is filtering, joining,
+grouping, and reshaping. A European extract of vascular-plant records from
+the Global Biodiversity Information Facility [GBIF, @gbif2026snapshot] holds
+about 400 million rows. Loaded as an R data frame with a dozen columns it
+would need more than 30 GB of memory, while the species-level table that a
+macroecological model uses has a few tens of thousands of rows. The question
+for the analyst is how to get from one to the other on the computer at hand.
+
+R offers several answers, each covering part of this path. \CRANpkg{data.table}
+[@datatable] makes in-memory manipulation fast and memory-frugal, but the
+table has to fit in memory. \CRANpkg{arrow} [@arrow] and \CRANpkg{duckdb}
+[@duckdb; @raasveldt2019duckdb] bring columnar query engines to R. Both accept
+\CRANpkg{dplyr} verbs [@dplyr], through arrow's own bindings and through
+\CRANpkg{dbplyr} [@dbplyr] or \CRANpkg{duckplyr} [@duckplyr]. Both read
+Parquet files [@parquet] larger than memory, and DuckDB spills sorts,
+aggregations, and joins to disk. Earlier packages such as \CRANpkg{ff}
+[@ff], \CRANpkg{bigmemory} [@bigmemory], and \CRANpkg{disk.frame}
+[@diskframe] provide file-backed vectors and chunked data frames.
+\CRANpkg{biglm} [@biglm] fits linear and generalised linear models in
+bounded memory from data supplied in chunks. For spatial data,
+\CRANpkg{sf} [@sf] and \CRANpkg{terra} [@terra] are the standard vector and
+raster tools. Both assume that the working layer, or at least the part of it
+being processed, is in memory.
+
+The gaps sit at the joins between these tools. A query engine returns its
+result to R in one piece, so an analysis whose next step is an R function
+(a model fit, a custom summary, a per-group computation) either collects a
+result that may itself be too large, or writes glue code that pages through
+the result. Spatial operations on hundreds of millions of points leave the
+query engine for a spatial package that holds its input in memory. And the
+memory an analysis needs is rarely stated per operation, so users find out
+whether a pipeline fits by running it.
+
+\CRANpkg{vectra} [@vectra] addresses these gaps from inside R. It is an R
+extension with a query engine written in C11, reached through R's `.Call()`
+interface [@rext]. It provides dplyr-style verbs over a lazy query plan, a
+compressed columnar file format (`.vtr`), streaming readers for CSV, SQLite,
+and GeoTIFF, geometry operations on the GEOS C API [@geos] supplied by
+\CRANpkg{libgeos} [@libgeos], and interfaces that hand a query result to R
+one batch (`collect_chunked()`, `chunk_feeder()`) or one on-disk partition
+(`offload()`, `group_map()`) at a time. The package has been on CRAN since
+2026, and \CRANpkg{taxify} [@taxify] depends on it.
+
+This paper makes three contributions:
+
+1. **A computational design.** It shows how lazy tabular queries, streaming
+   spatial operations, and incremental or partitioned model fitting connect
+   through three mechanisms: batches, disk-backed intermediate results, and
+   partitions (Sections \@ref(sec:example) and \@ref(sec:design)).
+2. **An account of resource use.** For each class of operation it states
+   what is held in memory, what spills to disk, and which quantity of the
+   data (input rows, distinct groups, build-side rows, partition size, result
+   size) sets the peak (Section \@ref(sec:memory)).
+3. **An evaluation and a worked analysis.** It measures these claims against
+   arrow, DuckDB, and data.table on a machine with 8 GB of memory
+   (Section \@ref(sec:eval)). It then carries 401 million GBIF records through
+   to a fitted macroecological model and reports the scientific result
+   alongside its computational cost (Section \@ref(sec:case)).
+
+Section \@ref(sec:discussion) discusses which workloads the measurements
+support using vectra for, where its semantics and resource bounds stop, and
+what its storage and dependency choices imply.
+
+# A working analysis with vectra {#sec:example}
+
+The example below is a condensed form of the case study in
+Section \@ref(sec:case). It starts from a `.vtr` file of occurrence records,
+attaches a climate value to each record through a grid-cell key, reduces the
+records to one row per species and cell, and fits a model per European
+region. File names are shortened; the complete scripts are in the
+supplementary material.
+
+```{r example, echo = TRUE, eval = FALSE}
+library(vectra)
+
+# 1. Open the records lazily. Nothing is read yet.
+rec <- tbl("records.vtr")
+
+# 2. Describe the cleaning step. Verbs build a plan; still nothing is read.
+clean <- rec |>
+  filter(occurrencestatus == "PRESENT", taxonrank == "SPECIES",
+         is.na(unc) | unc <= 10000, year >= 1950) |>
+  mutate(cell = floor((72 - lat) * 6) * 420 + floor((lon + 25) * 6)) |>
+  select(specieskey, cell, datasetkey)
+
+# 3. Execute: the plan runs batch by batch and the result streams to disk.
+write_vtr(clean, "clean.vtr")
+
+# 4. A second pipeline: one row per species and grid cell, joined to a
+#    small table of cell attributes (climate, region, area).
+tbl("clean.vtr") |>
+  group_by(specieskey, cell) |>
+  summarise(n = n(), n_ds = n_distinct(datasetkey)) |>
+  inner_join(tbl("cells.vtr"), by = "cell") |>
+  write_vtr("occ_env.vtr")
+
+# 5. Split the occupancy table on disk by region, then run arbitrary R on
+#    each region's shard, which is read into memory on its own.
+p <- offload(tbl("occ_env.vtr"), by = "region")
+fits <- group_modify(p, function(d, region) fit_one(species_table(d)))
+```
+
+Three things about this code matter for what follows. First, the verbs do
+not compute anything. `tbl()` returns a `vectra_node`, a reference to a plan
+tree held in C, and every verb wraps that tree in a new node. Computation
+happens only at a *terminal* operation, which pulls data through the plan:
+`collect()` returns a data frame, `write_vtr()`, `write_csv()`, and
+`write_sqlite()` stream to a file, `collect_chunked()` folds an R function
+over the batches, `chunk_feeder()` exposes the result as a resettable
+generator, and `offload()` materialises the result to disk as a replayable
+node or a set of partitions. A node is consumed by the terminal operation
+that runs it, so a plan that will be read twice is either rebuilt or
+offloaded.
+
+Second, `explain()` prints the optimised plan without running it, so the
+memory a pipeline needs can be read before it runs. Section
+\@ref(sec:design) follows one plan in detail.
+
+Third, the example never holds the record table in R. Steps 3 and 4 write
+their results to disk, and step 5 reads one region's shard at a time. The
+largest object in R memory is one shard of the occupancy table, which is
+orders of magnitude smaller than the record table.
+<!-- TODO(case study): give the largest shard's row count once 05_models.R has run. -->
+
+# Execution and storage design {#sec:design}
+
+## Plans, batches, and pull-based execution
+
+A vectra plan is a tree of nodes. Each node implements a `next_batch()`
+function and a destructor, following the iterator model of query evaluation
+[@graefe1994volcano]. A terminal operation calls `next_batch()` on the root.
+The root calls its child, and so on down to a scan, which reads one row group
+from its source and returns it as a *batch*. The batch then passes back up
+the tree, transformed at each node. Batches are columnar. Each column is a
+typed array (64-bit integer, double, logical, or string) with a validity
+bitmap for missing values, and whole columns are processed at a time rather
+than one row at a time [@boncz2005monetdb]. A filter does not copy the rows
+it keeps. It attaches a *selection vector* of row indices to the batch,
+which downstream nodes read through. The batch size is set by the source:
+the row-group size of a `.vtr` file (131,072 rows by default), 65,536 rows
+for CSV and SQLite scans, and 256 raster rows for GeoTIFF scans.
+
+Expressions in `filter()`, `mutate()`, and `summarise()` are captured in R,
+serialised into a small expression tree, and evaluated in C. This covers
+arithmetic, comparison and logical operators, `%in%`, `if_else()`,
+`case_when()`, `coalesce()`, date-time components, string functions
+(including regular expressions and edit distances), and geometry predicates
+and measures (`st_area()`, `st_intersects()`, and others) computed with GEOS
+on a hex-encoded well-known-binary (WKB) geometry column. Expensive per-row
+operations such as regular expressions, string distances, and geometry
+predicates run in parallel with OpenMP once a batch passes a size threshold.
+A function the engine does not know is an error, not a silent fallback to R.
+
+The verbs are S3 methods on `vectra_node` for generics that vectra defines
+itself. vectra is not a dplyr backend and does not import dplyr. Column
+selection (`select()`, `rename()`, `relocate()`, `across()`) goes through
+\CRANpkg{tidyselect} [@tidyselect], and argument capture through
+\CRANpkg{rlang} [@rlang].
+
+## The optimiser
+
+Before execution, two rewrites run over the plan. *Predicate pushdown*
+attaches a filter that sits directly above a `.vtr` scan to the scan itself.
+The scan can then skip whole row groups in three ways. It can use a hash
+index (a `.vtri` sidecar file) for equality and `%in%` predicates. It can
+binary-search a column recorded as sorted. And it can use per-row-group
+minimum, maximum, and null-count statistics, which are a form of zone map
+[@moerkotte1998sma]. *Column pruning* walks the tree from the root and marks
+the columns each node needs, so that a `.vtr` scan decodes only those. The
+optimiser also inserts hidden projections for nested aggregate expressions
+such as `mean(x * y)`.
+
+Both rewrites are local. Pushdown applies only to a filter immediately above
+a scan. A filter placed after a `mutate()`, or above a `bind_rows()` of
+several files, is evaluated row by row on every batch. Column pruning stops
+at a `mutate()`, because the projection it creates passes every existing
+column through. Section \@ref(sec:eval) measures what these limits cost.
+
+## Following one query
+
+```{r plan-setup, include = FALSE}
+library(vectra)
+set.seed(1)
+f_obs <- tempfile(fileext = ".vtr"); f_site <- tempfile(fileext = ".vtr")
+obs <- data.frame(site = sample(sprintf("S%03d", 1:200), 2e5, TRUE),
+                  species = sample(sprintf("sp%04d", 1:500), 2e5, TRUE),
+                  year = sample(1990:2024, 2e5, TRUE), cover = runif(2e5, 0, 100),
+                  observer = sample(letters, 2e5, TRUE), flag = runif(2e5))
+obs <- obs[order(obs$year), ]
+write_vtr(obs, f_obs, batch_size = 20000)
+write_vtr(data.frame(site = sprintf("S%03d", 1:200),
+                     region = sample(c("N", "S", "E", "W"), 200, TRUE)), f_site)
+```
+
+Consider a table of plot observations stored in ten row groups, sorted by
+year, and a small table of site attributes. The query keeps the observations
+from 2015 onward, attaches each site's region, and computes mean cover per
+region and species:
+
+```{r plan, echo = TRUE}
+q <- tbl(f_obs) |>
+  filter(year >= 2015) |>
+  select(site, species, cover) |>
+  left_join(tbl(f_site), by = "site") |>
+  group_by(region, species) |>
+  summarise(n = n(), mean_cover = mean(cover))
+explain(q)
+```
+
+Reading the plan from the leaves upwards shows where work and memory go. The
+observation scan reads 4 of its 6 columns (`year` for the filter and the
+three selected columns) and carries the pushed-down predicate. Because the
+file is sorted by year, the row-group statistics exclude row groups that end
+before 2015 without reading them (the annotation `tdc stats` marks a scan
+that has these statistics). The filter and projection stream: each
+batch passes through and is released. The join's right-hand (*build*) side,
+200 sites, is read into a hash table before the first observation batch
+arrives. The observations are the *probe* side and stream past it. The
+grouped aggregation is preceded by a sort node that the engine inserts
+itself: every grouped `summarise()` sorts its input by the grouping keys and
+then aggregates one group at a time. This makes the number of groups
+irrelevant to memory, at the cost of sorting even when there are only a few
+groups (Section \@ref(sec:memory)).
+
+## The `.vtr` format
+
+A `.vtr` file is a sequence of row groups. Each column of each row group is
+stored as one self-describing compressed block, written by the \pkg{tdc}
+codec library [@tdc] that is vendored into the package. The file ends with an
+index of row groups that records each block's offset, size, and statistics
+(minimum, maximum, null count), followed by a 24-byte trailer holding a
+64-bit digest of the file's bytes. A scan reads the index once, then reads
+only the blocks of the columns and row groups it needs. By default each block
+is byte-shuffled and LZ-compressed. With `compress = "small"` the writer
+trial-encodes each block with several models (delta, dictionary, sparse,
+floating-point prediction) and entropy coders and keeps the smallest. String columns are dictionary-encoded, so
+`collect()` creates each distinct string once rather than once per row.
+Dates, date-times with their time zone, and factors with their levels round
+trip through column annotations.
+
+Stores can grow without being rewritten. `append_vtr()` adds row groups, or
+columns, after the existing data and rewrites only the index and trailer, so
+building a store by repeated appends costs time linear in the rows written.
+`delete_vtr()` records deleted rows in a sidecar tombstone file.
+`create_index()` builds a hash index with one entry per distinct key and row
+group. The index is stamped with the store's row count and digest, so an
+index left over from a replaced store is ignored rather than used to prune
+row groups that no longer match.
+
+## Where results go
+
+Table \@ref(tab:sinks-tab) lists the ways a query result leaves the engine. The
+distinction that matters for memory is whether the result is materialised in
+R as a whole, in pieces, or not at all.
+
+```{r sinks-tab}
+sinks <- data.frame(
+  Interface = c("collect(), collect_sf(), pull()", "write_vtr(), write_csv(), write_sqlite(), write_tiff()",
+                "collect_chunked(x, f, .init)", "chunk_feeder(source)",
+                "offload(x)", "offload(x, by = key)", "group_map(), group_modify()"),
+  `Result in R` = c("whole result", "none", "one batch + accumulator", "one batch",
+                    "none (spilled to .vtr)", "none (one .vtr run set per key)",
+                    "one partition at a time"),
+  `Typical use` = c("small results: summaries, subsets", "large results, format conversion",
+                    "one-pass reductions: counts, X'X and X'y", "iterative fits: biglm::bigglm()",
+                    "replay a prepared query across passes", "localise within-group dependence",
+                    "per-group models or custom code"),
+  check.names = FALSE)
+ktab(sinks, "Terminal operations and what each holds in R memory.", widths = c("5.2cm", "3.6cm", "5.2cm"))
+```
+
+`collect_chunked()` is a left fold: it calls `f(acc, chunk)` on each batch
+in turn, so any reduction with a bounded accumulator (a count, a histogram,
+sufficient statistics) runs in one pass. With a `combine` function it also
+folds a partition shard by shard and merges the results. `chunk_feeder()`
+follows the `data(reset)` protocol of `biglm::bigglm()`. The model can
+therefore drive the iteration itself and re-read the data on each pass of
+iteratively reweighted least squares [@mccullagh1989glm; @miller1992].
+Because a plan is consumed when it runs, `chunk_feeder()` takes either a
+function that rebuilds the plan or an offloaded node. `offload(x)` writes the
+result of `x` to a temporary `.vtr` file once and returns a node that replays
+it, so each model pass reads the prepared columns instead of re-running the
+upstream joins. `offload(x, by = key)` writes one set of run files per key
+value, per value range, or per hash bucket. `group_map()` then reads each
+shard into a data frame and calls an arbitrary R function on it.
+
+## Spatial operations
+
+vectra has no geometry type. A geometry travels as a hex-encoded WKB string
+in an ordinary column, and point data may instead be given as two coordinate
+columns. The streaming spatial verbs, `spatial_join()`, `spatial_filter()`,
+`spatial_clip()`, and `spatial_map()` among others, differ from the tabular
+verbs in one respect: they execute when called. Each pulls its input batch
+by batch, processes the batch, buffers the output in R, and writes it to
+temporary `.vtr` run files once the buffer passes one eighth of the memory
+budget. It then returns a lazy node over those files. For recognised
+predicates on planar coordinates, `spatial_join()` and `spatial_filter()`
+parse the resident right-hand layer once into GEOS prepared geometries
+indexed by an STR tree. Each batch is then tested in C, in parallel, without
+converting it to an \pkg{sf} object. Other predicates, and geographic
+coordinates with spherical geometry enabled, fall back to calling
+`sf::st_join()` on each decoded batch. When both layers are too large to hold
+in memory, `spatial_join(partition = grid(cellsize))` bins both layers to a
+regular grid and joins one cell at a time. Raster data enter as tables
+(`tbl_tiff()` yields one row per pixel), through point extraction
+(`tiff_extract_points()`), or through the tiled `.vec` raster format with
+strip-wise `zonal()`, `focal()`, `terrain()`, and `warp()`. The spatial verbs
+need \pkg{sf} for CRS handling and for the fallback path, so \pkg{sf} is a
+suggested dependency that becomes a requirement as soon as they are used.
+
+# Memory requirements of analytical operations {#sec:memory}
+
+Every operation in a vectra plan belongs to one of six classes, according to
+what it must retain between batches (Table \@ref(tab:memclass-tab)). All
+buffering subsystems derive their limit from a single budget, `vectra_mem()`.
+It is set with `options(vectra.memory = "4GB")` and defaults to half of the
+physical memory.
+
+```{r memclass-tab}
+mc <- data.frame(
+  Class = c("Streaming", "Bounded by output parameter", "Budgeted, spills to disk",
+            "Partitioned", "Resident comparison side", "Materialised in R"),
+  Operations = c("scans; filter(), select(), mutate(), slice_head(); bind_rows(); write_*(); collect_chunked(); chunk_feeder()",
+                 "slice_min() / slice_max() with with_ties = FALSE",
+                 "arrange(); grouped summarise() incl. median() and n_distinct(); window functions; hash joins; interval and fuzzy joins; index builds",
+                 "offload(by =); group_map(); spatial_dissolve(); spatial_join(partition = grid())",
+                 "spatial_join(), spatial_filter(), spatial_clip() against an sf layer; materialize() blocks",
+                 "collect(), collect_sf(), pull(); fallbacks: slice_tail(), reframe(), ties in slice_min()"),
+  `Peak memory set by` = c("one batch (row-group size x columns)",
+                           "k rows",
+                           "vectra_mem() for the buffered state, plus one batch",
+                           "one shard (the largest partition), or the routing buffer",
+                           "the resident layer + one batch + output buffer (vectra_mem()/8)",
+                           "the size of the result"),
+  check.names = FALSE)
+ktab(mc, "Classes of operation by the state they retain between batches.", widths = c("2.6cm", "7cm", "4.4cm"))
+```
+
+**Streaming operations** retain nothing between batches, so their memory is
+one batch regardless of how many rows pass through. A pipeline built only
+from these, and ending in a file sink or a bounded fold, runs on any input
+that fits on disk.
+
+**Operations bounded by an output parameter.** `slice_min(x, n = k,
+with_ties = FALSE)` keeps a heap of the `k` best rows, so its state grows
+with `k`, not with the input.
+
+**Budgeted operations** must see all input before producing some output. In
+vectra they accumulate state up to `vectra_mem()` and then spill.
+
+- `arrange()` is an external merge sort [@knuth1998taocp3]. It accumulates
+  rows in column builders until their estimated size passes the budget,
+  sorts them, and writes a sorted run. At the end it merges the runs with a
+  heap. The number of runs merged at once is capped (at most 64), and is
+  sized from the measured row width so that the merge buffers stay within
+  half the budget. More runs are merged in several passes.
+- A grouped `summarise()` always goes through this sort, then aggregates one
+  group at a time. Memory therefore does not depend on the number of groups,
+  unlike a hash aggregation. `median()` and `n_distinct()` need every value
+  of a group and spill a single large group to disk as well.
+- Hash joins build the right-hand table in memory and stream the left. If
+  the build side exceeds the budget, both sides are hash-partitioned into 64
+  run files and joined one partition at a time, as in a Grace hash join
+  [@kitsuregawa1983grace; @shapiro1986join]. A partition that is still too
+  large is split again with a different hash, up to three levels. A
+  partition that cannot be split, because a single key value is too frequent,
+  is joined by a block-nested loop over budget-sized blocks.
+- Grouped window functions sort by group and row order and process one
+  group at a time, so they hold the largest group. Ungrouped windows stream
+  in one pass, after a sort when the function needs an ordering (ranks,
+  `lead()`). Interval joins sort both sides and sweep them, holding only the
+  intervals open at the current position.
+
+In this class the budget, not the data, sets the peak. Two qualifications
+apply. The budget bounds the engine's *estimate* of its buffered state. The
+sort that follows accumulation also needs working space, so peak process
+memory can exceed the budget (Section \@ref(sec:eval) measures by how much).
+And operations that spill trade memory for disk traffic: a sort that spills
+reads and writes its input at least once more.
+
+**Partitioned operations** make one pass that routes rows to per-key run
+files, then process one partition at a time. `offload(x, by = key)` first
+writes `x` to a temporary file. It then reads that file batch by batch and
+routes each batch's rows into per-key buffers held as R data frames,
+flushing them to run files when their combined size passes
+`vectra_mem() / 8`. The routing cost is therefore paid in R. It also
+produces one run file per key per flush, so a key with many values produces
+many small files. `group_map()` and `group_modify()` then load one shard at a
+time, and their peak is the largest shard as an R data frame.
+
+**Resident comparison sides.** A spatial join against an \pkg{sf} layer
+keeps that layer, its prepared geometries, and its spatial index in memory,
+together with one input batch and the output buffer.
+
+**Materialisation in R.** `collect()` returns the whole result as a data
+frame, and it is the only terminal operation whose memory grows with the
+result. It is safe for summaries and selective subsets. For results of
+roughly the input's size, a file sink or a fold is the bounded alternative.
+Its cost is not only the data. An R data frame stores each value in R's own
+representation (8 bytes per double, a pointer per string), so a collected
+result is usually larger than its compressed `.vtr` form. A few operations
+fall back to R and collect their input: `slice_tail()`, `reframe()`,
+`slice_min()` with `with_ties = TRUE` (the dplyr default), and `distinct()`
+with `.keep_all = TRUE` on a column subset.
+
+These classes compose. The memory of a pipeline is the sum over its
+simultaneously active stateful nodes, plus one batch per streaming stage.
+Because the stateful nodes share one budget knob rather than one budget, a
+plan with a sort and a spilling join can hold up to twice the budget.
+`explain()` marks each node as streaming or materialising, which is enough
+to find the nodes that count.
+
+```{r eval-section, child = "sections/evaluation.Rmd"}
+```
+
+```{r case-section, child = "sections/case-study.Rmd"}
+```
+
+```{r discussion-section, child = "sections/discussion.Rmd"}
+```
+
+# Computational details {#sec:details}
+
+The results in this paper were obtained with R `r R_VERSION` [@rcore] and
+vectra `r VECTRA_VERSION`, arrow `r ARROW_VERSION`, duckdb
+`r DUCKDB_VERSION`, data.table `r DT_VERSION`, sf `r SF_VERSION` (GEOS
+`r GEOS_VERSION`), and biglm `r BIGLM_VERSION`, on Ubuntu 24.04 in a virtual
+machine with two virtual CPUs (Intel Xeon, 2.1 GHz), 8 GB of memory, no
+swap, and local SSD storage. The benchmark harness, the case-study scripts,
+and the raw measurements are in the supplementary material and in the
+package repository at <https://github.com/gcol33/vectra>. vectra is
+available from CRAN at <https://CRAN.R-project.org/package=vectra>.
+
+# Acknowledgements
+
+<!-- TODO(Gilles): funding, colleagues, GBIF data publishers. -->
+We thank the data publishers who make their occurrence records available
+through GBIF.

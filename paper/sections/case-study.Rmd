@@ -1,0 +1,101 @@
+# Case study: range size and climatic niche breadth of European plants {#sec:case}
+
+## Question and data
+
+Species with broad environmental tolerances are expected to occupy larger
+geographical ranges. This is the niche-breadth hypothesis for range size
+[@brown1984abundance], and a meta-analysis found the relationship across
+most taxa and regions tested [@slatyer2013niche]. Testing it on
+occurrence data requires, for every species, its range size and the breadth
+of climate it occupies. Both are computed from all of the species' records,
+which for European vascular plants means several hundred million rows. Both
+also increase with the number of records, because a species recorded more
+often is found in more cells and in more extreme climates. Sampling effort
+is well known to be uneven across GBIF data [@beck2014bias; @meyer2015gbif],
+so it has to enter the model.
+
+The records come from the GBIF occurrence snapshot of 1 September 2026
+[@gbif2026snapshot], which GBIF distributes as Parquet files on public cloud
+storage. We selected the records of Tracheophyta whose country code is
+European, `r fmt(CS$n_records / 1e6, 1)` million rows, and kept
+`r CS$n_cols` columns: species key and name, coordinates, coordinate
+uncertainty, year, basis of record, occurrence status, taxon rank, country,
+and dataset key. Climate comes from WorldClim 2.1 [@fick2017worldclim] at 10
+arc-minutes: annual mean temperature (BIO1) and annual precipitation
+(BIO12). Country and region come from the Natural Earth 1:10m country
+polygons [@naturalearth], grouped into the four European subregions of the
+United Nations geoscheme that Natural Earth records.
+
+## Workflow
+
+The analysis has six stages, each a separate R script run in a fresh
+process (Table \@ref(tab:stages-tab)).
+
+0. **Acquisition** (outside vectra). A DuckDB query over the snapshot's
+   Parquet parts selected the rows and columns above and wrote them to
+   `r CS$n_raw_files` local Parquet files. In practice this step is a GBIF
+   download request, for example through \CRANpkg{rgbif}
+   [@chamberlain2025rgbif].
+1. **Ingest.** vectra does not read Parquet, so each file was read with
+   arrow and appended to a single `.vtr` store with `append_vtr()`.
+2. **Clean.** Records were kept if present, identified to species, collected
+   in or after 1950, with a coordinate uncertainty of at most 10 km or none
+   given, of an observation or specimen basis, and inside the climate grid.
+   Each record was assigned the key of the 10-arc-minute cell containing it,
+   computed from its coordinates in `mutate()`. The result streams to disk.
+3. **Cells.** The two climate layers were read with `tbl_tiff()` as tables of
+   pixels, given the same cell key, and joined. The cell centres were tagged
+   with country and region by `spatial_join()` against the country polygons,
+   dropping cells outside Europe. Each cell's area was computed from its
+   latitude.
+4. **Occupancy.** The cleaned records were reduced to one row per species and
+   cell (the number of records, the number of datasets, and the first and
+   last year), then joined to the cell table.
+5. **Models.** The occupancy table was partitioned on disk by region with
+   `offload(by = "region")`. `group_modify()` then read each region's shard
+   into R, reduced it to one row per species, and fitted a linear model. A
+   Europe-wide species table was computed in the engine with a grouped
+   `summarise()` and modelled the same way.
+
+For each species we computed range size as the summed area of occupied cells
+(km²). Niche breadth for temperature and for log precipitation is the
+standard deviation of the occupied cells' values. Within regions it was
+rarefied to 10 cells (the mean over 20 random draws of 10 occupied cells),
+so that breadth is measured at the same sample size for every species. The
+Europe-wide table uses the unrarefied standard deviation, which the engine
+computes in a grouped `summarise()`. We then fitted
+
+$$\log(\text{range}) = \beta_0 + \beta_T \log(\text{breadth}_T) +
+\beta_P \log(\text{breadth}_P) + \beta_n \log(n_\text{records}) + \varepsilon$$
+
+to species with at least 50 records in at least 10 cells. The coefficients
+$\beta_T$ and $\beta_P$ are elasticities: the proportional change in range
+size for a proportional change in niche breadth, at a given number of
+records.
+
+```{r stages-tab}
+st <- CS$stages
+if (!is.null(st)) {
+  knitr::kable(st, caption = "Resource use of the case-study stages. Each stage ran in a fresh R process on the 2-vCPU, 8-GB machine; peak memory is the maximum resident set size of the process; disk is the size of the stage's output.",
+               booktabs = TRUE, digits = 1)
+}
+```
+
+## Computational cost
+
+\textbf{TODO (pending run).} Stage 0 finished for 44 of the 122 source
+groups before the session stopped. Stages 1 to 5 have been tested
+end-to-end on a 0.87-million-record sample but not yet run on the full
+extract. Fill Table \@ref(tab:stages-tab) from `casestudy/stages.jsonl` and
+report the total time, peak memory per stage, and disk use.
+
+## Result
+
+\textbf{TODO (pending run).} Report $\beta_T$ and $\beta_P$ by region with
+95% intervals (the figure below), the number of species per region, and the
+comparison with the unrarefied Europe-wide model. Relate the sign and size
+of the elasticities to @slatyer2013niche.
+
+```{r fits-fig, fig.cap = CS$fig_caption, fig.width = 7, fig.height = 3.2, eval = !is.null(CS$fits)}
+source("scripts/fig_case.R")
+```

@@ -1,0 +1,113 @@
+# Discussion {#sec:discussion}
+
+## Workloads the measurements support
+
+The evaluation separates two kinds of pipeline, and the case for vectra
+differs between them.
+
+For **streaming pipelines**, which filter, derive, and select and then write
+to a file or fold the batches in R, vectra's peak memory stays near one batch
+regardless of input size. It was the lowest of the four tools on the collect
+and sink workloads, and it did not rise with input size (Section
+\@ref(sec:eval)). These are the pipelines that convert, clean, and subset
+large sources before any modelling. They also connect to R most directly,
+through `collect_chunked()` and `chunk_feeder()`, without an intermediate
+copy of the result.
+
+For **stateful relational work**, which groups, joins, and sorts,
+vectra completes these workloads within a configurable budget and spills
+beyond it. On this machine it was, however, consistently slower than DuckDB
+and arrow, and at its default budget it used more memory than both
+(Section \@ref(sec:eval)). The main cause is a design decision: every grouped
+aggregation passes through an external sort. That bounds memory
+independently of the number of groups, but it makes aggregation over a few
+groups cost as much as a sort of the aggregated columns. Where a pipeline is
+dominated by large aggregations or joins and needs to run many times, DuckDB
+is the faster engine. Where the table fits in memory, data.table remains
+the simplest fast option.
+
+The case for vectra is therefore not raw relational speed. It is a single
+engine, installed as an ordinary R package, that covers the whole path from
+a source file too large for R, through grouping, joins, and point-in-polygon
+operations on the same stream, to a model fitted by R code on batches or
+partitions, with a memory account for every step. The spatial benchmark is
+where this composition pays most directly. vectra tagged points with
+countries faster than DuckDB's spatial extension and with a fraction of the
+memory \pkg{sf} needed, and sf could not complete the largest point sets at
+all.
+
+## Semantic limits
+
+vectra implements dplyr-like verbs but is not a dplyr backend. Its generics
+mask dplyr's when both are attached, it covers a subset of the verbs, and
+it rejects expressions it cannot translate to its C evaluator rather than
+falling back to R. A few verbs (`slice_tail()`, `reframe()`, `slice_min()`
+with ties) do collect their input into R, and they are documented as doing
+so. Output order after grouping and joins is not guaranteed, as in SQL. A
+plan is consumed when it runs, which differs from arrow's and dbplyr's
+re-executable queries, and is the reason `offload()` and plan factories
+exist.
+
+The optimiser is deliberately small. Predicate pushdown applies only to a
+filter placed directly above a `.vtr` scan, and column pruning stops at the
+first `mutate()`. The ablation in Section \@ref(sec:eval) shows that these
+limits change the cost of equivalent queries by more than an order of
+magnitude, so the order in which a user writes the verbs matters more than it
+does in engines with a cost-based optimiser. Pushing predicates through
+projections, and pruning through `mutate()`, are the next improvements to
+make.
+
+## Resource limits
+
+The memory budget bounds each subsystem's estimate of its own buffered
+state. It is not a hard limit on the process. The measured peak of a grouped
+aggregation at the default budget exceeded the budget by the sorting working
+space, and a plan with several stateful nodes may hold several budgets at
+once. The spatial and partition verbs buffer their output as R data frames
+before spilling, so part of their memory is R's representation rather than
+the engine's. Partition routing in `offload(by =)` runs in R and writes one
+run file per key and flush, which becomes expensive for keys with many
+thousands of values. `method = "hash"` bounds the number of shards in that
+case. Spilling costs disk space as well as time: an external sort writes its
+input once more, and a spatial join on coordinate columns writes a WKB
+geometry column for every output row.
+
+## Storage and dependency choices
+
+The `.vtr` format is specific to vectra. It gives the engine per-row-group
+statistics, dictionary-aware string decoding, in-place appends, fingerprinted
+indexes, and quantised or spatially predicted numeric columns, and it lets
+the package be built without any external compression library. The cost is
+interoperability. Other tools cannot read `.vtr`, and vectra does not read
+Parquet or Arrow IPC, the formats in which much large ecological data is now
+distributed, including the GBIF snapshots used in Section \@ref(sec:case). In
+the case study, arrow read the Parquet files and vectra appended them to a
+`.vtr` store. The GeoTIFF reader decodes uncompressed and DEFLATE-compressed
+files but not LZW, the compression WorldClim distributes, so the climate
+layers were re-encoded once with \pkg{terra}. A Parquet reader, and LZW
+decoding for GeoTIFF, would remove both conversion steps.
+
+"No external dependencies" would overstate the package's position.
+vectra's C code depends only on the C standard library and on sources it
+vendors, the \pkg{tdc} codec and the miniz deflate library. The readers and
+writers for CSV, SQLite database files, and GeoTIFF are vectra's own code. At the R level, however, the package imports
+\CRANpkg{tidyselect}, \CRANpkg{rlang}, \CRANpkg{libgeos}, and \pkg{parallel},
+and it links to \CRANpkg{libgeos} for the GEOS C API. \CRANpkg{libgeos}
+bundles GEOS, so no system library is needed, but it is a compiled
+dependency of about 3 MB. The spatial verbs additionally require \pkg{sf},
+and with it GDAL and PROJ, although the geometry computations themselves run
+on the GEOS API without going through sf. The practical consequence is that
+the tabular engine compiles wherever R and a C11 compiler are available,
+while the spatial layer inherits sf's installation requirements.
+
+## Summary
+
+vectra lets an R user carry an analysis on data larger than memory from the
+source file to a fitted model within one package. It states, for each
+operation, which quantity of the data sets its memory. The measurements show
+streaming work at near-constant memory, stateful work bounded by a
+configurable budget at a clear cost in time relative to DuckDB, and
+streaming spatial joins that remain practical at sizes where in-memory
+spatial tools fail. The case study shows the pieces composing into a
+reproducible macroecological analysis of 401 million records on a machine
+with 8 GB of memory.

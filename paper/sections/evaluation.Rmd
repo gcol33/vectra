@@ -1,0 +1,296 @@
+# Comparative evaluation {#sec:eval}
+
+```{r eval-setup, include = FALSE}
+bd <- readRDS(file.path(.dir, "bench_data.rds"))
+nrep <- max(runs$rep)
+S <- function(tool, w, p, stat = "wall") B(tool, w, p, stat)
+R <- function(tool, w, p) S(tool, w, p, "rss") / 1024        # GB
+```
+
+## Claims and experiments
+
+Each claim of Sections \@ref(sec:design) and \@ref(sec:memory) is paired with
+an experiment in Table \@ref(tab:claims-tab). All experiments were run on one
+machine with two virtual CPUs and 8 GB of memory without swap (Section
+\@ref(sec:details)). A table larger than about 6 GB cannot be held in R there
+at all, and every tool must work within the same limit.
+
+```{r claims-tab}
+claims <- data.frame(
+  Claim = c("Streaming operations use memory independent of input size",
+            "Stateful operations are bounded by the budget, not by groups or build-side rows",
+            "Collecting a result costs memory in proportion to its size; sinks do not",
+            "Pushdown, zone maps, pruning, and indexes reduce the data read",
+            "Offloading a prepared query reduces the cost of iterative fits",
+            "Streaming spatial joins remain practical beyond in-memory sizes",
+            "The components compose into a complete analysis"),
+  Experiment = c("scan, filter, and aggregate 10 to 100 million rows",
+                 "grouping into 1,000 to 10 million groups; joins with 1,000 to 50 million build rows; full sort",
+                 "keep 0.1% to 50% of 50 million rows, then collect() or write to a file",
+                 "paired queries on one 50-million-row store (vectra only)",
+                 "logistic regression by IRLS over a joined, derived table",
+                 "point-in-polygon tagging of 1 to 50 million points",
+                 "401 million GBIF records to per-region models"),
+  Evidence = c("Input size and streaming", "Stateful operations", "Input size and streaming",
+               "Optimiser ablation", "Repeated passes for model fitting", "Spatial joins",
+               "Case study"),
+  check.names = FALSE)
+ktab(claims, "Claims and the experiments that test them, with the subsection that reports each.", widths = c("5.4cm", "5.4cm", "3.2cm"))
+```
+
+## Setup
+
+**Data.** The tabular benchmarks use a synthetic table shaped like an
+occurrence dataset. It has 11 columns: a row identifier, a year, four
+integer keys with 10^3^, 10^5^, 10^6^, and 10^7^ distinct values, a species
+name drawn from 10^4^ strings, two numeric measurements, and two
+coordinates. The table has 10^8^ rows, written in ten files of 10^7^ rows in
+each tool's own prepared format. That is `.vtr` for vectra
+(`r fmt(bd$sizes_gb[["vtr"]], 1)` GB in total), Parquet with arrow's default
+compression for arrow and DuckDB (`r fmt(bd$sizes_gb[["pq"]], 1)` GB), and
+\CRANpkg{fst} [@fst] for data.table (`r fmt(bd$sizes_gb[["fst"]], 1)` GB). An
+input of N rows is the first N/10^7^ files. vectra combines them with
+`bind_rows()`, arrow with `open_dataset()`, DuckDB with a list passed to
+`read_parquet()`, and data.table reads them with `read_fst()` and binds them
+with `rbindlist()`, reading only the columns a query uses. The spatial
+benchmark tags the table's coordinates, which are uniform over a box from
+10°W to 30°E and 36°N to 70°N, with 53 country polygons from Natural Earth
+1:10m clipped to the same box.
+
+**Queries.** Each workload was written the way a user of each package would
+write it: dplyr verbs for vectra and arrow, SQL for DuckDB, and `[.data.table`
+syntax for data.table. No query was rewritten to suit one engine. Results
+that are large (grouped results, sorted tables) were written to each tool's
+own file format, and small results were collected into R. For every
+configuration, the tools that completed returned the same checksum of their
+result (row counts and rounded sums).
+
+**Measurement.** Every run was a fresh `Rscript` process started after the
+operating-system page cache had been dropped, so all reads were cold. Every
+tool was limited to two threads. Memory settings were left at each package's
+defaults. For vectra that is a budget of half the physical memory
+(`r fmt(4211091456 / 1024^3, 1)` GB). A second configuration, "vectra (1 GB
+budget)", sets `options(vectra.memory = "1GB")`. Elapsed time and peak
+resident memory were recorded by GNU `time`, which reports the maximum
+resident set size of the process and therefore includes every library's
+native allocations. Temporary disk was the largest size of the process's
+temporary directory, sampled every 0.5 seconds. Bytes read were taken from
+`/proc/self/io`. Each configuration was repeated `r nrep` times, and figures
+show the median. A configuration whose first run was killed for lack of
+memory was not repeated, and the two slowest spatial runs were run once.
+Runs killed by the kernel's out-of-memory handler are shown as crosses at
+the memory they had reached.
+
+## Input size and streaming
+
+```{r fig-scan, fig.cap = "Scan, filter, derive, and aggregate by year (75 groups) as input grows from 10 to 100 million rows. (A) Elapsed time. (B) Peak resident memory of the R process. The dashed line is the machine's physical memory.", out.width = "100%"}
+knitr::include_graphics("figures/scan.pdf")
+```
+
+The first workload filters on two columns, derives a product, and aggregates
+by year, returning 75 rows (Figure \@ref(fig:fig-scan)). DuckDB was fastest
+at every size (`r fmt(S("duckdb", "scan", "1e8"))` s for 10^8^ rows) and used
+the least memory (`r fmt(R("duckdb", "scan", "1e8"), 2)` GB). arrow and
+data.table followed in time. data.table's memory grew linearly with input,
+since it loads the three columns it needs, and reached
+`r fmt(R("datatable", "scan", "1e8"))` GB at 10^8^ rows. vectra took
+`r fmt(S("vectra", "scan", "1e8"))` s at 10^8^ rows. Its memory also grew
+with input, to `r fmt(R("vectra", "scan", "1e8"))` GB, above its nominal
+budget. This is not a streaming cost. The grouped `summarise()` sorts its
+input, and because the filter is followed by a `mutate()`, column pruning
+stopped there and the sort carried all 12 columns of every surviving row
+(Section \@ref(sec:design)). With a 1 GB budget, vectra's memory stayed at
+`r fmt(R("vectra1g", "scan", "5e7"), 1)` to `r fmt(R("vectra1g", "scan", "1e8"), 1)` GB
+from 5 × 10^7^ rows upwards. It spilled `r fmt(S("vectra1g", "scan", "1e8", "tmp") / 1024, 1)` GB
+to disk at 10^8^ rows, and time rose to `r fmt(S("vectra1g", "scan", "1e8"))` s.
+
+```{r fig-collect, fig.cap = "Memory needed to materialise a result in R. A filter keeps a fraction of 50 million rows and four columns; the result is either collected into R (solid) or written to a file (dashed).", out.width = "70%"}
+knitr::include_graphics("figures/collect.pdf")
+```
+
+Pure streaming shows in Figure \@ref(fig:fig-collect). A filter keeps
+between 0.1% and 50% of 5 × 10^7^ rows and four columns. When the result was
+written to a file, vectra's peak memory stayed between
+`r fmt(min(summ$rss[summ$tool == "vectra" & summ$workload == "sink"]), 0)` and
+`r fmt(max(summ$rss[summ$tool == "vectra" & summ$workload == "sink"]), 0)` MB
+at every selectivity, the least of the three tools. DuckDB was similar
+(`r fmt(max(summ$rss[summ$tool == "duckdb" & summ$workload == "sink"]), 0)` MB
+at most), and arrow used `r gb(max(summ$rss[summ$tool == "arrow" & summ$workload == "sink"]))` GB.
+Collecting the result costs memory in proportion to its size for every tool.
+vectra needed `r gb(S("vectra", "collect", "0.5", "rss"))` GB to return
+25 million rows, arrow `r gb(S("arrow", "collect", "0.5", "rss"))` GB, and
+DuckDB `r gb(S("duckdb", "collect", "0.5", "rss"))` GB. Writing the half-size
+result with vectra's default `compress = "fast"` was slower than collecting
+it (`r fmt(S("vectra", "sink", "0.5"))` s against
+`r fmt(S("vectra", "collect", "0.5"))` s), because the encoder compresses
+every block.
+
+## Stateful operations
+
+```{r fig-stateful, fig.cap = "Grouping and joining 50 million rows. (A, B) Group by a key with 1,000 to 10 million distinct values and aggregate three columns; the result is written to a file. (C, D) Inner join to a build side of 1,000 to 50 million rows, then aggregate by year. Crosses mark runs killed for lack of memory.", out.width = "100%"}
+knitr::include_graphics("figures/stateful.pdf")
+```
+
+Grouping and joining (Figure \@ref(fig:fig-stateful)) show the consequences
+of the sort-based design most clearly. vectra's memory for grouping did not
+depend on the number of groups (panel B). At the default budget it was
+`r gb(S("vectra", "groups", "1e3", "rss"))` GB for 10^3^ groups and
+`r gb(S("vectra", "groups", "1e7", "rss"))` GB for 10^7^. With a 1 GB budget
+it was `r gb(S("vectra1g", "groups", "1e7", "rss"))` GB at every group
+count, with `r fmt(S("vectra1g", "groups", "1e7", "tmp") / 1024, 1)` GB spilled.
+The hash-based engines grew with the number of groups: arrow from
+`r gb(S("arrow", "groups", "1e3", "rss"))` to `r gb(S("arrow", "groups", "1e7", "rss"))` GB,
+and DuckDB from `r fmt(S("duckdb", "groups", "1e3", "rss"), 0)` MB to
+`r gb(S("duckdb", "groups", "1e7", "rss"))` GB. Even at 10^7^ groups,
+however, both stayed below vectra's default peak. The price of the sort is
+time. vectra took `r fmt(S("vectra", "groups", "1e3"))` s to aggregate into
+10^3^ groups, where DuckDB took `r fmt(S("duckdb", "groups", "1e3"))` s and
+arrow `r fmt(S("arrow", "groups", "1e3"))` s. With a 1 GB budget, the extra
+read and write of the spill added about 25 to 30 s at every group count.
+
+For joins, all three engines keep the build side in memory while it fits,
+and memory rose with its size (panel D). At 5 × 10^7^ build rows, as many as
+the probe side, vectra at its default budget was killed for lack of memory at
+`r gb(S("vectra", "join", "5e7", "rss"))` GB. With a 1 GB budget it
+completed by partitioning both sides to disk, but its peak of
+`r gb(S("vectra1g", "join", "5e7", "rss"))` GB was five times the budget.
+The Grace partitioning bounds the hash table, but not the sort for the
+grouped aggregation that follows it. arrow was at the limit of the machine:
+it completed one of its three runs, at `r gb(S("arrow", "join", "5e7", "rss"))` GB,
+and was killed in the other two. DuckDB completed at
+`r gb(S("duckdb", "join", "5e7", "rss"))` GB, and data.table at
+`r gb(S("datatable", "join", "5e7", "rss"))` GB.
+
+```{r sort-tab}
+st <- summ[summ$workload == "sort", ]
+st$tool <- factor(st$tool, levels = names(tool_lab))
+st <- st[order(st$param_num, st$tool), ]
+tab <- data.frame(Rows = paste0(st$param_num / 1e6, "M"), Tool = tool_lab[as.character(st$tool)],
+                  `Time (s)` = ifelse(st$n_ok > 0, sprintf("%.1f", st$wall), "killed (memory)"),
+                  `Peak memory (GB)` = sprintf("%.2f", st$rss / 1024),
+                  `Temporary disk (GB)` = ifelse(st$n_ok > 0, sprintf("%.2f", st$tmp / 1024), ""),
+                  check.names = FALSE)
+ktab(tab, "Sorting all 11 columns by a numeric column and writing the result to a file.")
+```
+
+Sorting (Table \@ref(tab:sort-tab)) is the operation where external memory
+is unavoidable once the table exceeds memory. At 10^7^ rows, data.table and
+DuckDB sorted in about 5 s. vectra was the slowest tool at this size, and its
+in-memory path (`r fmt(S("vectra", "sort", "1e7"))` s) was slower than
+its spilling path with a 1 GB budget (`r fmt(S("vectra1g", "sort", "1e7"))` s).
+At 5 × 10^7^ rows, which is about 4 GB of data in R, arrow and data.table
+were killed for lack of memory. DuckDB completed in
+`r fmt(S("duckdb", "sort", "5e7"))` s with a peak of
+`r gb(S("duckdb", "sort", "5e7", "rss"))` GB. vectra took
+`r fmt(S("vectra", "sort", "5e7"))` s at either budget, and with a 1 GB budget
+its peak stayed at `r gb(S("vectra1g", "sort", "5e7", "rss"))` GB. At 10^8^
+rows the two external sorts differed mainly in their disk use. DuckDB
+completed in `r fmt(S("duckdb", "sort", "1e8"))` s, but it needed
+`r fmt(S("duckdb", "sort", "1e8", "tmp") / 1024, 1)` GB of temporary files in
+addition to the `r fmt(S("duckdb", "sort", "1e8", "out") / 1024, 1)`-GB
+output. Its first two attempts failed because the 9 GB of free disk space
+then available was not enough, and the reported run was made after freeing
+space. vectra needed `r fmt(S("vectra", "sort", "1e8", "tmp") / 1024, 1)` GB
+of temporary files. It completed in `r fmt(S("vectra1g", "sort", "1e8"))` s
+with a peak of `r gb(S("vectra1g", "sort", "1e8", "rss"))` GB under the 1 GB
+budget, and `r gb(S("vectra", "sort", "1e8", "rss"))` GB under the default.
+
+## Optimiser ablation
+
+```{r abl-tab}
+ab <- function(p) c(S("vectra", "abl", p), S("vectra", "abl", p, "rchar"))
+rows <- list(
+  c("Zone maps", "filter on a column ordered across row groups", "zm_sorted"),
+  c("", "same selectivity (1%), column in random order", "zm_random"),
+  c("Column pruning", "sum of 1 column", "cols_1"),
+  c("", "sums of 10 columns", "cols_all"),
+  c("Hash index", "point lookup with a .vtri index", "idx_vtri"),
+  c("", "same lookup without an index", "idx_none"),
+  c("Pushdown order", "filter() before mutate()", "mut_after"),
+  c("", "the same filter after mutate()", "mut_before"))
+abt <- do.call(rbind, lapply(rows, function(r) {
+  v <- ab(r[3]); data.frame(Mechanism = r[1], Query = r[2],
+    `Time (s)` = sprintf("%.2f", v[1]), `Data read (MB)` = sprintf("%.0f", v[2]), check.names = FALSE)
+}))
+ktab(abt, "Paired queries on a single 50-million-row .vtr store (381 row groups). Each pair returns the same result. Data read is the number of bytes the process read from files.")
+```
+
+Table \@ref(tab:abl-tab) isolates the optimiser's mechanisms on a single
+store of 5 × 10^7^ rows. Zone maps skipped almost all row groups for a
+filter on a column whose values are ordered across row groups. The query
+read `r fmt(S("vectra", "abl", "zm_sorted", "rchar"), 0)` MB and took
+`r fmt(S("vectra", "abl", "zm_sorted"), 2)` s. The same selectivity on a
+randomly ordered column read every row group of the two columns involved
+(`r fmt(S("vectra", "abl", "zm_random", "rchar"), 0)` MB). Column pruning
+scaled the data read with the number of columns used. A `.vtri` index
+reduced a point lookup from `r fmt(S("vectra", "abl", "idx_none"), 1)` s and
+`r gb(S("vectra", "abl", "idx_none", "rchar"))` GB read to
+`r fmt(S("vectra", "abl", "idx_vtri"), 2)` s and
+`r fmt(S("vectra", "abl", "idx_vtri", "rchar"), 0)` MB. The last pair shows
+the cost of the optimiser's locality. A filter written after a `mutate()`
+is not pushed into the scan, and the `mutate()` blocks pruning. The query
+then read the whole store and took
+`r ratio(S("vectra", "abl", "mut_before"), S("vectra", "abl", "mut_after"), 0)`
+times as long as the same query with the verbs in the other order.
+
+## Repeated passes for model fitting
+
+```{r model-tab}
+mt <- summ[summ$workload %in% c("model_rebuild", "model_offload", "model_glm"), ]
+mt$Approach <- c(model_glm = "collect(), then glm()", model_rebuild = "bigglm(), plan rebuilt each pass",
+                 model_offload = "offload() once, then bigglm()")[mt$workload]
+mt <- mt[order(mt$param_num, match(mt$workload, c("model_glm", "model_rebuild", "model_offload"))), ]
+tab <- data.frame(Rows = paste0(mt$param_num / 1e6, "M"), Approach = mt$Approach,
+                  `Time (s)` = ifelse(mt$n_ok > 0, sprintf("%.1f", mt$wall), "killed (memory)"),
+                  `of which preparation (s)` = ifelse(mt$n_ok > 0 & mt$workload != "model_rebuild", sprintf("%.1f", mt$t_prep), ""),
+                  `Passes` = ifelse(mt$n_ok > 0, sprintf("%.0f", mt$iter), ""),
+                  `Peak memory (GB)` = sprintf("%.2f", mt$rss / 1024),
+                  `Data read (GB)` = ifelse(mt$n_ok > 0, sprintf("%.1f", mt$rchar / 1024), ""),
+                  check.names = FALSE)
+ktab(tab, "Logistic regression on a prepared query (filter, join to a table of one million rows, derived response and predictors). Rows are fact-table rows before filtering. Passes are IRLS iterations to convergence.")
+```
+
+A generalised linear model fitted by iteratively reweighted least squares
+reads its data once per iteration. Table \@ref(tab:model-tab) fits a
+logistic regression to a query that filters the fact table, joins it to a
+table of 10^6^ rows, and derives the response. Fed to `biglm::bigglm()`
+through a plan factory, every iteration re-ran the scan and the join. For
+5 × 10^7^ fact rows the fit took `r fmt(S("vectra", "model_rebuild", "5e7"))` s
+and read `r gb(S("vectra", "model_rebuild", "5e7", "rchar"))` GB. Offloading
+the prepared query once took `r fmt(S("vectra", "model_offload", "5e7", "t_prep"))` s,
+after which each pass read the three prepared columns. The whole fit then
+took `r fmt(S("vectra", "model_offload", "5e7"))` s at
+`r fmt(S("vectra", "model_offload", "5e7", "rss"), 0)` MB. Collecting the
+prepared data and calling `glm()` was a reasonable alternative at 10^7^ rows,
+though it needed `r gb(S("vectra", "model_glm", "1e7", "rss"))` GB. At
+5 × 10^7^ rows it was killed for lack of memory. All three approaches gave
+the same coefficients to ten decimal places.
+
+## Spatial joins
+
+```{r fig-pip, fig.cap = "Tagging points with the European country that contains them (53 polygons) and counting points per country. vectra streams the points against GEOS prepared geometries; sf builds one sf object of all points and joins it in memory; DuckDB uses its spatial extension's spatial join. Crosses mark runs killed for lack of memory.", out.width = "100%"}
+knitr::include_graphics("figures/pip.pdf")
+```
+
+The spatial benchmark (Figure \@ref(fig:fig-pip)) tags each point with the
+country polygon containing it and counts points per country. At 10^6^
+points all three tools completed, vectra in `r fmt(S("vectra", "pip", "1e6"))` s,
+\pkg{sf} in `r fmt(S("sf", "pip", "1e6"))` s, and DuckDB in
+`r fmt(S("duckdb", "pip", "1e6"))` s. From 10^7^ points upwards, building
+the \pkg{sf} point object and its join index exceeded memory, and the process
+was killed at about 6 GB. vectra's time grew linearly in the number of
+points, at about `r fmt(5e7 / S("vectra", "pip", "5e7") / 1e3, 0)` thousand
+points per second on two threads, and it tagged 5 × 10^7^ points in
+`r fmt(S("vectra", "pip", "5e7") / 60, 1)` minutes. Its peak memory rose from
+`r gb(S("vectra", "pip", "1e7", "rss"))` to `r gb(S("vectra", "pip", "5e7", "rss"))` GB.
+That rise comes from the output buffer, which holds joined rows as R data
+frames until they reach an eighth of the budget, and not from the input
+size. The spilled run files, which include a WKB point geometry for every
+output row, took `r fmt(S("vectra", "pip", "5e7", "tmp") / 1024, 1)` GB of
+temporary disk. DuckDB's spatial join used the least memory
+(`r fmt(S("duckdb", "pip", "5e7", "rss"), 0)` MB) but was about three times
+slower (`r fmt(S("duckdb", "pip", "5e7") / 60, 1)` minutes for 5 × 10^7^
+points). Its plan indexes the polygons' bounding boxes and then tests each
+candidate pair with an unprepared exact predicate. vectra prepares each
+polygon once. At every size, all tools that completed matched the same number
+of points and found them in the same number of countries.
