@@ -94,33 +94,42 @@ try_openmp() {
   return 0
 }
 
-detect_openmp() {
+try_generic_openmp() {
   try_openmp "" "" && return 0
   try_openmp '$(SHLIB_OPENMP_CFLAGS)' '$(SHLIB_OPENMP_CFLAGS)' && return 0
   try_openmp "-fopenmp" "-fopenmp" && return 0
-
-  case "`uname`" in
-  Darwin)
-    # CRAN's macOS R ships libomp under $R_HOME/lib, on the -L path R CMD
-    # SHLIB links with; -lomp records it as a real dependency.
-    try_openmp "-Xclang -fopenmp" "-lomp" && return 0
-
-    if [ "`uname -m`" = "arm64" ]; then
-      BREW=${HOMEBREW_PREFIX:-/opt/homebrew}
-    else
-      BREW=${HOMEBREW_PREFIX:-/usr/local}
-    fi
-    if [ -d "$BREW/opt/libomp" ]; then
-      try_openmp "-I$BREW/opt/libomp/include -Xclang -fopenmp" \
-                 "-L$BREW/opt/libomp/lib -lomp" && return 0
-    fi
-
-    if [ -e /usr/local/lib/libomp.dylib ]; then
-      try_openmp "-Xclang -fopenmp" "/usr/local/lib/libomp.dylib" && return 0
-    fi
-    ;;
-  esac
   return 1
+}
+
+# On macOS the linked runtime is tried first: CRAN's macOS R ships libomp
+# under $R_HOME/lib, on the -L path R CMD SHLIB links with, and -lomp
+# records it as a load-time dependency of the binary. The generic flags can
+# pass on a build machine that has libomp while producing a binary that
+# looks ___kmpc_* up in the flat namespace, which fails to load on a
+# machine without it.
+try_darwin_openmp() {
+  try_openmp "-Xclang -fopenmp" "-lomp" && return 0
+
+  if [ "`uname -m`" = "arm64" ]; then
+    BREW=${HOMEBREW_PREFIX:-/opt/homebrew}
+  else
+    BREW=${HOMEBREW_PREFIX:-/usr/local}
+  fi
+  if [ -d "$BREW/opt/libomp" ]; then
+    try_openmp "-I$BREW/opt/libomp/include -Xclang -fopenmp"                "-L$BREW/opt/libomp/lib -lomp" && return 0
+  fi
+
+  if [ -e /usr/local/lib/libomp.dylib ]; then
+    try_openmp "-Xclang -fopenmp" "/usr/local/lib/libomp.dylib" && return 0
+  fi
+  return 1
+}
+
+detect_openmp() {
+  case "`uname`" in
+  Darwin) try_darwin_openmp && return 0 ;;
+  esac
+  try_generic_openmp
 }
 
 if ! detect_openmp; then
