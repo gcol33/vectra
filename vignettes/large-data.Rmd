@@ -822,13 +822,17 @@ columns, not the total row count. For a typical batch of 50,000 rows with
 10 columns, each batch might occupy a few megabytes. These operations are
 safe for any dataset size.
 
-<!-- memory-budget: how the budget is shared between the nodes of one plan is completed once the plan-level budget design lands -->
-
 The operations below that buffer data all work against one memory budget,
 `vectra_mem()`. It defaults to half of physical RAM (at least 1 GB) and is set
-with `options(vectra.memory = "2GB")`. When an operation reaches its budget it
-writes to temporary files and keeps going, so the budget trades memory for disk
-passes rather than deciding whether a query can run.
+with `options(vectra.memory = "2GB")`. The budget covers the whole query: every
+buffering step in it (a sort, a join, a grouped aggregate) reserves what it
+actually allocates from one shared pool of that size, so a step that needs
+little leaves the rest to the others, and each is guaranteed a share of a
+quarter of the budget divided by the number of buffering steps. When a step's
+reservation is refused it writes to temporary files and keeps going, so the
+budget trades memory for disk passes rather than deciding whether a query can
+run. The temporary files are written uncompressed, since each is read back
+once.
 
 **External sort (arrange).** The sort node accumulates data in memory up to
 the budget. Past it, it flushes a sorted run to a temporary file and
