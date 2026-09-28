@@ -73,29 +73,6 @@ static int datetime_is_date(char date_scale, double val) {
 VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
                                   const VecBatch *batch) {
     switch (op) {
-    case EXPR_PMIN:
-    case EXPR_PMAX: {
-        VecArray *l = vec_expr_eval(expr->left, batch);
-        VecArray *r = vec_expr_eval(expr->right, batch);
-        /* Coerce any non-double operand to double before reading buf.dbl.
-           A bool/narrow-int operand has a smaller element than double, so
-           reading it through buf.dbl would over-read; a string operand
-           errors cleanly in vec_coerce rather than being type-punned. */
-        if (l->type != VEC_DOUBLE) { VecArray *t = vec_coerce(l, VEC_DOUBLE); vec_array_free(l); free(l); l = t; }
-        if (r->type != VEC_DOUBLE) { VecArray *t = vec_coerce(r, VEC_DOUBLE); vec_array_free(r); free(r); r = t; }
-        int64_t n = l->length;
-        VecArray *out = (VecArray *)malloc(sizeof(VecArray));
-        *out = vec_array_alloc(VEC_DOUBLE, n);
-        for (int64_t i = 0; i < n; i++) {
-            if (!vec_array_is_valid(l, i) || !vec_array_is_valid(r, i)) { vec_array_set_null(out, i); continue; }
-            vec_array_set_valid(out, i);
-            double lv = l->buf.dbl[i], rv = r->buf.dbl[i];
-            out->buf.dbl[i] = (op == EXPR_PMIN) ? (lv < rv ? lv : rv) : (lv > rv ? lv : rv);
-        }
-        vec_array_free(l); free(l);
-        vec_array_free(r); free(r);
-        return out;
-    }
     case EXPR_DATE_PART: {
         VecArray *o = vec_expr_eval(expr->operand, batch);
         /* Coerce any non-double operand to double before reading buf.dbl;

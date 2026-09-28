@@ -257,7 +257,7 @@ tbl(f) |>
   head()
 ```
 
-Math functions are evaluated natively in C: `abs()`, `sqrt()`, `log()`, `log2()`, `log10()`, `exp()`, `floor()`, `ceiling()`, `round()`, `sign()`, `trunc()`. For element-wise binary min/max, `pmin()` and `pmax()` take two arguments (columns or literals) and return the smaller or larger of each pair. These compose with arithmetic to build clamping expressions.
+Math functions are evaluated natively in C: `abs()`, `sqrt()`, `exp()`, `expm1()`, `log()`, `log1p()`, `log2()`, `log10()`, `floor()`, `ceiling()`, `round()`, `sign()`, `trunc()`, the trigonometric `sin()`, `cos()`, `tan()`, `asin()`, `acos()`, `atan()`, `atan2()`, the hyperbolic `sinh()`, `cosh()`, `tanh()`, `asinh()`, `acosh()`, `atanh()`, and powers with `^`. For element-wise min/max, `pmin()` and `pmax()` take two or more arguments (columns or literals) and return the smallest or largest of each row. These compose with arithmetic to build clamping expressions.
 
 ```{r mutate-math}
 tbl(f) |>

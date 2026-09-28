@@ -376,3 +376,94 @@ test_that("paste(collapse=) errors rather than silently dropping", {
   write_vtr(data.frame(x = c("a", "b")), f)
   expect_error(collect(mutate(tbl(f), z = paste(x, collapse = ","))), "collapse")
 })
+
+# --- elementwise math table: every function against base R ---
+
+test_that("every unary math function matches base R, including NA and NaN", {
+  # A stored NaN is read back as NA, so NaN enters as sqrt(-1) on `m`.
+  x <- c(-2.5, -1, -0.5, 0, 0.3, 0.5, 1, 1.5, 2.5, 10, Inf, -Inf, NA)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = x, m = -1), f)
+  for (fn in vectra:::.MATH_UNARY) {
+    q <- eval(bquote(tbl(f) |> mutate(y = .(as.name(fn))(x),
+                                      n = .(as.name(fn))(sqrt(m)))))
+    got <- collect(q)
+    expect_identical(got$y, as.double(suppressWarnings(do.call(fn, list(x)))),
+                     info = fn)
+    expect_identical(got$n, rep(NaN, length(x)), info = fn)
+  }
+})
+
+test_that("trig and log1p/expm1 functions are registered", {
+  expect_true(all(c("sin", "cos", "tan", "asin", "acos", "atan", "sinh",
+                    "cosh", "tanh", "asinh", "acosh", "atanh", "expm1",
+                    "log1p") %in% vectra:::.MATH_UNARY))
+})
+
+test_that("atan2 and ^ match base R, including NA and NaN", {
+  y <- c(1, -1, 0, 0, 2, NA, 1, 3, NA, -8, NA)
+  x <- c(1, 1, -1, 0, NA, 0, 2, 0, NA, 1 / 3, 1)
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(y = y, x = x, m = -1), f)
+  got <- tbl(f) |>
+    mutate(a = atan2(y, x), p = y^x, q = 2^x, r = y^2,
+           an = atan2(sqrt(m), x), pn = sqrt(m)^x, pz = sqrt(m)^0) |>
+    collect()
+  nan <- rep(NaN, length(x))
+  expect_identical(got$a, atan2(y, x))
+  expect_identical(got$p, suppressWarnings(y^x))
+  expect_identical(got$q, 2^x)
+  expect_identical(got$r, y^2)
+  expect_identical(got$an, atan2(nan, x))
+  expect_identical(got$pn, nan^x)
+  expect_identical(got$pz, nan^0)
+})
+
+test_that("pmin/pmax propagate NA and NaN like base R", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  a <- c(1, NA, 2, 5)
+  b <- c(3, 1, NA, 4)
+  write_vtr(data.frame(a = a, b = b, m = -1), f)
+  got <- tbl(f) |>
+    mutate(lo = pmin(a, b), hi = pmax(a, b),
+           lon = pmin(sqrt(m), b), hin = pmax(a, sqrt(m))) |>
+    collect()
+  expect_identical(got$lo, pmin(a, b))
+  expect_identical(got$hi, pmax(a, b))
+  expect_identical(got$lon, pmin(rep(NaN, 4), b))
+  expect_identical(got$hin, pmax(a, rep(NaN, 4)))
+  mixed <- tbl(f) |>
+    mutate(u = pmax(sqrt(m), b), v = pmin(a, sqrt(m), b)) |> collect()
+  expect_identical(mixed$u, pmax(rep(NaN, 4), b))
+  expect_identical(mixed$v, pmin(a, rep(NaN, 4), b))
+})
+
+test_that("math functions accept integer and logical operands", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(i = c(0L, 1L, NA), b = c(TRUE, FALSE, NA)), f)
+  got <- tbl(f) |> mutate(ci = cos(i), sb = sin(b), p = i^2L) |> collect()
+  expect_identical(got$ci, cos(c(0, 1, NA)))
+  expect_identical(got$sb, sin(c(1, 0, NA)))
+  expect_identical(got$p, c(0, 1, NA))
+})
+
+test_that("pi resolves as a constant inside a math expression", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  lat <- c(0, 45, 60, NA)
+  write_vtr(data.frame(lat = lat), f)
+  got <- tbl(f) |> mutate(w = cos(lat * pi / 180)) |> collect()
+  expect_equal(got$w, cos(lat * pi / 180))
+})
+
+test_that("a math function with the wrong number of arguments errors", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = 1), f)
+  expect_error(tbl(f) |> mutate(y = sin(x, 2)) |> collect(), "one argument")
+  expect_error(tbl(f) |> mutate(y = atan2(x)) |> collect(), "two arguments")
+})

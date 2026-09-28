@@ -526,8 +526,10 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
 
     if (strcmp(kind, "math_unary") == 0) {
         const char *fn = list_get_string(lst, "fn");
+        int idx = vec_math_lookup(fn, 1);
+        if (idx < 0) vectra_error("unknown math function: %s", fn ? fn : "(null)");
         VecExpr *e = vec_expr_alloc(EXPR_MATH_UNARY);
-        e->math_fn = fn[0];
+        e->math_fn = idx;
         e->operand = parse_expr(list_get(lst, "operand"), schema);
         e->result_type = VEC_DOUBLE;
         return e;
@@ -759,8 +761,12 @@ VecExpr *parse_expr(SEXP lst, const VecSchema *schema) {
         e->result_type = VEC_STRING;
         return e;
     }
-    if (strcmp(kind, "pmin") == 0 || strcmp(kind, "pmax") == 0) {
-        VecExpr *e = vec_expr_alloc(strcmp(kind, "pmin") == 0 ? EXPR_PMIN : EXPR_PMAX);
+    if (strcmp(kind, "math_binary") == 0) {
+        const char *fn = list_get_string(lst, "fn");
+        int idx = vec_math_lookup(fn, 2);
+        if (idx < 0) vectra_error("unknown math function: %s", fn ? fn : "(null)");
+        VecExpr *e = vec_expr_alloc(EXPR_MATH_BINARY);
+        e->math_fn = idx;
         e->left = parse_expr(list_get(lst, "left"), schema);
         e->right = parse_expr(list_get(lst, "right"), schema);
         e->result_type = VEC_DOUBLE;

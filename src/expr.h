@@ -20,7 +20,8 @@ typedef enum {
     EXPR_NCHAR,      /* nchar(x) -> int64 */
     EXPR_SUBSTR,     /* substr(x, start, stop) -> string */
     EXPR_GREPL,      /* grepl(pattern, x) -> bool (fixed match) */
-    EXPR_MATH_UNARY, /* abs, sqrt, log, exp, floor, ceiling, round */
+    EXPR_MATH_UNARY, /* abs, sqrt, log, exp, sin, cos, ... (see expr_math.c) */
+    EXPR_MATH_BINARY, /* pmin, pmax, atan2, ^ (see expr_math.c) */
     EXPR_TOLOWER,    /* tolower(x) -> string */
     EXPR_TOUPPER,    /* toupper(x) -> string */
     EXPR_TRIMWS,     /* trimws(x) -> string */
@@ -30,8 +31,6 @@ typedef enum {
     EXPR_ENDSWITH,   /* endsWith(x, suffix) -> bool */
     EXPR_GSUB,       /* gsub(pattern, replacement, x) -> string (fixed) */
     EXPR_SUB,        /* sub(pattern, replacement, x) -> string (fixed, first only) */
-    EXPR_PMIN,       /* pmin(x, y) -> numeric */
-    EXPR_PMAX,       /* pmax(x, y) -> numeric */
     EXPR_DATE_PART,  /* year/month/day/hour/minute/second extraction */
     EXPR_AS_DATE,    /* as.Date(string) -> double (days since epoch) */
     EXPR_FLOOR_TIME, /* floor_time(t, unit): truncate epoch to a calendar grid */
@@ -90,9 +89,9 @@ struct VecExpr {
     /* EXPR_NEGATE */
     /* uses operand */
 
-    /* EXPR_MATH_UNARY */
-    char math_fn;  /* 'a'=abs, 's'=sqrt, 'l'=log, 'e'=exp, 'f'=floor, 'c'=ceiling, 'r'=round */
-    /* uses operand */
+    /* EXPR_MATH_UNARY / EXPR_MATH_BINARY */
+    int math_fn;   /* index into the arity's table, from vec_math_lookup() */
+    /* unary uses operand, binary uses left + right */
 
     /* EXPR_IN */
     int64_t  n_set;
@@ -172,7 +171,14 @@ VecArray *vec_expr_eval(const VecExpr *expr, const VecBatch *batch);
 VecArray *vec_expr_eval_string(VecExprKind op, const VecExpr *expr,
                                 const VecBatch *batch);
 
-/* Sub-dispatcher for datetime/extended operations (pmin, pmax, date_part,
+/* Index of the named elementwise math function in the table for `arity`
+   (1 or 2), or -1 if there is none. See expr_math.c. */
+int vec_math_lookup(const char *name, int arity);
+
+/* Sub-dispatcher for EXPR_MATH_UNARY / EXPR_MATH_BINARY. */
+VecArray *vec_expr_eval_math(const VecExpr *expr, const VecBatch *batch);
+
+/* Sub-dispatcher for datetime/extended operations (date_part,
    as.Date, if_else, resolve, propagate). */
 VecArray *vec_expr_eval_extended(VecExprKind op, const VecExpr *expr,
                                   const VecBatch *batch);

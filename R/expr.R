@@ -66,8 +66,14 @@
        right = serialize_expr(expr[[3]], env, cols))
 }
 
-# Math functions: abs, sqrt, log, exp, floor, ceiling, round, log2, log10,
-#                 sign, trunc, pmin, pmax
+# Elementwise math. The engine resolves each name against its own table
+# (src/expr_math.c); these lists are the R-side registry of what it accepts.
+.MATH_UNARY <- c("abs", "sqrt", "exp", "expm1", "log", "log1p", "log2",
+                 "log10", "floor", "ceiling", "round", "trunc", "sign",
+                 "sin", "cos", "tan", "asin", "acos", "atan",
+                 "sinh", "cosh", "tanh", "asinh", "acosh", "atanh")
+.MATH_BINARY <- c("pmin", "pmax", "atan2", "^")
+
 .serialize_math <- function(fn, expr, env, cols) {
   if (fn == "pmin" || fn == "pmax") {
     call_args <- as.list(expr)[-1]
@@ -80,10 +86,18 @@
     # Left-fold N arguments into nested binary pmin/pmax.
     acc <- serialize_expr(data_args[[1]], env, cols)
     for (k in 2:length(data_args)) {
-      acc <- list(kind = fn, left = acc,
+      acc <- list(kind = "math_binary", fn = fn, left = acc,
                   right = serialize_expr(data_args[[k]], env, cols))
     }
     return(acc)
+  }
+
+  if (fn %in% .MATH_BINARY) {
+    if (length(expr) != 3L)
+      stop(sprintf("%s() needs exactly two arguments", fn))
+    return(list(kind = "math_binary", fn = fn,
+                left = serialize_expr(expr[[2]], env, cols),
+                right = serialize_expr(expr[[3]], env, cols)))
   }
 
   # round(x, digits): the engine has only single-argument round, so express
@@ -96,30 +110,28 @@
       factor_node <- list(kind = "lit_double", value = 10^dv)
     } else {
       # 10^d = exp(d * log(10)) for a non-constant number of digits
-      factor_node <- list(kind = "math_unary", fn = "e",
+      factor_node <- list(kind = "math_unary", fn = "exp",
         operand = list(kind = "arith", op = "*",
           left = serialize_expr(digits_expr, env, cols),
           right = list(kind = "lit_double", value = log(10))))
     }
     scaled  <- list(kind = "arith", op = "*", left = sx, right = factor_node)
-    rounded <- list(kind = "math_unary", fn = "r", operand = scaled)
+    rounded <- list(kind = "math_unary", fn = "round", operand = scaled)
     return(list(kind = "arith", op = "/", left = rounded, right = factor_node))
   }
 
   # log(x, base): express as log(x) / log(base).
   if (fn == "log" && length(expr) >= 3) {
     return(list(kind = "arith", op = "/",
-      left  = list(kind = "math_unary", fn = "l",
+      left  = list(kind = "math_unary", fn = "log",
                    operand = serialize_expr(expr[[2]], env, cols)),
-      right = list(kind = "math_unary", fn = "l",
+      right = list(kind = "math_unary", fn = "log",
                    operand = serialize_expr(expr[[3]], env, cols))))
   }
 
-  fn_char <- switch(fn,
-    abs = "a", sqrt = "s", log = "l", exp = "e",
-    floor = "f", ceiling = "c", round = "r",
-    log2 = "2", log10 = "t", sign = "g", trunc = "u")
-  list(kind = "math_unary", fn = fn_char,
+  if (length(expr) != 2L)
+    stop(sprintf("%s() takes one argument", fn))
+  list(kind = "math_unary", fn = fn,
        operand = serialize_expr(expr[[2]], env, cols))
 }
 
@@ -626,9 +638,7 @@ local({
   register(c("+", "-", "*", "/", "%%"),               .serialize_arith)
   register(c("==", "!=", "<", "<=", ">", ">="),       .serialize_cmp)
   register(c("&", "&&", "|", "||", "!"),              .serialize_bool)
-  register(c("abs", "sqrt", "log", "exp", "floor",
-             "ceiling", "round", "log2", "log10",
-             "sign", "trunc", "pmin", "pmax"),         .serialize_math)
+  register(c(.MATH_UNARY, .MATH_BINARY),              .serialize_math)
   register(c("nchar", "substr", "substring", "grepl",
              "tolower", "toupper", "trimws", "paste0",
              "paste", "startsWith", "endsWith", "gsub",
