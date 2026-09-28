@@ -1033,6 +1033,7 @@ static int64_t sort_static_rows(const VecNode *self) {
 }
 
 VEC_ONE_CHILD_FN(sort_children, SortNode, child)
+VEC_BUDGET_FIELD_FN(sort_set_budget, SortNode, mem_budget)
 
 SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
                            const char *temp_dir, int64_t mem_budget) {
@@ -1057,7 +1058,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->base.static_rows   = sort_static_rows;
     sn->base.kind          = "SortNode";
     sn->base.children = sort_children;
-    vec_node_set_budgeted(&sn->base, &sn->mem_budget);
+    vec_node_set_budgeted(&sn->base, sn->mem_budget, sort_set_budget);
     sn->base.row_count_hint = child->row_count_hint;
 
     return sn;

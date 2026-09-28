@@ -18,6 +18,7 @@
  */
 
 #include "spatial_join.h"
+#include "plan_budget.h"
 #include "vtr_spatial.h"
 #include "r_bridge_internal.h"
 #include "types.h"
@@ -285,6 +286,8 @@ static int sj_numeric_type(VecType t) {
  * `out_names[c]`, taken from side `out_side[c]` (0 left, 1 right, 2 the point
  * geometry of the coordinates) at column `out_src[c]` of that side. `right_df`
  * is the resident attribute data.frame, or NULL when y carries none. */
+VEC_ONE_CHILD_FN(spatial_join_children, SpatialJoinNode, child)
+
 SEXP C_spatial_join_node(SEXP node_xptr, SEXP wkb_list, SEXP right_df,
                          SEXP geom_sexp, SEXP coords_sexp, SEXP pred_sexp,
                          SEXP dist_sexp, SEXP left_sexp, SEXP out_side_sexp,
@@ -377,6 +380,7 @@ SEXP C_spatial_join_node(SEXP node_xptr, SEXP wkb_list, SEXP right_df,
     sj->base.free_node = sj_free;
     sj->base.static_rows = NULL;
     sj->base.kind = "SpatialJoinNode";
+    sj->base.children = spatial_join_children;
 
     /* The locator is built last: every earlier step can fail on user input,
        and until the child is taken the input pipeline stays intact. */

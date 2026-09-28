@@ -2,9 +2,15 @@
 #include "error.h"
 #include <stdlib.h>
 
-void vec_node_set_budgeted(VecNode *node, int64_t *slot) {
-    node->mem_slot = slot;
-    node->mem_request = *slot;
+void vec_node_set_budgeted(VecNode *node, int64_t request,
+                           SetBudgetFn set_budget) {
+    node->set_mem_budget = set_budget;
+    node->mem_request = request;
+}
+
+void vec_node_clear_budgeted(VecNode *node) {
+    node->set_mem_budget = NULL;
+    node->mem_request = 0;
 }
 
 typedef struct {
@@ -50,15 +56,15 @@ void vec_plan_assign_budgets(VecNode *root) {
     NodeList all = plan_nodes(root);
     int n_budgeted = 0;
     for (int i = 0; i < all.n; i++)
-        if (all.nodes[i]->mem_slot) n_budgeted++;
+        if (all.nodes[i]->set_mem_budget) n_budgeted++;
     for (int i = 0; i < all.n; i++) {
         VecNode *node = all.nodes[i];
-        if (!node->mem_slot) continue;
+        if (!node->set_mem_budget) continue;
         int64_t req = node->mem_request;
         /* <= 0 means unbounded (never spills); that is not divisible. */
         int64_t share = req > 0 ? req / n_budgeted : req;
         if (req > 0 && share < 1) share = 1;
-        *node->mem_slot = share;
+        node->set_mem_budget(node, share);
     }
     free(all.nodes);
 }

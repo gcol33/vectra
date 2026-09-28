@@ -14,6 +14,7 @@
 #include "vtr1_tdc.h"
 #include "vtr_codec.h"
 #include "error.h"
+#include "part_spill.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -375,20 +376,6 @@ static void jht_build_from_rcols(JoinNode *jn, int64_t r_nrows) {
    more than any multi-key skew needs, so BNL fires only for a true hot key. */
 #define JOIN_MAX_SPILL_DEPTH 3
 
-/* Depth salt for the partition hash. A constant XOR before `% K` is only a
-   fixed bucket permutation (keys that collide stay collided), so mix the salt
-   in multiplicatively (murmur3 fmix): a different depth reshuffles which keys
-   share a partition, so a multi-key oversized partition actually splits when
-   its sub-join re-partitions. salt 0 (the top level) is the identity. */
-static inline uint64_t join_salt_mix(uint64_t h, uint64_t salt) {
-    if (salt == 0) return h;
-    h ^= salt * 0x9E3779B97F4A7C15ULL;
-    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
-    h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
-    h ^= h >> 33;
-    return h;
-}
-
 /* Bytes a resident build of n rows allocates beyond its columns: the slot
    arrays (head + slot_hash), the chain array, the transient per-row hash
    array jht_build_from_rcols fills before inserting, and full_join's
@@ -441,125 +428,45 @@ static char *make_spill_path(const char *temp_dir, char side, int p) {
     return path;
 }
 
-/* Rows a spill partition buffers before it is written as one row group. */
-#define JOIN_SPILL_RG_ROWS 65536
+/* Budget for the per-partition buffers while a side is partitioned: nothing
+   else of the join is resident then, so a quarter of its share. */
+static int64_t join_spill_buf_budget(const JoinNode *jn) {
+    return jn->mem_budget > 0 ? jn->mem_budget / 4 : ((int64_t)64 << 20);
+}
 
-/* Routes rows into K partition run-files by the hash of the key columns
+/* Route every logical row of batch into ps by the hash of its key columns
    coerced to `common` types, so equal keys on both sides land in the same
-   partition (the sub-join re-coerces from the original stored rows). Rows are
-   buffered per partition and written as JOIN_SPILL_RG_ROWS-row row groups, so
-   a partition file holds a few full row groups rather than one sliver per
-   input batch (a 64-way split of a 131072-row batch is ~2000 rows). All
-   buffers together are flushed once they pass `buf_budget` bytes. A writer
-   slot is opened from paths[p] on first flush, so a partition that never
-   receives a row creates no file (a hot key leaves 63 of 64 empty each
-   level); paths may be NULL only when every writer is pre-opened (K=1 BNL). */
-typedef struct {
-    const VecSchema  *schema;
-    const int        *key_col;
-    const VecType    *common;
-    int               n_keys;
-    int               K;
-    uint64_t          salt;
-    Vtr1TdcWriter   **writers;
-    char            **paths;
-    VecArrayBuilder **bld;        /* K builder sets, NULL until first row */
-    int64_t           buf_budget;
-} SpillRouter;
-
-static void router_init(SpillRouter *r, const VecSchema *schema,
-                        const int *key_col, const VecType *common, int n_keys,
-                        Vtr1TdcWriter **writers, char **paths, int K,
-                        uint64_t salt, int64_t mem_budget) {
-    r->schema = schema; r->key_col = key_col; r->common = common;
-    r->n_keys = n_keys; r->K = K; r->salt = salt;
-    r->writers = writers; r->paths = paths;
-    r->bld = (VecArrayBuilder **)calloc((size_t)K, sizeof(VecArrayBuilder *));
-    if (!r->bld) vectra_error("alloc failed for spill router");
-    r->buf_budget = mem_budget > 0 ? mem_budget / 4 : ((int64_t)64 << 20);
-}
-
-static void router_flush(SpillRouter *r, int p) {
-    VecArrayBuilder *bld = r->bld[p];
-    if (!bld || bld[0].length == 0) return;
-    int n_cols = r->schema->n_cols;
-    VecBatch *ob = vec_batch_alloc(n_cols, bld[0].length);
-    for (int c = 0; c < n_cols; c++) {
-        ob->columns[c] = vec_builder_finish(&bld[c]);
-        ob->col_names[c] = (char *)malloc(strlen(r->schema->col_names[c]) + 1);
-        strcpy(ob->col_names[c], r->schema->col_names[c]);
-        bld[c] = vec_builder_init(r->schema->col_types[c]);
-    }
-    if (r->writers[p] == NULL)
-        r->writers[p] = vtr1_open_tdc_writer(r->paths[p], r->schema);
-    vtr1_write_rowgroup_tdc(r->writers[p], ob, VTR_SPILL_COMPRESS, NULL, NULL);
-    vec_batch_free(ob);
-}
-
-/* Flush every partition and free the buffers; the writers stay open. */
-static void router_close(SpillRouter *r) {
-    int n_cols = r->schema->n_cols;
-    for (int p = 0; p < r->K; p++) {
-        if (!r->bld[p]) continue;
-        router_flush(r, p);
-        for (int c = 0; c < n_cols; c++) vec_builder_free(&r->bld[p][c]);
-        free(r->bld[p]);
-    }
-    free(r->bld);
-    r->bld = NULL;
-}
-
-/* Flush every partition once the buffers together pass buf_budget. */
-static void router_bound(SpillRouter *r) {
-    int n_cols = r->schema->n_cols;
-    int64_t held = 0;
-    for (int p = 0; p < r->K; p++)
-        if (r->bld[p]) held += vec_builders_bytes(r->bld[p], n_cols);
-    if (held > r->buf_budget)
-        for (int p = 0; p < r->K; p++) router_flush(r, p);
-}
-
-static void router_route(SpillRouter *r, const VecBatch *batch) {
-    int n_cols = r->schema->n_cols;
+   partition (the sub-join re-coerces from the original stored rows). */
+static void join_route(PartSpill *ps, const VecBatch *batch, int K,
+                       const int *key_col, const VecType *common, int n_keys,
+                       uint64_t salt) {
     int64_t n = vec_batch_logical_rows(batch);
     if (n == 0) return;
+    if (K == 1) { part_spill_route(ps, batch, NULL); return; }
 
     VecArray ckeys[16];
     int       need_free[16];
     int       key_id[16];
-    for (int k = 0; k < r->n_keys; k++) {
+    for (int k = 0; k < n_keys; k++) {
         key_id[k] = k;
-        const VecArray *src = &batch->columns[r->key_col[k]];
-        if (src->type != r->common[k]) {
-            VecArray *co = vec_coerce(src, r->common[k]);
+        const VecArray *src = &batch->columns[key_col[k]];
+        if (src->type != common[k]) {
+            VecArray *co = vec_coerce(src, common[k]);
             ckeys[k] = *co; free(co); need_free[k] = 1;
         } else { ckeys[k] = *src; need_free[k] = 0; }
     }
-
+    int *pid = (int *)malloc((size_t)n * sizeof(int));
+    if (!pid) vectra_error("alloc failed for partition ids");
     for (int64_t li = 0; li < n; li++) {
         int64_t pr = vec_batch_physical_row(batch, li);
-        int p = 0;
-        if (r->K > 1) {
-            uint64_t h = join_salt_mix(
-                hash_join_key(ckeys, key_id, r->n_keys, pr), r->salt);
-            p = (int)(h % (uint64_t)r->K);
-        }
-        VecArrayBuilder *bld = r->bld[p];
-        if (!bld) {
-            bld = (VecArrayBuilder *)calloc((size_t)n_cols,
-                                            sizeof(VecArrayBuilder));
-            if (!bld) vectra_error("alloc failed for spill partition buffer");
-            for (int c = 0; c < n_cols; c++)
-                bld[c] = vec_builder_init(r->schema->col_types[c]);
-            r->bld[p] = bld;
-        }
-        for (int c = 0; c < n_cols; c++)
-            vec_builder_append_one(&bld[c], &batch->columns[c], pr);
-        if (bld[0].length >= JOIN_SPILL_RG_ROWS) router_flush(r, p);
-        if ((li & 4095) == 4095 || li == n - 1) router_bound(r);
+        uint64_t h = part_spill_salt(hash_join_key(ckeys, key_id, n_keys, pr),
+                                     salt);
+        pid[li] = (int)(h % (uint64_t)K);
     }
-    for (int k = 0; k < r->n_keys; k++)
+    for (int k = 0; k < n_keys; k++)
         if (need_free[k]) vec_array_free(&ckeys[k]);
+    part_spill_route(ps, batch, pid);
+    free(pid);
 }
 
 /* Switch to spill mode: partition the already-materialized build rows, the
@@ -589,16 +496,12 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders,
     jn->n_parts = K;
     jn->right_parts = (char **)calloc((size_t)K, sizeof(char *));
     jn->left_parts  = (char **)calloc((size_t)K, sizeof(char *));
-    Vtr1TdcWriter **rw = (Vtr1TdcWriter **)calloc((size_t)K, sizeof(Vtr1TdcWriter *));
-    Vtr1TdcWriter **lw = (Vtr1TdcWriter **)calloc((size_t)K, sizeof(Vtr1TdcWriter *));
     for (int p = 0; p < K; p++) {
         jn->right_parts[p] = make_spill_path(jn->temp_dir, 'r', p);
         jn->left_parts[p]  = make_spill_path(jn->temp_dir, 'l', p);
     }
-
-    SpillRouter rr, lr;
-    router_init(&rr, rs, rkey, common, jn->n_keys, rw, jn->right_parts, K,
-                salt, jn->mem_budget);
+    int64_t buf = join_spill_buf_budget(jn);
+    PartSpill *rps = part_spill_create(rs, K, jn->right_parts, buf);
 
     /* Route the already-materialized build partial. */
     int64_t nrp = r_builders[0].length;
@@ -609,7 +512,7 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders,
             pb->col_names[c] = (char *)malloc(strlen(rs->col_names[c]) + 1);
             strcpy(pb->col_names[c], rs->col_names[c]);
         }
-        router_route(&rr, pb);
+        join_route(rps, pb, K, rkey, common, jn->n_keys, salt);
         vec_batch_free(pb);
     } else {
         for (int c = 0; c < r_ncols; c++) {
@@ -619,42 +522,43 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders,
     }
 
     if (pending) {
-        router_route(&rr, pending);
+        join_route(rps, pending, K, rkey, common, jn->n_keys, salt);
         vec_batch_free(pending);
     }
 
-    /* Route the rest of the build stream, then the whole probe stream. */
+    /* Route the rest of the build stream, then the whole probe stream (one
+       side's buffers at a time). */
     VecBatch *b;
     while ((b = jn->right->next_batch(jn->right)) != NULL) {
-        router_route(&rr, b);
+        join_route(rps, b, K, rkey, common, jn->n_keys, salt);
         vec_batch_free(b);
     }
-    router_close(&rr);
-    router_init(&lr, ls, lkey, common, jn->n_keys, lw, jn->left_parts, K,
-                salt, jn->mem_budget);
+    PartSpill *lps = part_spill_create(ls, K, jn->left_parts, buf);
     while ((b = jn->left->next_batch(jn->left)) != NULL) {
-        router_route(&lr, b);
+        join_route(lps, b, K, lkey, common, jn->n_keys, salt);
         vec_batch_free(b);
     }
-    router_close(&lr);
 
-    /* Close opened writers. A partition empty on BOTH sides is dropped (no files
-       created); one empty on a single side still needs a valid empty run-file so
-       the sub-join's scan can open it (unmatched rows there still matter for
+    /* A partition empty on BOTH sides is dropped (no files created); one empty
+       on a single side still needs a valid empty run-file so the sub-join's
+       scan can open it (unmatched rows there still matter for
        left/right/full). */
+    uint8_t *keep = (uint8_t *)calloc((size_t)K, 1);
+    if (!keep) vectra_error("alloc failed for partition flags");
     for (int p = 0; p < K; p++) {
-        int ro = (rw[p] != NULL), lo = (lw[p] != NULL);
-        if (!ro && !lo) {
-            free(jn->right_parts[p]); jn->right_parts[p] = NULL;
-            free(jn->left_parts[p]);  jn->left_parts[p]  = NULL;
-            continue;
-        }
-        if (!ro) rw[p] = vtr1_open_tdc_writer(jn->right_parts[p], rs);
-        if (!lo) lw[p] = vtr1_open_tdc_writer(jn->left_parts[p], ls);
-        vtr1_close_tdc_writer(rw[p]);
-        vtr1_close_tdc_writer(lw[p]);
+        keep[p] = part_spill_used(rps, p) || part_spill_used(lps, p);
+        if (!keep[p]) continue;
+        part_spill_touch(rps, p);
+        part_spill_touch(lps, p);
     }
-    free(rw); free(lw);
+    part_spill_close(rps);
+    part_spill_close(lps);
+    for (int p = 0; p < K; p++) {
+        if (keep[p]) continue;
+        free(jn->right_parts[p]); jn->right_parts[p] = NULL;
+        free(jn->left_parts[p]);  jn->left_parts[p]  = NULL;
+    }
+    free(keep);
 
     jn->spill = 1;
     jn->cur_part = 0;
@@ -701,37 +605,32 @@ static char *bnl_make_path(const char *temp_dir, char side) {
 }
 
 /* Stream `partial` then `pending` (either may be NULL) then all of `child`
-   into one run-file, compacting selection vectors via the partition router
-   (K=1). Returns the logical row count written. */
+   into one run-file (a one-partition spill, which also compacts selection
+   vectors). Returns the logical row count written. */
 static int64_t bnl_consolidate(JoinNode *jn, VecNode *child,
                                const VecSchema *schema, const int *key_col,
                                VecBatch *partial, VecBatch *pending,
                                const char *path) {
-    Vtr1TdcWriter *w = vtr1_open_tdc_writer(path, schema);
-    Vtr1TdcWriter *ws[1] = { w };
-    VecType common[16];
-    for (int k = 0; k < jn->n_keys; k++)
-        common[k] = schema->col_types[key_col[k]];  /* K=1: identity, no coerce */
-    SpillRouter r;
-    router_init(&r, schema, key_col, common, jn->n_keys, ws, NULL, 1, 0,
-                jn->mem_budget);
+    char *paths[1] = { (char *)path };
+    PartSpill *ps = part_spill_create(schema, 1, paths,
+                                      join_spill_buf_budget(jn));
+    part_spill_touch(ps, 0);
     int64_t rows = 0;
     if (partial) {
         rows += vec_batch_logical_rows(partial);
-        router_route(&r, partial);
+        part_spill_route(ps, partial, NULL);
     }
     if (pending) {
         rows += vec_batch_logical_rows(pending);
-        router_route(&r, pending);
+        part_spill_route(ps, pending, NULL);
     }
     VecBatch *b;
     while ((b = child->next_batch(child)) != NULL) {
         rows += vec_batch_logical_rows(b);
-        router_route(&r, b);
+        part_spill_route(ps, b, NULL);
         vec_batch_free(b);
     }
-    router_close(&r);
-    vtr1_close_tdc_writer(w);
+    part_spill_close(ps);
     return rows;
 }
 
@@ -1836,6 +1735,7 @@ static void join_free(VecNode *self) {
 /* ------------------------------------------------------------------ */
 
 VEC_TWO_CHILDREN_FN(join_children, JoinNode, left, right)
+VEC_BUDGET_FIELD_FN(join_set_budget, JoinNode, mem_budget)
 
 JoinNode *join_node_create(VecNode *left, VecNode *right,
                            JoinKind kind, int n_keys, JoinKey *keys,
@@ -1998,7 +1898,7 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     jn->base.next_batch = join_next_batch;
     jn->base.kind = "JoinNode";
     jn->base.children = join_children;
-    vec_node_set_budgeted(&jn->base, &jn->mem_budget);
+    vec_node_set_budgeted(&jn->base, jn->mem_budget, join_set_budget);
     jn->base.free_node = join_free;
 
     return jn;

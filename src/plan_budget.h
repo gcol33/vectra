@@ -19,9 +19,16 @@
         return 2;                                                   \
     }
 
-/* Register node as budgeted: *slot is the budget it spills on, currently
-   holding the budget it was created with. */
-void vec_node_set_budgeted(VecNode *node, int64_t *slot);
+/* Defines a SetBudgetFn for node struct T that stores the share in `field`. */
+#define VEC_BUDGET_FIELD_FN(fn, T, field)                               static void fn(VecNode *self, int64_t bytes) {                          ((T *)self)->field = bytes;                                     }
+
+/* Register node as budgeted: `request` is the budget it was created with,
+   set_budget receives its share. A composite node that splits its share
+   among internal nodes of its own registers once and clears their
+   registration (vec_node_clear_budgeted), so the plan counts it once. */
+void vec_node_set_budgeted(VecNode *node, int64_t request,
+                           SetBudgetFn set_budget);
+void vec_node_clear_budgeted(VecNode *node);
 
 /* Divide vectra_mem() among the plan's budgeted nodes. Every budgeted node in
    the tree is live for the whole pull (none releases its state until the plan

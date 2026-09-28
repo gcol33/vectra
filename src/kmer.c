@@ -285,6 +285,7 @@ static void kmer_free(VecNode *self) {
 }
 
 VEC_ONE_CHILD_FN(kmer_children, KmerNode, child)
+VEC_BUDGET_FIELD_FN(kmer_set_budget, KmerNode, mem_budget)
 
 KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
                            int k, int canonical,
@@ -330,7 +331,7 @@ KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
     kn->base.free_node = kmer_free;
     kn->base.kind = "KmerNode";
     kn->base.children = kmer_children;
-    vec_node_set_budgeted(&kn->base, &kn->mem_budget);
+    vec_node_set_budgeted(&kn->base, kn->mem_budget, kmer_set_budget);
     kn->base.row_count_hint = -1;
 
     return kn;

@@ -480,7 +480,7 @@ static void fuzzy_flush_rowgroup(VecArrayBuilder *builders, int n,
         free(b->col_names[c]);
         b->col_names[c] = strdup(schema->col_names[c]);
     }
-    vtr1_write_rowgroup_tdc(w, b, VTR_COMPRESS_FAST, NULL, NULL);
+    vtr1_write_rowgroup_tdc(w, b, VTR_SPILL_COMPRESS, NULL, NULL);
     vec_batch_free(b);
     for (int c = 0; c < n; c++) builders[c] = vec_builder_init(schema->col_types[c]);
 }
@@ -651,6 +651,7 @@ static void fuzzy_join_free(VecNode *self) {
 }
 
 VEC_TWO_CHILDREN_FN(fuzzy_join_children, FuzzyJoinNode, probe_node, build_node)
+VEC_BUDGET_FIELD_FN(fuzzy_join_set_budget, FuzzyJoinNode, mem_budget)
 
 FuzzyJoinNode *fuzzy_join_node_create(
     VecNode     *probe,
@@ -687,7 +688,7 @@ FuzzyJoinNode *fuzzy_join_node_create(
     fj->base.next_batch = fuzzy_join_next_batch;
     fj->base.kind = "FuzzyJoinNode";
     fj->base.children = fuzzy_join_children;
-    vec_node_set_budgeted(&fj->base, &fj->mem_budget);
+    vec_node_set_budgeted(&fj->base, fj->mem_budget, fuzzy_join_set_budget);
     fj->base.free_node = fuzzy_join_free;
 
     return fj;
