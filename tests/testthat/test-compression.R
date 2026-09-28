@@ -77,6 +77,27 @@ test_that("small files are no larger than fast files on structured data", {
   expect_lte(file.size(f_ratio), file.size(f_fast))
 })
 
+test_that("small stays <= fast per column, including where fast's LZ level wins", {
+  # FAST's LZ runs at a different tdc level than SMALL's swept LZ candidate;
+  # on round(rnorm(), 2) the FAST level encodes smaller, so SMALL must carry
+  # the FAST spec itself to keep its guarantee.
+  set.seed(5)
+  n <- 50000L
+  cols <- list(r2 = round(rnorm(n), 2), rn = rnorm(n), ru = runif(n),
+               k = sample.int(1000L, n, TRUE))
+  for (nm in names(cols)) {
+    df <- data.frame(v = cols[[nm]])
+    f_fast  <- tempfile(fileext = ".vtr")
+    f_small <- tempfile(fileext = ".vtr")
+    write_vtr(df, f_fast,  compress = "fast")
+    write_vtr(df, f_small, compress = "small")
+    expect_lte(file.size(f_small), file.size(f_fast))
+    expect_equal(collect(tbl(f_fast))$v, as.double(df$v), info = nm)
+    expect_equal(collect(tbl(f_small))$v, as.double(df$v), info = nm)
+    unlink(c(f_fast, f_small))
+  }
+})
+
 test_that("compress='small' round-trips and stays <= fast on the parallel path", {
   # A row group above VEC_OMP_THRESHOLD (32768) drives the parallel candidate
   # sweep in vtr_codec_tdc_optimize_small; the chosen spec must match the serial

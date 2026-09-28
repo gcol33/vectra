@@ -98,6 +98,7 @@ typedef struct {
     tdc_quantize_pred2d_params   qpp;  /* used when spatial + quantize fuse */
     tdc_lane_entropy_params      lane; /* backs a SMALL-mode LANE candidate;
                                         * n_lanes set per column element width */
+    tdc_entropy_level            lz_level; /* backs the FAST LZ level */
     uint32_t                    *str_offsets_owned;  /* NULL unless VEC_STRING */
 } VtrTdcEncodeRequest;
 

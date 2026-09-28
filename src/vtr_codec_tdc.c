@@ -232,6 +232,17 @@ tdc_status vtr_codec_tdc_prepare_request(
         req->spec.entropy[0] = TDC_ENTROPY_LZ;
     }
 
+    /* FAST runs LZ at tdc level 1 (flat hash, accelerating skip over
+     * unmatched input). The default hash-chain level spends most of its time
+     * probing chains that never match on high-entropy bytes -- the mantissa
+     * planes of measured doubles -- and encodes those at ~30-40 MB/s against
+     * ~600 MB/s at level 1, for 0-3 points of ratio. SMALL still sweeps the
+     * deeper parsers. */
+    if (comp_level != VTR_COMPRESS_NONE && req->spec.entropy[0] == TDC_ENTROPY_LZ) {
+        req->lz_level.level      = VTR_FAST_LZ_LEVEL;
+        req->spec.entropy_params[0] = &req->lz_level;
+    }
+
     tdc_shape_set_contiguous(&req->block.shape);
 
     return tdc_block_validate(&req->block);
@@ -382,6 +393,9 @@ static int vtr_small_build_candidates(const VecArray      *col,
             out[n++] = s;
         }
     }
+    /* The FAST spec itself, last so that it wins only when strictly smaller:
+     * its LZ level differs from the swept LZ candidate's default. */
+    if (n < cap) out[n++] = req->spec;
     return n;
 }
 
