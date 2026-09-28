@@ -1,3 +1,109 @@
+# vectra (development version)
+
+## New features
+
+* `tbl_parquet()` reads Parquet files natively, with no arrow dependency (#25):
+  data page v1 and v2, the dictionary, RLE/bit-packed, delta and
+  byte-stream-split encodings, and UNCOMPRESSED, SNAPPY, GZIP, ZSTD and LZ4
+  pages. Logical types map to `Date`, `POSIXct`, int64 and double; struct
+  fields are flattened and one-level lists and maps are read as joined text
+  (`list_sep`). Only the columns a query uses are read, row-group statistics
+  skip groups a filter cannot match, and a vector of files or a directory
+  reads as one table. BROTLI and LZO pages, and lists of lists, raise an error
+  naming the column.
+
+* `tbl_tiff()` reads LZW-compressed GeoTIFFs, including those
+  `vec_to_tiff(compression = "lzw")` writes, and undoes predictor 2
+  (horizontal differencing) and predictor 3 (floating point) for LZW and
+  DEFLATE strips and tiles (#21).
+
+* Expressions support `sin()`, `cos()`, `tan()`, `asin()`, `acos()`, `atan()`,
+  `atan2()`, `sinh()`, `cosh()`, `tanh()`, `asinh()`, `acosh()`, `atanh()`,
+  `expm1()`, `log1p()` and `^` (#22). A math call with the wrong number of
+  arguments is now an error instead of dropping the extra ones, and `sign()`,
+  `pmin()`/`pmax()` follow base R on `NaN`.
+
+* Every verb that takes expressions captures them through rlang, so `!!`,
+  `!!!`, `{{ }}`, `:=`, `.data` and `.env` work as in dplyr (#24).
+  `group_by()` and `count()` accept `!!sym(k)`, `.data[[k]]`,
+  `across(all_of(k))`, `pick()` and computed groups (`group_by(odd = x %% 2)`),
+  and gain `.add`.
+
+* `spatial_join()` gains `keep_geom`. `keep_geom = FALSE` drops the left
+  geometry, and with `coords =` the points are never encoded (#23).
+
+## Performance and memory
+
+* `vectra_mem()` is now a bound on what a query allocates (#19, #28). All the
+  buffering steps of a query (sorts, joins, grouped aggregates, fuzzy joins,
+  k-mer counts) reserve the bytes they actually allocate from one shared pool
+  of `vectra_mem()` bytes, and spill when it is exhausted; each is guaranteed
+  a quarter of an equal share. Previously each step received the whole budget
+  and counted only part of what it allocated, so a join feeding a grouped
+  aggregate could peak at several times the budget. Temporary spill files are
+  written uncompressed, which is faster at the same peak memory. On 2e7 rows
+  with a 256 MB budget, a join followed by a grouped summary went from 50.1 s
+  and 427 MB above idle to 7.7 s and 168 MB.
+
+* Grouped `summarise()` aggregates in hash tables instead of always sorting its
+  input (#16). When the groups outgrow their share of the budget, the rest of
+  the input is hash-partitioned to disk and each partition aggregated in turn;
+  results stay sorted by key, and `median()`/`n_distinct()` keep their
+  spilling path. On 2e7 rows and 1,000 groups this took 0.9 s instead of
+  1.9 s, with memory falling from 1.16 GB to under 100 MB.
+
+* `arrange()` with enough memory emits its result in 131,072-row batches from
+  one permutation instead of as a single batch holding a second copy of the
+  data (#20). `arrange()` followed by `write_vtr()` on 2e7 rows went from
+  54.8 s to 3.5 s.
+
+* Column pruning passes through `mutate()`, `select()` and `rename()`, so a
+  scan reads only the columns a query uses (#17). Filters prune row groups by
+  zone map, sorted-column search and index even when written after a
+  `mutate()`, `select()`, `arrange()` or another filter, and in every input of
+  `bind_rows()` (#18); the plan no longer depends on the order the verbs are
+  written in.
+
+* `spatial_join()`'s native path is a lazy streaming node: the result flows
+  into the next verb without a spill and without buffering R data frames (#23).
+  Tagging 1e7 points and counting went from 72.5 s to 6.9 s.
+
+* `compress = "fast"`, the `write_vtr()` default, runs its LZ stage at the
+  fastest match-search level; streaming a filtered result to `.vtr` is about
+  2.8x faster for files about 3.6% larger (#26). `compress = "small"` also
+  tries that setting, so it is still never larger than `"fast"`.
+
+## Bug fixes
+
+* `bind_rows()` of stores whose column types differ keeps the widened type
+  after column pruning instead of narrowing a double to an integer.
+
+* Filter pushdown no longer stops after the 16th input of `bind_rows()`.
+
+* `arrange()` documentation now states that `NA` sorts last in both directions,
+  which is what it has always done.
+
+* `explain()` no longer prints an offload grade of "streaming scan" for plans
+  that contain a sort or a join; the grade is shown only for replay caches and
+  partitions that carry one (#27).
+
+## Installation
+
+* `configure` now tests the candidate OpenMP flags by building, loading and
+  calling a small parallel routine, and keeps the first that works (#15). On
+  macOS it tries `-Xclang -fopenmp -lomp` first, so a binary that uses OpenMP
+  records a real dependency on the `libomp.dylib` that CRAN's R ships instead
+  of looking its symbols up at load time; if nothing works the package builds
+  single-threaded and says so. The package now compiles without warnings when
+  OpenMP is unavailable.
+
+## Documentation
+
+* The engine, large-data, spatial, formats and indexing vignettes, and the
+  README, describe the current engine: the tdc container format, hash-first
+  aggregation, the shared memory pool, spilling joins, streaming windows and
+  mapped hash indexes (#27).
+
 # vectra 0.12.4
 
 ## Bug fixes
