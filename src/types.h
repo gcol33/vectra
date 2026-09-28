@@ -209,6 +209,11 @@ typedef void      (*FreeFn)(VecNode *self);
    cannot answer nrow(). */
 typedef int64_t   (*StaticRowsFn)(const VecNode *self);
 
+/* The node's input nodes, for plan-wide passes that must see the whole tree
+   (the memory-budget division in plan_budget.c). Writes up to `cap` children
+   into out and returns the total count. NULL = no children (a scan). */
+typedef int       (*ChildrenFn)(VecNode *self, VecNode **out, int cap);
+
 struct VecNode {
     NextBatchFn   next_batch;
     FreeFn        free_node;
@@ -217,6 +222,14 @@ struct VecNode {
     const char   *kind;       /* node type name for explain() */
     int64_t       row_count_hint; /* upper-bound estimate for preallocation;
                                      <= 0 = unknown */
+    ChildrenFn    children;       /* NULL = leaf */
+    /* A node that buffers under a memory budget points mem_slot at the field
+       it spills on and records the budget it was created with in
+       mem_request. Before execution vec_plan_assign_budgets() divides each
+       request among the plan's budgeted nodes, so vectra_mem() bounds the
+       plan rather than each node. NULL = holds no budgeted state. */
+    int64_t      *mem_slot;
+    int64_t       mem_request;
 };
 
 /* static_rows dispatch: the row count, or -1 when the node cannot supply it. */

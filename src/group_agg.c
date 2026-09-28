@@ -1,4 +1,5 @@
 #include "group_agg.h"
+#include "plan_budget.h"
 #include "hash.h"
 #include "key_arena.h"
 #include "array.h"
@@ -1119,6 +1120,8 @@ static void group_agg_free(VecNode *self) {
     free(ga);
 }
 
+VEC_ONE_CHILD_FN(group_agg_children, GroupAggNode, child)
+
 static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
                                       char **key_names, int n_aggs,
                                       AggSpec *agg_specs, const char *temp_dir,
@@ -1191,6 +1194,7 @@ static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
 
     ga->base.next_batch = group_agg_next_batch;
     ga->base.kind = "GroupAggNode";
+    ga->base.children = group_agg_children;
     ga->base.free_node = group_agg_free;
 
     return ga;

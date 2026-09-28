@@ -1,4 +1,5 @@
 #include "concat.h"
+#include "plan_budget.h"
 #include "coerce.h"
 #include "schema.h"
 #include "array.h"
@@ -55,6 +56,13 @@ static void concat_free(VecNode *self) {
     free(cn);
 }
 
+static int concat_children(VecNode *self, VecNode **out, int cap) {
+    ConcatNode *cn = (ConcatNode *)self;
+    for (int i = 0; i < cn->n_children && i < cap; i++)
+        out[i] = cn->children[i];
+    return cn->n_children;
+}
+
 ConcatNode *concat_node_create(int n_children, VecNode **children) {
     if (n_children < 1) vectra_error("concat requires at least one child");
 
@@ -80,6 +88,7 @@ ConcatNode *concat_node_create(int n_children, VecNode **children) {
     cn->base.free_node = concat_free;
     cn->base.static_rows = concat_static_rows;
     cn->base.kind = "ConcatNode";
+    cn->base.children = concat_children;
 
     return cn;
 }

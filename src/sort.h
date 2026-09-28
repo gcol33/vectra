@@ -28,7 +28,10 @@ typedef struct {
     int       runs_cap;
     char    **run_paths;    /* temp file paths (for cleanup) */
 
-    VecBatch *mem_result;   /* in-memory sorted result (single-run path) */
+    VecArray *mem_cols;     /* in-memory path: the buffered (unsorted) columns */
+    int64_t  *mem_perm;     /* in-memory path: sorted row permutation */
+    int64_t   mem_n;        /* in-memory path: buffered row count */
+    int64_t   mem_pos;      /* in-memory path: next permutation index to emit */
     void     *merge;        /* opaque MergeState* for multi-run merge */
 
     int64_t   total_rows;   /* exact row count, set once input is consumed;

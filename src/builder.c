@@ -6,18 +6,72 @@
 
 #define INITIAL_CAP 1024
 
+/* Capacity a buffer grows to so it holds `needed` elements. The one growth
+   rule every builder buffer follows (and that vec_builder_bytes_after predicts):
+   the first allocation jumps straight to max(needed, INITIAL_CAP), later ones
+   double. */
+static int64_t grown_cap(int64_t cap, int64_t needed) {
+    if (needed <= cap) return cap;
+    if (cap == 0) return needed < INITIAL_CAP ? INITIAL_CAP : needed;
+    int64_t c = cap;
+    while (c < needed) c *= 2;
+    return c;
+}
+
+/* Allocated bytes of a builder holding `cap` rows and `str_cap` string bytes. */
+static int64_t builder_bytes_at(VecType type, int64_t cap, int64_t str_cap) {
+    int64_t total = vec_validity_bytes(cap);
+    switch (type) {
+    case VEC_INT64:
+    case VEC_DOUBLE: total += cap * 8; break;
+    case VEC_INT32:  total += cap * 4; break;
+    case VEC_INT16:  total += cap * 2; break;
+    case VEC_INT8:
+    case VEC_BOOL:   total += cap;     break;
+    case VEC_STRING:
+        total += (cap + 1) * (int64_t)sizeof(int64_t) + str_cap;
+        break;
+    }
+    return total;
+}
+
+int64_t vec_builder_bytes(const VecArrayBuilder *b) {
+    return builder_bytes_at(b->type, b->capacity, b->str_data_cap);
+}
+
+int64_t vec_builder_bytes_after(const VecArrayBuilder *b, int64_t rows,
+                                int64_t str_bytes) {
+    int64_t str_cap = b->type == VEC_STRING
+        ? grown_cap(b->str_data_cap, b->str_data_len + str_bytes) : 0;
+    return builder_bytes_at(b->type, grown_cap(b->capacity, b->length + rows),
+                            str_cap);
+}
+
+int64_t vec_builders_bytes(const VecArrayBuilder *b, int n_cols) {
+    int64_t total = 0;
+    for (int c = 0; c < n_cols; c++) total += vec_builder_bytes(&b[c]);
+    return total;
+}
+
+int64_t vec_builders_bytes_after_batch(const VecArrayBuilder *b, int n_cols,
+                                       const VecBatch *batch) {
+    int64_t rows = vec_batch_logical_rows(batch);
+    int64_t total = 0;
+    for (int c = 0; c < n_cols; c++) {
+        const VecArray *a = &batch->columns[c];
+        int64_t sb = 0;
+        if (a->type == VEC_STRING && a->length > 0 && a->str_dict == NULL)
+            sb = a->buf.str.offsets[a->length] - a->buf.str.offsets[0];
+        total += vec_builder_bytes_after(&b[c], rows, sb);
+    }
+    return total;
+}
+
 static void ensure_capacity(VecArrayBuilder *b, int64_t extra) {
     int64_t needed = b->length + extra;
     if (needed <= b->capacity) return;
 
-    int64_t new_cap;
-    if (b->capacity == 0) {
-        /* First allocation: jump directly to needed size (avoid doubling loop) */
-        new_cap = needed < INITIAL_CAP ? INITIAL_CAP : needed;
-    } else {
-        new_cap = b->capacity;
-        while (new_cap < needed) new_cap *= 2;
-    }
+    int64_t new_cap = grown_cap(b->capacity, needed);
 
     int64_t old_vbytes = vec_validity_bytes(b->capacity);
     int64_t new_vbytes = vec_validity_bytes(new_cap);
@@ -63,8 +117,7 @@ static void ensure_capacity(VecArrayBuilder *b, int64_t extra) {
 static void ensure_str_data(VecArrayBuilder *b, int64_t extra) {
     int64_t needed = b->str_data_len + extra;
     if (needed <= b->str_data_cap) return;
-    int64_t new_cap = b->str_data_cap == 0 ? INITIAL_CAP : b->str_data_cap;
-    while (new_cap < needed) new_cap *= 2;
+    int64_t new_cap = grown_cap(b->str_data_cap, needed);
     b->str_data = (char *)realloc(b->str_data, (size_t)new_cap);
     if (!b->str_data) vectra_error("builder realloc failed (str data)");
     b->str_data_cap = new_cap;

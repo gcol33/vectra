@@ -1,4 +1,5 @@
 #include "window.h"
+#include "plan_budget.h"
 #include "vec_omp.h"
 #include "hash.h"
 #include "array.h"
@@ -1950,6 +1951,8 @@ static int win_spec_sort_desc(const WinSpec *ws) {
    R, so it is never visible. */
 #define WIN_ROWID_COL "__vtr_window_rowid"
 
+VEC_ONE_CHILD_FN(window_children, WindowNode, child)
+
 VecNode *window_node_create(VecNode *child,
                             int n_keys, char **key_names,
                             int n_wins, WinSpec *win_specs,
@@ -2149,6 +2152,7 @@ VecNode *window_node_create(VecNode *child,
 
     wn->base.next_batch = window_next_batch;
     wn->base.kind = "WindowNode";
+    wn->base.children = window_children;
     wn->base.free_node = window_free;
     wn->base.static_rows = window_static_rows;
     wn->base.row_count_hint = src->row_count_hint;

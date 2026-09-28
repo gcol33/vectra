@@ -1,4 +1,5 @@
 #include "fuzzy_join.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -649,6 +650,8 @@ static void fuzzy_join_free(VecNode *self) {
     free(fj);
 }
 
+VEC_TWO_CHILDREN_FN(fuzzy_join_children, FuzzyJoinNode, probe_node, build_node)
+
 FuzzyJoinNode *fuzzy_join_node_create(
     VecNode     *probe,
     VecNode     *build,
@@ -683,6 +686,8 @@ FuzzyJoinNode *fuzzy_join_node_create(
     fj->base.output_schema = build_output_schema(fj);
     fj->base.next_batch = fuzzy_join_next_batch;
     fj->base.kind = "FuzzyJoinNode";
+    fj->base.children = fuzzy_join_children;
+    vec_node_set_budgeted(&fj->base, &fj->mem_budget);
     fj->base.free_node = fuzzy_join_free;
 
     return fj;

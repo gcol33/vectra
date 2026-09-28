@@ -1,4 +1,5 @@
 #include "topn.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -428,6 +429,8 @@ static int64_t topn_static_rows(const VecNode *self) {
     return child_rows < tn->limit ? child_rows : tn->limit;
 }
 
+VEC_ONE_CHILD_FN(topn_children, TopNNode, child)
+
 TopNNode *topn_node_create(VecNode *child, int n_keys, SortKey *keys,
                             int64_t limit) {
     TopNNode *tn = (TopNNode *)calloc(1, sizeof(TopNNode));
@@ -443,6 +446,7 @@ TopNNode *topn_node_create(VecNode *child, int n_keys, SortKey *keys,
     tn->base.free_node = topn_free;
     tn->base.static_rows = topn_static_rows;
     tn->base.kind = "TopNNode";
+    tn->base.children = topn_children;
 
     return tn;
 }

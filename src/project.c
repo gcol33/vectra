@@ -1,4 +1,5 @@
 #include "project.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -293,6 +294,8 @@ static void project_free(VecNode *self) {
     free(pn);
 }
 
+VEC_ONE_CHILD_FN(project_children, ProjectNode, child)
+
 ProjectNode *project_node_create(VecNode *child, int n_entries,
                                   ProjEntry *entries) {
     ProjectNode *pn = (ProjectNode *)calloc(1, sizeof(ProjectNode));
@@ -328,6 +331,7 @@ ProjectNode *project_node_create(VecNode *child, int n_entries,
     pn->base.free_node = project_free;
     pn->base.static_rows = project_static_rows;
     pn->base.kind = "ProjectNode";
+    pn->base.children = project_children;
     pn->base.row_count_hint = child->row_count_hint;
 
     return pn;

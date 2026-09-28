@@ -1,4 +1,5 @@
 #include "limit.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -63,6 +64,8 @@ static void limit_free(VecNode *self) {
     free(ln);
 }
 
+VEC_ONE_CHILD_FN(limit_children, LimitNode, child)
+
 LimitNode *limit_node_create(VecNode *child, int64_t max_rows) {
     LimitNode *ln = (LimitNode *)calloc(1, sizeof(LimitNode));
     if (!ln) vectra_error("alloc failed for LimitNode");
@@ -75,6 +78,7 @@ LimitNode *limit_node_create(VecNode *child, int64_t max_rows) {
     ln->base.free_node = limit_free;
     ln->base.static_rows = limit_static_rows;
     ln->base.kind = "LimitNode";
+    ln->base.children = limit_children;
 
     return ln;
 }

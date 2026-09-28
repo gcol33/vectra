@@ -1,4 +1,5 @@
 #include "filter.h"
+#include "plan_budget.h"
 #include "vec_omp.h"
 #include "array.h"
 #include "batch.h"
@@ -231,6 +232,8 @@ static void filter_free(VecNode *self) {
     free(fn);
 }
 
+VEC_ONE_CHILD_FN(filter_children, FilterNode, child)
+
 FilterNode *filter_node_create(VecNode *child, VecExpr *predicate) {
     FilterNode *fn = (FilterNode *)calloc(1, sizeof(FilterNode));
     if (!fn) vectra_error("alloc failed for FilterNode");
@@ -240,6 +243,7 @@ FilterNode *filter_node_create(VecNode *child, VecExpr *predicate) {
     fn->base.next_batch = filter_next_batch;
     fn->base.free_node = filter_free;
     fn->base.kind = "FilterNode";
+    fn->base.children = filter_children;
 
     /* Flatten AND chain for selectivity-based reordering */
     fn->n_conjuncts = flatten_and_chain(predicate, fn->conjuncts,

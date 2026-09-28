@@ -1,4 +1,5 @@
 #include "optimize.h"
+#include "plan_budget.h"
 #include "scan.h"
 #include "filter.h"
 #include "project.h"
@@ -693,4 +694,7 @@ void vec_optimize(VecNode *root) {
         propagate_cols(root, needed, n);
         free(needed);
     }
+
+    /* Pass 3: divide the memory budget among the plan's budgeted nodes */
+    vec_plan_assign_budgets(root);
 }

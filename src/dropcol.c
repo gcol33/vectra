@@ -1,4 +1,5 @@
 #include "dropcol.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -33,6 +34,8 @@ static void dropcol_free(VecNode *self) {
     free(d);
 }
 
+VEC_ONE_CHILD_FN(dropcol_children, DropColNode, child)
+
 DropColNode *dropcol_node_create(VecNode *child, int drop_idx) {
     const VecSchema *cs = &child->output_schema;
     if (drop_idx < 0 || drop_idx >= cs->n_cols)
@@ -61,6 +64,7 @@ DropColNode *dropcol_node_create(VecNode *child, int drop_idx) {
     d->base.free_node = dropcol_free;
     d->base.static_rows = dropcol_static_rows;
     d->base.kind = "DropColNode";
+    d->base.children = dropcol_children;
     d->base.row_count_hint = child->row_count_hint;
     return d;
 }

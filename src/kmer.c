@@ -1,4 +1,5 @@
 #include "kmer.h"
+#include "plan_budget.h"
 #include "hash.h"
 #include "key_arena.h"
 #include "array.h"
@@ -283,6 +284,8 @@ static void kmer_free(VecNode *self) {
     free(kn);
 }
 
+VEC_ONE_CHILD_FN(kmer_children, KmerNode, child)
+
 KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
                            int k, int canonical,
                            int n_keys, char **key_names,
@@ -326,6 +329,8 @@ KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
     kn->base.next_batch = kmer_next_batch;
     kn->base.free_node = kmer_free;
     kn->base.kind = "KmerNode";
+    kn->base.children = kmer_children;
+    vec_node_set_budgeted(&kn->base, &kn->mem_budget);
     kn->base.row_count_hint = -1;
 
     return kn;

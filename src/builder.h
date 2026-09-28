@@ -84,6 +84,24 @@ VecArray vec_builder_finish(VecArrayBuilder *b);
    any append. The returned array must NOT be freed. */
 VecArray vec_builder_view(const VecArrayBuilder *b);
 
+/* Bytes a builder has allocated (its capacity, not its length). */
+int64_t vec_builder_bytes(const VecArrayBuilder *b);
+
+/* Bytes the builder will have allocated once `rows` more rows carrying
+   `str_bytes` more string payload are appended, under the builder's own growth
+   rule. Lets a budgeted consumer spill BEFORE a doubling crosses its budget
+   instead of discovering it after the realloc. */
+int64_t vec_builder_bytes_after(const VecArrayBuilder *b, int64_t rows,
+                                int64_t str_bytes);
+
+/* vec_builder_bytes summed over n_cols builders. */
+int64_t vec_builders_bytes(const VecArrayBuilder *b, int n_cols);
+
+/* vec_builder_bytes_after summed over n_cols builders for appending every
+   logical row of `batch` (string payload bounded by the whole column buffer). */
+int64_t vec_builders_bytes_after_batch(const VecArrayBuilder *b, int n_cols,
+                                       const VecBatch *batch);
+
 /* Free builder without finishing */
 void vec_builder_free(VecArrayBuilder *b);
 

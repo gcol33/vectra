@@ -90,6 +90,8 @@ typedef struct {
     int        bnl_fin_side;  /* finalize sub-stage: 0 = probe scan, 1 = build */
     uint8_t   *bnl_pmatched;  /* bitset over probe rows (non-inner kinds) */
     uint8_t   *bnl_bmatched;  /* bitset over build rows (full only) */
+    VecBatch  *bnl_rpending;  /* build batch read past a full block, owned;
+                                 it opens the next block */
     /* Resumable cursor over one BNL probe batch (bounds the many-to-many emit
        against a build block, the same way the resident probe path does). */
     VecBatch  *bnl_pb;           /* active probe batch (owned); NULL = none */

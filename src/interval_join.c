@@ -1,4 +1,5 @@
 #include "interval_join.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -445,6 +446,8 @@ static VecNode *sort_by_block_start(VecNode *child, int block_col, int start_col
     return (VecNode *)sn;
 }
 
+VEC_TWO_CHILDREN_FN(interval_join_children, IntervalJoinNode, probe_node, build_node)
+
 IntervalJoinNode *interval_join_node_create(
     VecNode *probe, VecNode *build,
     int probe_start_col, int probe_end_col,
@@ -487,6 +490,7 @@ IntervalJoinNode *interval_join_node_create(
 
     ij->base.next_batch = interval_join_next_batch;
     ij->base.kind = "IntervalJoinNode";
+    ij->base.children = interval_join_children;
     ij->base.free_node = interval_join_free;
 
     return ij;

@@ -7,6 +7,11 @@
 #include "vtr_append.h"
 #include "vtr_append_cols.h"
 #include "vec_omp.h"
+#include "proc_mem.h"
+
+static SEXP C_peak_rss(void) {
+    return Rf_ScalarReal(vec_peak_rss_bytes());
+}
 
 /* block.c R bridge functions */
 SEXP C_block_materialize(SEXP node_xptr);
@@ -126,6 +131,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_collect",      (DL_FUNC) &C_collect,       1},
     {"C_node_take",       (DL_FUNC) &C_node_take,       1},
     {"C_node_optimize",   (DL_FUNC) &C_node_optimize,   1},
+    {"C_peak_rss",        (DL_FUNC) &C_peak_rss,        0},
     {"C_node_next_batch", (DL_FUNC) &C_node_next_batch, 1},
     {"C_node_schema",  (DL_FUNC) &C_node_schema,   1},
     {"C_node_static_rows", (DL_FUNC) &C_node_static_rows, 1},

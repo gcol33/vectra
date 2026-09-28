@@ -1,4 +1,5 @@
 #include "rowid.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -47,6 +48,8 @@ static void rowid_free(VecNode *self) {
     free(r);
 }
 
+VEC_ONE_CHILD_FN(rowid_children, RowIdNode, child)
+
 RowIdNode *rowid_node_create(VecNode *child, const char *name) {
     RowIdNode *r = (RowIdNode *)calloc(1, sizeof(RowIdNode));
     if (!r) vectra_error("alloc failed for RowIdNode");
@@ -75,6 +78,7 @@ RowIdNode *rowid_node_create(VecNode *child, const char *name) {
     r->base.free_node = rowid_free;
     r->base.static_rows = rowid_static_rows;
     r->base.kind = "RowIdNode";
+    r->base.children = rowid_children;
     r->base.row_count_hint = child->row_count_hint;
     return r;
 }

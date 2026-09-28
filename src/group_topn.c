@@ -1,4 +1,5 @@
 #include "group_topn.h"
+#include "plan_budget.h"
 #include "array.h"
 #include "batch.h"
 #include "schema.h"
@@ -328,6 +329,8 @@ static void group_topn_free(VecNode *self) {
     free(gn);
 }
 
+VEC_ONE_CHILD_FN(group_topn_children, GroupTopNNode, child)
+
 GroupTopNNode *group_topn_node_create(VecNode *child, int n_keys,
                                       const int *key_idx, int order_idx,
                                       int descending,
@@ -366,6 +369,7 @@ GroupTopNNode *group_topn_node_create(VecNode *child, int n_keys,
     gn->base.next_batch = group_topn_next_batch;
     gn->base.free_node = group_topn_free;
     gn->base.kind = "GroupTopNNode";
+    gn->base.children = group_topn_children;
     gn->base.row_count_hint = -1;
 
     return gn;

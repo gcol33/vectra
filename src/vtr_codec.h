@@ -32,6 +32,11 @@
 /* tdc LZ level used by FAST: flat hash, no chain walk. */
 #define VTR_FAST_LZ_LEVEL   1
 
+/* Compression for engine-internal spill run files (external sort runs, join
+ * partitions). A run is written once and read back once within one query, so
+ * encode time buys nothing a later read can use. */
+#define VTR_SPILL_COMPRESS  VTR_COMPRESS_NONE
+
 /* Spatial predictor tags (consumed by the tdc bridge's pred2d_kind mapping).
  * -1 is the "auto" sentinel; 0-4 match the tdc predictor enum order. */
 #define VTR_PRED_LEFT    0
