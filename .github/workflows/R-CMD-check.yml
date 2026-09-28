@@ -76,3 +76,16 @@ jobs:
         with:
           upload-snapshots: true
           build_args: 'c("--no-manual")'
+
+      - name: A macOS binary that calls the OpenMP runtime must link libomp
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          f=$(find check -name 00install.out | head -1)
+          grep -iE "openmp|libomp" "$f" || true
+          so=$(find check -name 'vectra.so' | head -1)
+          otool -L "$so"
+          if nm -u "$so" | grep -q '__kmpc_'; then
+            otool -L "$so" | grep -q 'libomp' || {
+              echo "vectra.so calls the OpenMP runtime but does not link libomp"; exit 1; }
+          fi
