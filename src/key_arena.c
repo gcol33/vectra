@@ -70,6 +70,23 @@ static void key_arena_ensure(KeyArena *ka, int64_t n) {
     ka->capacity = new_cap;
 }
 
+void key_arena_reserve(KeyArena *ka, int64_t rows, const int64_t *str_extra) {
+    key_arena_ensure(ka, rows);
+    if (!str_extra) return;
+    for (int k = 0; k < ka->n_keys; k++) {
+        if (ka->key_types[k] != VEC_STRING) continue;
+        int64_t needed = ka->str_data_len[k] + str_extra[k];
+        if (needed <= ka->str_data_cap[k]) continue;
+        int64_t nc = ka->str_data_cap[k] == 0 ? 256 : ka->str_data_cap[k];
+        while (nc < needed) nc *= 2;
+        char *p = (char *)realloc(ka->str_data[k], (size_t)nc);
+        if (!p) vectra_error("alloc failed for key arena");
+        ka->str_data[k] = p;
+        ka->str_data_cap[k] = nc;
+        ka->arenas[k].buf.str.data = p;
+    }
+}
+
 void key_arena_append_row(KeyArena *ka, const VecArray *keys, int64_t row) {
     int64_t pos = ka->length;
     key_arena_ensure(ka, pos + 1);

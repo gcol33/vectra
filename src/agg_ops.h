@@ -54,6 +54,7 @@ typedef struct {
        (first captures once, last overwrites). NULL slot = nothing captured. */
     char    **str_val;
     int64_t  *str_len;
+    int64_t   str_bytes;   /* sum of str_len, for agg_accum_bytes */
     /* median / n_distinct: one spill-safe scalar store per group. median feeds
        bit-cast doubles and selects the middle; n_distinct feeds 64-bit value
        hashes and counts distinct hashes. Both spill to run files past
@@ -69,6 +70,17 @@ AggAccum agg_accum_init(AggKind kind, VecType input_type, int na_rm,
 
 /* Ensure capacity for n_groups */
 void agg_accum_ensure(AggAccum *acc, int64_t n_groups);
+
+/* Grow capacity to at least cap groups without changing n_groups. */
+void agg_accum_reserve(AggAccum *acc, int64_t cap);
+
+/* 1 when feeding allocates per row (string first()/last(), and the median /
+   n_distinct stores), so feeds must not run inside an OpenMP region. */
+int agg_accum_feed_allocates(AggKind kind, VecType input_type);
+
+/* Resident bytes of the accumulator's per-group state (arrays at capacity plus
+   owned string bytes), for charging against a memory budget. */
+int64_t agg_accum_bytes(const AggAccum *acc);
 
 /* Feed a value to group_id */
 void agg_accum_feed(AggAccum *acc, int64_t group_id,

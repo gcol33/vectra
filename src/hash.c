@@ -162,6 +162,28 @@ int64_t vec_ht_find_or_insert(VecHashTable *ht, uint64_t hash,
     }
 }
 
+int64_t vec_ht_find(const VecHashTable *ht, uint64_t hash,
+                    const VecArray *keys, int n_keys, int64_t row,
+                    const VecArray *key_arena) {
+    int64_t mask = ht->n_slots - 1;
+    int64_t idx = (int64_t)(hash & (uint64_t)mask);
+    for (;;) {
+        const VecHTEntry *e = &ht->entries[idx];
+        if (e->slot == -1) return -1;
+        if (e->hash == hash &&
+            vec_keys_equal(key_arena, n_keys, e->slot, keys, row))
+            return e->slot;
+        idx = (idx + 1) & mask;
+    }
+}
+
+void vec_ht_reserve(VecHashTable *ht, int64_t n_groups) {
+    /* find_or_insert resizes when n_groups * 10 > n_slots * 7 before an
+       insert, so the last insert of n_groups sees n_groups - 1 entries. */
+    while ((n_groups - 1) * 10 > ht->n_slots * 7)
+        ht_resize(ht, NULL, 0, 0);
+}
+
 static void ht_resize(VecHashTable *ht, const VecArray *key_arena,
                        int n_keys, int64_t arena_len) {
     int64_t old_n = ht->n_slots;

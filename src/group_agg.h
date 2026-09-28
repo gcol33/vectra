@@ -18,19 +18,23 @@ typedef struct {
     char      **key_names;
     int         n_aggs;
     AggSpec    *agg_specs;
-    int         done;        /* 1 after result emitted (hash path) */
-    int         use_sorted;  /* 1 = sort-based agg (spill-safe) */
-    int64_t     mem_budget;  /* spill threshold shared by the sort + holistic aggs */
-    char       *temp_dir;    /* owned copy; run-file dir for holistic spill */
+    int         use_sorted;  /* 1 = sort-based agg (median/n_distinct) */
+    int64_t     mem_budget;  /* node budget: table + partitions + result sort,
+                                or the sort + holistic aggs on the sorted path */
+    char       *temp_dir;    /* owned copy; run-file dir for every spill */
     void       *sagg;        /* SortedAggState* for the streaming sorted path */
+    VecNode    *out;         /* hash path: HashAggNode, or a SortNode over it
+                                once the table overflowed; created on first pull */
 } GroupAggNode;
 
 /* Create a group-by + aggregate node.
    Takes ownership of child, key_names, and agg_specs.
-   temp_dir: if non-NULL, enables sort-based aggregation for spill safety and is
-   the run-file directory for spill-safe median/n_distinct.
-   mem_budget: spill threshold in bytes (from vectra_mem()); 0 selects a
-   default. */
+   Groups are aggregated in a hash table while it fits the budget; past it the
+   remaining groups are hash-partitioned to run files under temp_dir and
+   aggregated one partition at a time (see group_agg.c). Output is ordered by
+   the key columns. median()/n_distinct() take the sort-based path.
+   temp_dir: run-file directory; NULL disables spilling (unbounded table).
+   mem_budget: node budget in bytes (from vectra_mem()); 0 selects a default. */
 GroupAggNode *group_agg_node_create(VecNode *child,
                                     int n_keys, char **key_names,
                                     int n_aggs, AggSpec *agg_specs,

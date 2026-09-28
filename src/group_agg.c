@@ -10,9 +10,17 @@
 #include "key_snap.h"
 #include "error.h"
 #include "vec_omp.h"
+#include "scan.h"
+#include "vtr1_tdc.h"
+#include "vtr_codec.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+
+static int agg_is_holistic(AggKind kind) {
+    return kind == AGG_MEDIAN || kind == AGG_N_DISTINCT;
+}
 
 /* Per-group spill budget for one holistic accumulator (median / n_distinct).
    The node's mem_budget is split across the holistic aggregations so their
@@ -21,16 +29,11 @@
 static int64_t agg_holistic_budget(const GroupAggNode *ga) {
     int n_holistic = 0;
     for (int a = 0; a < ga->n_aggs; a++)
-        if (ga->agg_specs[a].kind == AGG_MEDIAN ||
-            ga->agg_specs[a].kind == AGG_N_DISTINCT)
+        if (agg_is_holistic(ga->agg_specs[a].kind))
             n_holistic++;
     if (n_holistic < 1) n_holistic = 1;
     return ga->mem_budget / n_holistic;
 }
-
-/* ================================================================== */
-/*  Hash-based aggregation (original path)                            */
-/* ================================================================== */
 
 /* Output column type of an aggregate. Every aggregate emits a double except
    first()/last() on a string column, which preserve the string type. */
@@ -40,161 +43,773 @@ static VecType agg_output_type(AggKind kind, VecType input_type) {
     return VEC_DOUBLE;
 }
 
-static VecBatch *hash_agg_next_batch(GroupAggNode *ga) {
-    const VecSchema *child_schema = &ga->child->output_schema;
+static char *str_dup(const char *s) {
+    size_t len = strlen(s);
+    char *d = (char *)malloc(len + 1);
+    memcpy(d, s, len + 1);
+    return d;
+}
 
-    int *key_indices = (int *)malloc((size_t)ga->n_keys * sizeof(int));
-    VecType *key_types = (VecType *)malloc((size_t)ga->n_keys * sizeof(VecType));
-    for (int k = 0; k < ga->n_keys; k++) {
-        key_indices[k] = vec_schema_find_col(child_schema, ga->key_names[k]);
-        if (key_indices[k] < 0)
-            vectra_error("group_by: column not found: %s", ga->key_names[k]);
-        key_types[k] = child_schema->col_types[key_indices[k]];
-    }
-
-    int *agg_col_indices = (int *)malloc((size_t)ga->n_aggs * sizeof(int));
-    VecType *agg_types = (VecType *)malloc((size_t)ga->n_aggs * sizeof(VecType));
+/* Resolve each aggregate's input column index and type in schema cs; n() has
+   no input column (index -1, typed int64). */
+static void agg_resolve_inputs(const GroupAggNode *ga, const VecSchema *cs,
+                               int *idx, VecType *types) {
     for (int a = 0; a < ga->n_aggs; a++) {
         if (ga->agg_specs[a].kind == AGG_COUNT_STAR) {
-            agg_col_indices[a] = -1;
-            agg_types[a] = VEC_INT64;
+            idx[a] = -1;
+            types[a] = VEC_INT64;
         } else {
-            agg_col_indices[a] = vec_schema_find_col(child_schema,
-                ga->agg_specs[a].input_col);
-            if (agg_col_indices[a] < 0)
+            idx[a] = vec_schema_find_col(cs, ga->agg_specs[a].input_col);
+            if (idx[a] < 0)
                 vectra_error("summarise: column not found: %s",
                              ga->agg_specs[a].input_col);
-            agg_types[a] = child_schema->col_types[agg_col_indices[a]];
+            types[a] = cs->col_types[idx[a]];
         }
     }
+}
+
+/* Feed row r of batch into every aggregate of group gid. */
+static inline void agg_feed_row(AggAccum *accums, int n_aggs, const int *idx,
+                                int64_t gid, const VecBatch *batch, int64_t r) {
+    for (int a = 0; a < n_aggs; a++) {
+        if (idx[a] >= 0)
+            agg_accum_feed(&accums[a], gid, &batch->columns[idx[a]], r);
+        else
+            agg_accum_feed(&accums[a], gid, NULL, 0);
+    }
+}
+
+/* Set the result batch's column names: keys, then aggregate outputs. */
+static void group_agg_name_columns(const GroupAggNode *ga, VecBatch *out) {
+    for (int k = 0; k < ga->n_keys; k++)
+        out->col_names[k] = str_dup(ga->key_names[k]);
+    for (int a = 0; a < ga->n_aggs; a++)
+        out->col_names[ga->n_keys + a] = str_dup(ga->agg_specs[a].output_name);
+}
+
+/* Emitted result batches hold at most this many groups. */
+#define GROUP_AGG_EMIT 131072
+
+typedef enum { GAGG_AUTO, GAGG_SORTED } GroupAggMode;
+
+static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
+                                      char **key_names, int n_aggs,
+                                      AggSpec *agg_specs, const char *temp_dir,
+                                      int64_t mem_budget, GroupAggMode mode);
+
+/* ================================================================== */
+/*  Hash aggregation with a bounded partitioned fallback              */
+/*                                                                    */
+/*  Groups are aggregated in hash tables while their resident bytes   */
+/*  stay under the budget. The key space is split into shards by a    */
+/*  mixed key hash, one table (VecHashTable + KeyArena + one AggAccum */
+/*  per aggregate) per shard, so a batch is aggregated by all shards  */
+/*  in parallel with no shared state and no merge: a group lives in   */
+/*  exactly one shard. Once a shard's share of the budget is reached  */
+/*  the shard is frozen: rows of groups already in it keep            */
+/*  aggregating in place, and rows of any other group are routed by  */
+/*  a salted key hash into HAGG_PARTS run files. Every group          */
+/*  therefore lives either wholly in a table or wholly in one         */
+/*  partition, so no partial state is ever merged. After the input is */
+/*  drained the tables are emitted and freed, then each partition is  */
+/*  aggregated by a nested HashAggNode over a scan of its run file,   */
+/*  one at a time, with a deeper salt so a partition that still       */
+/*  overflows splits across different children. At HAGG_MAX_DEPTH a   */
+/*  partition drops to the sort-based path, which is bounded for any  */
+/*  key skew.                                                         */
+/* ================================================================== */
+
+#define HAGG_PARTS 64
+#define HAGG_MAX_DEPTH 3
+#define HAGG_MAX_SHARDS 64
+/* Group headroom reserved per shard before a parallel pass; a shard that
+   exhausts it stops, is regrown on the master, and resumes. */
+#define HAGG_HEADROOM_MIN 1024
+/* A partition's buffered spill rows are written as one row group once they
+   reach this many rows, or when all partitions together pass their byte
+   budget (floored at HAGG_PART_BUF_MIN so a tiny budget cannot degrade into one
+   row group per row). */
+#define HAGG_PART_FLUSH_ROWS 16384
+#define HAGG_PART_BUF_MIN    (256LL * 1024)
+#define HAGG_PART_BUF_MAX    (64LL * 1024 * 1024)
+
+/* murmur3 fmix of a key hash under a salt. The tables index slots by the low
+   bits of the raw hash, so shards and partitions are chosen from mixed bits:
+   keys that share a shard or partition do not share their slot bits. Salt 0
+   picks the shard; salt depth + 1 picks the spill partition at each level, so
+   each level splits independently. */
+static inline uint64_t hagg_mix(uint64_t h, uint64_t salt) {
+    h ^= salt * 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
+    h ^= h >> 33;
+    return h;
+}
+
+enum { HAGG_CONSUME, HAGG_EMIT_TABLE, HAGG_PARTITIONS, HAGG_DONE };
+
+typedef struct {
+    VecHashTable  ht;
+    KeyArena      arena;
+    AggAccum     *accums;
+    int           frozen;
+    int64_t       cap;        /* groups insertable without allocating */
+    int64_t       pos, end;   /* this batch's rows in the shard order array */
+    VecArray     *fin;        /* finished aggregate arrays, at emit */
+} HaggShard;
+
+typedef struct {
+    VecNode        base;
+    GroupAggNode  *ga;          /* borrowed: key names, agg specs, temp_dir */
+    VecNode       *in;          /* input stream */
+    int            own_in;      /* 1 = free `in` with this node */
+    int            depth;       /* partitioning level (0 = top) */
+    int64_t        budget;      /* table budget in bytes; <= 0 = unbounded */
+    int64_t        shard_freeze;/* per-shard bytes past which a shard freezes */
+    int            sorted_emit; /* 1 = emit groups ordered by key */
+    int            phase;
+
+    int           *key_idx;
+    VecType       *key_types;
+    int           *agg_idx;
+    VecType       *agg_types;
+
+    int            n_shards;    /* power of two */
+    int            shard_bits;
+    int            parallel;    /* 1 = shards run in an OpenMP region */
+    HaggShard     *shards;
+    int            tables_live;
+    int            frozen;      /* some shard froze: partitions exist */
+
+    /* Spill: the key and aggregate-input columns, deduplicated, by name. */
+    int            n_spill_cols;
+    int           *spill_src;       /* input column index per spill column */
+    VecSchema      spill_schema;
+    char         **part_paths;      /* NULL = partition received no rows */
+    Vtr1TdcWriter **writers;
+    VecArrayBuilder *pbuf;          /* HAGG_PARTS x n_spill_cols builders */
+    int64_t       *pbuf_rows;
+    int64_t       *pbuf_bytes;
+    int64_t        pbuf_total;
+    int64_t        pbuf_budget;
+
+    int64_t        n_out;           /* groups across shards, at emit */
+    int64_t       *order;           /* emit order: shard + gid * n_shards */
+    int64_t        emit_pos;
+    int            emitted_any;
+
+    int            cur_part;
+    VecNode       *sub;             /* aggregation of the current partition */
+} HashAggNode;
+
+/* Resident bytes of one shard: slots, arena, accumulators, plus what emitting
+   it adds -- the finished result arrays (bounded by the accumulators' own size)
+   and 16 bytes per group for the emit order and its merge buffer. */
+static int64_t hagg_shard_bytes(const HashAggNode *h, const HaggShard *s) {
+    const GroupAggNode *ga = h->ga;
+    int64_t bytes = vec_ht_bytes(&s->ht);
+    for (int k = 0; k < ga->n_keys; k++) {
+        int w = vec_type_elem_size(h->key_types[k]);
+        bytes += s->arena.capacity * (int64_t)((w ? w : 8) + 1);
+        if (h->key_types[k] == VEC_STRING)
+            bytes += s->arena.str_data_cap[k];
+    }
+    for (int a = 0; a < ga->n_aggs; a++)
+        bytes += 2 * agg_accum_bytes(&s->accums[a]);
+    bytes += 2 * (int64_t)sizeof(int64_t) * s->ht.n_groups;
+    return bytes;
+}
+
+static void hagg_setup(HashAggNode *h) {
+    GroupAggNode *ga = h->ga;
+    const VecSchema *cs = &h->in->output_schema;
+    int nk = ga->n_keys > 0 ? ga->n_keys : 1;
+    int na = ga->n_aggs > 0 ? ga->n_aggs : 1;
+    h->key_idx   = (int *)malloc((size_t)nk * sizeof(int));
+    h->key_types = (VecType *)malloc((size_t)nk * sizeof(VecType));
+    for (int k = 0; k < ga->n_keys; k++) {
+        h->key_idx[k] = vec_schema_find_col(cs, ga->key_names[k]);
+        if (h->key_idx[k] < 0)
+            vectra_error("group_by: column not found: %s", ga->key_names[k]);
+        h->key_types[k] = cs->col_types[h->key_idx[k]];
+    }
+    h->agg_idx   = (int *)malloc((size_t)na * sizeof(int));
+    h->agg_types = (VecType *)malloc((size_t)na * sizeof(VecType));
+    agg_resolve_inputs(ga, cs, h->agg_idx, h->agg_types);
+
+    /* Shards run in parallel only when no feed allocates (string first/last,
+       median, n_distinct), since nothing inside the region may raise. */
+    int alloc_feed = 0;
+    for (int a = 0; a < ga->n_aggs; a++)
+        if (agg_accum_feed_allocates(ga->agg_specs[a].kind, h->agg_types[a]))
+            alloc_feed = 1;
+    int threads = 1;
+#ifdef _OPENMP
+    if (!omp_in_parallel()) threads = omp_get_max_threads();
+#endif
+    h->n_shards = 1;
+    h->shard_bits = 0;
+    if (ga->n_keys > 0 && !alloc_feed) {
+        while (h->n_shards * 2 <= threads && h->n_shards < HAGG_MAX_SHARDS) {
+            h->n_shards *= 2;
+            h->shard_bits++;
+        }
+    }
+    h->parallel = h->n_shards > 1;
+    h->shard_freeze = (h->budget - h->pbuf_budget) / h->n_shards;
 
     int64_t store_mem = agg_holistic_budget(ga);
-    AggAccum *accums = (AggAccum *)malloc((size_t)ga->n_aggs * sizeof(AggAccum));
-    for (int a = 0; a < ga->n_aggs; a++) {
-        accums[a] = agg_accum_init(ga->agg_specs[a].kind,
-                                    agg_types[a],
-                                    ga->agg_specs[a].na_rm,
-                                    store_mem, ga->temp_dir);
+    h->shards = (HaggShard *)calloc((size_t)h->n_shards, sizeof(HaggShard));
+    if (!h->shards) vectra_error("alloc failed for hash aggregation shards");
+    for (int s = 0; s < h->n_shards; s++) {
+        HaggShard *sh = &h->shards[s];
+        sh->accums = (AggAccum *)malloc((size_t)na * sizeof(AggAccum));
+        for (int a = 0; a < ga->n_aggs; a++)
+            sh->accums[a] = agg_accum_init(ga->agg_specs[a].kind,
+                                           h->agg_types[a],
+                                           ga->agg_specs[a].na_rm,
+                                           store_mem, ga->temp_dir);
+        sh->ht = vec_ht_create(64);
+        key_arena_init(&sh->arena, ga->n_keys, h->key_types);
     }
+    h->tables_live = 1;
 
-    VecHashTable ht = vec_ht_create(64);
-    KeyArena arena;
-    key_arena_init(&arena, ga->n_keys, key_types);
+    /* Spill schema: keys first, then each distinct aggregate input column. */
+    h->spill_src = (int *)malloc((size_t)(nk + na) * sizeof(int));
+    int n = 0;
+    for (int k = 0; k < ga->n_keys; k++) h->spill_src[n++] = h->key_idx[k];
+    for (int a = 0; a < ga->n_aggs; a++) {
+        int ci = h->agg_idx[a];
+        if (ci < 0) continue;
+        int dup = 0;
+        for (int j = 0; j < n; j++) if (h->spill_src[j] == ci) { dup = 1; break; }
+        if (!dup) h->spill_src[n++] = ci;
+    }
+    h->n_spill_cols = n;
+}
 
-    VecBatch *batch;
-    while ((batch = ga->child->next_batch(ga->child)) != NULL) {
-        VecArray *batch_keys = (VecArray *)malloc((size_t)ga->n_keys * sizeof(VecArray));
-        for (int k = 0; k < ga->n_keys; k++)
-            batch_keys[k] = batch->columns[key_indices[k]];
+static char *hagg_part_path(const char *temp_dir, int depth, int p) {
+    static int hagg_counter = 0;
+    int id = hagg_counter++;
+    int len = snprintf(NULL, 0, "%s/vectra_hagg_%d_d%d_p%d.vtr",
+                       temp_dir, id, depth, p);
+    char *path = (char *)malloc((size_t)(len + 1));
+    snprintf(path, (size_t)(len + 1), "%s/vectra_hagg_%d_d%d_p%d.vtr",
+             temp_dir, id, depth, p);
+    return path;
+}
 
-        int64_t n_logical = vec_batch_logical_rows(batch);
+static void hagg_pbuf_init(HashAggNode *h, int p) {
+    for (int c = 0; c < h->n_spill_cols; c++)
+        h->pbuf[p * h->n_spill_cols + c] =
+            vec_builder_init(h->spill_schema.col_types[c]);
+    h->pbuf_rows[p] = 0;
+    h->pbuf_bytes[p] = 0;
+}
 
-        /* Pre-compute row hashes in parallel.  The hash function reads
-           only from immutable batch columns, so there are no conflicts.
-           Insert + accumulate remain sequential (hash table writes and
-           accumulator feeds have data dependencies). */
-        uint64_t *row_hashes = (uint64_t *)malloc(
-            (size_t)(n_logical > 0 ? n_logical : 1) * sizeof(uint64_t));
-        if (!row_hashes) vectra_error("alloc failed for row hash array");
+/* First freeze: set up the partition writers and buffers. */
+static void hagg_open_partitions(HashAggNode *h) {
+    const VecSchema *cs = &h->in->output_schema;
+    char **names = (char **)malloc((size_t)h->n_spill_cols * sizeof(char *));
+    VecType *types = (VecType *)malloc((size_t)h->n_spill_cols * sizeof(VecType));
+    for (int c = 0; c < h->n_spill_cols; c++) {
+        names[c] = cs->col_names[h->spill_src[c]];
+        types[c] = cs->col_types[h->spill_src[c]];
+    }
+    h->spill_schema = vec_schema_create(h->n_spill_cols, names, types);
+    free(names);
+    free(types);
 
-        #ifdef _OPENMP
-        #pragma omp parallel for if(n_logical > VEC_OMP_THRESHOLD) schedule(static)
-        #endif
-        for (int64_t li = 0; li < n_logical; li++) {
-            int64_t r = vec_batch_physical_row(batch, li);
-            uint64_t h = 0;
-            for (int k = 0; k < ga->n_keys; k++) {
-                uint64_t kh = vec_hash_value(&batch_keys[k], r);
-                h = (k == 0) ? kh : vec_hash_combine(h, kh);
-            }
-            row_hashes[li] = h;
+    h->part_paths = (char **)calloc(HAGG_PARTS, sizeof(char *));
+    h->writers = (Vtr1TdcWriter **)calloc(HAGG_PARTS, sizeof(Vtr1TdcWriter *));
+    h->pbuf = (VecArrayBuilder *)calloc(
+        (size_t)HAGG_PARTS * (size_t)h->n_spill_cols, sizeof(VecArrayBuilder));
+    h->pbuf_rows = (int64_t *)calloc(HAGG_PARTS, sizeof(int64_t));
+    h->pbuf_bytes = (int64_t *)calloc(HAGG_PARTS, sizeof(int64_t));
+    for (int p = 0; p < HAGG_PARTS; p++) hagg_pbuf_init(h, p);
+    h->frozen = 1;
+}
+
+static void hagg_flush_part(HashAggNode *h, int p) {
+    if (h->pbuf_rows[p] == 0) return;
+    int nc = h->n_spill_cols;
+    VecBatch *ob = vec_batch_alloc(nc, h->pbuf_rows[p]);
+    for (int c = 0; c < nc; c++) {
+        ob->columns[c] = vec_builder_finish(&h->pbuf[p * nc + c]);
+        ob->col_names[c] = str_dup(h->spill_schema.col_names[c]);
+    }
+    if (h->writers[p] == NULL) {
+        h->part_paths[p] = hagg_part_path(h->ga->temp_dir, h->depth, p);
+        h->writers[p] = vtr1_open_tdc_writer(h->part_paths[p], &h->spill_schema);
+    }
+    /* Uncompressed: a run file is written once and read once, and on 2e7-row
+       measurements FAST encoding made the spill eight times slower. */
+    vtr1_write_rowgroup_tdc(h->writers[p], ob, VTR_COMPRESS_NONE, NULL, NULL);
+    vec_batch_free(ob);
+    h->pbuf_total -= h->pbuf_bytes[p];
+    hagg_pbuf_init(h, p);
+}
+
+/* Route this batch's flagged rows (groups no frozen table holds) to their
+   partitions, keeping input order within each partition. */
+static void hagg_spill_batch(HashAggNode *h, VecBatch *batch,
+                             const uint8_t *spill, const uint64_t *hashes,
+                             int64_t n) {
+    int64_t n_sp = 0;
+    for (int64_t li = 0; li < n; li++) n_sp += spill[li];
+    if (n_sp == 0) return;
+
+    int64_t counts[HAGG_PARTS + 1] = {0};
+    uint8_t *pid = (uint8_t *)malloc((size_t)n_sp);
+    int32_t *rows = (int32_t *)malloc((size_t)n_sp * sizeof(int32_t));
+    if (!pid || !rows) {
+        free(pid); free(rows);
+        vectra_error("alloc failed for hash aggregation spill");
+    }
+    int64_t j = 0;
+    for (int64_t li = 0; li < n; li++) {
+        if (!spill[li]) continue;
+        pid[j] = (uint8_t)(hagg_mix(hashes[li], (uint64_t)h->depth + 1) %
+                           (uint64_t)HAGG_PARTS);
+        counts[pid[j] + 1]++;
+        j++;
+    }
+    for (int p = 0; p < HAGG_PARTS; p++) counts[p + 1] += counts[p];
+    int64_t fill[HAGG_PARTS];
+    memcpy(fill, counts, sizeof(fill));
+    j = 0;
+    for (int64_t li = 0; li < n; li++) {
+        if (!spill[li]) continue;
+        rows[fill[pid[j]]++] = (int32_t)vec_batch_physical_row(batch, li);
+        j++;
+    }
+    free(pid);
+
+    int nc = h->n_spill_cols;
+    for (int p = 0; p < HAGG_PARTS; p++) {
+        int64_t m = counts[p + 1] - counts[p];
+        if (m == 0) continue;
+        int64_t bytes = 0;
+        for (int c = 0; c < nc; c++) {
+            VecArray g = vec_array_gather(&batch->columns[h->spill_src[c]],
+                                          rows + counts[p], (int32_t)m);
+            bytes += 8 * m;
+            if (g.type == VEC_STRING) bytes += g.buf.str.offsets[m];
+            vec_builder_append_array(&h->pbuf[p * nc + c], &g);
+            vec_array_free(&g);
         }
+        h->pbuf_rows[p] += m;
+        h->pbuf_bytes[p] += bytes;
+        h->pbuf_total += bytes;
+        if (h->pbuf_rows[p] >= HAGG_PART_FLUSH_ROWS) hagg_flush_part(h, p);
+    }
+    free(rows);
+    if (h->pbuf_total > h->pbuf_budget)
+        for (int p = 0; p < HAGG_PARTS; p++) hagg_flush_part(h, p);
+}
 
-        /* Sequential insert + accumulate using pre-computed hashes.
-           Prefetch upcoming hash table slots to hide memory latency. */
-        int64_t ht_mask = ht.n_slots - 1;
-        for (int64_t li = 0; li < n_logical; li++) {
-            if (li + 8 < n_logical) {
-                int64_t pf_idx = (int64_t)(row_hashes[li + 8] & (uint64_t)ht_mask);
-                __builtin_prefetch(&ht.entries[pf_idx], 1, 1);
-            }
-            int64_t r = vec_batch_physical_row(batch, li);
+/* 1 when shard s can take the group at physical row r without allocating. */
+static inline int hagg_room(const HaggShard *sh, const VecArray *bkeys,
+                            int n_keys, int64_t r) {
+    if (sh->ht.n_groups >= sh->cap) return 0;
+    for (int k = 0; k < n_keys; k++) {
+        if (bkeys[k].type != VEC_STRING || !vec_array_is_valid(&bkeys[k], r))
+            continue;
+        int64_t slen = bkeys[k].buf.str.offsets[r + 1] - bkeys[k].buf.str.offsets[r];
+        if (sh->arena.str_data_len[k] + slen > sh->arena.str_data_cap[k])
+            return 0;
+    }
+    return 1;
+}
 
+/* Aggregate shard s's pending rows of this batch, from sh->pos, until done or
+   until the next new group does not fit the pre-reserved capacity. Performs no
+   allocation (and so cannot raise) when the node runs shards in parallel. Rows
+   of a frozen shard's unknown groups are flagged for the serial spill pass. */
+static void hagg_run_shard(HashAggNode *h, HaggShard *sh, const VecBatch *batch,
+                           const VecArray *bkeys, const int64_t *order,
+                           const uint64_t *hashes, uint8_t *spill) {
+    GroupAggNode *ga = h->ga;
+    for (; sh->pos < sh->end; sh->pos++) {
+        int64_t li = order[sh->pos];
+        int64_t r = vec_batch_physical_row((VecBatch *)batch, li);
+        int64_t gid = vec_ht_find(&sh->ht, hashes[li], bkeys, ga->n_keys, r,
+                                  sh->arena.arenas);
+        if (gid < 0) {
+            if (sh->frozen) { spill[li] = 1; continue; }
+            if (!hagg_room(sh, bkeys, ga->n_keys, r)) return;
             int was_new = 0;
-            int64_t gid = vec_ht_find_or_insert(
-                &ht, row_hashes[li], batch_keys, ga->n_keys, r,
-                arena.arenas, arena.length, &was_new);
+            gid = vec_ht_find_or_insert(&sh->ht, hashes[li], bkeys, ga->n_keys,
+                                        r, sh->arena.arenas, sh->arena.length,
+                                        &was_new);
+            key_arena_append_row(&sh->arena, bkeys, r);
+            for (int a = 0; a < ga->n_aggs; a++)
+                agg_accum_ensure(&sh->accums[a], sh->ht.n_groups);
+            if (h->budget > 0 && ga->n_keys > 0 &&
+                hagg_shard_bytes(h, sh) > h->shard_freeze)
+                sh->frozen = 1;
+        }
+        agg_feed_row(sh->accums, ga->n_aggs, h->agg_idx, gid, batch, r);
+    }
+}
 
-            if (was_new) {
-                key_arena_append_row(&arena, batch_keys, r);
-                for (int a = 0; a < ga->n_aggs; a++)
-                    agg_accum_ensure(&accums[a], ht.n_groups);
+/* Grow shard s so its next pending rows can open new groups without
+   allocating: room for the lesser of its pending rows and a headroom that
+   scales with the shard, plus the string key bytes of the rows that would
+   fill it. */
+static void hagg_reserve_shard(HashAggNode *h, HaggShard *sh,
+                               const VecArray *bkeys, const VecBatch *batch,
+                               const int64_t *order) {
+    GroupAggNode *ga = h->ga;
+    int64_t pending = sh->end - sh->pos;
+    int64_t head = sh->ht.n_groups / 2;
+    if (head < HAGG_HEADROOM_MIN) head = HAGG_HEADROOM_MIN;
+    if (head > pending) head = pending;
+    int64_t cap = sh->ht.n_groups + head;
+    int64_t str_extra[16] = {0};
+    int64_t *extra = ga->n_keys <= 16 ? str_extra
+        : (int64_t *)calloc((size_t)ga->n_keys, sizeof(int64_t));
+    for (int k = 0; k < ga->n_keys; k++) {
+        if (bkeys[k].type != VEC_STRING) continue;
+        for (int64_t i = 0; i < head; i++) {
+            int64_t r = vec_batch_physical_row((VecBatch *)batch, order[sh->pos + i]);
+            extra[k] += bkeys[k].buf.str.offsets[r + 1] - bkeys[k].buf.str.offsets[r];
+        }
+    }
+    vec_ht_reserve(&sh->ht, cap);
+    key_arena_reserve(&sh->arena, cap, extra);
+    for (int a = 0; a < ga->n_aggs; a++)
+        agg_accum_reserve(&sh->accums[a], cap);
+    sh->cap = cap;
+    if (extra != str_extra) free(extra);
+}
+
+/* Drain the input into the tables (and, once frozen, the partitions). */
+static void hagg_consume(HashAggNode *h) {
+    GroupAggNode *ga = h->ga;
+    hagg_setup(h);
+    int ns = h->n_shards;
+    int64_t *counts = (int64_t *)malloc((size_t)ns * sizeof(int64_t));
+
+    VecArray *bkeys = (VecArray *)malloc(
+        (size_t)(ga->n_keys > 0 ? ga->n_keys : 1) * sizeof(VecArray));
+    VecBatch *batch;
+    while ((batch = h->in->next_batch(h->in)) != NULL) {
+        for (int k = 0; k < ga->n_keys; k++)
+            bkeys[k] = batch->columns[h->key_idx[k]];
+        int64_t n = vec_batch_logical_rows(batch);
+        size_t nn = (size_t)(n > 0 ? n : 1);
+        uint64_t *hashes = (uint64_t *)malloc(nn * sizeof(uint64_t));
+        uint8_t  *sid    = (uint8_t *)malloc(nn);
+        int64_t  *order  = (int64_t *)malloc(nn * sizeof(int64_t));
+        uint8_t  *spill  = (uint8_t *)calloc(nn, 1);
+        if (!hashes || !sid || !order || !spill) {
+            free(hashes); free(sid); free(order); free(spill);
+            vectra_error("alloc failed for hash aggregation batch");
+        }
+
+        int sbits = h->shard_bits;
+        #ifdef _OPENMP
+        #pragma omp parallel for if(n > VEC_OMP_THRESHOLD) schedule(static)
+        #endif
+        for (int64_t li = 0; li < n; li++) {
+            int64_t r = vec_batch_physical_row(batch, li);
+            uint64_t hv = 0;
+            for (int k = 0; k < ga->n_keys; k++) {
+                uint64_t kh = vec_hash_value(&bkeys[k], r);
+                hv = (k == 0) ? kh : vec_hash_combine(hv, kh);
             }
+            hashes[li] = hv;
+            sid[li] = sbits ? (uint8_t)(hagg_mix(hv, 0) >> (64 - sbits)) : 0;
+        }
 
-            for (int a = 0; a < ga->n_aggs; a++) {
-                if (agg_col_indices[a] >= 0) {
-                    agg_accum_feed(&accums[a], gid,
-                                   &batch->columns[agg_col_indices[a]], r);
-                } else {
-                    agg_accum_feed(&accums[a], gid, NULL, 0);
-                }
+        /* Counting sort of the rows by shard, keeping input order within a
+           shard so first()/last() see each group's rows in order. */
+        memset(counts, 0, (size_t)ns * sizeof(int64_t));
+        for (int64_t li = 0; li < n; li++) counts[sid[li]]++;
+        int64_t off = 0;
+        for (int s = 0; s < ns; s++) {
+            h->shards[s].pos = h->shards[s].end = off;
+            off += counts[s];
+        }
+        for (int64_t li = 0; li < n; li++)
+            order[h->shards[sid[li]].end++] = li;
+
+        /* Reserve on the master, run every shard until done or out of room,
+           repeat for the shards that stopped. */
+        for (;;) {
+            int pending = 0;
+            for (int s = 0; s < ns; s++) {
+                HaggShard *sh = &h->shards[s];
+                if (sh->pos >= sh->end) continue;
+                pending = 1;
+                if (!sh->frozen && sh->ht.n_groups >= sh->cap)
+                    hagg_reserve_shard(h, sh, bkeys, batch, order);
+            }
+            if (!pending) break;
+            if (h->parallel && n > VEC_OMP_THRESHOLD) {
+                #ifdef _OPENMP
+                #pragma omp parallel for schedule(dynamic, 1)
+                #endif
+                for (int s = 0; s < ns; s++)
+                    hagg_run_shard(h, &h->shards[s], batch, bkeys, order,
+                                   hashes, spill);
+            } else {
+                for (int s = 0; s < ns; s++)
+                    hagg_run_shard(h, &h->shards[s], batch, bkeys, order,
+                                   hashes, spill);
+            }
+            /* A shard stopped for want of string key bytes has room in groups;
+               force its regrow on the next round. */
+            for (int s = 0; s < ns; s++) {
+                HaggShard *sh = &h->shards[s];
+                if (sh->pos < sh->end && !sh->frozen) sh->cap = sh->ht.n_groups;
             }
         }
 
-        free(row_hashes);
-
-        free(batch_keys);
+        int any_frozen = 0;
+        for (int s = 0; s < ns; s++) any_frozen |= h->shards[s].frozen;
+        if (any_frozen) {
+            if (!h->frozen) hagg_open_partitions(h);
+            hagg_spill_batch(h, batch, spill, hashes, n);
+        }
+        free(hashes); free(sid); free(order); free(spill);
         vec_batch_free(batch);
     }
+    free(bkeys);
+    free(counts);
 
-    int64_t n_groups = ht.n_groups;
-    int n_out = ga->n_keys + ga->n_aggs;
-    VecBatch *result = vec_batch_alloc(n_out, n_groups);
-
-    for (int k = 0; k < ga->n_keys; k++) {
-        VecArray *src = &arena.arenas[k];
-        src->length = n_groups;
-        if (key_types[k] == VEC_STRING) {
-            VecArray arr = vec_array_alloc(VEC_STRING, n_groups);
-            memcpy(arr.validity, src->validity, (size_t)vec_validity_bytes(n_groups));
-            memcpy(arr.buf.str.offsets, src->buf.str.offsets,
-                   (size_t)(n_groups + 1) * sizeof(int64_t));
-            int64_t dlen = arena.str_data_len[k];
-            free(arr.buf.str.data);
-            arr.buf.str.data = (char *)malloc((size_t)(dlen > 0 ? dlen : 1));
-            if (dlen > 0)
-                memcpy(arr.buf.str.data, arena.str_data[k], (size_t)dlen);
-            arr.buf.str.data_len = dlen;
-            result->columns[k] = arr;
-        } else {
-            VecArray *copy = vec_coerce(src, src->type);
-            copy->length = n_groups;
-            result->columns[k] = *copy;
-            free(copy);
+    if (h->frozen) {
+        for (int p = 0; p < HAGG_PARTS; p++) {
+            hagg_flush_part(h, p);
+            if (h->writers[p]) {
+                vtr1_close_tdc_writer(h->writers[p]);
+                h->writers[p] = NULL;
+            }
         }
-        size_t kn_len = strlen(ga->key_names[k]);
-        result->col_names[k] = (char *)malloc(kn_len + 1);
-        memcpy(result->col_names[k], ga->key_names[k], kn_len + 1);
     }
+    h->phase = HAGG_EMIT_TABLE;
+}
 
+/* Group order the sort-based path produces: ascending by each key in turn,
+   NA as the largest value (SortKey na_last = 0). Entries encode
+   shard + gid * n_shards. */
+static int hagg_key_cmp(const HashAggNode *h, int64_t x, int64_t y) {
+    int ns = h->n_shards;
+    const KeyArena *ax = &h->shards[x % ns].arena;
+    const KeyArena *ay = &h->shards[y % ns].arena;
+    int64_t gx = x / ns, gy = y / ns;
+    for (int k = 0; k < h->ga->n_keys; k++) {
+        int c = sort_compare_value(&ax->arenas[k], gx, &ay->arenas[k], gy, 0, 0);
+        if (c) return c;
+    }
+    return 0;
+}
+
+/* Bottom-up merge sort of the emit order by key. */
+static void hagg_sort_order(HashAggNode *h) {
+    int64_t n = h->n_out;
+    int64_t *a = h->order;
+    int64_t *tmp = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t));
+    if (!tmp) vectra_error("alloc failed for group order");
+    for (int64_t w = 1; w < n; w *= 2) {
+        for (int64_t lo = 0; lo < n; lo += 2 * w) {
+            int64_t mid = lo + w < n ? lo + w : n;
+            int64_t hi = lo + 2 * w < n ? lo + 2 * w : n;
+            int64_t i = lo, j = mid, o = lo;
+            while (i < mid && j < hi)
+                tmp[o++] = hagg_key_cmp(h, a[j], a[i]) < 0 ? a[j++] : a[i++];
+            while (i < mid) tmp[o++] = a[i++];
+            while (j < hi)  tmp[o++] = a[j++];
+        }
+        int64_t *t = a; a = tmp; tmp = t;
+    }
+    free(tmp);
+    h->order = a;
+}
+
+/* Finish every shard's aggregates and lay out the emit order: shard by shard,
+   or by key when sorted_emit. */
+static void hagg_prepare_emit(HashAggNode *h) {
+    GroupAggNode *ga = h->ga;
+    int ns = h->n_shards;
+    h->n_out = 0;
+    for (int s = 0; s < ns; s++) h->n_out += h->shards[s].ht.n_groups;
+    h->order = (int64_t *)malloc((size_t)(h->n_out > 0 ? h->n_out : 1) *
+                                 sizeof(int64_t));
+    if (!h->order) vectra_error("alloc failed for group order");
+    int64_t o = 0;
+    for (int s = 0; s < ns; s++) {
+        HaggShard *sh = &h->shards[s];
+        for (int64_t g = 0; g < sh->ht.n_groups; g++)
+            h->order[o++] = s + g * ns;
+        sh->fin = (VecArray *)calloc((size_t)(ga->n_aggs > 0 ? ga->n_aggs : 1),
+                                     sizeof(VecArray));
+        for (int a = 0; a < ga->n_aggs; a++) {
+            sh->accums[a].n_groups = sh->ht.n_groups;
+            sh->fin[a] = agg_accum_finish(&sh->accums[a]);
+        }
+    }
+    if (h->sorted_emit && ga->n_keys > 0 && h->n_out > 1)
+        hagg_sort_order(h);
+}
+
+static void hagg_free_tables(HashAggNode *h) {
+    if (!h->tables_live) return;
+    for (int s = 0; s < h->n_shards; s++) {
+        HaggShard *sh = &h->shards[s];
+        for (int a = 0; a < h->ga->n_aggs; a++) {
+            agg_accum_free(&sh->accums[a]);
+            if (sh->fin) vec_array_free(&sh->fin[a]);
+        }
+        free(sh->accums);
+        free(sh->fin);
+        vec_ht_free(&sh->ht);
+        key_arena_free(&sh->arena);
+    }
+    free(h->shards);
+    h->shards = NULL;
+    free(h->order);
+    h->order = NULL;
+    h->tables_live = 0;
+}
+
+/* Emit the next slice of table groups in emit order. */
+static VecBatch *hagg_emit_table(HashAggNode *h) {
+    GroupAggNode *ga = h->ga;
+    int ns = h->n_shards;
+    int64_t m = h->n_out - h->emit_pos;
+    if (m > GROUP_AGG_EMIT) m = GROUP_AGG_EMIT;
+    const int64_t *ord = h->order + h->emit_pos;
+
+    VecBatch *out = vec_batch_alloc(ga->n_keys + ga->n_aggs, m);
+    for (int k = 0; k < ga->n_keys; k++) {
+        VecArrayBuilder b = vec_builder_init(h->key_types[k]);
+        vec_builder_reserve(&b, m);
+        for (int64_t i = 0; i < m; i++)
+            vec_builder_append_one(&b, &h->shards[ord[i] % ns].arena.arenas[k],
+                                   ord[i] / ns);
+        out->columns[k] = vec_builder_finish(&b);
+    }
     for (int a = 0; a < ga->n_aggs; a++) {
-        result->columns[ga->n_keys + a] = agg_accum_finish(&accums[a]);
-        size_t on_len = strlen(ga->agg_specs[a].output_name);
-        result->col_names[ga->n_keys + a] = (char *)malloc(on_len + 1);
-        memcpy(result->col_names[ga->n_keys + a], ga->agg_specs[a].output_name, on_len + 1);
+        VecArrayBuilder b = vec_builder_init(
+            agg_output_type(ga->agg_specs[a].kind, h->agg_types[a]));
+        vec_builder_reserve(&b, m);
+        for (int64_t i = 0; i < m; i++)
+            vec_builder_append_one(&b, &h->shards[ord[i] % ns].fin[a],
+                                   ord[i] / ns);
+        out->columns[ga->n_keys + a] = vec_builder_finish(&b);
+    }
+    group_agg_name_columns(ga, out);
+    h->emit_pos += m;
+    h->emitted_any = 1;
+    return out;
+}
+
+static VecNode *hagg_node_create(GroupAggNode *ga, VecNode *in, int own_in,
+                                 int depth, int64_t budget, int sorted_emit);
+
+/* Aggregation of partition p's run file: a nested HashAggNode one level
+   deeper, or the sort-based path once the depth cap is reached. */
+static VecNode *hagg_partition_node(HashAggNode *h, int p) {
+    GroupAggNode *ga = h->ga;
+    VecNode *scan = (VecNode *)scan_node_create(h->part_paths[p], NULL, 0);
+    if (h->depth + 1 < HAGG_MAX_DEPTH)
+        return hagg_node_create(ga, scan, 1, h->depth + 1, h->budget, 0);
+
+    char **keys = (char **)malloc((size_t)ga->n_keys * sizeof(char *));
+    for (int k = 0; k < ga->n_keys; k++) keys[k] = str_dup(ga->key_names[k]);
+    AggSpec *specs = (AggSpec *)calloc((size_t)(ga->n_aggs > 0 ? ga->n_aggs : 1),
+                                       sizeof(AggSpec));
+    for (int a = 0; a < ga->n_aggs; a++) {
+        specs[a] = ga->agg_specs[a];
+        specs[a].output_name = str_dup(ga->agg_specs[a].output_name);
+        specs[a].input_col = ga->agg_specs[a].input_col
+            ? str_dup(ga->agg_specs[a].input_col) : NULL;
+    }
+    return (VecNode *)group_agg_create(scan, ga->n_keys, keys, ga->n_aggs,
+                                       specs, ga->temp_dir, h->budget,
+                                       GAGG_SORTED);
+}
+
+static VecBatch *hagg_next_batch(VecNode *self) {
+    HashAggNode *h = (HashAggNode *)self;
+    if (h->phase == HAGG_CONSUME) hagg_consume(h);
+
+    if (h->phase == HAGG_EMIT_TABLE) {
+        if (h->order == NULL) hagg_prepare_emit(h);
+        if (h->emit_pos < h->n_out || !h->emitted_any)
+            return hagg_emit_table(h);
+        hagg_free_tables(h);
+        h->phase = h->frozen ? HAGG_PARTITIONS : HAGG_DONE;
     }
 
-    for (int a = 0; a < ga->n_aggs; a++)
-        agg_accum_free(&accums[a]);
-    free(accums);
-    free(key_indices);
-    free(key_types);
-    free(agg_col_indices);
-    free(agg_types);
-    vec_ht_free(&ht);
-    key_arena_free(&arena);
+    while (h->phase == HAGG_PARTITIONS) {
+        if (h->sub == NULL) {
+            while (h->cur_part < HAGG_PARTS && h->part_paths[h->cur_part] == NULL)
+                h->cur_part++;
+            if (h->cur_part >= HAGG_PARTS) { h->phase = HAGG_DONE; break; }
+            h->sub = hagg_partition_node(h, h->cur_part);
+        }
+        VecBatch *out = h->sub->next_batch(h->sub);
+        if (out) return out;
+        h->sub->free_node(h->sub);
+        h->sub = NULL;
+        remove(h->part_paths[h->cur_part]);
+        free(h->part_paths[h->cur_part]);
+        h->part_paths[h->cur_part] = NULL;
+        h->cur_part++;
+    }
+    return NULL;
+}
 
-    return result;
+static void hagg_free(VecNode *self) {
+    HashAggNode *h = (HashAggNode *)self;
+    hagg_free_tables(h);
+    if (h->sub) h->sub->free_node(h->sub);
+    if (h->frozen) {
+        for (int p = 0; p < HAGG_PARTS; p++) {
+            if (h->writers[p]) vtr1_close_tdc_writer(h->writers[p]);
+            if (h->part_paths[p]) { remove(h->part_paths[p]); free(h->part_paths[p]); }
+            for (int c = 0; c < h->n_spill_cols; c++)
+                vec_builder_free(&h->pbuf[p * h->n_spill_cols + c]);
+        }
+        free(h->part_paths);
+        free(h->writers);
+        free(h->pbuf);
+        free(h->pbuf_rows);
+        free(h->pbuf_bytes);
+        vec_schema_free(&h->spill_schema);
+    }
+    if (h->own_in) h->in->free_node(h->in);
+    free(h->key_idx);
+    free(h->key_types);
+    free(h->agg_idx);
+    free(h->agg_types);
+    free(h->spill_src);
+    vec_schema_free(&h->base.output_schema);
+    free(h);
+}
+
+static VecNode *hagg_node_create(GroupAggNode *ga, VecNode *in, int own_in,
+                                 int depth, int64_t budget, int sorted_emit) {
+    HashAggNode *h = (HashAggNode *)calloc(1, sizeof(HashAggNode));
+    if (!h) vectra_error("alloc failed for HashAggNode");
+    h->ga = ga;
+    h->in = in;
+    h->own_in = own_in;
+    h->depth = depth;
+    h->budget = budget;
+    h->pbuf_budget = budget / 16;
+    if (h->pbuf_budget > HAGG_PART_BUF_MAX) h->pbuf_budget = HAGG_PART_BUF_MAX;
+    if (h->pbuf_budget < HAGG_PART_BUF_MIN) h->pbuf_budget = HAGG_PART_BUF_MIN;
+    h->sorted_emit = sorted_emit;
+    h->phase = HAGG_CONSUME;
+    h->base.output_schema = vec_schema_copy(&ga->base.output_schema);
+    h->base.next_batch = hagg_next_batch;
+    h->base.free_node = hagg_free;
+    h->base.kind = "HashAggNode";
+    return (VecNode *)h;
 }
 
 /* ================================================================== */
@@ -281,7 +896,6 @@ static void flush_group(const KeySnap *snap,
    emit threshold is reached, while the open group's accumulator + key snapshot
    carry over. Peak resident output is the emit threshold plus one child batch
    of groups -- bounded by the child rowgroup size, not the total group count. */
-#define GROUP_AGG_EMIT 131072
 
 typedef struct {
     int              inited;
@@ -322,21 +936,9 @@ static SortedAggState *sagg_init(GroupAggNode *ga) {
         st->key_types[k] = child_schema->col_types[st->key_indices[k]];
     }
 
-    st->agg_col_indices = (int *)malloc((size_t)ga->n_aggs * sizeof(int));
-    st->agg_types = (VecType *)malloc((size_t)ga->n_aggs * sizeof(VecType));
-    for (int a = 0; a < ga->n_aggs; a++) {
-        if (ga->agg_specs[a].kind == AGG_COUNT_STAR) {
-            st->agg_col_indices[a] = -1;
-            st->agg_types[a] = VEC_INT64;
-        } else {
-            st->agg_col_indices[a] = vec_schema_find_col(child_schema,
-                ga->agg_specs[a].input_col);
-            if (st->agg_col_indices[a] < 0)
-                vectra_error("summarise: column not found: %s",
-                             ga->agg_specs[a].input_col);
-            st->agg_types[a] = child_schema->col_types[st->agg_col_indices[a]];
-        }
-    }
+    st->agg_col_indices = (int *)malloc((size_t)(ga->n_aggs > 0 ? ga->n_aggs : 1) * sizeof(int));
+    st->agg_types = (VecType *)malloc((size_t)(ga->n_aggs > 0 ? ga->n_aggs : 1) * sizeof(VecType));
+    agg_resolve_inputs(ga, child_schema, st->agg_col_indices, st->agg_types);
 
     st->key_builders = (VecArrayBuilder *)calloc(
         (size_t)ga->n_keys, sizeof(VecArrayBuilder));
@@ -389,19 +991,11 @@ static VecBatch *sagg_emit(SortedAggState *st, GroupAggNode *ga) {
     int64_t n_groups = st->key_builders[0].length;
     int n_out = ga->n_keys + ga->n_aggs;
     VecBatch *result = vec_batch_alloc(n_out, n_groups);
-    for (int k = 0; k < ga->n_keys; k++) {
+    for (int k = 0; k < ga->n_keys; k++)
         result->columns[k] = vec_builder_finish(&st->key_builders[k]);
-        size_t kn_len = strlen(ga->key_names[k]);
-        result->col_names[k] = (char *)malloc(kn_len + 1);
-        memcpy(result->col_names[k], ga->key_names[k], kn_len + 1);
-    }
-    for (int a = 0; a < ga->n_aggs; a++) {
+    for (int a = 0; a < ga->n_aggs; a++)
         result->columns[ga->n_keys + a] = vec_builder_finish(&st->agg_builders[a]);
-        size_t on_len = strlen(ga->agg_specs[a].output_name);
-        result->col_names[ga->n_keys + a] = (char *)malloc(on_len + 1);
-        memcpy(result->col_names[ga->n_keys + a],
-               ga->agg_specs[a].output_name, on_len + 1);
-    }
+    group_agg_name_columns(ga, result);
     sagg_reset_builders(st, ga);   /* fresh builders; open group carries over */
     return result;
 }
@@ -438,13 +1032,8 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
                                 st->store_mem, ga->temp_dir);
                 snap_update(&st->snap, batch, row, st->key_indices);
             }
-            for (int a = 0; a < ga->n_aggs; a++) {
-                if (st->agg_col_indices[a] >= 0)
-                    agg_accum_feed(&st->accums[a], 0,
-                                   &batch->columns[st->agg_col_indices[a]], row);
-                else
-                    agg_accum_feed(&st->accums[a], 0, NULL, 0);
-            }
+            agg_feed_row(st->accums, ga->n_aggs, st->agg_col_indices, 0,
+                         batch, row);
             st->cur_row++;
             /* The open group (the one just fed) is not yet flushed, so the
                builders hold only completed groups. Emit and resume here. */
@@ -469,16 +1058,41 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
 /*  GroupAggNode interface                                            */
 /* ================================================================== */
 
+/* Hash path setup. The table (with its spill buffers) is charged half of the
+   node budget; the other half goes to the external sort that orders the result
+   once the table has overflowed, since from then on both are live. A table that
+   never overflows is emitted in key order from an in-RAM permutation and needs
+   no sort at all. */
+static void group_agg_start_hash(GroupAggNode *ga) {
+    int64_t budget = ga->mem_budget > 0 ? ga->mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    int64_t table_budget = ga->temp_dir ? budget / 2 : 0;
+    HashAggNode *h = (HashAggNode *)hagg_node_create(ga, ga->child, 0, 0,
+                                                     table_budget, 1);
+    ga->out = (VecNode *)h;
+    hagg_consume(h);
+    if (h->frozen) {
+        h->sorted_emit = 0;
+        SortKey *keys = (SortKey *)malloc((size_t)ga->n_keys * sizeof(SortKey));
+        for (int k = 0; k < ga->n_keys; k++) {
+            keys[k].col_index = k;
+            keys[k].descending = 0;
+            keys[k].na_last = 0;
+        }
+        ga->out = (VecNode *)sort_node_create((VecNode *)h, ga->n_keys, keys,
+                                              ga->temp_dir,
+                                              budget - table_budget);
+    }
+}
+
 static VecBatch *group_agg_next_batch(VecNode *self) {
     GroupAggNode *ga = (GroupAggNode *)self;
     /* Sorted path streams its output in bounded batches and signals completion
        by returning NULL itself (via SortedAggState.scan_done). */
     if (ga->use_sorted)
         return sorted_agg_next_batch(ga);
-    /* Hash path (single group, n_keys == 0) is one-shot. */
-    if (ga->done) return NULL;
-    ga->done = 1;
-    return hash_agg_next_batch(ga);
+    if (ga->out == NULL)
+        group_agg_start_hash(ga);
+    return ga->out->next_batch(ga->out);
 }
 
 static void group_agg_free(VecNode *self) {
@@ -486,6 +1100,10 @@ static void group_agg_free(VecNode *self) {
     if (ga->sagg) {
         sagg_free((SortedAggState *)ga->sagg, ga->n_keys, ga->n_aggs);
         ga->sagg = NULL;
+    }
+    if (ga->out) {
+        ga->out->free_node(ga->out);
+        ga->out = NULL;
     }
     ga->child->free_node(ga->child);
     for (int k = 0; k < ga->n_keys; k++)
@@ -501,10 +1119,10 @@ static void group_agg_free(VecNode *self) {
     free(ga);
 }
 
-GroupAggNode *group_agg_node_create(VecNode *child,
-                                    int n_keys, char **key_names,
-                                    int n_aggs, AggSpec *agg_specs,
-                                    const char *temp_dir, int64_t mem_budget) {
+static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
+                                      char **key_names, int n_aggs,
+                                      AggSpec *agg_specs, const char *temp_dir,
+                                      int64_t mem_budget, GroupAggMode mode) {
     GroupAggNode *ga = (GroupAggNode *)calloc(1, sizeof(GroupAggNode));
     if (!ga) vectra_error("alloc failed for GroupAggNode");
 
@@ -514,12 +1132,16 @@ GroupAggNode *group_agg_node_create(VecNode *child,
         strcpy(ga->temp_dir, temp_dir);
     }
 
-    /* One budget for the whole node: the external sort's spill threshold and
-       the per-group holistic (median / n_distinct) spill both derive from it. */
-    int64_t sort_mem = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    /* The sort-based path serves median() / n_distinct(), whose per-group
+       stores are built to hold one group at a time, and partitions that stayed
+       over budget through every level of hash partitioning. Everything else
+       aggregates by hash. */
+    int has_holistic = 0;
+    for (int a = 0; a < n_aggs; a++)
+        if (agg_is_holistic(agg_specs[a].kind)) has_holistic = 1;
 
-    /* If temp_dir provided, wrap child in a SortNode for spill-safe agg */
-    if (temp_dir && n_keys > 0) {
+    if (temp_dir && n_keys > 0 && (mode == GAGG_SORTED || has_holistic)) {
+        int64_t sort_mem = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
         const VecSchema *cs = &child->output_schema;
         SortKey *sort_keys = (SortKey *)malloc((size_t)n_keys * sizeof(SortKey));
         for (int k = 0; k < n_keys; k++) {
@@ -541,12 +1163,11 @@ GroupAggNode *group_agg_node_create(VecNode *child,
     ga->key_names = key_names;
     ga->n_aggs = n_aggs;
     ga->agg_specs = agg_specs;
-    ga->done = 0;
 
     /* Build output schema: key columns + agg columns */
     int n_out = n_keys + n_aggs;
-    char **out_names = (char **)malloc((size_t)n_out * sizeof(char *));
-    VecType *out_types = (VecType *)malloc((size_t)n_out * sizeof(VecType));
+    char **out_names = (char **)malloc((size_t)(n_out > 0 ? n_out : 1) * sizeof(char *));
+    VecType *out_types = (VecType *)malloc((size_t)(n_out > 0 ? n_out : 1) * sizeof(VecType));
 
     const VecSchema *cs = &child->output_schema;
     for (int k = 0; k < n_keys; k++) {
@@ -573,4 +1194,12 @@ GroupAggNode *group_agg_node_create(VecNode *child,
     ga->base.free_node = group_agg_free;
 
     return ga;
+}
+
+GroupAggNode *group_agg_node_create(VecNode *child,
+                                    int n_keys, char **key_names,
+                                    int n_aggs, AggSpec *agg_specs,
+                                    const char *temp_dir, int64_t mem_budget) {
+    return group_agg_create(child, n_keys, key_names, n_aggs, agg_specs,
+                            temp_dir, mem_budget, GAGG_AUTO);
 }

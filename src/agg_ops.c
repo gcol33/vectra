@@ -76,6 +76,7 @@ static void str_val_set(AggAccum *acc, int64_t g, const char *src, int64_t slen)
     char *p = (char *)realloc(acc->str_val[g], (size_t)(slen > 0 ? slen : 1));
     if (!p) vectra_error("agg alloc failed");
     if (slen > 0) memcpy(p, src, (size_t)slen);
+    acc->str_bytes += slen - acc->str_len[g];
     acc->str_val[g] = p;
     acc->str_len[g] = slen;
 }
@@ -685,6 +686,42 @@ VecArray agg_accum_finish(AggAccum *acc) {
     VecArray empty;
     memset(&empty, 0, sizeof(empty));
     return empty;
+}
+
+int agg_accum_feed_allocates(AggKind kind, VecType input_type) {
+    if (kind == AGG_MEDIAN || kind == AGG_N_DISTINCT) return 1;
+    return (kind == AGG_FIRST || kind == AGG_LAST) && input_type == VEC_STRING;
+}
+
+/* Grow capacity to at least cap groups without changing n_groups, so later
+   agg_accum_ensure calls up to cap never allocate. */
+void agg_accum_reserve(AggAccum *acc, int64_t cap) {
+    int64_t n = acc->n_groups;
+    agg_accum_ensure(acc, cap);
+    acc->n_groups = n;
+}
+
+int64_t agg_accum_bytes(const AggAccum *acc) {
+    int64_t per = 0;
+    if (acc->count)     per += sizeof(int64_t);
+    if (acc->count_all) per += sizeof(int64_t);
+    if (acc->sum_dbl)   per += sizeof(double);
+    if (acc->sum_i64)   per += sizeof(int64_t);
+    if (acc->min_dbl)   per += sizeof(double);
+    if (acc->max_dbl)   per += sizeof(double);
+    if (acc->min_i64)   per += sizeof(int64_t);
+    if (acc->max_i64)   per += sizeof(int64_t);
+    if (acc->has_value) per += sizeof(int);
+    if (acc->has_na)    per += sizeof(int);
+    if (acc->m2)        per += sizeof(double);
+    if (acc->first_dbl) per += sizeof(double);
+    if (acc->first_i64) per += sizeof(int64_t);
+    if (acc->last_dbl)  per += sizeof(double);
+    if (acc->last_i64)  per += sizeof(int64_t);
+    if (acc->has_first) per += sizeof(int);
+    if (acc->str_val)   per += sizeof(char *) + sizeof(int64_t);
+    if (acc->store)     per += sizeof(AggSpill);
+    return per * acc->capacity + acc->str_bytes;
 }
 
 void agg_accum_free(AggAccum *acc) {

@@ -45,4 +45,19 @@ int64_t vec_ht_find_or_insert(VecHashTable *ht, uint64_t hash,
                                const VecArray *key_arena, int64_t arena_len,
                                int *was_new);
 
+/* Lookup without insert. Returns the group_id whose arena key equals the probe
+   row, or -1 when the key is absent. */
+int64_t vec_ht_find(const VecHashTable *ht, uint64_t hash,
+                    const VecArray *keys, int n_keys, int64_t row,
+                    const VecArray *key_arena);
+
+/* Size the table so that n_groups entries fit under the resize threshold, so
+   inserts up to that count never allocate. */
+void vec_ht_reserve(VecHashTable *ht, int64_t n_groups);
+
+/* Bytes held by the table's slot array. */
+static inline int64_t vec_ht_bytes(const VecHashTable *ht) {
+    return ht->n_slots * (int64_t)sizeof(VecHTEntry);
+}
+
 #endif /* VECTRA_HASH_H */

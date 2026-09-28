@@ -30,6 +30,11 @@ void key_arena_init(KeyArena *ka, int n_keys, VecType *key_types);
    new group. Grows storage as needed. */
 void key_arena_append_row(KeyArena *ka, const VecArray *keys, int64_t row);
 
+/* Grow storage to hold at least `rows` groups and, for each string key column
+   k, str_extra[k] more key bytes, so appends within those limits never
+   allocate. str_extra may be NULL. */
+void key_arena_reserve(KeyArena *ka, int64_t rows, const int64_t *str_extra);
+
 /* Free all arena storage. */
 void key_arena_free(KeyArena *ka);
 
