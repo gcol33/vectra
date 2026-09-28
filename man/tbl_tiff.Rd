@@ -20,6 +20,10 @@ with columns \code{x}, \code{y}, \code{band1}, \code{band2}, etc. Coordinates ar
 derived from the affine geotransform. NoData values become \code{NA}.
 }
 \details{
+Strip and tiled files are read, uncompressed or compressed with DEFLATE or
+LZW, with the horizontal-differencing (2) and floating-point (3)
+predictors undone on read.
+
 Use \code{filter(x >= ..., y <= ...)} for extent-based cropping and
 \code{filter(band1 > ...)} for value-based cropping. Results can be converted
 back to a raster with \code{terra::rast(df, type = "xyz")}.

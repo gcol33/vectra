@@ -322,6 +322,10 @@ tbl_xlsx <- function(path, sheet = 1L, batch_size = .DEFAULT_BATCH_SIZE) {
 #' with columns `x`, `y`, `band1`, `band2`, etc. Coordinates are pixel centers
 #' derived from the affine geotransform. NoData values become `NA`.
 #'
+#' Strip and tiled files are read, uncompressed or compressed with DEFLATE or
+#' LZW, with the horizontal-differencing (2) and floating-point (3)
+#' predictors undone on read.
+#'
 #' Use `filter(x >= ..., y <= ...)` for extent-based cropping and
 #' `filter(band1 > ...)` for value-based cropping. Results can be converted
 #' back to a raster with `terra::rast(df, type = "xyz")`.

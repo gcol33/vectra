@@ -460,7 +460,7 @@ data.
 | Column pruning | yes | no | no | no | no |
 | Zone-map skip | yes | no | no | no | no |
 | Hash index support | yes | no | no | no | no |
-| Compression | tdc (dict/delta + LZ) | gzip (read) | -- | -- | deflate |
+| Compression | tdc (dict/delta + LZ) | gzip (read) | -- | -- | deflate, LZW |
 | Size on disk | small | large | medium | medium | variable |
 | Random access | by row group | no | by rowid | no | by raster row |
 | External tool support | vectra only | universal | wide | wide | GIS tools |

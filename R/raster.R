@@ -279,7 +279,7 @@ vec_build_overviews <- function(path,
 #' compression. LZW also applies horizontal differencing (Predictor 2)
 #' for integer pixel types, which dramatically improves compression on
 #' smooth raster data and matches the layout most production GIS tools
-#' produce by default. Tiled and BigTIFF output land in a follow-up.
+#' produce by default. [tbl_tiff()] reads all three back.
 #'
 #' @param r Either a path to a `.vec` raster or a `vectra_raster` returned
 #'   by `vec_open_raster()`. If a handle is passed it is left open.

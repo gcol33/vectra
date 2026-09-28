@@ -5,7 +5,7 @@
 
 /* ------------------------------------------------------------------ */
 /*  Minimal GeoTIFF reader/writer for climate rasters.                  */
-/*  Reads/writes strip-based GeoTIFF with optional DEFLATE compression. */
+/*  Strip/tiled GeoTIFF; reads none/LZW/DEFLATE, predictors 2 and 3.   */
 /*  Data model: pixels as (x, y, band1, band2, ...) rows.              */
 /* ------------------------------------------------------------------ */
 

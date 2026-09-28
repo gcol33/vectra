@@ -55,6 +55,10 @@
 #define COMPRESS_DEFLATE  8
 #define COMPRESS_ADOBE_DEFLATE 32946
 
+#define TIFF_LZW_CLEAR_CODE   256
+#define TIFF_LZW_EOI_CODE     257
+#define TIFF_LZW_FIRST_CODE   258
+
 #define SAMPLE_UINT     1
 #define SAMPLE_INT      2
 #define SAMPLE_FLOAT    3
@@ -627,11 +631,29 @@ static int parse_ifd(TiffReader *r) {
         goto fail;
     }
     if (r->compression != COMPRESS_NONE &&
+        r->compression != COMPRESS_LZW &&
         r->compression != COMPRESS_DEFLATE &&
         r->compression != COMPRESS_ADOBE_DEFLATE) {
         snprintf(r->errmsg, 256,
-                 "unsupported compression: %d (only none/deflate supported)",
+                 "unsupported compression: %d (only none/LZW/deflate supported)",
                  r->compression);
+        goto fail;
+    }
+    if (r->bits_per_sample != 8 && r->bits_per_sample != 16 &&
+        r->bits_per_sample != 32 && r->bits_per_sample != 64) {
+        snprintf(r->errmsg, 256, "unsupported bits per sample: %d",
+                 r->bits_per_sample);
+        goto fail;
+    }
+    if (r->sample_format == SAMPLE_FLOAT &&
+        r->bits_per_sample != 32 && r->bits_per_sample != 64) {
+        snprintf(r->errmsg, 256, "unsupported floating-point width: %d bits",
+                 r->bits_per_sample);
+        goto fail;
+    }
+    if (r->predictor < 1 || r->predictor > 3 ||
+        (r->predictor == 3 && r->sample_format != SAMPLE_FLOAT)) {
+        snprintf(r->errmsg, 256, "unsupported predictor: %d", r->predictor);
         goto fail;
     }
     if (r->n_bands > TIFF_MAX_BANDS) {
@@ -736,23 +758,203 @@ static int64_t block_expected_bytes(TiffReader *r, int64_t block_idx) {
     return rows * r->block_width * bps;
 }
 
-static void tiff_predictor2_undo(uint8_t *buf, int64_t nrows, int64_t W,
-                                 int nb, int bytes_per_sample);
+/* ================================================================== */
+/*  Predictors (tag 317)                                               */
+/* ================================================================== */
+/*
+ *  Predictor 2 (horizontal differencing): within each row, every sample is
+ *  stored as the difference from the previous sample of the same band.
+ *  Channels are chunky-interleaved, so "previous sample of the same band"
+ *  is `nb` samples back. Differences wrap modulo 2^bits, so the inverse
+ *  (a running sum) recovers the original exactly. Samples are integers in
+ *  the file's byte order; `be` selects it, so the writer (always
+ *  little-endian) and the reader (either order) share one implementation.
+ *
+ *  Predictor 3 (floating point): each row of `n` samples of `bps` bytes is
+ *  split into `bps` byte planes, most-significant plane first regardless of
+ *  the file's byte order, and the resulting `n * bps` bytes are then
+ *  byte-differenced with stride `nb`. Undoing it sums the bytes back and
+ *  reassembles each sample in the file's byte order, which is what
+ *  extract_pixel reads.
+ */
 
-/* Undo the storage predictor (tag 317) on a freshly decoded block, in place.
-   Predictor 2 (horizontal differencing) is the inverse of the writer's per-row
-   difference. Predictor 3 (floating-point) uses a byte-plane reshuffle we do not
-   implement; rather than return silently wrong pixels we signal failure. */
+static inline uint64_t tiff_load_sample(const uint8_t *p, int bps, int be) {
+    uint64_t v = 0;
+    if (be) for (int i = 0; i < bps; i++) v = (v << 8) | p[i];
+    else    for (int i = bps - 1; i >= 0; i--) v = (v << 8) | p[i];
+    return v;
+}
+
+static inline void tiff_store_sample(uint8_t *p, uint64_t v, int bps, int be) {
+    if (be) for (int i = bps - 1; i >= 0; i--) { p[i] = (uint8_t)v; v >>= 8; }
+    else    for (int i = 0; i < bps; i++)      { p[i] = (uint8_t)v; v >>= 8; }
+}
+
+/* Apply (undo = 0) or undo (undo = 1) Predictor 2 on `nrows` rows of `W`
+   pixels with `nb` interleaved samples of `bps` bytes each. */
+static void tiff_predictor2(uint8_t *buf, int64_t nrows, int64_t W, int nb,
+                            int bps, int be, int undo) {
+    int64_t n = W * nb;
+    int64_t row_bytes = n * bps;
+    for (int64_t r = 0; r < nrows; r++) {
+        uint8_t *row = buf + r * row_bytes;
+        if (bps == 1) {
+            if (undo)
+                for (int64_t i = nb; i < n; i++)
+                    row[i] = (uint8_t)(row[i] + row[i - nb]);
+            else
+                for (int64_t i = n - 1; i >= nb; i--)
+                    row[i] = (uint8_t)(row[i] - row[i - nb]);
+            continue;
+        }
+        if (undo) {
+            for (int64_t i = nb; i < n; i++) {
+                uint64_t prev = tiff_load_sample(row + (i - nb) * bps, bps, be);
+                uint64_t cur  = tiff_load_sample(row + i * bps, bps, be);
+                tiff_store_sample(row + i * bps, cur + prev, bps, be);
+            }
+        } else {
+            for (int64_t i = n - 1; i >= nb; i--) {
+                uint64_t prev = tiff_load_sample(row + (i - nb) * bps, bps, be);
+                uint64_t cur  = tiff_load_sample(row + i * bps, bps, be);
+                tiff_store_sample(row + i * bps, cur - prev, bps, be);
+            }
+        }
+    }
+}
+
+/* Undo Predictor 3 on `nrows` rows of `W` pixels with `nb` interleaved
+   samples of `bps` bytes. `tmp` holds one row. */
+static void tiff_predictor3_undo(uint8_t *buf, uint8_t *tmp, int64_t nrows,
+                                 int64_t W, int nb, int bps, int be) {
+    int64_t n = W * nb;
+    int64_t row_bytes = n * bps;
+    for (int64_t r = 0; r < nrows; r++) {
+        uint8_t *row = buf + r * row_bytes;
+        for (int64_t i = nb; i < row_bytes; i++)
+            row[i] = (uint8_t)(row[i] + row[i - nb]);
+        memcpy(tmp, row, (size_t)row_bytes);
+        for (int64_t i = 0; i < n; i++) {
+            uint8_t *s = row + i * bps;
+            for (int b = 0; b < bps; b++) {
+                /* plane b holds byte b of the big-endian representation */
+                uint8_t v = tmp[(int64_t)b * n + i];
+                s[be ? b : bps - 1 - b] = v;
+            }
+        }
+    }
+}
+
+/* Undo the storage predictor on a freshly decoded block, in place. */
 static int apply_read_predictor(TiffReader *r, int64_t block_idx, uint8_t *buf) {
     if (r->predictor <= 1) return 0;
     int bps = r->bits_per_sample / 8;
     int nb = (r->planar_config == 1) ? r->n_bands : 1;
     int64_t nrows = block_stored_rows(r, block_idx);
-    if (r->predictor == 2 && (bps == 1 || bps == 2 || bps == 4)) {
-        tiff_predictor2_undo(buf, nrows, r->block_width, nb, bps);
+    if (r->predictor == 2) {
+        tiff_predictor2(buf, nrows, r->block_width, nb, bps, r->io.big_endian, 1);
         return 0;
     }
-    return -1; /* predictor 3, or an unsupported sample width under predictor 2 */
+    uint8_t *tmp = (uint8_t *)malloc((size_t)(r->block_width * nb * bps));
+    if (!tmp) return -1;
+    tiff_predictor3_undo(buf, tmp, nrows, r->block_width, nb, bps,
+                         r->io.big_endian);
+    free(tmp);
+    return 0;
+}
+
+/* ================================================================== */
+/*  LZW decoder (TIFF flavour)                                         */
+/* ================================================================== */
+/*
+ *  Inverse of tiff_lzw_encode below: MSB-first codes of 9 to 12 bits,
+ *  ClearCode 256, EoiCode 257, string codes from 258. The code width grows
+ *  one code early ("early change"): once the next free code reaches
+ *  2^width - 1 the following code is read at width + 1.
+ *
+ *  Decodes into `out` (capacity `cap`) and returns the number of bytes
+ *  produced, or -1 on a malformed stream: a code that names no string, a
+ *  string code before the first ClearCode-reset literal, or the old
+ *  (pre-TIFF 6, LSB-first) variant, which starts with the bytes 0x00 0x01.
+ *  Output past `cap` is dropped; a stream ending without EoiCode ends the
+ *  block, and the caller then checks the byte count against the geometry.
+ */
+static int64_t tiff_lzw_decode(const uint8_t *in, int64_t n,
+                               uint8_t *out, int64_t cap) {
+    if (n >= 2 && in[0] == 0x00 && (in[1] & 0x01)) return -1;
+
+    uint16_t prefix[4096];
+    uint8_t  suffix[4096];
+    uint8_t  first[4096];
+    uint16_t length[4096];
+    for (int i = 0; i < 256; i++) {
+        prefix[i] = 0; suffix[i] = (uint8_t)i; first[i] = (uint8_t)i;
+        length[i] = 1;
+    }
+
+    int64_t produced = 0;
+    int64_t ip = 0;
+    uint32_t acc = 0;
+    int accbits = 0;
+    int width = 9;
+    int next = TIFF_LZW_FIRST_CODE;
+    int old = -1;
+
+    while (produced < cap) {
+        while (accbits < width && ip < n) {
+            acc = (acc << 8) | in[ip++];
+            accbits += 8;
+        }
+        if (accbits < width) break;
+        uint32_t code = (acc >> (accbits - width)) & ((1u << width) - 1u);
+        accbits -= width;
+
+        if (code == TIFF_LZW_EOI_CODE) break;
+        if (code == TIFF_LZW_CLEAR_CODE) {
+            width = 9;
+            next = TIFF_LZW_FIRST_CODE;
+            old = -1;
+            continue;
+        }
+
+        int cur;
+        uint8_t head;
+        if (old < 0) {
+            if (code > 255) return -1;
+            cur = (int)code;
+            head = first[cur];
+        } else if ((int)code < next) {
+            cur = (int)code;
+            head = first[cur];
+        } else if ((int)code == next && next < 4096) {
+            cur = -1;
+            head = first[old];
+        } else {
+            return -1;
+        }
+
+        if (old >= 0 && next < 4096) {
+            prefix[next] = (uint16_t)old;
+            suffix[next] = head;
+            first[next]  = first[old];
+            length[next] = (uint16_t)(length[old] + 1);
+            if (cur < 0) cur = next;
+            next++;
+            if (next >= (1 << width) - 1 && width < 12) width++;
+        }
+
+        /* Emit the string for `cur` by walking its prefix chain backwards. */
+        int64_t len = length[cur];
+        int64_t end = produced + len;
+        int c = cur;
+        for (int64_t pos = end - 1; pos >= produced; pos--) {
+            if (pos < cap) out[pos] = suffix[c];
+            c = prefix[c];
+        }
+        produced = end;
+        old = cur;
+    }
+    return produced < cap ? produced : cap;
 }
 
 static uint8_t *read_block(TiffReader *r, int64_t block_idx,
@@ -760,6 +962,8 @@ static uint8_t *read_block(TiffReader *r, int64_t block_idx,
     int64_t offset = r->block_offsets[block_idx];
     int64_t compressed_len = r->block_byte_counts[block_idx];
     int64_t expected_bytes = block_expected_bytes(r, block_idx);
+
+    if (compressed_len <= 0 || offset < 0 || expected_bytes <= 0) return NULL;
 
     if (r->compression == COMPRESS_NONE) {
         /* A corrupt/hostile file can record a byte count smaller than the block's
@@ -777,7 +981,6 @@ static uint8_t *read_block(TiffReader *r, int64_t block_idx,
         return buf;
     }
 
-    /* DEFLATE */
     uint8_t *comp = (uint8_t *)malloc((size_t)compressed_len);
     if (!comp) return NULL;
     if (tio_read_at(&r->io, offset, comp, (size_t)compressed_len) != 0) {
@@ -785,26 +988,28 @@ static uint8_t *read_block(TiffReader *r, int64_t block_idx,
         return NULL;
     }
 
-    uLong dest_len = (uLong)expected_bytes;
     uint8_t *decomp = (uint8_t *)malloc((size_t)expected_bytes);
     if (!decomp) { free(comp); return NULL; }
 
-    int rc = uncompress(decomp, &dest_len, comp, (uLong)compressed_len);
+    int64_t produced;
+    if (r->compression == COMPRESS_LZW) {
+        produced = tiff_lzw_decode(comp, compressed_len, decomp, expected_bytes);
+    } else {
+        uLong dest_len = (uLong)expected_bytes;
+        int rc = uncompress(decomp, &dest_len, comp, (uLong)compressed_len);
+        produced = (rc == Z_OK) ? (int64_t)dest_len : -1;
+    }
     free(comp);
 
-    if (rc != Z_OK) {
-        free(decomp);
-        return NULL;
-    }
-    /* A truncated-but-valid DEFLATE stream can decode to fewer bytes than the
-       block geometry; the tail would then be uninitialized heap. Reject it. */
-    if ((int64_t)dest_len < expected_bytes) {
+    /* A truncated stream can decode to fewer bytes than the block geometry;
+       the tail would then be uninitialized heap. Reject it. */
+    if (produced < expected_bytes) {
         free(decomp);
         return NULL;
     }
     if (apply_read_predictor(r, block_idx, decomp) != 0) { free(decomp); return NULL; }
 
-    *out_len = (int64_t)dest_len;
+    *out_len = expected_bytes;
     return decomp;
 }
 
@@ -1177,9 +1382,6 @@ void tiff_reader_close(TiffReader *r) {
  *  can detect collisions; the value is the assigned code.
  */
 
-#define TIFF_LZW_CLEAR_CODE   256
-#define TIFF_LZW_EOI_CODE     257
-#define TIFF_LZW_FIRST_CODE   258
 #define TIFF_LZW_MAX_CODE     4094  /* TIFF spec: clear before code 4095 */
 #define TIFF_LZW_HASH_SIZE    9001  /* prime, > 4096 */
 #define TIFF_LZW_EMPTY        (-1)
@@ -1338,119 +1540,6 @@ fail:
     free(table);
     free(bw.out);
     return -1;
-}
-
-/* ================================================================== */
-/*  Predictor 2 (horizontal differencing)                              */
-/* ================================================================== */
-/*
- *  For each scanline, replace each sample with the difference from the
- *  previous sample of the same band. Channels are interleaved chunky
- *  (sample0_band0, sample0_band1, ..., sample1_band0, ...), so the
- *  "previous sample of the same band" is `nbands` positions back, not 1.
- *
- *  Difference is computed in the integer width of the sample. Wraparound
- *  on overflow is intentional — the inverse predictor sums modulo 2^N and
- *  recovers the original exactly.
- */
-
-static void tiff_predictor2_apply_row_u8(uint8_t *row, int64_t W, int nb) {
-    for (int64_t col = W - 1; col >= 1; col--) {
-        for (int b = 0; b < nb; b++) {
-            row[col * nb + b] =
-                (uint8_t)(row[col * nb + b] - row[(col - 1) * nb + b]);
-        }
-    }
-}
-
-static void tiff_predictor2_apply_row_u16(uint8_t *row, int64_t W, int nb) {
-    /* Little-endian 16-bit samples in chunky layout. Operate on uint16_t
-     * values via memcpy to stay alignment-safe on platforms that care. */
-    int stride = nb * 2;
-    for (int64_t col = W - 1; col >= 1; col--) {
-        for (int b = 0; b < nb; b++) {
-            uint16_t a, c;
-            memcpy(&a, row + (col - 1) * stride + b * 2, 2);
-            memcpy(&c, row + col       * stride + b * 2, 2);
-            uint16_t d = (uint16_t)(c - a);
-            memcpy(row + col * stride + b * 2, &d, 2);
-        }
-    }
-}
-
-static void tiff_predictor2_apply_row_u32(uint8_t *row, int64_t W, int nb) {
-    int stride = nb * 4;
-    for (int64_t col = W - 1; col >= 1; col--) {
-        for (int b = 0; b < nb; b++) {
-            uint32_t a, c;
-            memcpy(&a, row + (col - 1) * stride + b * 4, 4);
-            memcpy(&c, row + col       * stride + b * 4, 4);
-            uint32_t d = c - a;
-            memcpy(row + col * stride + b * 4, &d, 4);
-        }
-    }
-}
-
-/* Apply Predictor 2 to a chunky-interleaved buffer of `nrows` x `W` pixels
- * with `nb` bands. `bytes_per_sample` selects 1 / 2 / 4. */
-static void tiff_predictor2_apply(uint8_t *buf, int64_t nrows, int64_t W,
-                                  int nb, int bytes_per_sample) {
-    int64_t row_bytes = W * nb * bytes_per_sample;
-    for (int64_t r = 0; r < nrows; r++) {
-        uint8_t *row = buf + r * row_bytes;
-        switch (bytes_per_sample) {
-        case 1: tiff_predictor2_apply_row_u8(row, W, nb); break;
-        case 2: tiff_predictor2_apply_row_u16(row, W, nb); break;
-        case 4: tiff_predictor2_apply_row_u32(row, W, nb); break;
-        default: /* unsupported sample width — leave untouched */ break;
-        }
-    }
-}
-
-/* --- Reader side: undo Predictor 2 (horizontal differencing). Each row is a
- * left-to-right cumulative sum, inverting the writer's per-row difference. */
-static void tiff_predictor2_undo_row_u8(uint8_t *row, int64_t W, int nb) {
-    for (int64_t col = 1; col < W; col++)
-        for (int b = 0; b < nb; b++)
-            row[col * nb + b] = (uint8_t)(row[col * nb + b] + row[(col - 1) * nb + b]);
-}
-
-static void tiff_predictor2_undo_row_u16(uint8_t *row, int64_t W, int nb) {
-    int stride = nb * 2;
-    for (int64_t col = 1; col < W; col++)
-        for (int b = 0; b < nb; b++) {
-            uint16_t a, c;
-            memcpy(&a, row + (col - 1) * stride + b * 2, 2);
-            memcpy(&c, row + col       * stride + b * 2, 2);
-            uint16_t d = (uint16_t)(c + a);
-            memcpy(row + col * stride + b * 2, &d, 2);
-        }
-}
-
-static void tiff_predictor2_undo_row_u32(uint8_t *row, int64_t W, int nb) {
-    int stride = nb * 4;
-    for (int64_t col = 1; col < W; col++)
-        for (int b = 0; b < nb; b++) {
-            uint32_t a, c;
-            memcpy(&a, row + (col - 1) * stride + b * 4, 4);
-            memcpy(&c, row + col       * stride + b * 4, 4);
-            uint32_t d = c + a;
-            memcpy(row + col * stride + b * 4, &d, 4);
-        }
-}
-
-static void tiff_predictor2_undo(uint8_t *buf, int64_t nrows, int64_t W,
-                                 int nb, int bytes_per_sample) {
-    int64_t row_bytes = W * nb * bytes_per_sample;
-    for (int64_t r = 0; r < nrows; r++) {
-        uint8_t *row = buf + r * row_bytes;
-        switch (bytes_per_sample) {
-        case 1: tiff_predictor2_undo_row_u8(row, W, nb); break;
-        case 2: tiff_predictor2_undo_row_u16(row, W, nb); break;
-        case 4: tiff_predictor2_undo_row_u32(row, W, nb); break;
-        default: break;
-        }
-    }
 }
 
 /* ================================================================== */
@@ -1930,6 +2019,9 @@ static int tiff_writer_write_rows_tiled(TiffWriter *w, int64_t row_start,
                 }
             }
 
+            if (w->predictor == 2)
+                tiff_predictor2(raw, TH, TW, nb, bps, 0, 0);
+
             int64_t tile_idx = ty * w->n_tiles_x + tx;
             if (tile_idx >= 0 && tile_idx < w->n_tiles) {
                 if (write_block(w, raw, tile_raw_size,
@@ -2017,7 +2109,7 @@ int tiff_writer_write_rows(TiffWriter *w, int64_t row_start, int64_t n_rows,
          * Only LZW + integer types use it; float and uncompressed/DEFLATE
          * keep predictor = 1 (none). */
         if (w->predictor == 2) {
-            tiff_predictor2_apply(raw, actual_rows, W, nb, bps);
+            tiff_predictor2(raw, actual_rows, W, nb, bps, 0, 0);
         }
 
         /* Compress and write via shared helper */
