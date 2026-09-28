@@ -28,7 +28,7 @@ arrange <- function(.data, ...) {
 
 #' @export
 arrange.vectra_node <- function(.data, ...) {
-  dots <- eval(substitute(alist(...)))
+  dots <- .capture_dots(...)
   if (length(dots) == 0) return(.data)
 
   col_names <- character(length(dots))
@@ -45,8 +45,9 @@ arrange.vectra_node <- function(.data, ...) {
                length(expr) == 2L) {
       expr <- expr[[2]]; desc <- TRUE
     }
-    if (is.name(expr)) {
-      col_names[i] <- as.character(expr)
+    col <- .col_ref_name(expr, parent.frame())
+    if (!is.null(col)) {
+      col_names[i] <- col
     } else {
       # arrange(x + y), arrange(desc(x * 2)): dplyr sorts by arbitrary
       # expressions. Materialize the expression into a hidden sort key, sort by
@@ -128,7 +129,7 @@ filter <- function(.data, ...) {
 
 #' @export
 filter.vectra_node <- function(.data, ...) {
-  exprs <- eval(substitute(alist(...)))
+  exprs <- .capture_dots(...)
   meta <- .strip_meta_args(exprs)
   exprs <- meta$dots
 
@@ -328,7 +329,7 @@ mutate <- function(.data, ...) {
 
 #' @export
 mutate.vectra_node <- function(.data, ...) {
-  dots <- eval(substitute(alist(...)))
+  dots <- .capture_dots(...)
   meta <- .strip_meta_args(dots)
   dots <- meta$dots
   .check_mutate_keep(meta$keep, parent.frame())
@@ -363,6 +364,35 @@ mutate.vectra_node <- function(.data, ...) {
 # dplyr 1.1 meta-arguments (.by / .keep / .preserve) and if_any()/if_all().
 # Shared by mutate()/filter() (this file) and summarise() (verbs_grouping.R).
 # ---------------------------------------------------------------------------
+
+# Capture a verb's `...` as plain expressions for the serializer. rlang
+# resolves injection while capturing (`!!x`, `!!!xs`, `{{ x }}`, `!!nm := e`),
+# so every NSE verb reads the same expressions whichever way they were
+# written. Names are NULL when no argument is named, as alist() gives.
+.capture_dots <- function(...) {
+  exprs <- lapply(rlang::enquos(...), rlang::quo_squash)
+  if (!length(exprs) || all(!nzchar(names(exprs)))) names(exprs) <- NULL
+  exprs
+}
+
+# The column an expression names directly, or NULL when it is not a plain
+# column reference: a symbol, `.data$x`, or `.data[[k]]` (k evaluated in
+# `env`).
+.col_ref_name <- function(expr, env) {
+  if (is.name(expr)) return(as.character(expr))
+  if (is.call(expr) && length(expr) == 3L &&
+      identical(expr[[2L]], quote(.data))) {
+    op <- expr[[1L]]
+    if (identical(op, quote(`$`))) return(as.character(expr[[3L]]))
+    if (identical(op, quote(`[[`))) {
+      key <- eval(expr[[3L]], env)
+      if (!is.character(key) || length(key) != 1L || is.na(key))
+        stop(".data[[ ]] needs a single column name")
+      return(key)
+    }
+  }
+  NULL
+}
 
 # Split the dplyr 1.1 meta-arguments out of a captured alist of dots so they are
 # never mistaken for data expressions. Returns the remaining dots plus each meta

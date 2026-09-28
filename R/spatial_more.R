@@ -189,7 +189,7 @@ rast_calc <- function(rasters, expr, band = 1L, path = NULL, dtype = "f32",
   if (!is.list(rasters) || !length(rasters) ||
       is.null(names(rasters)) || any(names(rasters) == ""))
     stop("`rasters` must be a named list of vectra_raster handles or .vec paths")
-  ex <- substitute(expr)
+  ex <- rlang::quo_squash(rlang::enquo(expr))
   comp_code <- switch(match.arg(compression), fast = 0L, balanced = 1L, max = 2L)
 
   handles <- lapply(rasters, function(z) .zonal_open(z, "rasters"))

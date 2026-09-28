@@ -195,7 +195,7 @@ lookup.vectra_schema <- function(.schema, ..., .join = "left", .report = TRUE) {
   if (!.join %in% c("left", "inner"))
     stop(sprintf(".join must be 'left' or 'inner', got '%s'", .join))
 
-  exprs <- eval(substitute(alist(...)))
+  exprs <- .capture_dots(...)
   if (length(exprs) == 0)
     stop("at least one column reference is required")
 

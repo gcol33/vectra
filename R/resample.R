@@ -111,7 +111,7 @@ resample <- function(.data, time, every, ..., .name = NULL) {
 
 #' @export
 resample.vectra_node <- function(.data, time, every, ..., .name = NULL) {
-  time_sym <- substitute(time)
+  time_sym <- rlang::quo_squash(rlang::enquo(time))
   if (is.character(time_sym)) time_sym <- as.name(time_sym)
   if (!is.name(time_sym))
     stop("`time` must be a column name")
@@ -120,7 +120,7 @@ resample.vectra_node <- function(.data, time, every, ..., .name = NULL) {
   if (!is.character(every) || length(every) != 1L)
     stop("`every` must be a single string, e.g. \"1 hour\"")
 
-  dots <- eval(substitute(alist(...)))
+  dots <- .capture_dots(...)
   if (length(dots) == 0L || is.null(names(dots)) || any(names(dots) == ""))
     stop("resample() needs at least one named aggregation, e.g. mean_x = mean(x)")
 

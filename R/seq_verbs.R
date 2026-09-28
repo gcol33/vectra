@@ -48,8 +48,8 @@ kmer <- function(x, seq, k = 4, by = NULL, canonical = FALSE) {
 #' @export
 kmer.vectra_node <- function(x, seq, k = 4, by = NULL, canonical = FALSE) {
   seq_name <- if (missing(seq)) "seq"
-              else .col_name_from_expr(substitute(seq), "seq")
-  by_names <- .by_names_from_expr(substitute(by), parent.frame())
+              else .col_name_from_expr(rlang::quo_squash(rlang::enquo(seq)), "seq")
+  by_names <- .by_names_from_expr(rlang::quo_squash(rlang::enquo(by)), parent.frame())
 
   if (!is.numeric(k) || length(k) != 1 || is.na(k))
     stop(sprintf("k must be a single integer in 1:32, got %s", deparse(k)))

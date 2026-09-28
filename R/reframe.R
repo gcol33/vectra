@@ -23,7 +23,7 @@ reframe <- function(.data, ...) {
 reframe.vectra_node <- function(.data, ...) {
   df <- collect(.data)
   groups <- .data$.groups
-  dots <- eval(substitute(alist(...)))
+  dots <- .capture_dots(...)
   # Expand across() calls
   dot_names_check <- names(dots)
   has_across <- any(vapply(dots, function(e) is.call(e) && identical(e[[1]], as.name("across")), logical(1)))

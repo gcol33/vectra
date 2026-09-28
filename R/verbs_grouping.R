@@ -69,7 +69,7 @@ group_by.vectra_node <- function(.data, ..., .add = FALSE) {
       next
     }
 
-    col <- .group_col_ref(expr, env)
+    col <- .col_ref_name(expr, env)
     if (!is.null(col) && (!nzchar(nm) || identical(nm, col))) {
       if (!col %in% schema$name)
         stop(sprintf("%s(): column `%s` not found", verb, col))
@@ -82,28 +82,6 @@ group_by.vectra_node <- function(.data, ..., .add = FALSE) {
     keys <- c(keys, nm)
   }
   list(node = node, keys = unique(keys))
-}
-
-# The column a grouping expression names directly, or NULL when it is not a
-# plain column reference: a symbol, `.data$x`, or `.data[[k]]` (k evaluated in
-# the caller's environment).
-.group_col_ref <- function(expr, env) {
-  if (is.name(expr)) return(as.character(expr))
-  if (is.call(expr) && length(expr) == 3L &&
-      identical(expr[[2L]], quote(.data))) {
-    op <- expr[[1L]]
-    if (identical(op, quote(`$`))) {
-      key <- expr[[3L]]
-      return(if (is.name(key)) as.character(key) else as.character(key)[1])
-    }
-    if (identical(op, quote(`[[`))) {
-      key <- eval(expr[[3L]], env)
-      if (!is.character(key) || length(key) != 1L || is.na(key))
-        stop(".data[[ ]] needs a single column name")
-      return(key)
-    }
-  }
-  NULL
 }
 
 .is_pick_call <- function(expr) {
@@ -168,7 +146,7 @@ summarise <- function(.data, ..., .groups = NULL) {
 
 #' @export
 summarise.vectra_node <- function(.data, ..., .groups = NULL) {
-  dots <- eval(substitute(alist(...)))
+  dots <- .capture_dots(...)
   meta <- .strip_meta_args(dots)
   dots <- meta$dots
   # summarise() takes .by and .groups; .keep/.preserve are not summarise args,
@@ -392,7 +370,7 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
   existing <- if (!is.null(x$.groups)) x$.groups else character(0)
   grp_names <- unique(c(existing, res$keys))
   cnt_name <- if (!is.null(name)) name else "n"
-  wt_expr <- substitute(wt)
+  wt_expr <- rlang::quo_squash(rlang::enquo(wt))
 
   # Build the grouped summarise
   node <- res$node
@@ -426,7 +404,7 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
   if (!is.null(name) && (!is.character(name) || length(name) != 1))
     stop(sprintf("name must be NULL or a single string, got %s of length %d", class(name)[1], length(name)))
   cnt_name <- if (!is.null(name)) name else "n"
-  wt_expr <- substitute(wt)
+  wt_expr <- rlang::quo_squash(rlang::enquo(wt))
   key_names <- if (!is.null(x$.groups)) x$.groups else character(0)
 
   wt <- .count_wt_agg(x, wt_expr, cnt_name, parent.frame())

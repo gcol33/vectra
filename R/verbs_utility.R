@@ -137,7 +137,7 @@ transmute <- function(.data, ...) {
 
 #' @export
 transmute.vectra_node <- function(.data, ...) {
-  dots <- eval(substitute(alist(...)))
+  dots <- .capture_dots(...)
   # Expand across() calls
   schema <- .Call(C_node_schema, .data$.node)
   proxy <- schema_proxy(schema)
@@ -191,15 +191,15 @@ distinct.vectra_node <- function(.data, ..., .keep_all = FALSE) {
   schema <- .Call(C_node_schema, .data$.node)
   proxy <- schema_proxy(schema)
 
-  col_exprs <- eval(substitute(alist(...)))
-  if (length(col_exprs) == 0) {
+  col_quos <- rlang::enquos(...)
+  if (length(col_quos) == 0) {
     key_names <- schema$name
   } else {
-    sel <- tidyselect::eval_select(rlang::expr(c(...)), data = proxy)
+    sel <- tidyselect::eval_select(rlang::expr(c(!!!col_quos)), data = proxy)
     key_names <- unname(schema$name[sel])
   }
 
-  if (.keep_all && length(col_exprs) > 0) {
+  if (.keep_all && length(col_quos) > 0) {
     # .keep_all with subset of columns: fall back to collect + base R
     message("distinct(.keep_all = TRUE) with column subset: falling back to R")
     df <- collect(.data)
@@ -232,7 +232,9 @@ pull <- function(.data, var = -1) {
 
 #' @export
 pull.vectra_node <- function(.data, var = -1) {
-  var_expr <- substitute(var)
+  var_expr <- rlang::quo_squash(rlang::enquo(var))
+  ref <- if (is.call(var_expr)) .col_ref_name(var_expr, parent.frame())
+  if (!is.null(ref)) var_expr <- as.name(ref)
   # Validate length 1 for literal values (not symbols that need schema lookup)
   if (!is.name(var_expr)) {
     val <- eval(var_expr, parent.frame())
@@ -421,6 +423,16 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
                  .groups = .data$.groups), class = "vectra_node")
 }
 
+# The column slice_min()/slice_max() order by: a bare, injected or
+# `.data`-pronoun column reference, or its name as a string.
+.order_col_name <- function(quo, env) {
+  expr <- rlang::quo_squash(quo)
+  if (is.character(expr) && length(expr) == 1L) return(expr)
+  col <- .col_ref_name(expr, env)
+  if (is.null(col)) stop("`order_by` must be a column name")
+  col
+}
+
 #' @rdname slice_head
 #' @export
 slice_min <- function(.data, order_by, n = 1L, with_ties = TRUE) {
@@ -433,7 +445,7 @@ slice_min.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
     stop(sprintf("n must be a positive integer, got %s", deparse(n)))
   if (!is.logical(with_ties) || length(with_ties) != 1 || is.na(with_ties))
     stop(sprintf("with_ties must be TRUE or FALSE, got %s", deparse(with_ties)))
-  order_col <- as.character(substitute(order_by))
+  order_col <- .order_col_name(rlang::enquo(order_by), parent.frame())
   if (!is.null(.data$.groups) && length(.data$.groups) > 0)
     return(.grouped_slice_topn(.data, order_col, n, with_ties, desc = FALSE))
   if (!with_ties) {
@@ -475,7 +487,7 @@ slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
     stop(sprintf("n must be a positive integer, got %s", deparse(n)))
   if (!is.logical(with_ties) || length(with_ties) != 1 || is.na(with_ties))
     stop(sprintf("with_ties must be TRUE or FALSE, got %s", deparse(with_ties)))
-  order_col <- as.character(substitute(order_by))
+  order_col <- .order_col_name(rlang::enquo(order_by), parent.frame())
   if (!is.null(.data$.groups) && length(.data$.groups) > 0)
     return(.grouped_slice_topn(.data, order_col, n, with_ties, desc = TRUE))
   if (!with_ties) {
