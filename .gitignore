@@ -39,3 +39,4 @@ inst/benchmarks/baseline.rds
 /dev_notes/run_check.log
 /dev_notes/*.tar.gz
 /dev_notes/0.6.2_worklist.md
+src/Makevars

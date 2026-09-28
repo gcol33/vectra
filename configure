@@ -1,7 +1,7 @@
 #!/bin/sh
-# configure — auto-vendor tdc before compilation
+# configure — vendor tdc, then choose the OpenMP flags and write src/Makevars
 #
-# Resolution order:
+# tdc resolution order:
 #  1. Sibling tdc tree + tools/vendor_tdc.sh both present → re-vendor fresh.
 #     (Development workflow.)
 #  2. Pre-vendored src/tdc/ exists → use it as-is.
@@ -9,6 +9,13 @@
 #     is absent here even when the TDC env var still points somewhere
 #     valid in the surrounding CI environment.)
 #  3. Otherwise → error out.
+#
+# OpenMP: each candidate (PKG_CFLAGS, PKG_LIBS) pair is accepted only if a
+# parallel loop built with it compiles, loads into R and returns the right
+# sum. A flag set that compiles but leaves the runtime to be found at load
+# time (macOS flat-namespace lookup of ___kmpc_* against an R without
+# libomp) fails the load step here instead of on the user's machine. When
+# no pair works the package builds serial; vec_omp.h has serial fallbacks.
 #
 # POSIX sh only — bash is not guaranteed on all CRAN build hosts.
 
@@ -28,3 +35,111 @@ else
   echo "  or pre-vendored copy at src/tdc/" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# OpenMP probe
+# ---------------------------------------------------------------------------
+
+: "${R_HOME:=`R RHOME`}"
+USER_CFLAGS=${PKG_CFLAGS-}
+USER_LIBS=${PKG_LIBS-}
+OMP_CFLAGS=""
+OMP_LIBS=""
+OMP_OK=0
+
+PROBE_DIR=`mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/vectra-omp-$$"`
+mkdir -p "$PROBE_DIR"
+trap 'rm -rf "$PROBE_DIR"' EXIT INT TERM
+
+# No #include <omp.h>, for the same reason as src/vec_omp.h: the pragma
+# needs no header, and schedule(dynamic) exercises the runtime entry points
+# a static schedule can inline away.
+cat > "$PROBE_DIR/vectra-omp.c" <<'CEOF'
+void vectra_omp_probe(int *result) {
+  int sum = 0;
+#ifdef _OPENMP
+  #pragma omp parallel for reduction(+:sum) num_threads(2) schedule(dynamic)
+  for (int i = 1; i <= 2; ++i) sum += i;
+#endif
+  *result = sum;
+}
+CEOF
+
+cat > "$PROBE_DIR/vectra-omp.R" <<'REOF'
+dyn.load(file.path(getwd(), paste0("vectra-omp", .Platform$dynlib.ext)))
+stopifnot(identical(.C("vectra_omp_probe", r = integer(1))$r, 3L))
+REOF
+
+# try_openmp CFLAGS LIBS: accept the pair if the probe compiles, loads and
+# returns 3.
+try_openmp() {
+  cflags="$USER_CFLAGS${USER_CFLAGS:+ }$1"
+  libs="$USER_LIBS${USER_LIBS:+ }$2"
+  printf "%s" "configure: checking OpenMP with CFLAGS='$1' LIBS='$2'... "
+  rm -f "$PROBE_DIR"/vectra-omp.o "$PROBE_DIR"/vectra-omp.so \
+        "$PROBE_DIR"/vectra-omp.dll "$PROBE_DIR"/vectra-omp.dylib
+  if ! (cd "$PROBE_DIR" && PKG_CFLAGS="$cflags" PKG_LIBS="$libs" \
+        "$R_HOME/bin/R" CMD SHLIB vectra-omp.c) >> "$PROBE_DIR/log" 2>&1; then
+    echo "no (compile)"
+    return 1
+  fi
+  if ! (cd "$PROBE_DIR" && "$R_HOME/bin/Rscript" --vanilla vectra-omp.R)         >> "$PROBE_DIR/log" 2>&1; then
+    echo "no (load/run)"
+    return 1
+  fi
+  echo "yes"
+  OMP_CFLAGS=$1
+  OMP_LIBS=$2
+  OMP_OK=1
+  return 0
+}
+
+detect_openmp() {
+  try_openmp "" "" && return 0
+  try_openmp '$(SHLIB_OPENMP_CFLAGS)' '$(SHLIB_OPENMP_CFLAGS)' && return 0
+  try_openmp "-fopenmp" "-fopenmp" && return 0
+
+  case "`uname`" in
+  Darwin)
+    # CRAN's macOS R ships libomp under $R_HOME/lib, on the -L path R CMD
+    # SHLIB links with; -lomp records it as a real dependency.
+    try_openmp "-Xclang -fopenmp" "-lomp" && return 0
+
+    if [ "`uname -m`" = "arm64" ]; then
+      BREW=${HOMEBREW_PREFIX:-/opt/homebrew}
+    else
+      BREW=${HOMEBREW_PREFIX:-/usr/local}
+    fi
+    if [ -d "$BREW/opt/libomp" ]; then
+      try_openmp "-I$BREW/opt/libomp/include -Xclang -fopenmp" \
+                 "-L$BREW/opt/libomp/lib -lomp" && return 0
+    fi
+
+    if [ -e /usr/local/lib/libomp.dylib ]; then
+      try_openmp "-Xclang -fopenmp" "/usr/local/lib/libomp.dylib" && return 0
+    fi
+    ;;
+  esac
+  return 1
+}
+
+if ! detect_openmp; then
+  echo "configure: *** no working OpenMP runtime found; vectra builds serial."
+  echo "configure: *** Results are identical; parallel string, fuzzy-join and"
+  echo "configure: *** compression kernels run on one thread. On macOS see"
+  echo "configure: *** https://mac.r-project.org/openmp/ to install libomp."
+fi
+
+# sed replacement text: escape the delimiter, & and backslash.
+sed_escape() {
+  printf "%s" "$1" | sed -e 's/[\|&]/\&/g'
+}
+
+FINAL_CFLAGS="$USER_CFLAGS${USER_CFLAGS:+${OMP_CFLAGS:+ }}$OMP_CFLAGS"
+FINAL_LIBS="$USER_LIBS${USER_LIBS:+${OMP_LIBS:+ }}$OMP_LIBS"
+sed -e "s|@PKG_CFLAGS@|`sed_escape "$FINAL_CFLAGS"`|" \
+    -e "s|@PKG_LIBS@|`sed_escape "$FINAL_LIBS"`|" \
+    "$PKG_ROOT/src/Makevars.in" > "$PKG_ROOT/src/Makevars"
+echo "configure: wrote src/Makevars (OpenMP: `[ $OMP_OK = 1 ] && echo "'$OMP_CFLAGS' / '$OMP_LIBS'" || echo off`)"
+
+exit 0

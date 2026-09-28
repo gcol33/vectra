@@ -1,4 +1,9 @@
-# Makevars — vectra
+# Makevars.in — vectra (configure writes src/Makevars from this file)
+#
+# configure fills PKG_CFLAGS / PKG_LIBS below with the OpenMP flags it
+# verified by compiling, loading and running a parallel loop, plus any
+# PKG_CFLAGS / PKG_LIBS set in the environment. They carry no OpenMP flags
+# when no variant worked, and the package then builds serial.
 #
 # Vendored libraries:
 #   src/tdc/    typed dimensional compression engine; owns the .vtr codec
@@ -13,8 +18,8 @@
 # does not link miniz, the dependency relationship is purely vectra
 # source files (tiff_format.c, byte_reader.c) -> miniz.
 
-PKG_CFLAGS = $(SHLIB_OPENMP_CFLAGS) -I./tdc/include
-PKG_LIBS = $(SHLIB_OPENMP_CFLAGS)
+PKG_CFLAGS = @PKG_CFLAGS@ -I./tdc/include
+PKG_LIBS = @PKG_LIBS@
 
 TDC_SOURCES = \
 	$(wildcard tdc/src/api/*.c) \

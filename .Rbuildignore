@@ -55,3 +55,4 @@
 ^tdc$
 ^AGENTS\.md$
 ^paper$
+^src/Makevars$

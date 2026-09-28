@@ -1,0 +1,3 @@
+#!/bin/sh
+# cleanup — remove the files configure generates
+rm -f src/Makevars
