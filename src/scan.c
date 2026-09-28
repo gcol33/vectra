@@ -55,7 +55,7 @@ static int str_in_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
  * Returns 0 if the predicate is definitely false for all rows in this row group,
  * 1 if it might be true (or we can't determine). rg_n_rows is the row count of
  * this group, used for all-null pruning against null_count. */
-static int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
+int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
                                   const VecSchema *schema, int64_t rg_n_rows) {
     if (!pred || !stats) return 1;
 

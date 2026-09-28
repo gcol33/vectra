@@ -36,6 +36,7 @@
 #include "csv_scan.h"
 #include "sql_scan.h"
 #include "tiff_scan.h"
+#include "parquet_scan.h"
 #include "optimize.h"
 #include "error.h"
 #include <stdlib.h>
@@ -628,6 +629,8 @@ static int node_annotation(VecNode *node, char *buf, int bufsize) {
         return snprintf(buf, (size_t)bufsize, "streaming sql, %d cols",
                         sn->n_cols);
     }
+    if (strcmp(kind, "ParquetScanNode") == 0)
+        return parquet_scan_describe(node, buf, bufsize);
     if (strcmp(kind, "TiffScanNode") == 0) {
         TiffScanNode *tn = (TiffScanNode *)node;
         return snprintf(buf, (size_t)bufsize, "streaming tiff, %d bands",

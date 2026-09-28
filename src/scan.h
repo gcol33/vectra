@@ -34,6 +34,12 @@ typedef struct {
    n_selected: number of entries in col_indices (ignored if col_indices is NULL) */
 ScanNode *scan_node_create(const char *path, int *col_indices, int n_selected);
 
+/* Zone-map check shared by every scan with per-row-group statistics: 0 when
+   stats (indexed like schema) prove no row of a group of rg_n_rows rows can
+   satisfy pred, 1 when some might. */
+int predicate_might_match(const VecExpr *pred, const Vtr1ColStat *stats,
+                          const VecSchema *schema, int64_t rg_n_rows);
+
 /* Parallel I/O eligibility: returns 1 if this is a plain scan with no
    predicate, tombstone, index bitmap, or binary-search range narrowing. */
 int scan_node_is_parallel_safe(const VecNode *node);

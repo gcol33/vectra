@@ -240,6 +240,89 @@ tbl_bed <- function(path, batch_size = .DEFAULT_BATCH_SIZE, quiet = FALSE) {
   structure(list(.node = xptr, .path = path), class = "vectra_node")
 }
 
+#' Create a lazy table reference from Parquet files
+#'
+#' Streams one or more Apache Parquet files as a single lazy table. The reader
+#' is native: no Arrow installation is needed. Only the columns a query uses
+#' are read from disk, and a [filter()] directly above the scan skips row
+#' groups whose footer statistics (min, max, null count) show that no row can
+#' match. Row groups are decoded one page at a time into batches of at most
+#' `batch_size` rows, so a row group larger than RAM still streams. No data is
+#' read until [collect()] is called.
+#'
+#' `path` may name several files, or a directory. A directory is read
+#' recursively; files whose name starts with `_` or `.` (Spark/Hive markers
+#' such as `_SUCCESS`, checksum files) are skipped, so a partitioned dataset
+#' directory or a GBIF snapshot folder can be passed as is. All files must
+#' share the first file's columns and types; extra columns in later files are
+#' ignored.
+#'
+#' **Supported.** Data pages v1 and v2; `PLAIN`, `PLAIN_DICTIONARY` /
+#' `RLE_DICTIONARY`, `RLE`, `DELTA_BINARY_PACKED`, `DELTA_LENGTH_BYTE_ARRAY`,
+#' `DELTA_BYTE_ARRAY` and `BYTE_STREAM_SPLIT` encodings; `UNCOMPRESSED`,
+#' `SNAPPY`, `GZIP`, `ZSTD`, `LZ4_RAW` and (Hadoop-framed) `LZ4`
+#' compression. `BROTLI` and `LZO` are not supported and raise an error
+#' naming the column.
+#'
+#' **Types.** Booleans become logical; `INT32` (and 8/16-bit and unsigned
+#' 8/16-bit integers) becomes integer; unsigned 32-bit integers and `INT64`
+#' become 64-bit integers (returned as double); unsigned 64-bit integers,
+#' `FLOAT`, `DOUBLE`, decimals of any width and half floats become double;
+#' `DATE` becomes `Date`; `TIMESTAMP` and legacy `INT96` timestamps become
+#' `POSIXct` in seconds (UTC when the file marks them adjusted to UTC,
+#' otherwise without a time zone), with nanosecond timestamps rounded to
+#' double precision; `TIME` becomes seconds since midnight as double; byte
+#' arrays (strings, JSON, ENUM, and unannotated binary) become character, and
+#' UUIDs their canonical text form.
+#'
+#' **Nested columns.** Struct fields are flattened into one column each,
+#' named by their path (`address.city`). A list column (one level of
+#' repetition, including a map's keys and values) becomes one character
+#' column whose elements are written as text and joined by `list_sep`: a null
+#' list is `NA`, an empty list `""`, a null element `"NA"`. Lists of lists
+#' cannot be read; such a column stays in the schema, and reading it raises an
+#' error naming it, so drop it with `select(-name)` first.
+#'
+#' @param path Path to a Parquet file, a character vector of files, or a
+#'   directory of Parquet files.
+#' @param batch_size Maximum number of rows per batch (default 65536).
+#' @param list_sep Separator placed between the elements of a list column
+#'   (default `";"`).
+#'
+#' @return A `vectra_node` object representing a lazy scan of the files.
+#'
+#' @examples
+#' f <- system.file("extdata", "example.parquet", package = "vectra")
+#' tbl_parquet(f) |> collect() |> head()
+#' tbl_parquet(f) |> filter(id > 95) |> select(id, species) |> collect()
+#'
+#' @seealso [tbl()], [tbl_csv()], [bind_rows()]
+#' @export
+tbl_parquet <- function(path, batch_size = .DEFAULT_BATCH_SIZE, list_sep = ";") {
+  if (!is.character(path) || length(path) < 1 || anyNA(path))
+    stop("path must be a character vector of files or a directory")
+  if (!is.character(list_sep) || length(list_sep) != 1 || is.na(list_sep))
+    stop("list_sep must be a single string")
+  if (length(batch_size) != 1 || is.na(batch_size) || batch_size < 1)
+    stop("batch_size must be a single number >= 1")
+  path <- normalizePath(path, mustWork = TRUE)
+  files <- unlist(lapply(path, function(p) {
+    if (!dir.exists(p)) return(p)
+    fs <- list.files(p, recursive = TRUE, full.names = TRUE, all.files = TRUE,
+                     no.. = TRUE)
+    rel <- substring(fs, nchar(p) + 2L)
+    hidden <- vapply(strsplit(rel, "/", fixed = TRUE),
+                     function(parts) any(substr(parts, 1L, 1L) %in% c("_", ".")),
+                     logical(1))
+    sort(fs[!hidden & !dir.exists(fs)])
+  }))
+  if (length(files) == 0)
+    stop("no Parquet files found in ", paste(path, collapse = ", "))
+  xptr <- .Call(C_parquet_scan_node, files, as.double(batch_size),
+                enc2utf8(list_sep))
+  structure(list(.node = xptr, .path = files[1]), class = "vectra_node")
+}
+
 #' Create a lazy table reference from a SQLite database
 #'
 #' Opens a SQLite database and lazily scans a table. Column types are inferred

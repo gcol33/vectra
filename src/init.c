@@ -148,6 +148,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_tiff_scan_node", (DL_FUNC) &C_tiff_scan_node, 2},
     {"C_fasta_scan_node", (DL_FUNC) &C_fasta_scan_node, 4},
     {"C_bed_scan_node", (DL_FUNC) &C_bed_scan_node, 3},
+    {"C_parquet_scan_node", (DL_FUNC) &C_parquet_scan_node, 3},
     {"C_tiff_scan_meta",         (DL_FUNC) &C_tiff_scan_meta,         1},
     {"C_tiff_extract_points",    (DL_FUNC) &C_tiff_extract_points,    3},
     {"C_write_tiff",             (DL_FUNC) &C_write_tiff,             3},

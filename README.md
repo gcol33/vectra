@@ -31,10 +31,16 @@ tbl_csv("measurements.csv") |>
 
 ## One engine, several file formats
 
-`.vtr` (vectra's own columnar format), CSV, SQLite, and GeoTIFF all open into the same
-lazy query nodes, so the same pipeline runs against any of them:
+`.vtr` (vectra's own columnar format), Parquet, CSV, SQLite, and GeoTIFF all open into
+the same lazy query nodes, so the same pipeline runs against any of them:
 
 ```r
+# A folder of Parquet files (a GBIF snapshot, a Spark export) as one table
+tbl_parquet("occurrence.parquet/") |>
+  filter(countrycode == "AT", year >= 2000) |>
+  count(species) |>
+  collect()
+
 # GeoTIFF climate raster as tidy data
 tbl_tiff("worldclim_bio1.tif") |>
   filter(band1 > 0) |>

@@ -61,6 +61,7 @@ reference:
   - tbl_fasta
   - tbl_fastq
   - tbl_bed
+  - tbl_parquet
 - title: Data sinks
   desc: Write query results or data.frames to disk
   contents:

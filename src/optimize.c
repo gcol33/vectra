@@ -9,6 +9,7 @@
 #include "window.h"
 #include "topn.h"
 #include "concat.h"
+#include "parquet_scan.h"
 #include "expr.h"
 #include "schema.h"
 #include "coerce.h"
@@ -167,6 +168,11 @@ static void propagate_cols(VecNode *node, const uint8_t *parent_needed,
     /* ---- Scan: terminal node ---- */
     if (strcmp(kind, "ScanNode") == 0) {
         prune_scan((ScanNode *)node, parent_needed, parent_ncols);
+        return;
+    }
+
+    if (strcmp(kind, "ParquetScanNode") == 0) {
+        parquet_scan_prune(node, parent_needed, parent_ncols);
         return;
     }
 
@@ -607,6 +613,12 @@ static void push_into(VecNode *node, VecExpr *pred) {
     if (strcmp(kind, "ScanNode") == 0) {
         ScanNode *sn = (ScanNode *)node;
         sn->predicate = and_opt(sn->predicate, pred);
+        return;
+    }
+    if (strcmp(kind, "ParquetScanNode") == 0) {
+        VecExpr **slot = parquet_scan_predicate_slot(node);
+        if (slot) *slot = and_opt(*slot, pred);
+        else vec_expr_free(pred);
         return;
     }
     if (strcmp(kind, "ProjectNode") == 0) {

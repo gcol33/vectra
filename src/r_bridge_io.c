@@ -5,6 +5,7 @@
 #include "csv_scan.h"
 #include "fasta_scan.h"
 #include "bed_scan.h"
+#include "parquet_scan.h"
 #include "sql_scan.h"
 #include "sql_write.h"
 #include "tiff_format.h"
@@ -174,6 +175,18 @@ SEXP C_bed_scan_node(SEXP path_sexp, SEXP batch_size_sexp, SEXP quiet_sexp) {
     int quiet = Rf_asLogical(quiet_sexp) == TRUE;
     BedScanNode *sn = bed_scan_node_create(fpath, batch_size, quiet);
     return wrap_node((VecNode *)sn);
+}
+
+SEXP C_parquet_scan_node(SEXP paths_sexp, SEXP batch_size_sexp,
+                         SEXP list_sep_sexp) {
+    int n = Rf_length(paths_sexp);
+    const char **paths = (const char **)R_alloc((size_t)(n ? n : 1),
+                                                sizeof(const char *));
+    for (int i = 0; i < n; i++)
+        paths[i] = Rf_translateChar(STRING_ELT(paths_sexp, i));
+    int64_t batch_size = (int64_t)Rf_asReal(batch_size_sexp);
+    const char *sep = CHAR(STRING_ELT(list_sep_sexp, 0));
+    return wrap_node(parquet_scan_node_create(n, paths, batch_size, sep));
 }
 
 /* ---- write entry points ---- */
