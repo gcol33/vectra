@@ -31,18 +31,15 @@ print.offload_grade <- function(x, ...) {
   invisible(x)
 }
 
-.scan_grade <- function()
-  new_offload_grade("streaming scan", "1 per consumption (lazy)",
-                    "O(one batch)", "O(n) per pass",
-                    "plain query node; re-reading re-runs the upstream pipeline")
-
-# Internal: the grade of any stream (offloaded or plain). Surfaced through
-# print() and explain(), not as a separate exported verb.
+# Internal: the grade an offloaded stream carries (replay cache or partition),
+# or NULL for a plain query node, whose cost the plan tree in explain() already
+# states node by node. Surfaced through print() and explain(), not as a
+# separate exported verb.
 grade_of <- function(x) {
   if (inherits(x, "offload_grade")) return(x)
   g <- attr(x, ".grade", exact = TRUE)
   if (is.null(g) && is.list(x)) g <- x$.grade
-  if (is.null(g)) .scan_grade() else g
+  g
 }
 
 # -- offload(): replay cache and partition ------------------------------------

@@ -51,6 +51,17 @@ test_that("an offloaded node reports its replay-cache grade", {
   expect_output(print(tbl(f)), "vectra query node")   # plain node, no grade tier
 })
 
+test_that("explain() shows a grade only for streams that carry one", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(mtcars, f)
+  plain <- capture.output(explain(tbl(f) |> arrange(mpg)))
+  expect_false(any(grepl("offload grade", plain)))
+  expect_true(any(grepl("SortNode", plain)))
+  off <- capture.output(explain(offload(tbl(f))))
+  expect_true(any(grepl("offload grade: replay cache", off)))
+})
+
 test_that("chunk_feeder replays an offloaded node on every pass", {
   f <- tempfile(fileext = ".vtr")
   on.exit(unlink(f))

@@ -132,8 +132,9 @@ s
 ```
 
 Printing an offloaded node shows its cost grade, the label for what the
-stream costs. A plain node reports a streaming scan; an offloaded node reports
-the replay cache. `explain()` shows the same grade alongside the plan.
+stream costs: here the replay cache. `explain()` shows the same grade below the
+plan. A plain query node carries no grade; its plan tree already marks each
+node as streaming or materializing.
 
 Feeding the replay cache to a fit is the point. `chunk_feeder()` accepts an
 offloaded node directly, so each reweighted pass reads the prepared columns from
