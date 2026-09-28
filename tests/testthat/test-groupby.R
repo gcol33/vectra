@@ -170,3 +170,73 @@ test_that("summarise accepts namespace-qualified aggregation calls", {
     "unknown aggregation function: nope"
   )
 })
+
+# --- programmatic grouping (#24) ---
+
+.gb_store <- function() {
+  f <- tempfile(fileext = ".vtr")
+  write_vtr(data.frame(g = c("a", "b", "a", "b", "a"), h = c(1, 1, 2, 2, 1),
+                       x = 1:5, stringsAsFactors = FALSE), f)
+  f
+}
+
+.gb_sorted <- function(d) d[do.call(order, unname(as.list(d))), , drop = FALSE]
+
+test_that("group_by accepts injected symbols and the .data pronoun", {
+  f <- .gb_store()
+  on.exit(unlink(f))
+  ref <- tbl(f) |> group_by(g, h) |> summarise(n = n()) |> collect()
+  k <- "g"
+  ks <- c("g", "h")
+  one <- tbl(f) |> group_by(!!rlang::sym(k)) |> summarise(n = n()) |> collect()
+  expect_equal(one$g, c("a", "b"))
+  expect_equal(one$n, c(3, 2))
+  expect_equal(tbl(f) |> group_by(!!!rlang::syms(ks)) |> summarise(n = n()) |>
+                 collect(), ref)
+  expect_equal(tbl(f) |> group_by(.data[[k]], .data$h) |> summarise(n = n()) |>
+                 collect(), ref)
+  expect_equal(tbl(f) |> group_by(across(tidyselect::all_of(ks))) |>
+                 summarise(n = n()) |> collect(), ref)
+  expect_equal(tbl(f) |> group_by(pick(g, h)) |> summarise(n = n()) |>
+                 collect(), ref)
+})
+
+test_that("group_by with an expression adds a computed grouping column", {
+  f <- .gb_store()
+  on.exit(unlink(f))
+  named <- tbl(f) |> group_by(odd = x %% 2) |> summarise(s = sum(x)) |> collect()
+  expect_equal(.gb_sorted(as.data.frame(named)),
+               data.frame(odd = c(0, 1), s = c(6, 9)), ignore_attr = TRUE)
+  unnamed <- tbl(f) |> group_by(x %% 2) |> summarise(n = n()) |> collect()
+  expect_equal(names(unnamed), c("x%%2", "n"))
+  renamed <- tbl(f) |> group_by(grp = g) |> summarise(n = n()) |> collect()
+  expect_equal(renamed$grp, c("a", "b"))
+})
+
+test_that("group_by .add keeps the existing grouping", {
+  f <- .gb_store()
+  on.exit(unlink(f))
+  q <- tbl(f) |> group_by(g) |> group_by(h, .add = TRUE)
+  expect_equal(q$.groups, c("g", "h"))
+  expect_equal((tbl(f) |> group_by(g) |> group_by(h))$.groups, "h")
+  expect_null((tbl(f) |> group_by())$.groups)
+})
+
+test_that("group_by names an unknown column in its error", {
+  f <- .gb_store()
+  on.exit(unlink(f))
+  expect_error(tbl(f) |> group_by(!!rlang::sym("nope")), "column `nope` not found")
+  expect_error(tbl(f) |> group_by(.data[["nope"]]), "column `nope` not found")
+  expect_error(tbl(f) |> group_by(across(g, toupper)), "not supported for grouping")
+})
+
+test_that("count shares group_by's argument resolution", {
+  f <- .gb_store()
+  on.exit(unlink(f))
+  k <- "g"
+  r <- tbl(f) |> count(!!rlang::sym(k)) |> collect()
+  expect_equal(r$g, c("a", "b"))
+  expect_equal(r$n, c(3, 2))
+  r2 <- tbl(f) |> count(odd = x %% 2) |> collect()
+  expect_equal(sort(r2$n), c(2, 3))
+})

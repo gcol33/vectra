@@ -11,7 +11,14 @@
 #' Group a vectra query by columns
 #'
 #' @param .data A `vectra_node` object.
-#' @param ... Grouping column names (unquoted).
+#' @param ... Grouping columns. Bare column names, injected symbols
+#'   (`!!rlang::sym(k)`, `!!!rlang::syms(ks)`), the `.data` pronoun
+#'   (`.data[[k]]`), `across()`/`pick()` with a tidyselect selection
+#'   (`across(all_of(ks))`), or expressions, which add a computed column
+#'   first (`group_by(decade = year %/% 10)`; an unnamed expression is named
+#'   after its text, as in dplyr).
+#' @param .add If `FALSE` (default), replace the existing grouping; if `TRUE`,
+#'   add to it.
 #'
 #' @return A `vectra_node` with grouping information stored.
 #'
@@ -22,17 +29,106 @@
 #' unlink(f)
 #'
 #' @export
-group_by <- function(.data, ...) {
+group_by <- function(.data, ..., .add = FALSE) {
   UseMethod("group_by")
 }
 
 #' @export
-group_by.vectra_node <- function(.data, ...) {
-  grp_exprs <- eval(substitute(alist(...)))
-  grp_names <- vapply(grp_exprs, as.character, character(1))
-  structure(list(.node = .data$.node, .path = .data$.path,
-                 .groups = grp_names),
+group_by.vectra_node <- function(.data, ..., .add = FALSE) {
+  res <- .resolve_group_dots(.data, rlang::enquos(...), "group_by")
+  keys <- res$keys
+  if (isTRUE(.add) && !is.null(.data$.groups))
+    keys <- unique(c(.data$.groups, keys))
+  structure(list(.node = res$node$.node, .path = .data$.path,
+                 .groups = if (length(keys)) keys else NULL),
             class = "vectra_node")
+}
+
+# Resolve the grouping arguments of group_by() / count() to column names, the
+# way dplyr does: a column reference (bare, injected, or through `.data`) names
+# itself; across()/pick() contribute their tidyselect selection; any other
+# expression, or a renamed column, is first added as a computed column named
+# by its argument name (or its text when unnamed). Returns the node carrying
+# any computed columns and the grouping keys in argument order.
+.resolve_group_dots <- function(node, quos, verb) {
+  keys <- character(0)
+  arg_names <- names(quos)
+  if (is.null(arg_names)) arg_names <- rep("", length(quos))
+  for (i in seq_along(quos)) {
+    expr <- rlang::quo_get_expr(quos[[i]])
+    env <- rlang::quo_get_env(quos[[i]])
+    if (is.null(expr)) next
+    nm <- arg_names[i]
+    schema <- .Call(C_node_schema, node$.node)
+
+    if (.is_pick_call(expr)) {
+      if (nzchar(nm))
+        stop(sprintf("%s(): `%s = %s` is not supported; across()/pick() name their own columns",
+                     verb, nm, rlang::as_label(expr)))
+      keys <- c(keys, .resolve_pick_cols(expr, schema, env, verb))
+      next
+    }
+
+    col <- .group_col_ref(expr, env)
+    if (!is.null(col) && (!nzchar(nm) || identical(nm, col))) {
+      if (!col %in% schema$name)
+        stop(sprintf("%s(): column `%s` not found", verb, col))
+      keys <- c(keys, col)
+      next
+    }
+
+    if (!nzchar(nm)) nm <- rlang::as_label(expr)
+    node <- .apply_mutate_dots(node, stats::setNames(list(expr), nm), env)
+    keys <- c(keys, nm)
+  }
+  list(node = node, keys = unique(keys))
+}
+
+# The column a grouping expression names directly, or NULL when it is not a
+# plain column reference: a symbol, `.data$x`, or `.data[[k]]` (k evaluated in
+# the caller's environment).
+.group_col_ref <- function(expr, env) {
+  if (is.name(expr)) return(as.character(expr))
+  if (is.call(expr) && length(expr) == 3L &&
+      identical(expr[[2L]], quote(.data))) {
+    op <- expr[[1L]]
+    if (identical(op, quote(`$`))) {
+      key <- expr[[3L]]
+      return(if (is.name(key)) as.character(key) else as.character(key)[1])
+    }
+    if (identical(op, quote(`[[`))) {
+      key <- eval(expr[[3L]], env)
+      if (!is.character(key) || length(key) != 1L || is.na(key))
+        stop(".data[[ ]] needs a single column name")
+      return(key)
+    }
+  }
+  NULL
+}
+
+.is_pick_call <- function(expr) {
+  if (!is.call(expr)) return(FALSE)
+  head <- expr[[1L]]
+  if (is.call(head) && identical(head[[1L]], quote(`::`))) head <- head[[3L]]
+  is.name(head) && as.character(head) %in% c("across", "pick")
+}
+
+# Column names selected by across(.cols) or pick(...). across() with `.fns`
+# computes new columns, which is not a grouping selection.
+.resolve_pick_cols <- function(expr, schema, env, verb) {
+  args <- as.list(expr)[-1L]
+  head <- expr[[1L]]
+  if (is.call(head)) head <- head[[3L]]
+  if (identical(as.character(head), "across")) {
+    m <- rlang::call_match(expr, function(.cols, .fns = NULL, ..., .names = NULL,
+                                          .unpack = FALSE) NULL)
+    if (!is.null(m$.fns))
+      stop(sprintf("%s(): across() with `.fns` is not supported for grouping; use across(<selection>) or pick()", verb))
+    args <- list(if (is.null(m$.cols)) quote(tidyselect::everything()) else m$.cols)
+  }
+  proxy <- schema_proxy(schema)
+  sel <- tidyselect::eval_select(rlang::expr(c(!!!args)), data = proxy, env = env)
+  unname(schema$name[sel])
 }
 
 #' Summarise grouped data
@@ -261,7 +357,7 @@ ungroup.vectra_node <- function(x, ...) {
 #' Count observations by group
 #'
 #' @param x A `vectra_node` object.
-#' @param ... Grouping columns (unquoted).
+#' @param ... Grouping columns, resolved as in [group_by()].
 #' @param wt Column to weight by (unquoted). If `NULL`, counts rows.
 #' @param sort If `TRUE`, sort output in descending order of `n`.
 #' @param name Name of the count column (default `"n"`).
@@ -290,17 +386,16 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
     stop(sprintf("sort must be TRUE or FALSE, got %s", deparse(sort)))
   if (!is.null(name) && (!is.character(name) || length(name) != 1))
     stop(sprintf("name must be NULL or a single string, got %s of length %d", class(name)[1], length(name)))
-  grp_exprs <- eval(substitute(alist(...)))
-  grp_names <- vapply(grp_exprs, as.character, character(1))
+  res <- .resolve_group_dots(x, rlang::enquos(...), "count")
   # count() on grouped data groups by the existing group_by() keys plus the
   # count columns, as dplyr does (group_by(g) |> count(b) counts per g, b).
   existing <- if (!is.null(x$.groups)) x$.groups else character(0)
-  grp_names <- unique(c(existing, grp_names))
+  grp_names <- unique(c(existing, res$keys))
   cnt_name <- if (!is.null(name)) name else "n"
   wt_expr <- substitute(wt)
 
   # Build the grouped summarise
-  node <- x
+  node <- res$node
   if (length(grp_names) > 0) {
     node <- structure(list(.node = node$.node, .path = node$.path,
                            .groups = grp_names), class = "vectra_node")

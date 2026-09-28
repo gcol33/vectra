@@ -4,12 +4,20 @@
 \alias{group_by}
 \title{Group a vectra query by columns}
 \usage{
-group_by(.data, ...)
+group_by(.data, ..., .add = FALSE)
 }
 \arguments{
 \item{.data}{A \code{vectra_node} object.}
 
-\item{...}{Grouping column names (unquoted).}
+\item{...}{Grouping columns. Bare column names, injected symbols
+(\code{!!rlang::sym(k)}, \code{!!!rlang::syms(ks)}), the \code{.data} pronoun
+(\code{.data[[k]]}), \code{across()}/\code{pick()} with a tidyselect selection
+(\code{across(all_of(ks))}), or expressions, which add a computed column
+first (\code{group_by(decade = year \%/\% 10)}; an unnamed expression is named
+after its text, as in dplyr).}
+
+\item{.add}{If \code{FALSE} (default), replace the existing grouping; if \code{TRUE},
+add to it.}
 }
 \value{
 A \code{vectra_node} with grouping information stored.

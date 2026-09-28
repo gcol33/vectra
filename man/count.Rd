@@ -12,7 +12,7 @@ tally(x, wt = NULL, sort = FALSE, name = NULL)
 \arguments{
 \item{x}{A \code{vectra_node} object.}
 
-\item{...}{Grouping columns (unquoted).}
+\item{...}{Grouping columns, resolved as in \code{\link[=group_by]{group_by()}}.}
 
 \item{wt}{Column to weight by (unquoted). If \code{NULL}, counts rows.}
 
