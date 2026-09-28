@@ -7,10 +7,12 @@
 #
 # Vendored libraries:
 #   src/tdc/    typed dimensional compression engine; owns the .vtr codec
-#   src/miniz/  single-file deflate library; powers TIFF deflate strips
-#               and gzip-compressed CSV input
+#   src/miniz/  single-file deflate library; powers TIFF deflate strips,
+#               gzip-compressed CSV input and GZIP Parquet pages
+#   src/zstd/   zstd's single-file decoder (zstddeclib.c); ZSTD Parquet
+#               pages
 #
-# Vendoring both keeps the package self-contained: no system zlib link,
+# Vendoring them keeps the package self-contained: no system zlib link,
 # no SystemRequirements beyond GNU make. Requires GNU make for the
 # wildcard expansion (declared in DESCRIPTION SystemRequirements).
 #
@@ -33,6 +35,8 @@ TDC_SOURCES = \
 
 MINIZ_SOURCES = $(wildcard miniz/*.c)
 
+ZSTD_SOURCES = $(wildcard zstd/*.c)
+
 VECTRA_SOURCES = $(wildcard *.c)
 
-OBJECTS = $(VECTRA_SOURCES:.c=.o) $(TDC_SOURCES:.c=.o) $(MINIZ_SOURCES:.c=.o)
+OBJECTS = $(VECTRA_SOURCES:.c=.o) $(TDC_SOURCES:.c=.o) $(MINIZ_SOURCES:.c=.o) $(ZSTD_SOURCES:.c=.o)

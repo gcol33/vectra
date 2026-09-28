@@ -19,6 +19,8 @@ TDC_SOURCES = \
 
 MINIZ_SOURCES = $(wildcard miniz/*.c)
 
+ZSTD_SOURCES = $(wildcard zstd/*.c)
+
 VECTRA_SOURCES = $(wildcard *.c)
 
-OBJECTS = $(VECTRA_SOURCES:.c=.o) $(TDC_SOURCES:.c=.o) $(MINIZ_SOURCES:.c=.o)
+OBJECTS = $(VECTRA_SOURCES:.c=.o) $(TDC_SOURCES:.c=.o) $(MINIZ_SOURCES:.c=.o) $(ZSTD_SOURCES:.c=.o)
