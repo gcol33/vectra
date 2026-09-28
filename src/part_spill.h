@@ -5,16 +5,18 @@
 
 /*
  * Partitioned spill: route rows into K run-files by a caller-computed
- * partition id (the grace-hash spill of a join or a grouped aggregate).
+ * partition id (the grace-hash spill of a join, the overflow partitions of a
+ * hash aggregation).
  *
- * Rows are buffered per partition and written as PART_SPILL_RG_ROWS-row row
- * groups, so a partition file holds a few full row groups rather than one
- * sliver per input batch (a 64-way split of a 131072-row batch is ~2000
- * rows). All buffers together are flushed once they pass `buf_budget`
- * bytes. A partition's file is created on its first flush, so a partition
- * that never receives a row creates no file; part_spill_touch() creates an
- * empty one where a consumer needs every file to exist. Runs are written with
- * VTR_SPILL_COMPRESS.
+ * Rows are buffered per partition and written as row groups of about
+ * PART_SPILL_RG_ROWS rows, so a partition file holds a few full row groups
+ * rather than one sliver per input batch (a 64-way split of a 131072-row
+ * batch is ~2000 rows). All buffers together are flushed once they pass
+ * `buf_budget` bytes. A partition's file is created on its first flush, so a
+ * partition that never receives a row creates no file; part_spill_touch()
+ * creates an empty one where a consumer needs every file to exist. Runs are
+ * written with VTR_SPILL_COMPRESS. Within a partition, rows keep their input
+ * order.
  */
 
 #define PART_SPILL_RG_ROWS 65536
@@ -22,12 +24,13 @@
 typedef struct PartSpill PartSpill;
 
 /* K partitions writing to paths[0..K) (borrowed; must outlive the spill),
-   rows laid out by `schema` (copied). */
-PartSpill *part_spill_create(const VecSchema *schema, int K,
-                             char *const *paths, int64_t buf_budget);
+   rows laid out by `schema` (copied). Spill column c is read from input
+   column col_map[c] (copied; NULL = column c). */
+PartSpill *part_spill_create(const VecSchema *schema, const int *col_map,
+                             int K, char *const *paths, int64_t buf_budget);
 
-/* Route every logical row of `batch`; pid[li] is the partition of logical
-   row li (NULL = all rows to partition 0). */
+/* Route the logical rows of `batch`: pid[li] is the partition of logical row
+   li, or -1 to skip it (pid NULL = every row to partition 0). */
 void part_spill_route(PartSpill *ps, const VecBatch *batch, const int *pid);
 
 /* 1 if partition p has received a row. */

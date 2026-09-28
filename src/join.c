@@ -376,15 +376,16 @@ static void jht_build_from_rcols(JoinNode *jn, int64_t r_nrows) {
    more than any multi-key skew needs, so BNL fires only for a true hot key. */
 #define JOIN_MAX_SPILL_DEPTH 3
 
-/* Bytes a resident build of n rows allocates beyond its columns: the slot
-   arrays (head + slot_hash), the chain array, the transient per-row hash
-   array jht_build_from_rcols fills before inserting, and full_join's
-   matched bitset. */
+/* Bytes a resident build of n rows allocates beyond its columns: for a hash
+   join the slot arrays (head + slot_hash), the chain array and the transient
+   per-row hash array jht_build_from_rcols fills before inserting (a merge
+   join builds none of them); full_join's matched bitset either way. */
 static int64_t jht_resident_bytes(const JoinNode *jn, int64_t n) {
-    int64_t bytes = jht_slots(n) * (int64_t)(sizeof(int64_t) + sizeof(uint64_t))
-                  + (n > 0 ? n : 1) * (int64_t)sizeof(int64_t)
-                  + n * (int64_t)sizeof(uint64_t);
-    if (jn->kind == JOIN_FULL) bytes += (n + 7) / 8;
+    int64_t bytes = jn->kind == JOIN_FULL ? (n + 7) / 8 : 0;
+    if (!jn->use_merge)
+        bytes += jht_slots(n) * (int64_t)(sizeof(int64_t) + sizeof(uint64_t))
+               + (n > 0 ? n : 1) * (int64_t)sizeof(int64_t)
+               + n * (int64_t)sizeof(uint64_t);
     return bytes;
 }
 
@@ -428,10 +429,23 @@ static char *make_spill_path(const char *temp_dir, char side, int p) {
     return path;
 }
 
-/* Budget for the per-partition buffers while a side is partitioned: nothing
-   else of the join is resident then, so a quarter of its share. */
-static int64_t join_spill_buf_budget(const JoinNode *jn) {
-    return jn->mem_budget > 0 ? jn->mem_budget / 4 : ((int64_t)64 << 20);
+/* Reserve the per-partition buffers while a side is partitioned: nothing else
+   of the join is resident then, so a quarter of what the pool would give it.
+   Returns the buffer budget. */
+static int64_t join_spill_buf_reserve(JoinNode *jn) {
+    vec_mem_set(&jn->mem, 0);
+    int64_t allow = vec_mem_allowance(&jn->mem);
+    int64_t buf = allow == INT64_MAX ? ((int64_t)64 << 20) : allow / 4;
+    vec_mem_set(&jn->mem, buf);
+    return buf;
+}
+
+/* 1 when the build side may grow to `bytes`: reserves them on the pool. A join
+   with no temp directory cannot spill, so it takes them regardless. */
+static int join_reserve_build(JoinNode *jn, int64_t bytes) {
+    if (vec_mem_try(&jn->mem, bytes)) return 1;
+    if (!jn->temp_dir) { vec_mem_set(&jn->mem, bytes); return 1; }
+    return 0;
 }
 
 /* Route every logical row of batch into ps by the hash of its key columns
@@ -500,8 +514,8 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders,
         jn->right_parts[p] = make_spill_path(jn->temp_dir, 'r', p);
         jn->left_parts[p]  = make_spill_path(jn->temp_dir, 'l', p);
     }
-    int64_t buf = join_spill_buf_budget(jn);
-    PartSpill *rps = part_spill_create(rs, K, jn->right_parts, buf);
+    int64_t buf = join_spill_buf_reserve(jn);
+    PartSpill *rps = part_spill_create(rs, NULL, K, jn->right_parts, buf);
 
     /* Route the already-materialized build partial. */
     int64_t nrp = r_builders[0].length;
@@ -533,7 +547,7 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders,
         join_route(rps, b, K, rkey, common, jn->n_keys, salt);
         vec_batch_free(b);
     }
-    PartSpill *lps = part_spill_create(ls, K, jn->left_parts, buf);
+    PartSpill *lps = part_spill_create(ls, NULL, K, jn->left_parts, buf);
     while ((b = jn->left->next_batch(jn->left)) != NULL) {
         join_route(lps, b, K, lkey, common, jn->n_keys, salt);
         vec_batch_free(b);
@@ -559,6 +573,7 @@ static void join_spill(JoinNode *jn, VecArrayBuilder *r_builders,
         free(jn->left_parts[p]);  jn->left_parts[p]  = NULL;
     }
     free(keep);
+    vec_mem_set(&jn->mem, 0);
 
     jn->spill = 1;
     jn->cur_part = 0;
@@ -578,6 +593,8 @@ static VecNode *make_partition_join(JoinNode *jn, int p) {
                                     jn->n_keys, keys, jn->suffix_x, jn->suffix_y,
                                     jn->mem_budget, jn->temp_dir);
     sj->na_matches = jn->na_matches;   /* inherit NA-matching in re-partition */
+    vec_node_clear_budgeted(&sj->base);
+    vec_mem_acct_rebind(&sj->mem, jn->mem.grant);
     sj->spill_depth = jn->spill_depth + 1;
     return (VecNode *)sj;
 }
@@ -589,7 +606,7 @@ static VecNode *make_partition_join(JoinNode *jn, int p) {
 /* A partition that survives JOIN_MAX_SPILL_DEPTH re-partitions is dominated by
    one key value that hashing cannot split. Rather than materialize it resident,
    consolidate each side to a single run-file and block-nested-loop: read the
-   build file in <= mem_budget blocks; for each block, re-scan the whole probe
+   build file in blocks the memory pool grants; for each block, re-scan the whole probe
    file and emit matches. Peak = one build block + one probe batch + 1-bit/row
    matched bitsets, independent of key skew. Non-inner kinds defer unmatched /
    matched emission to a final scan driven by the bitsets. */
@@ -612,8 +629,8 @@ static int64_t bnl_consolidate(JoinNode *jn, VecNode *child,
                                VecBatch *partial, VecBatch *pending,
                                const char *path) {
     char *paths[1] = { (char *)path };
-    PartSpill *ps = part_spill_create(schema, 1, paths,
-                                      join_spill_buf_budget(jn));
+    PartSpill *ps = part_spill_create(schema, NULL, 1, paths,
+                                      join_spill_buf_reserve(jn));
     part_spill_touch(ps, 0);
     int64_t rows = 0;
     if (partial) {
@@ -658,6 +675,7 @@ static void join_spill_bnl(JoinNode *jn, VecArrayBuilder *r_builders,
     if (pending) vec_batch_free(pending);
     jn->bnl_lrows = bnl_consolidate(jn, jn->left, ls, jn->lkey_idx,
                                     NULL, NULL, jn->bnl_lpath);
+    vec_mem_set(&jn->mem, 0);
 
     if (jn->kind != JOIN_INNER) {
         int64_t nb = (jn->bnl_lrows + 7) / 8;
@@ -684,10 +702,11 @@ static void bnl_free_block(JoinNode *jn) {
         jn->r_cols = NULL;
     }
     if (jn->jht.head) jht_free(&jn->jht);
+    vec_mem_set(&jn->mem, 0);
 }
 
 /* Load the next build block into jn->r_cols and build its hash table, sized
-   so the block's columns plus its hash table stay within mem_budget (a block
+   so the block's columns plus its hash table fit what the memory pool grants (a block
    always takes at least one batch). A batch that would cross the budget is
    held in bnl_rpending and opens the next block. Returns rows loaded, 0 when
    the build file is exhausted. */
@@ -703,10 +722,13 @@ static int64_t bnl_load_block(JoinNode *jn) {
         jn->bnl_rpending = NULL;
         if (!b) b = jn->bnl_rscan->next_batch(jn->bnl_rscan);
         if (!b) break;
-        if (rb[0].length > 0 &&
-            join_build_bytes_after(jn, rb, r_ncols, b) > jn->mem_budget) {
-            jn->bnl_rpending = b;
-            break;
+        int64_t need = join_build_bytes_after(jn, rb, r_ncols, b);
+        if (!vec_mem_try(&jn->mem, need)) {
+            if (rb[0].length > 0) {
+                jn->bnl_rpending = b;
+                break;
+            }
+            vec_mem_set(&jn->mem, need);
         }
         join_append_batch(rb, r_ncols, b);
         vec_batch_free(b);
@@ -930,10 +952,24 @@ static void join_build(JoinNode *jn) {
     const VecSchema *rschema = &jn->right->output_schema;
     jn->r_ncols = rschema->n_cols;
 
+    /* Both sides sorted on the join keys: merge join, which needs no hash
+       table. Decided from the children's metadata before the build, so the
+       build reserves only what it will allocate. */
+    if (child_sorted_on_keys(jn->left, jn->lkey_idx, jn->n_keys) &&
+        child_sorted_on_keys(jn->right, jn->rkey_idx, jn->n_keys)) {
+        jn->use_merge = 1;
+    }
+
     VecArrayBuilder *r_builders = (VecArrayBuilder *)calloc(
         (size_t)jn->r_ncols, sizeof(VecArrayBuilder));
     for (int c = 0; c < jn->r_ncols; c++)
         r_builders[c] = vec_builder_init(rschema->col_types[c]);
+    /* A build side whose row count is known from metadata is sized exactly,
+       so its buffers (and their reservation) are not up to twice the rows. */
+    int64_t exact = vec_node_static_rows(jn->right);
+    if (exact > 0)
+        for (int c = 0; c < jn->r_ncols; c++)
+            vec_builder_reserve(&r_builders[c], exact);
 
     VecBatch *batch;
     while ((batch = jn->right->next_batch(jn->right)) != NULL) {
@@ -943,9 +979,9 @@ static void join_build(JoinNode *jn) {
            partition is un-splittable by hashing (a single hot key), so fall
            back to a block-nested-loop that blocks the build under budget and
            re-scans the probe per block. Either way peak stays bounded. */
-        if (jn->mem_budget > 0 &&
-            join_build_bytes_after(jn, r_builders, jn->r_ncols, batch)
-                > jn->mem_budget) {
+        if (!join_reserve_build(jn, join_build_bytes_after(
+                jn, r_builders, jn->r_ncols, batch))) {
+            jn->use_merge = 0;   /* partitions and BNL blocks hash-join */
             if (jn->spill_depth < JOIN_MAX_SPILL_DEPTH)
                 join_spill(jn, r_builders, batch);
             else
@@ -965,12 +1001,6 @@ static void join_build(JoinNode *jn) {
 
     /* Coerce build-side key columns to match probe-side types */
     join_coerce_build_keys(jn);
-
-    /* Check if both sides are sorted on join keys — use merge join if so */
-    if (child_sorted_on_keys(jn->left, jn->lkey_idx, jn->n_keys) &&
-        child_sorted_on_keys(jn->right, jn->rkey_idx, jn->n_keys)) {
-        jn->use_merge = 1;
-    }
 
     if (jn->use_merge) {
         /* Merge join: skip hash table, just store row count for cursor bounds */
@@ -1698,6 +1728,7 @@ static void join_free(VecNode *self) {
     free(jn->rkey_idx);
     free(jn->r_non_key_idx);
     free(jn->build_matched);
+    vec_mem_acct_free(&jn->mem);
     if (jn->r_cols) {
         for (int c = 0; c < jn->r_ncols; c++)
             vec_array_free(&jn->r_cols[c]);
@@ -1735,7 +1766,7 @@ static void join_free(VecNode *self) {
 /* ------------------------------------------------------------------ */
 
 VEC_TWO_CHILDREN_FN(join_children, JoinNode, left, right)
-VEC_BUDGET_FIELD_FN(join_set_budget, JoinNode, mem_budget)
+VEC_BUDGET_ACCT_FN(join_set_grant, JoinNode, mem)
 
 JoinNode *join_node_create(VecNode *left, VecNode *right,
                            JoinKind kind, int n_keys, JoinKey *keys,
@@ -1755,6 +1786,7 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     jn->na_matches = 1;   /* dplyr default; the bridge overrides from R */
     jn->keys = keys;
     jn->mem_budget = mem_budget;
+    jn->mem = vec_mem_acct(NULL, mem_budget);
     if (temp_dir) {
         jn->temp_dir = (char *)malloc(strlen(temp_dir) + 1);
         strcpy(jn->temp_dir, temp_dir);
@@ -1898,7 +1930,7 @@ JoinNode *join_node_create(VecNode *left, VecNode *right,
     jn->base.next_batch = join_next_batch;
     jn->base.kind = "JoinNode";
     jn->base.children = join_children;
-    vec_node_set_budgeted(&jn->base, jn->mem_budget, join_set_budget);
+    vec_node_set_budgeted(&jn->base, jn->mem_budget, join_set_grant);
     jn->base.free_node = join_free;
 
     return jn;

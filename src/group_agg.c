@@ -14,6 +14,7 @@
 #include "scan.h"
 #include "vtr1_tdc.h"
 #include "vtr_codec.h"
+#include "part_spill.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,16 +25,16 @@ static int agg_is_holistic(AggKind kind) {
 }
 
 /* Per-group spill budget for one holistic accumulator (median / n_distinct).
-   The node's mem_budget is split across the holistic aggregations so their
-   concurrent in-RAM buffers for a single group sum to <= mem_budget before any
-   spills. Scalar aggregations ignore the value (they hold O(1) state). */
-static int64_t agg_holistic_budget(const GroupAggNode *ga) {
+   `total` is split across the holistic aggregations so their concurrent
+   in-RAM buffers for a single group sum to <= total before any spills. Scalar
+   aggregations ignore the value (they hold O(1) state). */
+static int64_t agg_holistic_budget(const GroupAggNode *ga, int64_t total) {
     int n_holistic = 0;
     for (int a = 0; a < ga->n_aggs; a++)
         if (agg_is_holistic(ga->agg_specs[a].kind))
             n_holistic++;
     if (n_holistic < 1) n_holistic = 1;
-    return ga->mem_budget / n_holistic;
+    return total / n_holistic;
 }
 
 /* Output column type of an aggregate. Every aggregate emits a double except
@@ -97,6 +98,7 @@ static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
                                       char **key_names, int n_aggs,
                                       AggSpec *agg_specs, const char *temp_dir,
                                       int64_t mem_budget, GroupAggMode mode);
+static void group_agg_share_grant(GroupAggNode *ga, VecMemGrant *grant);
 
 /* ================================================================== */
 /*  Hash aggregation with a bounded partitioned fallback              */
@@ -126,21 +128,18 @@ static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
 /* Group headroom reserved per shard before a parallel pass; a shard that
    exhausts it stops, is regrown on the master, and resumes. */
 #define HAGG_HEADROOM_MIN 1024
-/* A partition's buffered spill rows are written as one row group once they
-   reach this many rows, or when all partitions together pass their byte
-   budget (floored at HAGG_PART_BUF_MIN so a tiny budget cannot degrade into one
-   row group per row). */
-#define HAGG_PART_FLUSH_ROWS 16384
+/* Byte budget for the partition buffers (part_spill), floored at
+   HAGG_PART_BUF_MIN so a tiny budget cannot degrade into one row group per
+   row. */
 #define HAGG_PART_BUF_MIN    (256LL * 1024)
 #define HAGG_PART_BUF_MAX    (64LL * 1024 * 1024)
 
-/* murmur3 fmix of a key hash under a salt. The tables index slots by the low
-   bits of the raw hash, so shards and partitions are chosen from mixed bits:
-   keys that share a shard or partition do not share their slot bits. Salt 0
-   picks the shard; salt depth + 1 picks the spill partition at each level, so
-   each level splits independently. */
-static inline uint64_t hagg_mix(uint64_t h, uint64_t salt) {
-    h ^= salt * 0x9E3779B97F4A7C15ULL;
+/* The tables index slots by the low bits of the raw hash, so shards and
+   partitions are chosen from mixed bits: keys that share a shard or partition
+   do not share their slot bits. The shard is picked by the murmur3 fmix of the
+   hash (hagg_shard_mix); the spill partition by part_spill_salt() under salt
+   depth + 1, so each level splits independently. */
+static inline uint64_t hagg_shard_mix(uint64_t h) {
     h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
     h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
     h ^= h >> 33;
@@ -187,11 +186,7 @@ typedef struct {
     int           *spill_src;       /* input column index per spill column */
     VecSchema      spill_schema;
     char         **part_paths;      /* NULL = partition received no rows */
-    Vtr1TdcWriter **writers;
-    VecArrayBuilder *pbuf;          /* HAGG_PARTS x n_spill_cols builders */
-    int64_t       *pbuf_rows;
-    int64_t       *pbuf_bytes;
-    int64_t        pbuf_total;
+    PartSpill     *ps;              /* open while the input is consumed */
     int64_t        pbuf_budget;
 
     int64_t        n_out;           /* groups across shards, at emit */
@@ -259,7 +254,7 @@ static void hagg_setup(HashAggNode *h) {
     h->parallel = h->n_shards > 1;
     h->shard_freeze = (h->budget - h->pbuf_budget) / h->n_shards;
 
-    int64_t store_mem = agg_holistic_budget(ga);
+    int64_t store_mem = agg_holistic_budget(ga, h->budget);
     h->shards = (HaggShard *)calloc((size_t)h->n_shards, sizeof(HaggShard));
     if (!h->shards) vectra_error("alloc failed for hash aggregation shards");
     for (int s = 0; s < h->n_shards; s++) {
@@ -300,15 +295,7 @@ static char *hagg_part_path(const char *temp_dir, int depth, int p) {
     return path;
 }
 
-static void hagg_pbuf_init(HashAggNode *h, int p) {
-    for (int c = 0; c < h->n_spill_cols; c++)
-        h->pbuf[p * h->n_spill_cols + c] =
-            vec_builder_init(h->spill_schema.col_types[c]);
-    h->pbuf_rows[p] = 0;
-    h->pbuf_bytes[p] = 0;
-}
-
-/* First freeze: set up the partition writers and buffers. */
+/* First freeze: open the partition spill. */
 static void hagg_open_partitions(HashAggNode *h) {
     const VecSchema *cs = &h->in->output_schema;
     char **names = (char **)malloc((size_t)h->n_spill_cols * sizeof(char *));
@@ -322,33 +309,11 @@ static void hagg_open_partitions(HashAggNode *h) {
     free(types);
 
     h->part_paths = (char **)calloc(HAGG_PARTS, sizeof(char *));
-    h->writers = (Vtr1TdcWriter **)calloc(HAGG_PARTS, sizeof(Vtr1TdcWriter *));
-    h->pbuf = (VecArrayBuilder *)calloc(
-        (size_t)HAGG_PARTS * (size_t)h->n_spill_cols, sizeof(VecArrayBuilder));
-    h->pbuf_rows = (int64_t *)calloc(HAGG_PARTS, sizeof(int64_t));
-    h->pbuf_bytes = (int64_t *)calloc(HAGG_PARTS, sizeof(int64_t));
-    for (int p = 0; p < HAGG_PARTS; p++) hagg_pbuf_init(h, p);
-    h->frozen = 1;
-}
-
-static void hagg_flush_part(HashAggNode *h, int p) {
-    if (h->pbuf_rows[p] == 0) return;
-    int nc = h->n_spill_cols;
-    VecBatch *ob = vec_batch_alloc(nc, h->pbuf_rows[p]);
-    for (int c = 0; c < nc; c++) {
-        ob->columns[c] = vec_builder_finish(&h->pbuf[p * nc + c]);
-        ob->col_names[c] = str_dup(h->spill_schema.col_names[c]);
-    }
-    if (h->writers[p] == NULL) {
+    for (int p = 0; p < HAGG_PARTS; p++)
         h->part_paths[p] = hagg_part_path(h->ga->temp_dir, h->depth, p);
-        h->writers[p] = vtr1_open_tdc_writer(h->part_paths[p], &h->spill_schema);
-    }
-    /* Uncompressed: a run file is written once and read once, and on 2e7-row
-       measurements FAST encoding made the spill eight times slower. */
-    vtr1_write_rowgroup_tdc(h->writers[p], ob, VTR_COMPRESS_NONE, NULL, NULL);
-    vec_batch_free(ob);
-    h->pbuf_total -= h->pbuf_bytes[p];
-    hagg_pbuf_init(h, p);
+    h->ps = part_spill_create(&h->spill_schema, h->spill_src, HAGG_PARTS,
+                              h->part_paths, h->pbuf_budget);
+    h->frozen = 1;
 }
 
 /* Route this batch's flagged rows (groups no frozen table holds) to their
@@ -356,57 +321,48 @@ static void hagg_flush_part(HashAggNode *h, int p) {
 static void hagg_spill_batch(HashAggNode *h, VecBatch *batch,
                              const uint8_t *spill, const uint64_t *hashes,
                              int64_t n) {
+    int *pid = (int *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+    if (!pid) vectra_error("alloc failed for hash aggregation spill");
     int64_t n_sp = 0;
-    for (int64_t li = 0; li < n; li++) n_sp += spill[li];
-    if (n_sp == 0) return;
-
-    int64_t counts[HAGG_PARTS + 1] = {0};
-    uint8_t *pid = (uint8_t *)malloc((size_t)n_sp);
-    int32_t *rows = (int32_t *)malloc((size_t)n_sp * sizeof(int32_t));
-    if (!pid || !rows) {
-        free(pid); free(rows);
-        vectra_error("alloc failed for hash aggregation spill");
-    }
-    int64_t j = 0;
     for (int64_t li = 0; li < n; li++) {
-        if (!spill[li]) continue;
-        pid[j] = (uint8_t)(hagg_mix(hashes[li], (uint64_t)h->depth + 1) %
-                           (uint64_t)HAGG_PARTS);
-        counts[pid[j] + 1]++;
-        j++;
+        if (!spill[li]) { pid[li] = -1; continue; }
+        pid[li] = (int)(part_spill_salt(hashes[li], (uint64_t)h->depth + 1) %
+                        (uint64_t)HAGG_PARTS);
+        n_sp++;
     }
-    for (int p = 0; p < HAGG_PARTS; p++) counts[p + 1] += counts[p];
-    int64_t fill[HAGG_PARTS];
-    memcpy(fill, counts, sizeof(fill));
-    j = 0;
-    for (int64_t li = 0; li < n; li++) {
-        if (!spill[li]) continue;
-        rows[fill[pid[j]]++] = (int32_t)vec_batch_physical_row(batch, li);
-        j++;
-    }
+    if (n_sp > 0) part_spill_route(h->ps, batch, pid);
     free(pid);
+}
 
-    int nc = h->n_spill_cols;
+/* Close the partition spill; a partition that received no rows keeps no
+   file and no path. */
+static void hagg_close_partitions(HashAggNode *h) {
+    if (!h->ps) return;
+    uint8_t used[HAGG_PARTS];
+    for (int p = 0; p < HAGG_PARTS; p++) used[p] = (uint8_t)part_spill_used(h->ps, p);
+    part_spill_close(h->ps);
+    h->ps = NULL;
     for (int p = 0; p < HAGG_PARTS; p++) {
-        int64_t m = counts[p + 1] - counts[p];
-        if (m == 0) continue;
-        int64_t bytes = 0;
-        for (int c = 0; c < nc; c++) {
-            VecArray g = vec_array_gather(&batch->columns[h->spill_src[c]],
-                                          rows + counts[p], (int32_t)m);
-            bytes += 8 * m;
-            if (g.type == VEC_STRING) bytes += g.buf.str.offsets[m];
-            vec_builder_append_array(&h->pbuf[p * nc + c], &g);
-            vec_array_free(&g);
-        }
-        h->pbuf_rows[p] += m;
-        h->pbuf_bytes[p] += bytes;
-        h->pbuf_total += bytes;
-        if (h->pbuf_rows[p] >= HAGG_PART_FLUSH_ROWS) hagg_flush_part(h, p);
+        if (used[p]) continue;
+        free(h->part_paths[p]);
+        h->part_paths[p] = NULL;
     }
-    free(rows);
-    if (h->pbuf_total > h->pbuf_budget)
-        for (int p = 0; p < HAGG_PARTS; p++) hagg_flush_part(h, p);
+}
+
+/* Table bytes the pool lets this node hold now: the node's cap (half the
+   budget at the top level, so the result sort keeps the other half), or less
+   when other nodes of the plan already hold the rest. */
+static int64_t hagg_table_cap(const HashAggNode *h) {
+    int64_t allow = vec_mem_allowance(&h->ga->mem);
+    return allow < h->budget ? allow : h->budget;
+}
+
+/* Reserve what the tables and the partition buffers hold now. */
+static void hagg_account(HashAggNode *h) {
+    int64_t bytes = h->frozen ? h->pbuf_budget : 0;
+    for (int s = 0; s < h->n_shards; s++)
+        bytes += hagg_shard_bytes(h, &h->shards[s]);
+    vec_mem_set(&h->ga->mem, bytes);
 }
 
 /* 1 when shard s can take the group at physical row r without allocating. */
@@ -521,7 +477,7 @@ static void hagg_consume(HashAggNode *h) {
                 hv = (k == 0) ? kh : vec_hash_combine(hv, kh);
             }
             hashes[li] = hv;
-            sid[li] = sbits ? (uint8_t)(hagg_mix(hv, 0) >> (64 - sbits)) : 0;
+            sid[li] = sbits ? (uint8_t)(hagg_shard_mix(hv) >> (64 - sbits)) : 0;
         }
 
         /* Counting sort of the rows by shard, keeping input order within a
@@ -535,6 +491,11 @@ static void hagg_consume(HashAggNode *h) {
         }
         for (int64_t li = 0; li < n; li++)
             order[h->shards[sid[li]].end++] = li;
+
+        /* A shard freezes at its share of what the pool gives the tables
+           now, read on the master before the shards run. */
+        if (h->budget > 0)
+            h->shard_freeze = (hagg_table_cap(h) - h->pbuf_budget) / ns;
 
         /* Reserve on the master, run every shard until done or out of room,
            repeat for the shards that stopped. */
@@ -576,19 +537,13 @@ static void hagg_consume(HashAggNode *h) {
         }
         free(hashes); free(sid); free(order); free(spill);
         vec_batch_free(batch);
+        hagg_account(h);
     }
     free(bkeys);
     free(counts);
 
-    if (h->frozen) {
-        for (int p = 0; p < HAGG_PARTS; p++) {
-            hagg_flush_part(h, p);
-            if (h->writers[p]) {
-                vtr1_close_tdc_writer(h->writers[p]);
-                h->writers[p] = NULL;
-            }
-        }
-    }
+    hagg_close_partitions(h);
+    hagg_account(h);
     h->phase = HAGG_EMIT_TABLE;
 }
 
@@ -673,6 +628,7 @@ static void hagg_free_tables(HashAggNode *h) {
     free(h->order);
     h->order = NULL;
     h->tables_live = 0;
+    vec_mem_set(&h->ga->mem, 0);
 }
 
 /* Emit the next slice of table groups in emit order. */
@@ -728,9 +684,11 @@ static VecNode *hagg_partition_node(HashAggNode *h, int p) {
         specs[a].input_col = ga->agg_specs[a].input_col
             ? str_dup(ga->agg_specs[a].input_col) : NULL;
     }
-    return (VecNode *)group_agg_create(scan, ga->n_keys, keys, ga->n_aggs,
-                                       specs, ga->temp_dir, h->budget,
-                                       GAGG_SORTED);
+    GroupAggNode *sub = group_agg_create(scan, ga->n_keys, keys, ga->n_aggs,
+                                         specs, ga->temp_dir, h->budget,
+                                         GAGG_SORTED);
+    group_agg_share_grant(sub, ga->mem.grant);
+    return (VecNode *)sub;
 }
 
 static VecBatch *hagg_next_batch(VecNode *self) {
@@ -769,17 +727,10 @@ static void hagg_free(VecNode *self) {
     hagg_free_tables(h);
     if (h->sub) h->sub->free_node(h->sub);
     if (h->frozen) {
-        for (int p = 0; p < HAGG_PARTS; p++) {
-            if (h->writers[p]) vtr1_close_tdc_writer(h->writers[p]);
+        hagg_close_partitions(h);
+        for (int p = 0; p < HAGG_PARTS; p++)
             if (h->part_paths[p]) { remove(h->part_paths[p]); free(h->part_paths[p]); }
-            for (int c = 0; c < h->n_spill_cols; c++)
-                vec_builder_free(&h->pbuf[p * h->n_spill_cols + c]);
-        }
         free(h->part_paths);
-        free(h->writers);
-        free(h->pbuf);
-        free(h->pbuf_rows);
-        free(h->pbuf_bytes);
         vec_schema_free(&h->spill_schema);
     }
     if (h->own_in) h->in->free_node(h->in);
@@ -947,7 +898,15 @@ static SortedAggState *sagg_init(GroupAggNode *ga) {
         (size_t)ga->n_aggs, sizeof(VecArrayBuilder));
     sagg_reset_builders(st, ga);
 
-    st->store_mem = agg_holistic_budget(ga);
+    /* The holistic stores reserve half of what the pool gives this node
+       now; the input sort, which shares the grant, has the rest. */
+    int64_t allow = vec_mem_allowance(&ga->mem);
+    int64_t stores = allow == INT64_MAX ? ga->mem_budget : allow / 2;
+    int has_holistic = 0;
+    for (int a = 0; a < ga->n_aggs; a++)
+        if (agg_is_holistic(ga->agg_specs[a].kind)) has_holistic = 1;
+    if (has_holistic && stores > 0) vec_mem_set(&ga->mem, stores);
+    st->store_mem = agg_holistic_budget(ga, stores);
     st->accums = (AggAccum *)malloc((size_t)ga->n_aggs * sizeof(AggAccum));
     for (int a = 0; a < ga->n_aggs; a++) {
         st->accums[a] = agg_accum_init(ga->agg_specs[a].kind, st->agg_types[a],
@@ -1065,7 +1024,8 @@ static VecBatch *sorted_agg_next_batch(GroupAggNode *ga) {
    never overflows is emitted in key order from an in-RAM permutation and needs
    no sort at all. */
 static void group_agg_start_hash(GroupAggNode *ga) {
-    int64_t budget = ga->mem_budget > 0 ? ga->mem_budget : VECTRA_SORT_MEM_DEFAULT;
+    int64_t budget = vec_mem_allowance(&ga->mem);
+    if (budget == INT64_MAX) budget = VECTRA_SORT_MEM_DEFAULT;
     int64_t table_budget = ga->temp_dir ? budget / 2 : 0;
     HashAggNode *h = (HashAggNode *)hagg_node_create(ga, ga->child, 0, 0,
                                                      table_budget, 1);
@@ -1079,9 +1039,10 @@ static void group_agg_start_hash(GroupAggNode *ga) {
             keys[k].descending = 0;
             keys[k].na_last = 0;
         }
-        ga->out = (VecNode *)sort_node_create((VecNode *)h, ga->n_keys, keys,
-                                              ga->temp_dir,
-                                              budget - table_budget);
+        SortNode *sn = sort_node_create((VecNode *)h, ga->n_keys, keys,
+                                        ga->temp_dir, budget - table_budget);
+        sort_node_share_grant(sn, ga->mem.grant);
+        ga->out = (VecNode *)sn;
     }
 }
 
@@ -1116,11 +1077,25 @@ static void group_agg_free(VecNode *self) {
     }
     free(ga->agg_specs);
     free(ga->temp_dir);
+    vec_mem_acct_free(&ga->mem);
     vec_schema_free(&ga->base.output_schema);
     free(ga);
 }
 
 VEC_ONE_CHILD_FN(group_agg_children, GroupAggNode, child)
+
+/* The plan's grant for this node, shared by its internal sorts. */
+static void group_agg_set_grant(VecNode *self, VecMemGrant *grant) {
+    GroupAggNode *ga = (GroupAggNode *)self;
+    vec_mem_acct_rebind(&ga->mem, grant);
+    if (ga->use_sorted) sort_node_share_grant((SortNode *)ga->child, grant);
+}
+
+/* Reserve through a parent's grant rather than as a node of the plan. */
+static void group_agg_share_grant(GroupAggNode *ga, VecMemGrant *grant) {
+    vec_node_clear_budgeted(&ga->base);
+    group_agg_set_grant(&ga->base, grant);
+}
 
 static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
                                       char **key_names, int n_aggs,
@@ -1130,6 +1105,7 @@ static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
     if (!ga) vectra_error("alloc failed for GroupAggNode");
 
     ga->mem_budget = mem_budget;
+    ga->mem = vec_mem_acct(NULL, mem_budget);
     if (temp_dir) {
         ga->temp_dir = (char *)malloc(strlen(temp_dir) + 1);
         strcpy(ga->temp_dir, temp_dir);
@@ -1157,6 +1133,7 @@ static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
         }
         SortNode *sn = sort_node_create(child, n_keys, sort_keys, temp_dir,
                                         sort_mem);
+        sort_node_share_grant(sn, NULL);   /* counted through this node */
         child = (VecNode *)sn;
         ga->use_sorted = 1;
     }
@@ -1195,6 +1172,7 @@ static GroupAggNode *group_agg_create(VecNode *child, int n_keys,
     ga->base.next_batch = group_agg_next_batch;
     ga->base.kind = "GroupAggNode";
     ga->base.children = group_agg_children;
+    vec_node_set_budgeted(&ga->base, mem_budget, group_agg_set_grant);
     ga->base.free_node = group_agg_free;
 
     return ga;

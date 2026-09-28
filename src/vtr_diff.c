@@ -212,7 +212,7 @@ static void diff_flush_added(Vtr1TdcWriter *w, const VecSchema *bs,
         batch->col_names[c] = strdup(bs->col_names[c]);
     }
     batch->n_rows = *added_n;
-    vtr1_write_rowgroup_tdc(w, batch, VTR_COMPRESS_FAST, NULL, NULL);
+    vtr1_write_rowgroup_tdc(w, batch, VTR_SPILL_COMPRESS, NULL, NULL);
     vec_batch_free(batch);
     for (int c = 0; c < nb; c++)
         bb[c] = vec_builder_init(bs->col_types[c]);

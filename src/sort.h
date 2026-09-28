@@ -2,6 +2,7 @@
 #define VECTRA_SORT_H
 
 #include "types.h"
+#include "plan_budget.h"
 
 typedef struct {
     int   col_index;
@@ -21,7 +22,8 @@ typedef struct {
     SortKey  *keys;
     int       phase;        /* internal: init / memory / merging / done */
 
-    int64_t   mem_budget;   /* spill threshold in bytes; 0 = unlimited */
+    int64_t   mem_budget;   /* budget requested at creation; 0 = unlimited */
+    VecMemAcct mem;         /* reservation on the plan's memory pool */
     char     *temp_dir;     /* directory for spill files; NULL = no spill */
 
     int       n_runs;       /* number of spilled runs */
@@ -61,5 +63,9 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
    before that. Used by streaming consumers that need the partition size up
    front (window ntile/percent_rank/cume_dist). */
 int64_t sort_node_total_rows(const SortNode *sn);
+
+/* Reserve through `grant` (a composite node's grant the sort is internal to)
+   instead of registering as a budgeted node of its own. */
+void sort_node_share_grant(SortNode *sn, VecMemGrant *grant);
 
 #endif /* VECTRA_SORT_H */

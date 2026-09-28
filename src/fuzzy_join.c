@@ -491,7 +491,10 @@ static void fuzzy_build_phase(FuzzyJoinNode *fj) {
     fj->b_ncols = nc;
     fj->p_ncols = fj->probe_node->output_schema.n_cols;
 
-    int64_t budget = fj->mem_budget > 0 ? fj->mem_budget : FUZZY_MEM_DEFAULT;
+    /* The build side reserves what the plan's memory pool gives it now. */
+    int64_t budget = vec_mem_allowance(&fj->mem);
+    if (budget == INT64_MAX) budget = FUZZY_MEM_DEFAULT;
+    vec_mem_set(&fj->mem, budget);
 
     VecArrayBuilder *builders =
         (VecArrayBuilder *)malloc((size_t)nc * sizeof(VecArrayBuilder));
@@ -632,6 +635,7 @@ static VecBatch *fuzzy_join_next_batch(VecNode *self) {
 
 static void fuzzy_join_free(VecNode *self) {
     FuzzyJoinNode *fj = (FuzzyJoinNode *)self;
+    vec_mem_acct_free(&fj->mem);
     if (fj->probe_node) fj->probe_node->free_node(fj->probe_node);
     if (fj->build_node) fj->build_node->free_node(fj->build_node);
     if (fj->b_cols) {
@@ -651,7 +655,7 @@ static void fuzzy_join_free(VecNode *self) {
 }
 
 VEC_TWO_CHILDREN_FN(fuzzy_join_children, FuzzyJoinNode, probe_node, build_node)
-VEC_BUDGET_FIELD_FN(fuzzy_join_set_budget, FuzzyJoinNode, mem_budget)
+VEC_BUDGET_ACCT_FN(fuzzy_join_set_grant, FuzzyJoinNode, mem)
 
 FuzzyJoinNode *fuzzy_join_node_create(
     VecNode     *probe,
@@ -681,6 +685,7 @@ FuzzyJoinNode *fuzzy_join_node_create(
     fj->n_threads = n_threads;
     fj->suffix_y = suffix_y ? strdup(suffix_y) : strdup(".y");
     fj->mem_budget = mem_budget;
+    fj->mem = vec_mem_acct(NULL, mem_budget);
     fj->temp_dir = temp_dir ? strdup(temp_dir) : NULL;
     fj->state = FSTATE_BUILD;
 
@@ -688,7 +693,7 @@ FuzzyJoinNode *fuzzy_join_node_create(
     fj->base.next_batch = fuzzy_join_next_batch;
     fj->base.kind = "FuzzyJoinNode";
     fj->base.children = fuzzy_join_children;
-    vec_node_set_budgeted(&fj->base, fj->mem_budget, fuzzy_join_set_budget);
+    vec_node_set_budgeted(&fj->base, fj->mem_budget, fuzzy_join_set_grant);
     fj->base.free_node = fuzzy_join_free;
 
     return fj;

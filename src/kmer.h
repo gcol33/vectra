@@ -2,6 +2,7 @@
 #define VECTRA_KMER_H
 
 #include "types.h"
+#include "plan_budget.h"
 #include "rec_spill.h"
 #include "key_arena.h"
 
@@ -37,7 +38,8 @@ typedef struct {
     int         canonical;
     int         n_keys;
     char      **key_names;
-    int64_t     mem_budget;   /* spill threshold for the record sort */
+    int64_t     mem_budget;   /* budget requested at creation */
+    VecMemAcct  mem;          /* reservation on the plan's memory pool */
     char       *temp_dir;     /* owned run-file dir */
 
     int         phase;        /* 0 = consume, 1 = emit, 2 = done */

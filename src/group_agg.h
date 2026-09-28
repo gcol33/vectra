@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "agg_ops.h"
+#include "plan_budget.h"
 
 typedef struct {
     char    *output_name;
@@ -19,8 +20,12 @@ typedef struct {
     int         n_aggs;
     AggSpec    *agg_specs;
     int         use_sorted;  /* 1 = sort-based agg (median/n_distinct) */
-    int64_t     mem_budget;  /* node budget: table + partitions + result sort,
-                                or the sort + holistic aggs on the sorted path */
+    int64_t     mem_budget;  /* budget requested at creation */
+    VecMemAcct  mem;         /* reservation on the plan's memory pool: the hash
+                                tables + partition buffers, or the holistic
+                                stores on the sorted path. Internal sorts (the
+                                sorted path's input sort, the result sort)
+                                reserve through the same grant. */
     char       *temp_dir;    /* owned copy; run-file dir for every spill */
     void       *sagg;        /* SortedAggState* for the streaming sorted path */
     VecNode    *out;         /* hash path: HashAggNode, or a SortNode over it

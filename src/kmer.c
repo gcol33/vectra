@@ -77,8 +77,12 @@ static void kmer_consume(KmerNode *kn) {
         key_types[k] = cs->col_types[key_idx[k]];
     }
 
+    /* The record sort reserves what the plan's memory pool gives it now. */
+    int64_t budget = vec_mem_allowance(&kn->mem);
+    if (budget == INT64_MAX) budget = 0;   /* RecSpill default */
+    vec_mem_set(&kn->mem, budget);
     rec_spill_init(&kn->spill, sizeof(KmerRec), cmp_kmer_rec,
-                   kn->mem_budget, kn->temp_dir);
+                   budget, kn->temp_dir);
 
     /* Group table (only when there are key columns). */
     VecHashTable ht;
@@ -269,6 +273,7 @@ static VecBatch *kmer_next_batch(VecNode *self) {
 
 static void kmer_free(VecNode *self) {
     KmerNode *kn = (KmerNode *)self;
+    vec_mem_acct_free(&kn->mem);
     kn->child->free_node(kn->child);
     if (kn->merge) rec_spill_merge_end(kn->merge);
     if (kn->phase != KP_CONSUME) {
@@ -285,7 +290,7 @@ static void kmer_free(VecNode *self) {
 }
 
 VEC_ONE_CHILD_FN(kmer_children, KmerNode, child)
-VEC_BUDGET_FIELD_FN(kmer_set_budget, KmerNode, mem_budget)
+VEC_BUDGET_ACCT_FN(kmer_set_grant, KmerNode, mem)
 
 KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
                            int k, int canonical,
@@ -305,6 +310,7 @@ KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
     kn->n_keys = n_keys;
     kn->key_names = key_names;
     kn->mem_budget = mem_budget;
+    kn->mem = vec_mem_acct(NULL, mem_budget);
     kn->temp_dir = temp_dir ? strdup(temp_dir) : NULL;
     kn->phase = KP_CONSUME;
 
@@ -331,7 +337,7 @@ KmerNode *kmer_node_create(VecNode *child, const char *seq_col,
     kn->base.free_node = kmer_free;
     kn->base.kind = "KmerNode";
     kn->base.children = kmer_children;
-    vec_node_set_budgeted(&kn->base, kn->mem_budget, kmer_set_budget);
+    vec_node_set_budgeted(&kn->base, kn->mem_budget, kmer_set_grant);
     kn->base.row_count_hint = -1;
 
     return kn;

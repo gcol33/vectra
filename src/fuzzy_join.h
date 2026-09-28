@@ -2,6 +2,7 @@
 #define VECTRA_FUZZY_JOIN_H
 
 #include "types.h"
+#include "plan_budget.h"
 #include "join_partition.h"
 
 /* Distance method for fuzzy matching */
@@ -73,6 +74,7 @@ typedef struct {
        (loaded into chunk_cols with a per-chunk block index), so peak build
        state is one rowgroup, not the whole side. */
     int64_t     mem_budget;
+    VecMemAcct  mem;          /* reservation on the plan's memory pool */
     char       *temp_dir;         /* owned run-file dir */
     int         spilled;          /* 1 = build side lives in build_file */
     char       *build_spill_path; /* owned run-file path */

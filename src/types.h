@@ -214,8 +214,9 @@ typedef int64_t   (*StaticRowsFn)(const VecNode *self);
    into out and returns the total count. NULL = no children (a scan). */
 typedef int       (*ChildrenFn)(VecNode *self, VecNode **out, int cap);
 
-/* Hand a budgeted node its share of the plan's memory budget, in bytes. */
-typedef void      (*SetBudgetFn)(VecNode *self, int64_t bytes);
+/* Hand a budgeted node its grant on the plan's memory pool (plan_budget.h). */
+typedef struct VecMemGrant VecMemGrant;
+typedef void      (*SetBudgetFn)(VecNode *self, VecMemGrant *grant);
 
 struct VecNode {
     NextBatchFn   next_batch;
@@ -228,8 +229,8 @@ struct VecNode {
     ChildrenFn    children;       /* NULL = leaf */
     /* A node that buffers under a memory budget sets set_mem_budget and
        records the budget it was created with in mem_request. Before
-       execution vec_plan_assign_budgets() divides each request among the
-       plan's budgeted nodes, so vectra_mem() bounds the plan rather than
+       execution vec_plan_assign_budgets() gives each one a grant on one
+       pool for the whole plan, so vectra_mem() bounds the plan rather than
        each node. NULL = holds no budgeted state. */
     SetBudgetFn   set_mem_budget;
     int64_t       mem_request;

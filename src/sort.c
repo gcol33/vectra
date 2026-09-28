@@ -699,8 +699,10 @@ static VecBatch *merge_build_one_batch(MergeState *ms) {
 static VecBatch *merge_next_batch(SortNode *sn) {
     MergeState *ms = (MergeState *)sn->merge;
     VecBatch *result = merge_build_one_batch(ms);
-    if (!result)
+    if (!result) {
         sn->phase = SORT_DONE;
+        vec_mem_set(&sn->mem, 0);
+    }
     return result;
 }
 
@@ -746,6 +748,7 @@ static VecBatch *memory_next_batch(SortNode *sn) {
     int64_t left = sn->mem_n - sn->mem_pos;
     if (left <= 0) {
         free_memory_result(sn);
+        vec_mem_set(&sn->mem, 0);
         sn->phase = SORT_DONE;
         return NULL;
     }
@@ -805,21 +808,23 @@ static void merge_drain_to_writer(MergeState *ms, const char *out_path) {
 }
 
 /* Choose the merge fan-in so that k decoded rowgroups fit in ~half the
-   spill budget: k = (budget/2) / (SPILL_RG_SIZE * bytes_per_row), where
-   bytes_per_row is the measured decoded width of the spilled data
-   (est_bytes / est_rows accumulated at spill time). Clamped to
+   memory available to the merge: k = (budget/2) / (SPILL_RG_SIZE *
+   bytes_per_row), where bytes_per_row is the measured decoded width of the
+   spilled data (est_bytes / est_rows accumulated at spill time). Clamped to
    [2, SORT_MAX_FANIN]. Wide rows (geometry / long strings) get a small
    fan-in, narrow numeric rows a large one, so merge-phase resident memory
-   stays near the budget regardless of row width or total size. */
+   stays near the budget regardless of row width or total size. *reserve is
+   set to the merge's resident bytes: k row groups plus one output batch. */
 static int compute_merge_fanin(int64_t est_bytes, int64_t est_rows,
-                               int64_t mem_budget) {
-    int64_t budget = mem_budget > 0 ? mem_budget : VECTRA_SORT_MEM_DEFAULT;
+                               int64_t budget, int64_t *reserve) {
+    if (budget <= 0 || budget == INT64_MAX) budget = VECTRA_SORT_MEM_DEFAULT;
     int64_t row_bytes = (est_rows > 0) ? est_bytes / est_rows : 1;
     if (row_bytes < 1) row_bytes = 1;
     int64_t rg_bytes = (int64_t)SPILL_RG_SIZE * row_bytes;
     int64_t fanin = (budget / 2) / (rg_bytes > 0 ? rg_bytes : 1);
     if (fanin < 2) fanin = 2;
     if (fanin > SORT_MAX_FANIN) fanin = SORT_MAX_FANIN;
+    *reserve = fanin * rg_bytes + (int64_t)MERGE_BATCH_SIZE * row_bytes;
     return (int)fanin;
 }
 
@@ -885,7 +890,8 @@ static void init_merge(SortNode *sn, int fanin) {
 static void consume_input(SortNode *sn) {
     int n_cols = sn->base.output_schema.n_cols;
     const VecSchema *schema = &sn->base.output_schema;
-    int can_spill = (sn->temp_dir != NULL && sn->mem_budget > 0);
+    int can_spill = sn->temp_dir != NULL &&
+                    (sn->mem.grant != NULL || sn->mem.cap > 0);
 
     VecArrayBuilder *builders = (VecArrayBuilder *)calloc(
         (size_t)n_cols, sizeof(VecArrayBuilder));
@@ -901,17 +907,19 @@ static void consume_input(SortNode *sn) {
 
     /* Pull all child batches. Before a batch is appended, the sort predicts
        the buffer's allocated bytes after the append (builder growth included)
-       plus the permutation and radix scratch sorting it will need; if that
-       would cross the budget the current buffer is spilled first. So the
-       budget bounds what is actually allocated, not the rows held. */
+       plus the permutation and radix scratch sorting it will need, and
+       reserves that on the plan's memory pool. If the pool refuses, the
+       current buffer is spilled first and its reservation released. So the
+       budget bounds what is actually allocated, not the rows held. A batch
+       arriving at an empty buffer is always taken. */
     VecBatch *batch;
     while ((batch = sn->child->next_batch(sn->child)) != NULL) {
         int64_t n_logical = vec_batch_logical_rows(batch);
         int64_t held = builders[0].length;
-        if (can_spill && held > 0) {
-            int64_t need = vec_builders_bytes_after_batch(builders, n_cols, batch)
-                         + SORT_WORK_BYTES_PER_ROW * (held + n_logical);
-            if (need > sn->mem_budget) {
+        int64_t need = vec_builders_bytes_after_batch(builders, n_cols, batch)
+                     + SORT_WORK_BYTES_PER_ROW * (held + n_logical);
+        if (!vec_mem_try(&sn->mem, need)) {
+            if (can_spill && held > 0) {
                 spill_est_bytes += vec_builders_bytes(builders, n_cols);
                 spill_est_rows  += held;
                 char *path = spill_sorted_run(builders, n_cols, schema,
@@ -921,7 +929,11 @@ static void consume_input(SortNode *sn) {
                 /* Reinitialize builders (consumed by spill) */
                 for (int c = 0; c < n_cols; c++)
                     builders[c] = vec_builder_init(schema->col_types[c]);
+                vec_mem_set(&sn->mem, 0);
+                need = vec_builders_bytes_after_batch(builders, n_cols, batch)
+                     + SORT_WORK_BYTES_PER_ROW * n_logical;
             }
+            vec_mem_set(&sn->mem, need);
         }
 
         total_rows += n_logical;
@@ -971,9 +983,13 @@ static void consume_input(SortNode *sn) {
         vec_builder_free(&builders[c]);
     free(builders);
 
-    /* Set up the k-way merge with a fan-in bounded to the memory budget. */
+    /* Set up the k-way merge with a fan-in bounded to what the pool would
+       give the merge now, and reserve the merge's resident bytes. */
+    vec_mem_set(&sn->mem, 0);
+    int64_t merge_bytes;
     int fanin = compute_merge_fanin(spill_est_bytes, spill_est_rows,
-                                    sn->mem_budget);
+                                    vec_mem_allowance(&sn->mem), &merge_bytes);
+    vec_mem_set(&sn->mem, merge_bytes);
     init_merge(sn, fanin);
 }
 
@@ -1005,6 +1021,7 @@ static void sort_free(VecNode *self) {
     free(sn->keys);
 
     free_memory_result(sn);
+    vec_mem_acct_free(&sn->mem);
 
     if (sn->merge)
         merge_state_free((MergeState *)sn->merge);
@@ -1033,7 +1050,12 @@ static int64_t sort_static_rows(const VecNode *self) {
 }
 
 VEC_ONE_CHILD_FN(sort_children, SortNode, child)
-VEC_BUDGET_FIELD_FN(sort_set_budget, SortNode, mem_budget)
+VEC_BUDGET_ACCT_FN(sort_set_grant, SortNode, mem)
+
+void sort_node_share_grant(SortNode *sn, VecMemGrant *grant) {
+    vec_node_clear_budgeted(&sn->base);
+    vec_mem_acct_rebind(&sn->mem, grant);
+}
 
 SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
                            const char *temp_dir, int64_t mem_budget) {
@@ -1045,6 +1067,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->keys       = keys;
     sn->phase      = SORT_INIT;
     sn->mem_budget = mem_budget;
+    sn->mem        = vec_mem_acct(NULL, mem_budget);
     sn->total_rows = -1;
 
     if (temp_dir) {
@@ -1058,7 +1081,7 @@ SortNode *sort_node_create(VecNode *child, int n_keys, SortKey *keys,
     sn->base.static_rows   = sort_static_rows;
     sn->base.kind          = "SortNode";
     sn->base.children = sort_children;
-    vec_node_set_budgeted(&sn->base, sn->mem_budget, sort_set_budget);
+    vec_node_set_budgeted(&sn->base, sn->mem_budget, sort_set_grant);
     sn->base.row_count_hint = child->row_count_hint;
 
     return sn;
