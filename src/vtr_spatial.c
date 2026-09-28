@@ -569,7 +569,7 @@ static void locate_xy_worker(const GeosBatchJob *job) {
 
 /* C_geos_locate_xy(loc, x, y, pred, dist, want_all, nthreads): match raw point
  * coordinates against the resident locator -- the sf-free counterpart of
- * encoding the points to WKB and running C_geos_join / C_geos_nearest. Each
+ * encoding the points to WKB and matching those geometries. Each
  * point is built once with GEOSGeom_createPointFromXY, so there is no hex
  * round-trip. Serves the coords= spatial verbs and the vector-zone path of
  * zonal().
