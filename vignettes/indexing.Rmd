@@ -90,15 +90,13 @@ an entire row group is uniformly one value.
 
 Not all column types benefit equally. Numeric columns with natural ordering
 produce the tightest zone maps: timestamps that increase over time, sensor
-readings that cluster by location, sequential IDs. String columns can also
-prune well if the values have a predictable lexicographic distribution (e.g.,
-ISO country codes or zero-padded identifiers like `"site_042"`), but
-free-text strings with arbitrary prefixes tend to span the full alphabet in
-every row group, making the min/max bounds too wide to exclude anything.
+readings that cluster by location, sequential IDs. String columns store only a
+null count per row group, no min/max, so a zone map can skip a row group for a
+string predicate only when the column is entirely `NA` there. Equality lookups
+on strings are what hash indexes (below) are for.
 
 This works for numeric comparisons: `>`, `<`, `>=`, `<=`, `==`, `!=`, and
-combinations that define a range. It also works for string columns where
-lexicographic ordering makes the min/max bounds meaningful.
+combinations that define a range.
 
 ```{r zonemap-explain}
 tbl(f) |>
@@ -106,7 +104,7 @@ tbl(f) |>
   explain()
 ```
 
-The plan output shows `v4 stats` on the ScanNode, indicating that zone-map
+The plan output shows `tdc stats` on the ScanNode, indicating that zone-map
 statistics are available and the engine will use them. With our uniform random
 data, roughly 5% of rows have `value > 95`. Some row groups will have a max
 below 95 and be skipped entirely; others will be read and filtered
@@ -501,18 +499,21 @@ pulls batches from its child. The annotations on each line tell us:
 **Node types:**
 
 - `ScanNode`: reads from disk. Annotations include column count, pruning info,
-  predicate pushdown, zone-map stats (`v4 stats`), hash index usage.
+  predicate pushdown, zone-map stats (`tdc stats`), hash index usage.
 - `FilterNode`: applies a predicate row-by-row. When pushdown succeeds, this
   node still appears but does less work.
 - `ProjectNode`: handles `select()`, `mutate()`, and `rename()`. Always
   streaming.
 - `SortNode`: materializes all input, sorts, then streams output.
 
-- `GroupAggNode`: hash-based grouping and aggregation. Materializes groups.
+- `GroupAggNode`: hash-based grouping and aggregation. Holds the groups,
+  spilling to disk past the memory budget.
 
-- `JoinNode`: hash join. Materializes the build side (right table).
+- `JoinNode`: hash join. Holds the build side (right table), spilling to disk
+  past the memory budget.
 
-- `WindowNode`: window functions. May materialize partitions.
+- `WindowNode`: window functions. Grouped windows hold one group at a time;
+  ungrouped windows stream.
 
 - `TopNNode`: combined sort + limit. More efficient than separate sort and
   limit for small N.
@@ -526,7 +527,7 @@ pulls batches from its child. The annotations on each line tell us:
   Sorts and some aggregations are materializing.
 - `predicate pushdown`: filter condition was absorbed into the scan.
 
-- `v4 stats`: zone-map statistics are available for row group pruning.
+- `tdc stats`: zone-map statistics are available for row group pruning.
 
 - `hash index`: a `.vtri` index is being used for row group identification.
 
@@ -742,16 +743,15 @@ tbl(f_by_site) |>
 ```
 
 When data is sorted by `site`, each site occupies a contiguous range of row
-groups. Zone maps on string columns prune all row groups outside that range,
-and an index can pinpoint the exact groups.
+groups, and an index on `site` pinpoints exactly those groups.
 
 **Index maintenance.**
-A row append rewrites every row group, which moves the rows a key sits in, so
-each of the store's indexes is rebuilt as part of `append_vtr(along = "rows")`.
-The rebuild is a single sequential pass over the indexed column, hashing each
-value and recording its row group membership; on a file of a few million rows
-it takes well under a second, against the full restream the row append itself
-performs.
+A row append leaves the existing row groups where they are and adds new ones
+after them, so the entries an index already holds stay true.
+`append_vtr(along = "rows")` therefore extends each of the store's indexes
+rather than rebuilding it: it reads only the appended row groups, and merges
+their entries into the sorted index as the new sidecar is written. The
+extended index is byte-identical to one built from scratch.
 
 ```{r index-rebuild}
 append_vtr(eco[1:100, ], f)
@@ -767,12 +767,13 @@ A column append (`along = "cols"`) leaves row group boundaries and existing
 column data untouched, so an index over the original columns stays valid and
 is not rebuilt.
 
-An index records the row and row-group counts of the store it was built
-against. A query that finds those changed reads the store and leaves the index
-alone. An index invalidated some other way, such as overwriting the file with
-`write_vtr()`, therefore costs the acceleration and never the rows.
-`has_index()` reports `FALSE` in that state, which is the signal to call
-`create_index()` again:
+An index records the row count, row-group count and a fingerprint of the
+store it was built against. A query that finds any of them changed reads the
+store and leaves the index alone, so an index that no longer describes its
+store, for instance after the file was replaced by a download, costs the
+acceleration and never the rows. `write_vtr()` over an indexed file also
+removes the old sidecars. `has_index()` reports `FALSE` in either state, which
+is the signal to call `create_index()` again:
 
 ```{r index-invalidated}
 g <- tempfile(fileext = ".vtr")

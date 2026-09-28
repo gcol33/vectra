@@ -26,8 +26,9 @@ This vignette is the hands-on companion to
 [Out-of-core GIS with vectra](spatial.html). That article lays out the cost
 model; this one runs the streaming vector verbs end to end on a real layer, so
 every block below is code you can execute and check. It needs the optional
-[sf](https://r-spatial.github.io/sf/) package, which supplies the geometry
-engine vectra streams around.
+[sf](https://r-spatial.github.io/sf/) package, which the spatial verbs use to
+take layers and coordinate reference systems as arguments, and which runs the
+operations vectra has no native path for.
 
 ```{r libs, message = FALSE}
 library(vectra)
@@ -54,13 +55,18 @@ and `rasterize()`.
 
 vectra has no geometry type. A geometry rides through the engine as hex-encoded
 WKB in an ordinary string column, and the coordinate reference system is carried
-on the returned node rather than written into the `.vtr` file. Topology stays
-with sf and the GEOS library it links: vectra contributes the streaming, the
-spill machinery, and a native fast path, not the geometry algorithms.
+on the returned node rather than written into the `.vtr` file. The geometry
+algorithms come from GEOS. For the operations vectra recognises (the common
+predicates, clipping, buffering, measures and the like on planar data) it calls
+the GEOS C API directly, through the
+[libgeos](https://paleolimbot.github.io/libgeos/) package it links against, and
+works straight off the WKB column in C. Everything else, such as an arbitrary
+function passed to `spatial_map()` or geographic data with spherical geometry
+switched on, runs through sf batch by batch.
 
-One streamed step is a loop. Pull a batch, decode its WKB column into an `sf`
-object, run the operation, encode the result back into a WKB string column, and
-append it to a run-file. When the loop finishes, the run-files become a single
+On that sf path, one streamed step is a loop. Pull a batch, decode its WKB
+column into an `sf` object, run the operation, encode the result back into a
+WKB string column, and append it to a run-file. When the loop finishes, the run-files become a single
 lazy node you can carry on querying. The memory a run holds is
 
 ```
@@ -303,7 +309,9 @@ streams the large left side and joins each batch against a small resident right
 side. The dominant workload is tagging a huge point set with the polygon it
 falls in: which county each occurrence sits in, which census tract each address
 belongs to. The billion-row left stream never materializes while the polygon
-layer stays in RAM.
+layer stays in RAM. On the native path the join is a lazy node like any other
+verb: the joined rows stream straight into whatever comes next, a `count()` or a
+`write_vtr()`, without being spilled first.
 
 ```{r join-tag}
 tagged <- tbl(fp) |>
@@ -322,6 +330,19 @@ tagged_sf <- st_as_sf(tdf, coords = c("x", "y"), crs = crs_nc)
 plot(st_geometry(nc), border = "grey85", col = NA,
      main = "Points tagged with their county")
 plot(tagged_sf["NAME"], pch = 16, cex = 0.5, add = TRUE)
+```
+
+When only the attributes matter, `keep_geom = FALSE` drops the left geometry
+column. With `coords =` the point geometries are then never built at all, which
+is the cheap way to tag points and aggregate:
+
+```{r join-count}
+tbl(fp) |>
+  spatial_join(nc["NAME"], coords = c("x", "y"), crs = crs_nc,
+               keep_geom = FALSE) |>
+  count(NAME) |>
+  collect() |>
+  head()
 ```
 
 Columns present on both sides are disambiguated with `suffix` (default

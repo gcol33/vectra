@@ -16,7 +16,9 @@ Point vectra at a file too big to load and query it with the verbs you already u
 Data flows through the engine one row group at a time, so peak memory stays bounded
 no matter how large the file gets. Arrow needs compiled binaries that match your
 platform, DuckDB links a bundled library, Spark wants a JVM. vectra is a standard R
-extension with no external dependencies: it compiles where R compiles.
+extension that needs no system libraries: its C engine and codecs are compiled from
+the package sources, and its only compiled R dependency is libgeos (GEOS for the
+spatial functions), next to tidyselect and rlang.
 
 ```r
 library(vectra)
@@ -88,7 +90,7 @@ tbl("data.vtr") |>
 #>
 #> ProjectNode [streaming]
 #>   FilterNode [streaming]
-#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
+#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, tdc stats]
 ```
 
 ## Fuzzy matching in the engine

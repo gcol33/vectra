@@ -18,8 +18,10 @@ knitr::opts_chunk$set(
 
 ## Introduction
 
-vectra reads and writes five formats: its native `.vtr`, CSV, SQLite, Excel, and
-GeoTIFF. Each reader returns the same `vectra_node` object. Once a node exists,
+vectra reads its native `.vtr`, Parquet, CSV, SQLite, Excel and GeoTIFF, and
+writes `.vtr`, CSV, SQLite and GeoTIFF. (Sequence and genome files have their
+own readers, `tbl_fasta()`, `tbl_fastq()` and `tbl_bed()`.) Each reader returns
+the same `vectra_node` object. Once a node exists,
 the engine treats it identically regardless of where the data came from. A filter
 on a CSV scan produces the same plan tree as a filter on a `.vtr` scan. The same
 verbs work, the same expressions evaluate, and `collect()` materializes an R
@@ -80,7 +82,7 @@ tbl(f) |>
 When we call `write_vtr()` with a `vectra_node` input, the writer streams
 batches from the upstream plan and writes each batch as one row group. The full
 result never materializes in memory. For `data.frame` inputs, the data is
-written directly from R's memory in a single row group.
+written directly from R's memory in row groups of 131,072 rows by default.
 
 The `batch_size` parameter on `write_vtr()` controls how many rows accumulate
 before flushing a row group. Smaller row groups mean more granular zone-map
@@ -206,6 +208,40 @@ tbl(f) |>
 # Read it back through vectra
 tbl_sqlite(db, "v8_cars") |> collect()
 ```
+
+## Parquet
+
+`tbl_parquet()` reads Parquet files with vectra's own reader, so no arrow
+installation is needed. It takes one file, a vector of files, or a directory:
+a directory is read recursively, skipping files whose name starts with `_` or
+`.` (the `_SUCCESS` markers and checksum files Spark and Hive leave behind), so
+a partitioned dataset folder or a GBIF snapshot can be passed as is. All files
+must share the first file's columns and types.
+
+```{r parquet}
+pq <- system.file("extdata", "example.parquet", package = "vectra")
+tbl_parquet(pq) |>
+  filter(dbh_cm > 60) |>
+  select(id, species, dbh_cm) |>
+  collect() |>
+  head()
+```
+
+The scan reads only the columns a query uses, and a filter skips any row group
+whose min/max statistics in the Parquet footer show it cannot match, the same
+check a `.vtr` scan makes against its zone maps. `nrow()` answers from the
+footer without reading data.
+
+The reader covers data pages v1 and v2, the dictionary, run-length, delta and
+byte-stream-split encodings, and `SNAPPY`, `GZIP`, `ZSTD` and `LZ4`
+compression; `BROTLI` and `LZO` columns raise an error naming the column.
+Struct fields are flattened into one column each (`address.city`), and a
+one-level list or map column is read as text with its elements joined by
+`list_sep`. `?tbl_parquet` lists how each Parquet type maps to an R type.
+
+Parquet is read-only in vectra. To query the same data repeatedly, convert it
+once with `tbl_parquet(path) |> write_vtr(f)`, which streams one row group at
+a time.
 
 ## Excel
 
@@ -452,18 +488,18 @@ on the workload: `.vtr` for repeated analytical queries, CSV for interchange,
 SQLite for multi-tool access, Excel for one-off imports, GeoTIFF for raster
 data.
 
-| Feature | .vtr | CSV | SQLite | Excel | GeoTIFF |
-|:--------|:-----|:----|:-------|:------|:--------|
-| Streaming read | yes | yes | yes | no | yes |
-| Streaming write | yes | yes | yes | -- | yes |
-| Predicate pushdown | yes | no | no | no | no |
-| Column pruning | yes | no | no | no | no |
-| Zone-map skip | yes | no | no | no | no |
-| Hash index support | yes | no | no | no | no |
-| Compression | tdc (dict/delta + LZ) | gzip (read) | -- | -- | deflate, LZW |
-| Size on disk | small | large | medium | medium | variable |
-| Random access | by row group | no | by rowid | no | by raster row |
-| External tool support | vectra only | universal | wide | wide | GIS tools |
+| Feature | .vtr | Parquet | CSV | SQLite | Excel | GeoTIFF |
+|:--------|:-----|:--------|:----|:-------|:------|:--------|
+| Streaming read | yes | yes | yes | yes | no | yes |
+| Streaming write | yes | -- | yes | yes | -- | yes |
+| Predicate pushdown | yes | yes | no | no | no | no |
+| Column pruning | yes | yes | no | no | no | no |
+| Zone-map skip | yes | yes (footer stats) | no | no | no | no |
+| Hash index support | yes | no | no | no | no | no |
+| Compression | tdc (dict/delta + LZ) | snappy, gzip, zstd, lz4 (read) | gzip (read) | -- | -- | deflate, LZW |
+| Size on disk | small | small | large | medium | medium | variable |
+| Random access | by row group | by row group | no | by rowid | no | by raster row |
+| External tool support | vectra only | wide | universal | wide | wide | GIS tools |
 
 `.vtr` wins on query performance because it is the only format where the
 scanner can skip data before reading it. Zone maps, column pruning, and hash

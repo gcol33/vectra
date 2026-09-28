@@ -9,9 +9,10 @@
 #' @return A new `vectra_node` with sorted rows.
 #'
 #' @details
-#' Uses an external merge sort with a 1 GB memory budget. When data exceeds
-#' this limit, sorted runs are spilled to temporary `.vtr` files and merged
-#' via a k-way min-heap. NAs sort last in ascending order.
+#' Uses an external merge sort bounded by the memory budget ([vectra_mem()]).
+#' When data exceeds it, sorted runs are spilled to temporary `.vtr` files and
+#' merged via a k-way min-heap. `NA`s sort last, in ascending and descending
+#' order alike.
 #'
 #' This is a materializing operation.
 #'

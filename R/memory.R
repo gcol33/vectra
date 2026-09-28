@@ -46,7 +46,8 @@
 #' @param limit Optional per-call override: a byte count or a string such as
 #'   `"8GB"`. `NULL` (the default) falls back to the option, then to
 #'   auto-detection.
-#' @return The budget in bytes, as a numeric scalar, never below 1 GB.
+#' @return The budget in bytes, as a numeric scalar: at least 1 GB when
+#'   auto-detected, and as given (down to 1 KB) when set explicitly.
 #' @export
 #' @examples
 #' vectra_mem()

@@ -12,7 +12,8 @@ vectra_mem(limit = NULL)
 auto-detection.}
 }
 \value{
-The budget in bytes, as a numeric scalar, never below 1 GB.
+The budget in bytes, as a numeric scalar: at least 1 GB when
+auto-detected, and as given (down to 1 KB) when set explicitly.
 }
 \description{
 The single memory ceiling every buffering subsystem derives its working budget

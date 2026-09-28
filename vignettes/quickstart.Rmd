@@ -522,7 +522,7 @@ tbl(f) |>
   head(8)
 ```
 
-Under the hood, `arrange()` uses an external merge sort with a 1 GB memory budget. When data exceeds that limit, sorted runs spill to temporary `.vtr` files and merge via a k-way min-heap. NAs sort last in ascending order and first in descending order.
+Under the hood, `arrange()` uses an external merge sort bounded by the memory budget (`vectra_mem()`). When data exceeds it, sorted runs spill to temporary `.vtr` files and merge via a k-way min-heap. `NA`s sort last in both ascending and descending order.
 
 `slice_head()` and `slice_tail()` return the first or last `n` rows. `slice_head()` is streaming (it creates a LimitNode that stops pulling after `n` rows). `slice_tail()` must materialize all rows to know the total count.
 
