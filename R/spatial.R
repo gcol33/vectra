@@ -236,33 +236,59 @@
   list(x = as.numeric(chunk[[coords[1L]]]), y = as.numeric(chunk[[coords[2L]]]))
 }
 
-# Build one streamed spatial-join batch from the per-row match lists the C join
-# returns. `matches` is a list with one integer vector of 1-based resident-row
-# indices per left row; each left row is replicated once per match and the
-# resident attributes `y_attrs` attached. With `left`, an unmatched left row is
-# kept once padded with NA resident columns; otherwise it is dropped. Attribute
-# names shared by both sides get `suffix`, mirroring [sf::st_join()]. The left
-# geometry column rides through untouched (the left side is never decoded).
-.geos_join_assemble <- function(chunk, matches, y_attrs, left, suffix) {
-  nmatch <- lengths(matches)
-  reps   <- if (left) pmax(nmatch, 1L) else nmatch
-  left_idx  <- rep.int(seq_len(nrow(chunk)), reps)
-  right_idx <- unlist(lapply(seq_along(matches), function(i) {
-    mi <- matches[[i]]
-    if (length(mi)) mi else if (left) NA_integer_ else integer(0)
-  }), use.names = FALSE)
-  if (is.null(right_idx)) right_idx <- integer(0)
-
-  lout <- chunk[left_idx, , drop = FALSE]
-  rout <- y_attrs[right_idx, , drop = FALSE]
-  shared <- intersect(names(lout), names(rout))
-  if (length(shared)) {
-    names(lout)[match(shared, names(lout))] <- paste0(shared, suffix[1L])
-    names(rout)[match(shared, names(rout))] <- paste0(shared, suffix[2L])
+# Build the lazy SpatialJoinNode for the native join. The output layout is
+# decided here and handed to C as one source per output column: the left
+# columns, then `y`'s attributes, with names shared by both sides suffixed as
+# [sf::st_join()] does, and the geometry column last. The geometry is the left
+# hex-WKB column (geom=) or the point built in C from the coordinates (coords=),
+# renamed to `out_geom`; `keep_geom = FALSE` leaves it out, so nothing builds or
+# carries it. `code` is a native predicate code (11 = nearest feature).
+.spatial_join_node <- function(x, y, code, dist, geom, coords, keep_geom,
+                               out_geom, left, suffix, crs) {
+  lnames  <- .Call(C_node_schema, x$.node)$name
+  y_attrs <- .coerce_for_vtr(as.data.frame(sf::st_drop_geometry(y)))
+  spec <- data.frame(name = lnames, side = 0L, src = lnames,
+                     stringsAsFactors = FALSE)
+  if (is.null(coords)) {
+    if (!geom %in% lnames)
+      stop(sprintf("geometry column '%s' not found; pass geom= or coords=", geom))
+    if (!keep_geom) spec <- spec[spec$name != geom, , drop = FALSE]
+  } else {
+    miss <- setdiff(coords, lnames)
+    if (length(miss))
+      stop(sprintf("coords column(s) not found: %s", paste(miss, collapse = ", ")))
+    if (keep_geom)
+      spec <- rbind(spec[spec$name != out_geom, , drop = FALSE],
+                    data.frame(name = out_geom, side = 2L, src = out_geom,
+                               stringsAsFactors = FALSE))
   }
-  out <- cbind(lout, rout, stringsAsFactors = FALSE)
-  rownames(out) <- NULL
-  out
+  rspec <- data.frame(name = names(y_attrs), side = rep(1L, ncol(y_attrs)),
+                      src = names(y_attrs), stringsAsFactors = FALSE)
+  shared <- intersect(spec$name, rspec$name)
+  if (length(shared)) {
+    spec$name[spec$name %in% shared]   <- paste0(spec$name[spec$name %in% shared], suffix[1L])
+    rspec$name[rspec$name %in% shared] <- paste0(rspec$name[rspec$name %in% shared], suffix[2L])
+  }
+  spec <- rbind(spec, rspec)
+  if (keep_geom) {
+    if (!identical(out_geom, geom) && geom %in% spec$name)
+      spec$name[match(geom, spec$name)] <- out_geom
+    g <- match(out_geom, spec$name)
+    if (is.na(g)) g <- match(geom, spec$name)
+    if (!is.na(g)) spec <- spec[c(setdiff(seq_len(nrow(spec)), g), g), , drop = FALSE]
+  }
+
+  xptr <- .Call(C_spatial_join_node, x$.node,
+                sf::st_as_binary(sf::st_geometry(y), EWKB = FALSE),
+                if (ncol(y_attrs)) y_attrs else NULL,
+                if (is.null(coords)) geom else NULL,
+                if (is.null(coords)) NULL else as.character(coords),
+                as.integer(code), as.numeric(dist), isTRUE(left),
+                as.integer(spec$side), spec$src, spec$name, .spatial_threads())
+  node <- structure(list(.node = xptr, .path = NULL), class = "vectra_node")
+  node$.reg <- x$.reg
+  node$.crs <- crs
+  node
 }
 
 # -- self-overlay (QGIS-style Union) ------------------------------------------
@@ -780,12 +806,15 @@ spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
 #' contains, overlaps, covers, covered by, touches, crosses), equals,
 #' within-distance ([sf::st_is_within_distance], radius passed as `dist =`), and
 #' nearest feature ([sf::st_nearest_feature]) -- on projected or unprojected
-#' planar data, the match runs natively on the GEOS C API straight off the
-#' hex-WKB column: `y` is parsed once into a spatial index, each batch's matches
-#' come back from C, and `y`'s attributes are attached in R without decoding the
-#' left side to \pkg{sf}. Coordinate-assembled (`coords`) point input runs
-#' natively too, building each point in C (the emitted point geometry is built in
-#' C as well). Geographic coordinates with spherical geometry on
+#' planar data, the join is a lazy plan node that runs on the GEOS C API
+#' straight off the hex-WKB column: `y` is parsed once into a spatial index, and
+#' each streamed batch is matched and joined to `y`'s attributes in C, without
+#' decoding the left side to \pkg{sf}, passing it through R, or spilling it to
+#' disk. The result streams into the next verb, so tagging points and then
+#' aggregating (`spatial_join() |> count()`) holds one batch at a time.
+#' Coordinate-assembled (`coords`) point input runs natively too, building each
+#' point in C (the emitted point geometry is built in C as well, unless
+#' `keep_geom = FALSE`). Geographic coordinates with spherical geometry on
 #' (`sf::sf_use_s2()`), a disjoint join (whose matches are the bounding-box
 #' complement an index cannot prune), and other extra [sf::st_join()] arguments
 #' use \pkg{sf} instead, preserving its semantics.
@@ -824,10 +853,16 @@ spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
 #'   `partition`: the name of `y`'s hex-WKB geometry column (`y_geom`, default
 #'   the left `geom`), or a length-2 character vector of `y`'s coordinate columns
 #'   (`y_coords`). Ignored without `partition`.
+#' @param keep_geom If `TRUE` (default) the output carries the left geometry
+#'   column (the point geometry built from `coords`, when `coords` is given).
+#'   `FALSE` drops it, for the common "tag, then aggregate the attributes" use
+#'   where the geometry is never read; with `coords` the points are then never
+#'   encoded at all.
 #' @param ... Further arguments passed to [sf::st_join()].
 #'
-#' @return A `vectra_node` of the joined stream, backed by temporary `.vtr`
-#'   spills and carrying the left CRS.
+#' @return A `vectra_node` of the joined stream carrying the left CRS. On the
+#'   native path it is a lazy node that consumes `x` when run; on the \pkg{sf}
+#'   and `partition` paths it is backed by temporary `.vtr` spills.
 #'
 #' @seealso [spatial_map()] for per-feature transforms, [collect_sf()] to
 #'   materialize as `sf`, [offload()] to partition both-sides-huge joins.
@@ -847,6 +882,14 @@ spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
 #'                coords = c("x", "y"), crs = sf::st_crs(nc))
 #' head(collect(tagged))
 #'
+#' # Tag, then count per county: the join streams into count() and the point
+#' # geometry is never built.
+#' tbl(f) |>
+#'   spatial_join(nc["NAME"], coords = c("x", "y"), crs = sf::st_crs(nc),
+#'                keep_geom = FALSE) |>
+#'   count(NAME) |>
+#'   collect()
+#'
 #' # Both sides streamed: bin to a grid and join per shard. Here y is a
 #' # vectra_node rather than a resident sf object.
 #' g <- tempfile(fileext = ".vtr")
@@ -864,10 +907,13 @@ spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
 spatial_join <- function(x, y, join = NULL, geom = "geometry", coords = NULL,
                          crs = NA, left = TRUE, suffix = c(".x", ".y"),
                          partition = NULL, y_geom = NULL, y_coords = NULL,
-                         out_geom = NULL, flush_rows = NULL, ...) {
+                         out_geom = NULL, keep_geom = TRUE, flush_rows = NULL,
+                         ...) {
   .check_sf()
   if (!inherits(x, "vectra_node"))
     stop("`x` must be a vectra_node (the streamed left side)")
+  if (!is.logical(keep_geom) || length(keep_geom) != 1L || is.na(keep_geom))
+    stop("`keep_geom` must be TRUE or FALSE")
   if (is.null(join)) join <- sf::st_intersects
   crs <- .resolve_crs(x, crs)
   if (is.null(out_geom)) out_geom <- if (is.null(coords)) geom else "geometry"
@@ -882,84 +928,40 @@ spatial_join <- function(x, y, join = NULL, geom = "geometry", coords = NULL,
     if (is.null(y_geom)) y_geom <- geom
     return(.spatial_join_partition(x, y, join, partition, geom, coords,
                                    y_geom, y_coords, crs, left, suffix,
-                                   out_geom, fr, dots))
+                                   out_geom, keep_geom, fr, dots))
   }
 
   if (!inherits(y, "sf"))
     stop("`y` must be an sf object (the resident right side of the join)")
 
-  # Native path: a recognised predicate and planar-equivalent data. `y` is parsed
-  # once into a GEOS locator; each batch's per-row matches come back from C and
-  # the resident attributes are joined on in R, so the streamed left side is
-  # never decoded to sf. `prep_batch(chunk, loc, nt)` returns a list of the
-  # (possibly geometry-augmented) left `chunk` and its per-row match lists.
-  run_native_join <- function(prep_batch) {
-    loc     <- .geos_locator(y)
-    y_attrs <- .coerce_for_vtr(as.data.frame(sf::st_drop_geometry(y)))
-    nt      <- .spatial_threads()
-    acc     <- .run_accumulator(fr)
-    nxt     <- .batch_cursor(x)
-    repeat {
-      chunk <- nxt(); if (is.null(chunk)) break
-      pb   <- prep_batch(chunk, loc, nt)
-      out  <- .geos_join_assemble(pb$chunk, pb$matches, y_attrs, left, suffix)
-      if (!identical(out_geom, geom) && geom %in% names(out))
-        names(out)[match(geom, names(out))] <- out_geom
-      gcol <- if (out_geom %in% names(out)) out_geom
-              else if (geom %in% names(out)) geom else NULL
-      if (!is.null(gcol))
-        out <- out[c(setdiff(names(out), gcol), gcol)]  # geometry last, as st_join
-      acc$push(.coerce_for_vtr(out))
-    }
-    acc$finish(crs = crs, empty_geom = out_geom)
-  }
-
-  # The streamed geometry reaches C as the batch's hex-WKB column (geom=) or as
-  # raw point coordinates built into points in C (coords=); both share the match
-  # assembly above. within-distance takes its radius through `...` (`dist =`);
-  # any other extra st_join argument, or disjoint (whose matches are the bbox
-  # complement the index cannot prune), falls back to sf.
+  # Native path: a recognised predicate and planar-equivalent data. The join
+  # is a lazy SpatialJoinNode: `y` is parsed once into a GEOS locator, each
+  # streamed batch is matched in C and its joined rows gathered in C, so the
+  # left side is never decoded to sf, never passes through R and never spills.
+  # within-distance takes its radius through `...` (`dist =`); any other extra
+  # st_join argument, or disjoint (whose matches are the bbox complement the
+  # index cannot prune), falls back to sf.
   if (.geos_planar_ok(crs)) {
     nearest <- !length(dots) && identical(join, sf::st_nearest_feature)
-    code <- if (nearest) NA_integer_ else .geos_pred_code(join)
+    code <- if (nearest) 11L else .geos_pred_code(join)
     dist_val <- 0
-    if (!is.na(code) && code == 10L) {
+    if (!nearest && !is.na(code) && code == 10L) {
       dist_val <- dots$dist
       if (is.null(dist_val) || length(setdiff(names(dots), "dist")))
         code <- NA_integer_
-    } else if (length(dots) || (!is.na(code) && code == 9L)) {
+    } else if (!nearest && (length(dots) || (!is.na(code) && code == 9L))) {
       code <- NA_integer_
     }
-    if (nearest || !is.na(code)) {
-      d <- as.numeric(dist_val)
-      hex_matches <- function(hex, loc, nt)
-        if (nearest) {
-          near <- .Call(C_geos_nearest, loc, hex, nt)
-          lapply(near, function(k) if (is.na(k)) integer(0) else k)
-        } else .Call(C_geos_join, loc, hex, code, d, nt)
-      xy_matches <- function(xy, loc, nt)
-        if (nearest) {
-          near <- .Call(C_geos_locate_xy, loc, xy$x, xy$y, 11L, 0, FALSE, nt)
-          lapply(near, function(k) if (is.na(k)) integer(0) else k)
-        } else .Call(C_geos_locate_xy, loc, xy$x, xy$y, code, d, TRUE, nt)
-      if (is.null(coords))
-        return(run_native_join(function(chunk, loc, nt) {
-          if (!geom %in% names(chunk))
-            stop(sprintf("geometry column '%s' not found; pass geom= or coords=", geom))
-          list(chunk = chunk,
-               matches = hex_matches(as.character(chunk[[geom]]), loc, nt))
-        }))
-      return(run_native_join(function(chunk, loc, nt) {
-        xy <- .batch_xy(chunk, coords)
-        chunk[[out_geom]] <- .Call(C_geos_points_to_hex, xy$x, xy$y)
-        list(chunk = chunk, matches = xy_matches(xy, loc, nt))
-      }))
-    }
+    if (!is.na(code))
+      return(.spatial_join_node(x, y, code, dist_val, geom, coords, keep_geom,
+                                out_geom, left, suffix, crs))
   }
 
-  batch_fn <- function(sb)
-    do.call(sf::st_join,
-            c(list(sb, y, join = join, left = left, suffix = suffix), dots))
+  batch_fn <- function(sb) {
+    res <- do.call(sf::st_join,
+                   c(list(sb, y, join = join, left = left, suffix = suffix), dots))
+    if (keep_geom) res else sf::st_drop_geometry(res)
+  }
   .spatial_stream(x, batch_fn, geom, coords, crs, out_geom, fr)
 }
 
@@ -1133,7 +1135,7 @@ print.vectra_grid <- function(x, ...) {
 
 .spatial_join_partition <- function(x, y, join, g, geom, coords,
                                     y_geom, y_coords, crs, left, suffix,
-                                    out_geom, fr, dots) {
+                                    out_geom, keep_geom, fr, dots) {
   halo <- identical(join, sf::st_nearest_feature)
 
   lruns <- .cell_router(
@@ -1173,6 +1175,7 @@ print.vectra_grid <- function(x, ...) {
     res <- do.call(sf::st_join,
                    c(list(lsf, rsf, join = join, left = left, suffix = suffix),
                      dots))
+    if (!keep_geom) res <- sf::st_drop_geometry(res)
     acc$push(.sf_encode_result(res, out_geom))
   }
   acc$finish(crs = crs, empty_geom = out_geom)

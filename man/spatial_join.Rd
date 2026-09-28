@@ -17,6 +17,7 @@ spatial_join(
   y_geom = NULL,
   y_coords = NULL,
   out_geom = NULL,
+  keep_geom = TRUE,
   flush_rows = NULL,
   ...
 )
@@ -61,6 +62,12 @@ the left \code{geom}), or a length-2 character vector of \code{y}'s coordinate c
 \item{out_geom}{Name of the output geometry column. Defaults to \code{geom}
 (or \code{"geometry"} when \code{coords} is used).}
 
+\item{keep_geom}{If \code{TRUE} (default) the output carries the left geometry
+column (the point geometry built from \code{coords}, when \code{coords} is given).
+\code{FALSE} drops it, for the common "tag, then aggregate the attributes" use
+where the geometry is never read; with \code{coords} the points are then never
+encoded at all.}
+
 \item{flush_rows}{Transformed rows buffered before a spill flush. Larger
 values mean fewer, bigger temporary files. \code{NULL}
 (the default) instead flushes once a spill buffer's size crosses the
@@ -71,8 +78,9 @@ many rows.}
 \item{...}{Further arguments passed to \code{\link[sf:st_join]{sf::st_join()}}.}
 }
 \value{
-A \code{vectra_node} of the joined stream, backed by temporary \code{.vtr}
-spills and carrying the left CRS.
+A \code{vectra_node} of the joined stream carrying the left CRS. On the
+native path it is a lazy node that consumes \code{x} when run; on the \pkg{sf}
+and \code{partition} paths it is backed by temporary \code{.vtr} spills.
 }
 \description{
 Streams a large left side \code{x} through the engine and joins each batch against
@@ -88,12 +96,15 @@ For the recognised predicates -- the topological ones (intersects, within,
 contains, overlaps, covers, covered by, touches, crosses), equals,
 within-distance (\link[sf:st_is_within_distance]{sf::st_is_within_distance}, radius passed as \verb{dist =}), and
 nearest feature (\link[sf:st_nearest_feature]{sf::st_nearest_feature}) -- on projected or unprojected
-planar data, the match runs natively on the GEOS C API straight off the
-hex-WKB column: \code{y} is parsed once into a spatial index, each batch's matches
-come back from C, and \code{y}'s attributes are attached in R without decoding the
-left side to \pkg{sf}. Coordinate-assembled (\code{coords}) point input runs
-natively too, building each point in C (the emitted point geometry is built in
-C as well). Geographic coordinates with spherical geometry on
+planar data, the join is a lazy plan node that runs on the GEOS C API
+straight off the hex-WKB column: \code{y} is parsed once into a spatial index, and
+each streamed batch is matched and joined to \code{y}'s attributes in C, without
+decoding the left side to \pkg{sf}, passing it through R, or spilling it to
+disk. The result streams into the next verb, so tagging points and then
+aggregating (\code{spatial_join() |> count()}) holds one batch at a time.
+Coordinate-assembled (\code{coords}) point input runs natively too, building each
+point in C (the emitted point geometry is built in C as well, unless
+\code{keep_geom = FALSE}). Geographic coordinates with spherical geometry on
 (\code{sf::sf_use_s2()}), a disjoint join (whose matches are the bounding-box
 complement an index cannot prune), and other extra \code{\link[sf:st_join]{sf::st_join()}} arguments
 use \pkg{sf} instead, preserving its semantics.
@@ -131,6 +142,14 @@ tagged <- tbl(f) |>
   spatial_join(nc["NAME"], join = sf::st_intersects,
                coords = c("x", "y"), crs = sf::st_crs(nc))
 head(collect(tagged))
+
+# Tag, then count per county: the join streams into count() and the point
+# geometry is never built.
+tbl(f) |>
+  spatial_join(nc["NAME"], coords = c("x", "y"), crs = sf::st_crs(nc),
+               keep_geom = FALSE) |>
+  count(NAME) |>
+  collect()
 
 # Both sides streamed: bin to a grid and join per shard. Here y is a
 # vectra_node rather than a resident sf object.

@@ -12,14 +12,14 @@
  *                           across every batch.
  *   C_geos_filter        -- per batch row, keep it when its geometry relates to
  *                           any resident feature under a topological predicate.
- *   C_geos_join          -- per batch row, the indices of every resident feature
- *                           it relates to (the spatial-join match lists).
+ *   vtr_geos_match_batch -- per batch row, the indices of every resident feature
+ *                           it relates to (the spatial-join match lists), for the
+ *                           SpatialJoinNode (spatial_join.c).
  *   C_geos_clip          -- per batch row, intersect (clip) or difference
  *                           (erase) its geometry against the resident mask.
  *   C_geos_union_hex     -- union a group's geometries into one (dissolve).
  *   C_geos_locate_xy     -- match raw point coordinates (no WKB round-trip)
  *                           against the locator: the coords= verbs and zonal.
- *   C_geos_points_to_hex -- encode raw point coordinates to point hex-WKB.
  *
  * Geometry math runs in the planar GEOS frame, exactly as the sf path does; the
  * caller aligns CRS on the resident side before building the locator.
@@ -31,6 +31,7 @@
 #include <string.h>
 #include "libgeos.h"
 #include "vtr_geos.h"
+#include "vtr_spatial.h"
 
 #include "vec_omp.h"
 
@@ -54,7 +55,7 @@ VTR_GEOS_CALLS_BEGIN
 #define VTR_PRED_EQUALS          8   /* x equals y     -> GEOSEquals(y, x)         */
 #define VTR_PRED_DISJOINT        9   /* x disjoint y (filter only, via intersects) */
 #define VTR_PRED_WITHIN_DISTANCE 10  /* x within `dist` of y                       */
-#define VTR_PRED_NEAREST         11  /* single nearest resident feature (locate_xy)*/
+#define VTR_PRED_NEAREST         VTR_SPATIAL_PRED_NEAREST /* single nearest resident feature */
 
 static char prep_relates(GEOSContextHandle_t ctx, const GEOSPreparedGeometry *py,
                          const GEOSGeometry *x, int pred, double dist) {
@@ -74,19 +75,18 @@ static char prep_relates(GEOSContextHandle_t ctx, const GEOSPreparedGeometry *py
 
 /* ---- resident locator (external pointer) --------------------------------- */
 
-typedef struct {
+struct GeosLocator {
     GEOSContextHandle_t ctx;   /* owns the parsed geometries + tree + finalizer */
     GEOSGeometry **geom;       /* resident geometries, parsed once (may be NULL) */
     int *store;                /* tree payload: the feature index */
     GEOSSTRtree *tree;         /* over the resident geometries, pre-warmed       */
     int n;                     /* feature slots (some geom[i] may be NULL)        */
     int n_live;                /* features that parsed to a non-NULL geometry     */
-} GeosLocator;
+};
 
 static void locator_noop_cb(void *item, void *userdata) { (void) item; (void) userdata; }
 
-static void geos_locator_finalize(SEXP ptr) {
-    GeosLocator *loc = (GeosLocator *) R_ExternalPtrAddr(ptr);
+void vtr_geos_locator_free(GeosLocator *loc) {
     if (loc == NULL) return;
     GEOSContextHandle_t ctx = loc->ctx;
     if (loc->tree != NULL) GEOSSTRtree_destroy_r(ctx, loc->tree);
@@ -96,13 +96,14 @@ static void geos_locator_finalize(SEXP ptr) {
     free(loc->store);
     GEOS_finish_r(ctx);
     free(loc);
+}
+
+static void geos_locator_finalize(SEXP ptr) {
+    vtr_geos_locator_free((GeosLocator *) R_ExternalPtrAddr(ptr));
     R_ClearExternalPtr(ptr);
 }
 
-/* C_geos_locator_build(wkb_list): wkb_list is a VECSXP of RAWSXP (resident
- * features' WKB). Returns an external pointer to a GeosLocator reused across all
- * batches. */
-SEXP C_geos_locator_build(SEXP wkb_list) {
+GeosLocator *vtr_geos_locator_new(SEXP wkb_list) {
     vtr_geos_ensure_api();
     int n = (int) Rf_length(wkb_list);
 
@@ -147,7 +148,14 @@ SEXP C_geos_locator_build(SEXP wkb_list) {
     if (first_live >= 0)
         GEOSSTRtree_query_r(ctx, loc->tree, loc->geom[first_live],
                             locator_noop_cb, NULL);
+    return loc;
+}
 
+/* C_geos_locator_build(wkb_list): wkb_list is a VECSXP of RAWSXP (resident
+ * features' WKB). Returns an external pointer to a GeosLocator reused across all
+ * batches. */
+SEXP C_geos_locator_build(SEXP wkb_list) {
+    GeosLocator *loc = vtr_geos_locator_new(wkb_list);
     SEXP ptr = PROTECT(R_MakeExternalPtr(loc, R_NilValue, R_NilValue));
     R_RegisterCFinalizerEx(ptr, geos_locator_finalize, TRUE);
     UNPROTECT(1);
@@ -165,16 +173,21 @@ static void extract_hex(SEXP batch_hex, int m,
     }
 }
 
-static int resolve_threads(SEXP nthreads_sexp, int work) {
+/* Resolve the worker count for a batch of `m` rows from an explicit request. */
+static int batch_threads(int requested, int m) {
 #ifdef _OPENMP
-    int nt = (Rf_length(nthreads_sexp) > 0) ? INTEGER(nthreads_sexp)[0] : 0;
-    if (nt <= 0) nt = omp_get_max_threads();
-    if (nt > work) nt = work > 0 ? work : 1;
+    int nt = requested > 0 ? requested : omp_get_max_threads();
+    if (nt > m) nt = m > 0 ? m : 1;
     return nt;
 #else
-    (void) nthreads_sexp; (void) work;
+    (void) requested; (void) m;
     return 1;
 #endif
+}
+
+static int resolve_threads(SEXP nthreads_sexp, int work) {
+    return batch_threads(Rf_length(nthreads_sexp) > 0 ? INTEGER(nthreads_sexp)[0] : 0,
+                         work);
 }
 
 /* ---- per-row matching (shared by filter and join) ------------------------ */
@@ -420,57 +433,6 @@ static void join_worker(const GeosBatchJob *job) {
     GEOS_finish_r(ctx);
 }
 
-/* C_geos_join(loc_ptr, batch_hex, pred, dist, nthreads) -> VECSXP(m): for each
- * batch row an INTSXP of the 1-based resident-feature indices it relates to
- * under `pred` (sorted ascending, empty when none). The R driver replicates the
- * left row once per match and attaches the resident attributes. */
-SEXP C_geos_join(SEXP loc_ptr, SEXP batch_hex, SEXP pred_sexp,
-                 SEXP dist_sexp, SEXP nthreads_sexp) {
-    vtr_geos_ensure_api();
-    GeosLocator *loc = (GeosLocator *) R_ExternalPtrAddr(loc_ptr);
-    if (loc == NULL) error("vectra: spatial locator was released");
-    int m = (int) Rf_length(batch_hex);
-    int pred = INTEGER(pred_sexp)[0];
-    double dist = REAL(dist_sexp)[0];
-
-    const unsigned char **hex =
-        (const unsigned char **) R_alloc((size_t) (m > 0 ? m : 1), sizeof(const unsigned char *));
-    size_t *hexlen = (size_t *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(size_t));
-    extract_hex(batch_hex, m, hex, hexlen);
-
-    /* per-row match arrays (1-based), filled in threads then serialised into a
-     * VECSXP afterwards because allocVector allocates. */
-    int **mptr = (int **) R_alloc((size_t) (m > 0 ? m : 1), sizeof(int *));
-    int *mlen = (int *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(int));
-    for (int r = 0; r < m; r++) { mptr[r] = NULL; mlen[r] = 0; }
-    int nt = resolve_threads(nthreads_sexp, m);
-    volatile int oom = 0;
-
-    GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .m = m, .pred = pred,
-                          .dist = dist, .mptr = mptr, .mlen = mlen, .oom = &oom };
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(nt)
-#endif
-    join_worker(&job);
-
-    if (oom) {
-        for (int r = 0; r < m; r++) free(mptr[r]);
-        error("vectra: out of memory in spatial join");
-    }
-
-    SEXP out = PROTECT(allocVector(VECSXP, m));
-    for (int r = 0; r < m; r++) {
-        SEXP v = allocVector(INTSXP, mlen[r]);
-        if (mlen[r] > 0) {
-            memcpy(INTEGER(v), mptr[r], (size_t) mlen[r] * sizeof(int));
-            free(mptr[r]);
-        }
-        SET_VECTOR_ELT(out, r, v);
-    }
-    UNPROTECT(1);
-    return out;
-}
-
 /* ---- nearest feature ----------------------------------------------------- */
 
 /* Distance between the query geometry and a resident feature, for the STRtree
@@ -521,35 +483,6 @@ static void nearest_worker(const GeosBatchJob *job) {
     }
     GEOSWKBReader_destroy_r(ctx, reader);
     GEOS_finish_r(ctx);
-}
-
-/* C_geos_nearest(loc_ptr, batch_hex, nthreads) -> INTSXP(m): the 1-based index
- * of the single resident feature nearest to each batch row (NA where the row has
- * no geometry or the tree is empty). One match per row, as st_nearest_feature. */
-SEXP C_geos_nearest(SEXP loc_ptr, SEXP batch_hex, SEXP nthreads_sexp) {
-    vtr_geos_ensure_api();
-    GeosLocator *loc = (GeosLocator *) R_ExternalPtrAddr(loc_ptr);
-    if (loc == NULL) error("vectra: spatial locator was released");
-    int m = (int) Rf_length(batch_hex);
-
-    const unsigned char **hex =
-        (const unsigned char **) R_alloc((size_t) (m > 0 ? m : 1), sizeof(const unsigned char *));
-    size_t *hexlen = (size_t *) R_alloc((size_t) (m > 0 ? m : 1), sizeof(size_t));
-    extract_hex(batch_hex, m, hex, hexlen);
-
-    SEXP out = PROTECT(allocVector(INTSXP, m));
-    int *res = INTEGER(out);
-    for (int r = 0; r < m; r++) res[r] = NA_INTEGER;
-    int nt = resolve_threads(nthreads_sexp, m);
-
-    GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .m = m, .res = res };
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(nt)
-#endif
-    nearest_worker(&job);
-
-    UNPROTECT(1);
-    return out;
 }
 
 /* ---- locate raw point coordinates ---------------------------------------- */
@@ -689,40 +622,6 @@ SEXP C_geos_locate_xy(SEXP loc_ptr, SEXP x_sexp, SEXP y_sexp, SEXP pred_sexp,
         }
         SET_VECTOR_ELT(out, r, v);
     }
-    UNPROTECT(1);
-    return out;
-}
-
-/* C_geos_points_to_hex(x, y) -> STRSXP(m): each (x, y) as point hex-WKB, NA where
- * a coordinate is missing. Gives the coords= spatial join the same point geometry
- * output column the sf path emits, without round-tripping through sf. */
-SEXP C_geos_points_to_hex(SEXP x_sexp, SEXP y_sexp) {
-    vtr_geos_ensure_api();
-    int m = (int) Rf_length(x_sexp);
-    if ((int) Rf_length(y_sexp) != m)
-        error("vectra: x and y must have the same length");
-    const double *xs = REAL(x_sexp), *ys = REAL(y_sexp);
-
-    GEOSContextHandle_t ctx = GEOS_init_r();
-    GEOSContext_setErrorMessageHandler_r(ctx, vtr_geos_quiet_handler, NULL);
-    GEOSWKBWriter *writer = GEOSWKBWriter_create_r(ctx);
-
-    SEXP out = PROTECT(allocVector(STRSXP, m));
-    for (int r = 0; r < m; r++) {
-        SET_STRING_ELT(out, r, NA_STRING);
-        if (ISNAN(xs[r]) || ISNAN(ys[r])) continue;
-        GEOSGeometry *pt = GEOSGeom_createPointFromXY_r(ctx, xs[r], ys[r]);
-        if (pt == NULL) continue;
-        size_t len = 0;
-        unsigned char *buf = GEOSWKBWriter_writeHEX_r(ctx, writer, pt, &len);
-        if (buf != NULL) {
-            SET_STRING_ELT(out, r, mkCharLen((const char *) buf, (int) len));
-            GEOSFree_r(ctx, buf);
-        }
-        GEOSGeom_destroy_r(ctx, pt);
-    }
-    GEOSWKBWriter_destroy_r(ctx, writer);
-    GEOS_finish_r(ctx);
     UNPROTECT(1);
     return out;
 }
@@ -885,6 +784,67 @@ SEXP C_geos_union_hex(SEXP batch_hex) {
     GEOS_finish_r(ctx);
     UNPROTECT(1);
     return out;
+}
+
+/* ---- batch match lists (SpatialJoinNode) -------------------------------- */
+
+int vtr_geos_match_batch(GeosLocator *loc, const unsigned char **hex,
+                         const size_t *hexlen, const double *xs, const double *ys,
+                         int m, int pred, double dist, int nthreads,
+                         int **mptr, int *mlen) {
+    for (int r = 0; r < m; r++) { mptr[r] = NULL; mlen[r] = 0; }
+    if (m == 0) return 0;
+    int nt = batch_threads(nthreads, m);
+    volatile int oom = 0;
+
+    if (pred == VTR_PRED_NEAREST) {
+        int *res = (int *) malloc((size_t) m * sizeof(int));
+        if (res == NULL) return -1;
+        for (int r = 0; r < m; r++) res[r] = NA_INTEGER;
+        GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .xs = xs,
+                              .ys = ys, .m = m, .pred = pred, .want_all = 0,
+                              .res = res, .oom = &oom };
+        if (hex != NULL) {
+#ifdef _OPENMP
+            #pragma omp parallel num_threads(nt)
+#endif
+            nearest_worker(&job);
+        } else {
+#ifdef _OPENMP
+            #pragma omp parallel num_threads(nt)
+#endif
+            locate_xy_worker(&job);
+        }
+        for (int r = 0; r < m && !oom; r++) {
+            if (res[r] == NA_INTEGER) continue;
+            mptr[r] = (int *) malloc(sizeof(int));
+            if (mptr[r] == NULL) { oom = 1; break; }
+            mptr[r][0] = res[r];
+            mlen[r] = 1;
+        }
+        free(res);
+    } else {
+        GeosBatchJob job = { .loc = loc, .hex = hex, .hexlen = hexlen, .xs = xs,
+                              .ys = ys, .m = m, .pred = pred, .dist = dist,
+                              .want_all = 1, .mptr = mptr, .mlen = mlen,
+                              .oom = &oom };
+        if (hex != NULL) {
+#ifdef _OPENMP
+            #pragma omp parallel num_threads(nt)
+#endif
+            join_worker(&job);
+        } else {
+#ifdef _OPENMP
+            #pragma omp parallel num_threads(nt)
+#endif
+            locate_xy_worker(&job);
+        }
+    }
+    if (oom) {
+        for (int r = 0; r < m; r++) { free(mptr[r]); mptr[r] = NULL; mlen[r] = 0; }
+        return -1;
+    }
+    return 0;
 }
 
 VTR_GEOS_CALLS_END
