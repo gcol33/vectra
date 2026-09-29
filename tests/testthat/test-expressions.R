@@ -416,8 +416,13 @@ test_that("atan2 and ^ match base R, including NA and NaN", {
   expect_identical(got$p, suppressWarnings(y^x))
   expect_identical(got$q, 2^x)
   expect_identical(got$r, y^2)
-  expect_identical(got$an, atan2(nan, x))
-  expect_identical(got$pn, nan^x)
+  # NaN combined with NA may give NaN or NA depending on the platform (?NA),
+  # so those rows are only required to be missing.
+  mix <- is.na(x) & !is.nan(x)
+  expect_identical(got$an[!mix], atan2(nan, x)[!mix])
+  expect_true(all(is.na(got$an[mix])))
+  expect_identical(got$pn[!mix], (nan^x)[!mix])
+  expect_true(all(is.na(got$pn[mix])))
   expect_identical(got$pz, nan^0)
 })
 
