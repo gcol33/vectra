@@ -58,6 +58,7 @@ Suggests:
     openxlsx2,
     rmarkdown,
     RSQLite,
+    s2,
     sf,
     ShortRead,
     stringdist,
