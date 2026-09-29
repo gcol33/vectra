@@ -1,3 +1,10 @@
+## Resubmission
+
+The first 0.13.0 upload failed one test on r-devel-linux-x86_64-debian-gcc:
+it compared `NaN^NA` with base R, which gives `NaN` there and `NA` elsewhere
+(`?NA` leaves this platform-dependent). The test now only requires those rows
+to be missing. No package code changed.
+
 ## Submission
 
 This is a feature update. The main changes are:
