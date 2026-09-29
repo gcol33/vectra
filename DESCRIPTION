@@ -1,12 +1,22 @@
 Package: vectra
 Title: Columnar Query Engine for Larger-than-RAM Data
-Version: 0.12.4
+Version: 0.13.0
 Authors@R: c(
     person("Gilles", "Colling", email = "gilles.colling051@gmail.com",
       role = c("aut", "cre", "cph"),
       comment = c(ORCID = "0000-0003-3070-6066")),
+    person("Yann", "Collet", role = c("ctb", "cph"),
+      comment = "zstd decoder and xxHash in src/zstd"),
     person("Meta Platforms, Inc. and affiliates", role = "cph",
       comment = "zstd decoder in src/zstd"),
+    person("Rich", "Geldreich", role = "ctb",
+      comment = "miniz in src/miniz"),
+    person("Martin", "Raiber", role = c("ctb", "cph"),
+      comment = "miniz in src/miniz"),
+    person("Alistair", "Moffat", role = "ctb",
+      comment = "minimum-redundancy code routine in src/miniz"),
+    person("Jyrki", "Katajainen", role = "ctb",
+      comment = "minimum-redundancy code routine in src/miniz"),
     person("RAD Game Tools and Valve Software", role = "cph",
       comment = "miniz in src/miniz"),
     person("Rich Geldreich and Tenacious Software LLC", role = "cph",

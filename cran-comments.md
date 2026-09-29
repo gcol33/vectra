@@ -1,26 +1,30 @@
 ## Submission
 
-This update corrects two bugs reported after 0.12.3 was published on
-2026-09-14.
+This is a feature update. The main changes are:
 
-* `filter()` on a store with a '.vtri' index could return too few rows. An
-  index checked only the row count and row-group count of the store it was
-  built on, so after `write_vtr()` replaced the store with another of the same
-  shape, a filter pruned row groups by the old store's keys and silently
-  dropped matching rows. An index now also records a fingerprint of the store
-  and is ignored when it no longer matches, and `write_vtr()` removes the
-  indexes of the store it replaces.
+* `tbl_parquet()`, a native Parquet reader implemented in C with no
+  dependency on 'arrow'. ZSTD-compressed pages are decoded by the zstd
+  decompressor, included in `src/zstd` under its BSD license.
+* `vectra_mem()` is now a single memory bound per query plan, shared by the
+  sort, join and aggregation nodes, and grouped `summarise()` aggregates in
+  hash tables that spill to disk past that bound.
+* LZW-compressed GeoTIFF input, trigonometric functions in expressions, and
+  fixes to `bind_rows()` type widening and filter pushdown.
 
-* A source install failed under a non-UTF-8 locale. `R/verbs.R` started with a
-  UTF-8 byte-order mark, which the parser reads as a token under
-  `LC_CTYPE=C`, so `R CMD INSTALL` stopped with "unable to collate and parse R
-  files". The mark is removed, and CI now parses every R file in a C locale.
+NEWS.md lists every change.
+
+## Authors@R
+
+`Authors@R` now lists the authors and copyright holders of the bundled third
+party code: Yann Collet and Meta Platforms (zstd and xxHash, `src/zstd`), and
+Rich Geldreich, Martin Raiber, RAD Game Tools and Valve Software, and Tenacious
+Software (miniz, `src/miniz`). Alistair Moffat and Jyrki Katajainen are listed
+as contributors because a routine in miniz credits them by name.
 
 ## Test environments
 
-* Local: Windows 11, R 4.6.1, `R CMD check --as-cran` on the built tarball --
-  0 errors | 0 warnings | 1 note (3778 test expectations)
-* Local: Windows 11, R 4.6.1, `R CMD INSTALL` from source with `LC_ALL=C`
+* Local: Windows 11, R 4.6.1, `R CMD check --as-cran` on the built tarball
+* win-builder: R-devel
 * GitHub Actions: R-CMD-check (macOS, Windows, Ubuntu release/devel/oldrel-1),
   gcc ASAN/UBSAN, clang `-fsanitize=undefined,function`
 
@@ -29,11 +33,8 @@ This update corrects two bugs reported after 0.12.3 was published on
 0 errors | 0 warnings | 1 note
 
 The note is from the incoming feasibility check (days since the last update).
-This update fixes a filter that returns wrong results without an error, and an
-install failure that also affects the reverse dependency 'taxify'.
 
 ## Reverse dependencies
 
-taxify imports vectra. `R CMD check` of taxify 0.5.0 (the CRAN version)
-against this release: Status OK, its test suite passes in full (7547
-expectations, 0 failures).
+taxify imports vectra. `R CMD check` of taxify 0.5.5 (the CRAN version)
+against this release: see below.

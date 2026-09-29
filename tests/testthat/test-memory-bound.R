@@ -34,6 +34,8 @@ run_peak <- function(expr_text, budget, files) {
 test_that("a join feeding a grouped aggregate stays within vectra_mem()", {
   skip_on_cran()
   skip_if_not(vectra:::.peak_rss() > 0, "peak RSS is not reported on this platform")
+  skip_if(nzchar(Sys.getenv("ASAN_OPTIONS")),
+          "peak RSS under AddressSanitizer includes its shadow memory and quarantine")
 
   set.seed(1)
   n <- 4e6

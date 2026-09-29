@@ -28,4 +28,14 @@ How to refresh
     python combine.py -r ../../lib -x legacy/zstd_legacy.h \
         -o zstddeclib.c zstddeclib-in.c
   then copy zstddeclib.c, lib/zstd.h, lib/zstd_errors.h and LICENSE here and
-  update the Version line above. No local patches.
+  update the Version line above, then apply the local patch below.
+
+Local patches
+
+  The clang "diagnostic push / ignored -Wzero-as-null-pointer-constant / pop"
+  block around ZSTD_defaultCMem is removed from both zstd.h and zstddeclib.c,
+  leaving the declaration itself. R CMD check --as-cran reports any pragma
+  that suppresses diagnostics, and that warning is a C++ one that C builds
+  never enable. After a refresh, check with
+    grep -n "diagnostic ignored" zstd.h zstddeclib.c
+  which must print nothing.
