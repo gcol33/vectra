@@ -16,7 +16,7 @@ exceeds the largest integer R can hold, in which case both are doubles.
 }
 \description{
 Reports the shape of a \code{vectra_node} from plan metadata, without running
-the query. Defining \code{dim()} is what makes base R's \code{\link[=nrow]{nrow()}} and \code{\link[=ncol]{ncol()}}
+the query. Defining \code{dim()} is what makes base R's \code{\link[base:nrow]{base::nrow()}} and \code{\link[base:ncol]{base::ncol()}}
 work on a node, since both read \code{dim(x)}.
 }
 \details{
@@ -25,7 +25,7 @@ available when it can be read from metadata: a \code{.vtr} table reports the
 count stored in its row-group index (minus any rows \code{\link[=delete_vtr]{delete_vtr()}} has
 tombstoned), and the row-preserving verbs carry it through --
 \code{\link[=select]{select()}}, \code{\link[=mutate]{mutate()}}, \code{\link[=rename]{rename()}}, \code{\link[=arrange]{arrange()}}, \code{\link[=relocate]{relocate()}}, window
-functions, \code{\link[=head]{head()}}, \code{\link[=slice_head]{slice_head()}}, \code{slice_min()}/\code{slice_max()}, and
+functions, \code{\link[utils:head]{utils::head()}}, \code{\link[=slice_head]{slice_head()}}, \code{slice_min()}/\code{slice_max()}, and
 \code{\link[=bind_rows]{bind_rows()}} over counted inputs.
 
 Verbs whose output length depends on the data -- \code{\link[=filter]{filter()}}, the joins,

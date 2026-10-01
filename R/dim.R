@@ -1,7 +1,7 @@
 #' Dimensions of a lazy query
 #'
 #' Reports the shape of a `vectra_node` from plan metadata, without running
-#' the query. Defining `dim()` is what makes base R's [nrow()] and [ncol()]
+#' the query. Defining `dim()` is what makes base R's [base::nrow()] and [base::ncol()]
 #' work on a node, since both read `dim(x)`.
 #'
 #' The column count always comes from the plan's schema. The row count is
@@ -9,7 +9,7 @@
 #' count stored in its row-group index (minus any rows [delete_vtr()] has
 #' tombstoned), and the row-preserving verbs carry it through --
 #' [select()], [mutate()], [rename()], [arrange()], [relocate()], window
-#' functions, [head()], [slice_head()], `slice_min()`/`slice_max()`, and
+#' functions, [utils::head()], [slice_head()], `slice_min()`/`slice_max()`, and
 #' [bind_rows()] over counted inputs.
 #'
 #' Verbs whose output length depends on the data -- [filter()], the joins,
