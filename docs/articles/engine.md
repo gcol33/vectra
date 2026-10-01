@@ -68,12 +68,16 @@ means operations that touch few columns (e.g. `select(id, x)` on a
 
 ## Data sources
 
-| Function                  | Format                 | Streaming                |
-|:--------------------------|:-----------------------|:-------------------------|
-| `tbl(path)`               | `.vtr` (vectra native) | yes, row-group-at-a-time |
-| `tbl_csv(path)`           | CSV                    | yes, batch-at-a-time     |
-| `tbl_sqlite(path, table)` | SQLite                 | yes, batch-at-a-time     |
-| `tbl_tiff(path)`          | GeoTIFF                | yes, row-strip-at-a-time |
+| Function | Format | Streaming |
+|:---|:---|:---|
+| `tbl(path)` | `.vtr` (vectra native) | yes, row-group-at-a-time |
+| `tbl_csv(path)` | CSV | yes, batch-at-a-time |
+| `tbl_parquet(path)` | Parquet (one file, several, or a directory) | yes, row-group-at-a-time |
+| `tbl_sqlite(path, table)` | SQLite | yes, batch-at-a-time |
+| `tbl_tiff(path)` | GeoTIFF | yes, row-strip-at-a-time |
+| `tbl_fasta(path)`, `tbl_fastq(path)` | FASTA / FASTQ (plain or gzipped) | yes, batch-at-a-time |
+| `tbl_bed(path)` | BED | yes, batch-at-a-time |
+| `tbl_xlsx(path)` | Excel `.xlsx` | no, the sheet is read into memory via openxlsx2 |
 
 All sources produce the same `vectra_node` object. The query engine does
 not know or care which source is upstream.
@@ -96,7 +100,7 @@ not know or care which source is upstream.
 |:---|:---|:---|
 | `filter(...)` | yes | Zero-copy via selection vector |
 | `select(...)` | yes | Full tidyselect: `starts_with()`, `where()`, `-col`, etc. |
-| `mutate(...)` | yes | Arithmetic, comparison, boolean, [`is.na()`](https://rdrr.io/r/base/NA.html), [`nchar()`](https://rdrr.io/r/base/nchar.html), [`substr()`](https://rdrr.io/r/base/substr.html), [`grepl()`](https://rdrr.io/r/base/grep.html), math (`abs`, `sqrt`, `log`, `exp`, `floor`, `ceiling`, `round`, `log2`, `log10`, `sign`, `trunc`), `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), [`tolower()`](https://rdrr.io/r/base/chartr.html), [`toupper()`](https://rdrr.io/r/base/chartr.html), [`trimws()`](https://rdrr.io/r/base/trimws.html), [`paste0()`](https://rdrr.io/r/base/paste.html), [`gsub()`](https://rdrr.io/r/base/grep.html), [`sub()`](https://rdrr.io/r/base/grep.html), [`startsWith()`](https://rdrr.io/r/base/startsWith.html), [`endsWith()`](https://rdrr.io/r/base/startsWith.html), [`pmin()`](https://rdrr.io/r/base/Extremes.html), [`pmax()`](https://rdrr.io/r/base/Extremes.html), `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, [`as.Date()`](https://rdrr.io/r/base/as.Date.html) |
+| `mutate(...)` | yes | Arithmetic, comparison, boolean, [`is.na()`](https://rdrr.io/r/base/NA.html), [`nchar()`](https://rdrr.io/r/base/nchar.html), [`substr()`](https://rdrr.io/r/base/substr.html), [`grepl()`](https://rdrr.io/r/base/grep.html), math (`abs`, `sqrt`, `log`, `exp`, `log1p`, `expm1`, `floor`, `ceiling`, `round`, `log2`, `log10`, `sign`, `trunc`, `^`), trigonometric and hyperbolic functions (`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`), the constant `pi`, `if_else()`, `between()`, `%in%`, type casting (`as.numeric`), [`tolower()`](https://rdrr.io/r/base/chartr.html), [`toupper()`](https://rdrr.io/r/base/chartr.html), [`trimws()`](https://rdrr.io/r/base/trimws.html), [`paste0()`](https://rdrr.io/r/base/paste.html), [`gsub()`](https://rdrr.io/r/base/grep.html), [`sub()`](https://rdrr.io/r/base/grep.html), [`startsWith()`](https://rdrr.io/r/base/startsWith.html), [`endsWith()`](https://rdrr.io/r/base/startsWith.html), [`pmin()`](https://rdrr.io/r/base/Extremes.html), [`pmax()`](https://rdrr.io/r/base/Extremes.html), `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, [`as.Date()`](https://rdrr.io/r/base/as.Date.html) |
 | `transmute(...)` | yes | Like [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) but drops unmentioned columns |
 | `rename(...)` | yes | Full tidyselect rename support |
 | `relocate(...)` | yes | Reorder columns with `.before` / `.after` |
@@ -106,7 +110,7 @@ not know or care which source is upstream.
 | Verb | Streams | Notes |
 |:---|:---|:---|
 | `group_by(...)` | metadata only | Attaches grouping info; no data moves |
-| `summarise(...)` | **materializes** | Hash-based or sort-based aggregation |
+| `summarise(...)` | **materializes** | Hash aggregation; spills to disk when the groups outgrow the memory budget |
 | [`ungroup()`](https://gillescolling.com/vectra/reference/ungroup.md) | metadata only | Removes grouping |
 | `count(...)` | **materializes** | Sugar for `group_by() |> summarise(n = n())` |
 | `tally(...)` | **materializes** | Like [`count()`](https://gillescolling.com/vectra/reference/count.md) on existing groups |
@@ -127,25 +131,25 @@ accept `na.rm = TRUE`.
 
 | Verb | Streams | Notes |
 |:---|:---|:---|
-| `arrange(...)` | **materializes** | External merge sort with 1 GB spill budget |
+| `arrange(...)` | **materializes** | External merge sort; spills sorted runs past the memory budget |
 | `slice_head(n)` | yes | Limit node, stops after n rows |
 | `slice_tail(n)` | **materializes** | Must see all rows to take last n |
 | `slice_min(order_by, n)` | partial | Heap-based top-N; `with_ties = TRUE` (default) includes ties |
 | `slice_max(order_by, n)` | partial | Heap-based top-N; `with_ties = TRUE` (default) includes ties |
 | `head(n)` | yes | Alias for `slice_head() |> collect()` |
 | `slice(...)` | **materializes** | Select or exclude rows by position (positive or negative indices) |
-| `distinct(...)` | **materializes** | Uses hash-based grouping |
+| `distinct(...)` | **materializes** | Grouped aggregation with no aggregates, so the same hash path and spill |
 
 ### Join verbs
 
 | Verb | Streams | Notes |
 |:---|:---|:---|
-| `inner_join(x, y)` | **build materializes right** | Hash join; left streams |
-| `left_join(x, y)` | **build materializes right** | Hash join; left streams |
-| `right_join(x, y)` | **build materializes left** | Implemented as swapped left join |
-| `full_join(x, y)` | **build materializes right** | Hash join + finalize pass |
-| `semi_join(x, y)` | **build materializes right** | Hash join; returns left rows only |
-| `anti_join(x, y)` | **build materializes right** | Hash join; returns non-matching left rows |
+| `inner_join(x, y)` | **build side buffered** | Hash join; left streams, right is the build side and spills past the budget |
+| `left_join(x, y)` | **build side buffered** | Hash join; left streams |
+| `right_join(x, y)` | **build side buffered** | Implemented as swapped left join |
+| `full_join(x, y)` | **build side buffered** | Hash join + finalize pass |
+| `semi_join(x, y)` | **build side buffered** | Hash join; returns left rows only |
+| `anti_join(x, y)` | **build side buffered** | Hash join; returns non-matching left rows |
 | `cross_join(x, y)` | **materializes** | Cartesian product; no key columns required |
 
 All joins support: `by = "col"`, `by = c("a" = "b")`, `by = NULL`
@@ -173,7 +177,13 @@ Available inside
 
 Window functions respect
 [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md)
-partitions. They **materialize** all data within each partition.
+partitions. A grouped window sorts its input by the group keys through
+the external sort and then processes one group at a time, so its peak is
+the largest group. An ungrouped window streams the table in one forward
+pass; when its functions need different orderings (for example
+[`lag()`](https://rdrr.io/r/stats/lag.html) next to
+[`rank()`](https://rdrr.io/r/base/rank.html)), it runs as a chain of
+single-function windows, each of which streams.
 
 ### Other verbs
 
@@ -208,6 +218,35 @@ and `across(.cols)` support the full tidyselect vocabulary:
 from the schema, giving tidyselect enough type information to evaluate
 predicates.
 
+### Programming with verbs
+
+Every verb that takes expressions
+([`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+[`transmute()`](https://gillescolling.com/vectra/reference/transmute.md),
+[`summarise()`](https://gillescolling.com/vectra/reference/summarise.md),
+[`arrange()`](https://gillescolling.com/vectra/reference/arrange.md),
+[`group_by()`](https://gillescolling.com/vectra/reference/group_by.md),
+[`count()`](https://gillescolling.com/vectra/reference/count.md),
+[`pull()`](https://gillescolling.com/vectra/reference/pull.md),
+[`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md),
+[`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md),
+and the others) captures its arguments with rlang, so the usual
+injection tools work:
+
+- `!!` and `!!!` inject a value, a symbol or a list of them
+  (`group_by(!!sym(k))`, `summarise(!!!aggs)`)
+- `{{ }}` forwards an argument from a wrapper function
+- `!!name := expr` builds a column name
+- `.data[[k]]` and `.data$k` refer to a column by name, `.env$x` to a
+  variable in the calling environment
+
+``` r
+
+k <- "species"
+tbl("data.vtr") |> group_by(.data[[k]]) |> summarise(n = n())
+```
+
 ## Supported types
 
 ### Base types
@@ -227,8 +266,8 @@ output instead.
 
 ### Annotated types
 
-The `.vtr` format version 2 stores per-column annotations that preserve
-R type metadata through the write/read cycle:
+The `.vtr` schema stores a per-column annotation that preserves R type
+metadata through the write/read cycle:
 
 | R class | Annotation | Storage | Roundtrip |
 |:---|:---|:---|:---|
@@ -327,12 +366,12 @@ expressions. It returns a boolean column based on the validity bitmap.
 - [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md):
   produces a total order (stable sort)
 
-- `group_by() |> summarise()`: output order is **not guaranteed**
-  (hash-based path) or sorted by key (sort-based path); do not depend on
-  either
+- `group_by() |> summarise()`: groups come out sorted by key, with `NA`
+  keys last, whether or not the aggregation spilled
 
 - [`distinct()`](https://gillescolling.com/vectra/reference/distinct.md):
-  output order is not guaranteed
+  sorted by the distinct columns, `NA` last (it runs through the same
+  aggregation)
 
 - Joins: probe-side order is preserved within each batch; build-side
   order is not guaranteed
@@ -344,7 +383,7 @@ expressions. It returns a boolean column based on the validity bitmap.
 
 ### Streaming nodes (constant memory per batch)
 
-- Scan (`.vtr`, CSV, SQLite, TIFF)
+- Scans (`.vtr`, Parquet, CSV, SQLite, TIFF, FASTA/FASTQ, BED)
 
 - Filter
 
@@ -354,176 +393,250 @@ expressions. It returns a boolean column based on the validity bitmap.
 
 - Concat (bind_rows)
 
+- Ungrouped windows (see Window functions above)
+
 ### Materializing nodes
 
-These nodes buffer data in memory:
+These nodes buffer data. Every one of them is bounded: it either holds a
+fixed amount of state or spills to temporary files once its buffer
+reaches the memory budget.
 
 | Node | What it buffers | Bounded by |
 |:---|:---|:---|
-| Sort (arrange) | All input rows | 1 GB memory budget, then spills to disk |
-| GroupAgg (summarise) | Hash table of groups + accumulators | Number of distinct groups |
-| TopN (slice_min/max) | Heap of n rows | Requested n |
-| Window | All rows per partition | Partition size |
-| Join (build phase) | Right-side table in hash table | Right-side row count |
+| Sort (arrange) | Input rows | Memory budget, then sorted runs on disk |
+| GroupAgg (summarise, distinct, count) | Hash tables of groups + accumulators | Memory budget, then hash partitions on disk |
+| TopN (slice_min/max, `with_ties = FALSE`) | Heap of n rows | Requested n |
+| Window, grouped | One group at a time, after the external sort | Largest group |
+| Join (build side) | Right-side rows + hash table | Memory budget, then hash partitions on disk |
+
+The memory budget is
+[`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+which defaults to half of physical RAM (at least 1 GB) and is set with
+`options(vectra.memory = "4GB")`. It bounds the whole query, not each
+node. Before execution the optimizer creates one pool of
+[`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+bytes for the plan and gives every buffering step (sort, join, grouped
+aggregate, fuzzy join, k-mer count) a claim on it. A step reserves the
+bytes it actually allocates as its buffers grow, releases them as it
+frees them, and spills to disk when the pool refuses a reservation. A
+step that needs little leaves the rest of the pool to the others. So
+that no step can be starved, each is guaranteed a floor of 1/(4 x number
+of buffering steps) of the budget; the other three quarters are shared,
+first come first served. The nodes a step creates internally, such as a
+grouped aggregate’s sorts or a grace-hash join’s sub-joins, draw on that
+step’s claim.
+
+Spill files (sort runs, join and aggregation partitions, fuzzy-join
+build runs, and the temporary file
+[`diff_vtr()`](https://gillescolling.com/vectra/reference/diff_vtr.md)
+collects added rows in) are written uncompressed, since each is written
+once and read once. They go to
+[`tempdir()`](https://rdrr.io/r/base/tempfile.html) and are deleted when
+the node that wrote them is freed.
 
 ### External sort (spill-to-disk)
 
 [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
-accumulates incoming batches into column builders in memory. After each
-batch, the sort node estimates total memory usage across all builders.
-When the estimate exceeds the memory budget (default 1 GB, defined as
-`DEFAULT_MEM_BUDGET`), the node flushes the accumulated data as a sorted
-run:
+accumulates incoming batches into column builders. Before taking a batch
+it reserves what the builders will hold after growing, plus 32 bytes per
+buffered row for the sort’s working space (the row permutation and the
+radix sort’s scratch). When the reservation is refused, the node sorts
+what it holds and writes it to a temporary `.vtr` file as one sorted
+run, in row groups of 65,536 rows, then resets the builders and
+continues. Sorting in memory orders a row-index permutation: a radix
+sort for a single numeric key, otherwise a parallel merge sort (OpenMP
+tasks above 32,768 rows).
 
-1.  The builders are finished into arrays.
+Once the input is consumed, the node merges the runs with a min-heap.
+The number of runs merged at once (the fan-in) is capped: it is computed
+from the measured width of the spilled rows so that the rows held by an
+open merge stay within half the budget, and lies between 2 and 64. When
+there are more runs than the fan-in, groups of runs are first merged
+into fewer, longer runs, in as many passes as needed, before the final
+merge streams the result in batches of 65,536 rows. Merge memory
+therefore depends on the row width and the budget, not on the number of
+rows sorted.
 
-2.  The arrays are sorted in-place using a parallel merge sort (OpenMP
-    task spawning above 32,768 rows, sequential below).
+If the input fits within the budget, nothing is written to disk and the
+sort runs in memory. It then keeps only the buffered columns and the
+permutation, and emits the result in batches of 131,072 rows, gathering
+each batch’s fixed-width columns in one parallel pass.
 
-3.  The sorted data is written to a temporary `.vtr` file in the system
-    temp directory, split into row groups of 65,536 rows each.
+### Grouped aggregation
 
-4.  The builders are reset and accumulation continues.
+[`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+of the scalar aggregates (`n()`,
+[`sum()`](https://rdrr.io/r/base/sum.html),
+[`mean()`](https://rdrr.io/r/base/mean.html),
+[`min()`](https://rdrr.io/r/base/Extremes.html),
+[`max()`](https://rdrr.io/r/base/Extremes.html),
+[`sd()`](https://rdrr.io/r/stats/sd.html),
+[`var()`](https://rdrr.io/r/stats/cor.html), `first()`, `last()`,
+[`any()`](https://rdrr.io/r/base/any.html),
+[`all()`](https://rdrr.io/r/base/all.html)) aggregates in hash tables.
+The key space is split by hash into up to 64 shards, one hash table per
+shard, and the shards run in parallel; a group lives in exactly one
+shard, so nothing has to be merged afterwards. Hashing is FNV-1a on the
+key bytes, multi-key hashes are combined by rotating and XOR-ing the
+per-key hashes.
 
-This spill cycle repeats as many times as needed. A 10 GB dataset with a
-1 GB budget produces approximately 10 spill files.
+When the tables reach their share of the budget they stop admitting new
+groups. Rows of groups already held keep aggregating in place; rows of
+any other group are written, by a salted hash of the key, to one of 64
+temporary partition files. Each partition is then aggregated on its own
+with a differently salted hash, recursively, and a partition still too
+large after three levels takes the sort-based path. Every group is
+either wholly in memory or wholly in one partition, so no partial result
+is ever combined with another.
 
-Once all input is consumed, the sort node enters the merge phase. It
-opens all spill files as `Vtr1File` readers and runs a k-way merge using
-a min-heap. Each heap entry holds a reference to one merge run (one
-spill file) and tracks the current row group and cursor position within
-that run. The merge emits batches of up to 65,536 rows, reading row
-groups from spill files on demand. Peak memory during the merge phase is
-proportional to k (number of runs) times the row group size, not the
-total dataset size.
+[`median()`](https://rdrr.io/r/stats/median.html) and `n_distinct()`
+need every value of a group. With either of them in the
+[`summarise()`](https://gillescolling.com/vectra/reference/summarise.md),
+the input is sorted by the group keys through the external sort and the
+groups are aggregated one at a time; each group’s values go to a buffer
+that spills to disk and is reduced by an external merge, so a single
+very large group costs disk rather than memory.
 
-If all data fits within the 1 GB budget, no spill occurs. The node sorts
-in memory and emits the result directly. This is the common case for
-datasets under ~100 million rows (depending on column count and types).
-
-The sort-based `group_by() |> summarise()` path (used internally when
-the engine detects it is advantageous) also benefits from this spill
-mechanism. Temporary spill files are deleted when the sort node is
-freed.
+Groups are emitted sorted by key, `NA` last. When nothing spilled, the
+result table is sorted in memory; otherwise it passes through the
+external sort.
 
 ### Join memory model
 
 Joins use a **build-right, probe-left** hash join:
 
-1.  **Build phase**: The entire right-side table is materialized into a
-    hash table in memory. Key columns are hashed using FNV-1a. For
-    single-key joins, the hash is computed directly on the key bytes.
-    For multi-key joins, per-key hashes are combined via XOR and FNV
-    prime multiplication. The hash table uses open addressing. Key
-    hashing is OpenMP-parallelized for batches above 32,768 rows.
-2.  **Probe phase**: Left-side batches stream through one at a time,
-    probing the hash table. For each left row, the engine computes the
-    key hash, looks up the hash table, and verifies key equality (hash
-    collisions are resolved by comparison). Probe-side hashing is also
-    parallelized.
-3.  **Finalize phase** (full_join only): Unmatched right-side rows are
-    emitted in chunks of 65,536 rows. A matched-flag array tracks which
-    right-side rows participated in the join.
+1.  **Build phase**: The right side is read into memory and indexed by a
+    hash table. Key columns are hashed with FNV-1a; multi-key hashes are
+    combined per key. Build-side hashing is OpenMP-parallelized above
+    32,768 rows.
+2.  **Probe phase**: Left-side batches stream through one at a time. For
+    each left row the engine computes the key hash, looks up the table,
+    and checks key equality, so hash collisions never produce a false
+    match. Probe-side hashing is also parallelized.
+3.  **Finalize phase** (full join): unmatched right-side rows are
+    emitted from a matched-row bitset.
 
-The memory cost of a join is proportional to the right-side table size
-(data arrays plus hash table overhead). The left side streams and does
-not accumulate. For this reason, place the smaller table on the right
-side of the join. The `right_join` verb handles this automatically by
-swapping sides internally and remapping columns in the output.
+When the build side outgrows the memory budget, the join switches to a
+grace hash join: both sides are written by key hash into 64 partition
+files and the partitions are joined one at a time. A partition that is
+itself still too large is partitioned again with a hash salted by the
+recursion depth, so keys that collided at one level split at the next. A
+single key value repeated more times than fits in memory cannot be split
+by any hash; after three levels such a partition is joined by a block
+nested loop, reading the build side in blocks that fit the budget and
+rescanning the probe side once per block. At that level the join holds
+one build block, one probe batch, and bitsets of one bit per row.
+
+When both inputs are already sorted on the join keys, the join merges
+them instead of building a hash table. Which of the two it uses is
+decided before the build, because it sets what the build reserves: a
+hash join reserves the build columns plus the slot arrays (16 bytes per
+slot, with the slot count the next power of two at or above twice the
+build rows), a chain array and a temporary hash array (8 bytes per build
+row each), and for a full join a one-bit-per-row matched bitset. A merge
+join reserves only the columns and the bitset. The grace-hash partitions
+and block-nested-loop blocks check the same figure.
+
+The left side streams and does not accumulate, so put the smaller table
+on the right.
+[`right_join()`](https://gillescolling.com/vectra/reference/left_join.md)
+does this by swapping the sides internally and remapping the output
+columns.
 
 ## The .vtr file format
 
-The `.vtr` format is vectra’s native binary columnar format. It is
-designed for fast sequential reads with row-group-level granularity.
+The `.vtr` format is vectra’s native binary columnar format, built on
+the tdc container (typed dimensional compression, vendored in
+`src/tdc/`).
 
 ### Layout
 
-    Header:
-      magic bytes ("VTR1")
-      version (uint16: 1–4)
-      n_cols, n_rowgroups
-      per-column: name + type byte [+ annotation string in v2+]
-      row group index (byte offsets)
+    tdc container:
+      header (64 bytes): "TDC1" magic, flags, section offsets
+      schema: per-column name, type and annotation
+      blocks: one self-describing block record per column per row group
+      row-group index: block offsets and sizes, plus per-column
+                       min / max / null count for every row group
+    vectra trailer (24 bytes):
+      container length (u64), digest of the container bytes (u64),
+      trailer version (u32), "VTRD"
 
-    Row groups (repeated):
-      per-column:
-        validity bitmap (bit-packed)
-        [v4] encoding tag (1 byte) + compression tag (1 byte)
-        [v4] uncompressed_size (uint32)
-        typed data array (int64/double/bool/string)
-      [v3+] per-column statistics (min/max)
+Each column of each row group is one block record: a header naming how
+the block was encoded, the encoded payload, and the column’s validity
+bitmap. The reader decodes each block from its own header, so files
+written with different compression settings are read the same way.
 
-### Version history
+The trailer records a digest of every byte written.
+[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+stamps its sidecar with a fingerprint built from it, which is how an
+index notices that its store was replaced (see Hash indexes). A reader
+that does not know the trailer ignores it, since tdc never reads past
+the row-group index.
 
-- **Version 1**: Base format with typed columns and validity bitmaps.
+[`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+grows a store in place in either direction: new row groups
+(`along = "rows"`) or new columns (`along = "cols"`) are written after
+the old index together with a rebuilt index, and the header is patched
+last, so an interrupted append leaves the previous store readable.
 
-- **Version 2**: Adds per-column annotation strings for Date, POSIXct,
-  and factor roundtripping.
+The format is not compatible with `.vtr` files written before the tdc
+container was adopted.
 
-- **Version 3**: Adds per-column per-rowgroup statistics (min/max)
-  enabling zone-map predicate pushdown.
+### Encoding and compression
 
-- **Version 4** (current): Adds a two-layer encoding and compression
-  stack. Writing always produces v4. All versions (v1–v4) are readable.
+`write_vtr(compress = )` picks the encoding per column chunk:
 
-### Encoding and compression (v4)
+- `"fast"` (default): numeric columns are byte-shuffled (the bytes of
+  each value are regrouped by position, which exposes the redundancy in
+  exponent and high-order bytes) and compressed with LZ; a
+  non-decreasing integer column is delta-encoded first. String columns
+  are dictionary-encoded: the distinct values once, then an index per
+  row. The LZ runs at tdc’s fastest matching level.
+- `"small"`: for each column chunk, tries a set of candidate encodings
+  and keeps the smallest. Candidates vary the model (raw, delta,
+  second-order delta, floating-point prediction, numeric dictionary,
+  sparse-zero) and the entropy coder (LZ at several parser levels, FSE,
+  Huffman, per-lane coding), and always include the `"fast"` encoding,
+  so `"small"` is never larger than `"fast"`. The trial encodes run in
+  parallel, and the choice does not depend on the thread count.
+- `"none"`: no compression; strings are still stored as a dictionary.
 
-v4 applies two transformations to each column chunk (one column in one
-row group), in order: an **encoding** step and a **compression** step.
+Columns written with `write_vtr(quantize = )` or `write_vtr(spatial = )`
+use tdc’s quantizing and 2-D predictive models instead.
 
-Encoding transforms data logically to expose redundancy. The encoder
-picks the best encoding per column per row group automatically:
-
-| Encoding | Applies to | Condition | Mechanism |
-|:---|:---|:---|:---|
-| PLAIN | all types | default | Raw bytes, no transformation |
-| DICTIONARY | string | unique ratio \< 50% | Builds a string dictionary; stores indices as RLE (run-length encoded) |
-| DELTA | int64 | monotonically increasing | Stores first value + deltas (all \>= 0) |
-
-DICTIONARY encoding is the most impactful for typical categorical string
-columns. The encoder counts distinct values in a single pass using an
-open-addressing hash table (70% load factor, dynamic resizing). If fewer
-than half the values are unique, it emits a dictionary (offset array +
-packed strings) followed by RLE-encoded indices. The RLE step collapses
-runs of repeated indices into (value, count) pairs, which is effective
-when rows with the same category are clustered (e.g. after a sort). If
-more than half the values are unique, the encoder aborts dictionary
-encoding and falls back to PLAIN with zero overhead.
-
-DELTA encoding stores an initial value followed by the difference
-between consecutive values. It targets auto-increment IDs, timestamps,
-and other monotonic integer sequences where the deltas are small and
-compress well.
-
-Compression squeezes bytes physically after encoding. vectra uses a
-built-in LZ77 compressor (LZ-VTR), approximately 120 lines of C with no
-external dependencies. The compressor uses a 3-byte minimum match,
-256-byte maximum offset, and a hash table for match finding. It skips
-column chunks smaller than 64 bytes (not worth the overhead). If
-compression does not reduce size, the chunk is stored uncompressed.
-There is no configuration knob; the format always attempts compression
-on eligible chunks.
-
-The two-layer design is intentional. Encoding and compression solve
-different problems. DICTIONARY and DELTA reduce the entropy of the data
-(fewer distinct byte patterns, smaller integer ranges). LZ-VTR then
-exploits the reduced entropy at the byte level. Applying both layers
-yields better ratios than either layer alone, particularly for
-RLE-encoded dictionary indices where long runs of identical small
-integers compress to near zero.
+Because string columns are dictionary-encoded,
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+converts each distinct string to an R string once and fills the column
+by index.
 
 ## Query optimizer
 
 [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
 runs the optimizer before printing so you see the actual execution plan.
-Two optimization passes run automatically:
+The optimizer rewrites the plan so the order in which the verbs were
+written does not change how much is read.
 
 ### Predicate pushdown
 
-When a `FilterNode` sits above a `ScanNode` reading a `.vtr` file (v3+),
-the filter predicate is attached to the scan. The scan then applies up
-to three pruning strategies on its first `next_batch()` call, in
-priority order:
+A filter stays where it was written and still checks every row. In
+addition, the optimizer hands a copy of its predicate down to every scan
+it can reach, where the copy is used only to skip row groups. The copy
+passes through
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+[`select()`](https://gillescolling.com/vectra/reference/select.md),
+[`rename()`](https://gillescolling.com/vectra/reference/rename.md)
+(following renamed columns), other filters,
+[`arrange()`](https://gillescolling.com/vectra/reference/arrange.md),
+and into every input of
+[`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md)
+whose column types match. A condition on a column computed or
+overwritten by a
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) is
+dropped from the copy, which is safe because the filter above still
+evaluates it. The copy never passes a limit, top-n, window, aggregate or
+join, since removing rows before those would change the result.
+
+A `.vtr` scan applies up to three pruning strategies on its first batch:
 
 1.  **Hash index pushdown** (highest priority). If a `.vtri` sidecar
     index exists for the predicate column(s), the scan probes the index
@@ -533,49 +646,42 @@ priority order:
     columns are matched and probed as a single composite key. See the
     Hash indexes section below for details.
 
-2.  **Binary search on sorted columns**. If the `.vtr` file records that
-    a column is sorted and the predicate is a simple comparison (`==`,
+2.  **Binary search on sorted columns**. If a column’s values are sorted
+    across row groups and the predicate is a simple comparison (`==`,
     `<`, `<=`, `>`, `>=`) against a literal, the scan binary-searches
-    the row group stats to find the first and last row groups that could
-    contain matching rows. The scan range is narrowed to
-    `[first_rg, last_rg)`. For AND-combined predicates on the same
-    sorted column (e.g. `x >= 10 & x < 100`), both bounds are applied.
+    the row-group statistics for the first and last row groups that
+    could contain matching rows. For AND-combined predicates on the same
+    sorted column (e.g. `x >= 10 & x < 100`), both bounds are applied.
     For OR-combined predicates, the union of both ranges is used.
 
-3.  **Zone-map pruning** (applied per row group during iteration). Each
-    row group in a v3+ file stores per-column min/max statistics. Before
-    reading a row group’s data from disk, the scan evaluates the
-    pushed-down predicate against the row group’s stats. If the
-    predicate is provably false for the entire row group
-    (e.g. `filter(x > 100)` on a row group where max(x) = 50), that row
-    group is skipped entirely without touching the underlying bytes.
-    Zone-map pruning handles comparison operators on numeric and string
-    columns, AND/OR combinations, and `%in%` predicates (checking
-    whether any set value falls within the row group’s min/max range).
-    String zone maps use a packed 8-byte prefix representation for
-    efficient comparison.
+3.  **Zone-map pruning** (per row group). Each row group stores
+    per-column min/max and null counts. Before reading a row group, the
+    scan evaluates the predicate against these statistics and skips the
+    row group when no row can match (e.g. `filter(x > 100)` where the
+    row group’s max(x) is 50). This covers comparisons, AND/OR
+    combinations and `%in%` on numeric, logical and date columns. A
+    comparison on a column that is entirely `NA` in a row group also
+    skips it. String columns carry only the null count, so string
+    predicates prune through a hash index rather than zone maps.
 
-These three strategies compose. The scan first applies hash index and
-binary search to narrow the set of candidate row groups, then checks
-zone-map stats on each candidate before reading data. In
-[`explain()`](https://gillescolling.com/vectra/reference/explain.md)
-output, predicate pushdown appears as `predicate pushdown` and
-`v3 stats` annotations on the ScanNode.
+These strategies compose: hash index and binary search narrow the
+candidate row groups, then zone maps are checked on each candidate
+before its bytes are read. A Parquet scan uses the same zone-map check
+against the min/max and null counts in the Parquet footer.
 
 ### Column pruning
 
-The optimizer walks the plan tree top-down and determines which columns
-each node actually needs from its child. The required column set at each
-node is the union of: columns referenced in the node’s own expressions
-(filter predicates, mutate expressions, aggregation functions), columns
-passed through to the parent, and join key columns. At scan nodes,
-unneeded columns are excluded from disk reads by setting a column mask.
-For a 100-column `.vtr` file where only 3 columns are needed, this means
-97 columns are never deserialized, never decompressed, and never
-decoded. This is visible in
+The optimizer walks the plan top-down and determines which columns each
+node needs from its child: the columns referenced in its own expressions
+(filter predicates, mutate expressions, aggregation inputs, join keys)
+plus the columns its parent needs. A
+[`mutate()`](https://gillescolling.com/vectra/reference/mutate.md) drops
+the passed-through columns nothing above it uses, so pruning continues
+below it. At scan nodes, unneeded columns are never read, decompressed
+or decoded. For a 100-column `.vtr` file where 3 columns are needed,
+this shows in
 [`explain()`](https://gillescolling.com/vectra/reference/explain.md) as
-`3/100 cols (pruned)`. Column pruning applies to all `.vtr` scans
-regardless of format version.
+`3/100 cols (pruned)`.
 
 ### Hidden mutate insertion
 
@@ -601,11 +707,16 @@ prints the optimized plan tree without executing it. The output shows:
 - Node types in execution order (leaf to root)
 
 - Per-node annotations: streaming/materializing, column pruning,
-  predicate pushdown, v3 stats, hidden mutate
+  predicate pushdown, row-group statistics (`tdc stats`), a hash index
+  when one will be used, hidden mutate
 
 - Grouping columns if present
 
 - Output schema (column names and types)
+
+- For an offloaded node or partition (see
+  [`offload()`](https://gillescolling.com/vectra/reference/offload.md)),
+  its cost grade
 
 ``` r
 
@@ -617,7 +728,7 @@ tbl("data.vtr") |>
 #>
 #> ProjectNode [streaming]
 #>   FilterNode [streaming]
-#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]
+#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, tdc stats]
 #>
 #> Output columns (2):
 #>   id <int64>
@@ -666,9 +777,10 @@ named in any order.
 
 The `.vtri` format is a sorted array of (key hash, row group) entries.
 One layout covers both cases: a header with the indexed column indices,
-a case-insensitive flag, and the row and row-group counts of the store
-at build time, followed by the entries in ascending hash order and a
-directory giving the first entry for each range of leading hash bits.
+a case-insensitive flag, and the row count, row-group count and
+fingerprint of the store at build time, followed by the entries in
+ascending hash order and a directory giving the first entry for each
+range of leading hash bits.
 
 Sorting the entries rather than chaining them is what lets an index be
 built in one forward pass through a fixed memory budget, since a chained
@@ -681,12 +793,20 @@ folds ASCII uppercase to lowercase before hashing. A composite key
 combines the per-column FNV-1a hashes by XOR and multiplication with the
 FNV prime, giving one 64-bit hash per entry.
 
-The stored row and row-group counts are what make an index safe to leave
-on disk. `vtri_open()` compares them with the store being queried and
-reports no index when they disagree, so an index that no longer
-describes its store is ignored rather than used to prune row groups that
-have moved. Formats written before 0.11.8 lack the counts and read as
-absent;
+The stored stamp is what makes an index safe to leave on disk.
+`vtri_open()` compares it with the store being queried and reports no
+index when any part disagrees, so an index that no longer describes its
+store is ignored rather than used to prune row groups that have moved or
+now hold other keys. The counts catch an append; the fingerprint catches
+a store replaced by another of the same shape, whether by
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md),
+a download or a rename. It digests the store’s row-group index together
+with a digest of the store’s bytes, which the writers compute as they
+write and record in a 24-byte trailer after the container, so checking
+it costs the store’s metadata rather than its data. A store written
+before 0.12.4 has no trailer, and its fingerprint covers its layout
+only. Index formats written before 0.12.4 lack the fingerprint and read
+as absent;
 [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
 rebuilds them.
 
@@ -707,16 +827,17 @@ and zone-map checks.
 
 ### Performance characteristics
 
-A probe is a hash computation plus one chain walk, repeated per query
-key (once for `==`, n times for `%in%`). Opening the index reads the
-whole sidecar into memory once per
-[`tbl()`](https://gillescolling.com/vectra/reference/tbl.md), and that
-read is what the entry-per-distinct-key layout keeps small: an index
-over a column of few distinct values stays the same size as the store
-grows, so the cost of a lookup does not follow the size of the store.
-For tables with many row groups and selective equality predicates, index
-pushdown can reduce I/O by orders of magnitude compared to zone-map
-pruning alone.
+A probe is a hash computation, one directory lookup, and a binary search
+over the few entries that directory slot covers (the directory holds one
+slot per four entries, up to 2^22 slots), repeated per query key (once
+for `==`, n times for `%in%`). A sidecar of up to 4 MB is read into
+memory when the scan opens it; a larger one is memory-mapped read-only
+and probed in place, so opening it does not read the whole file. An
+index over a column of few distinct values stays the same size as the
+store grows, so the cost of a lookup does not follow the size of the
+store. For tables with many row groups and selective equality
+predicates, index pushdown can reduce I/O by orders of magnitude
+compared to zone-map pruning alone.
 
 ## Materialized blocks
 
@@ -807,14 +928,18 @@ support OpenMP.
 | [`filter()`](https://gillescolling.com/vectra/reference/filter.md) (selection vector build) | 32,768 rows | parallel prefix sum | Two-phase: count matches per thread, then write at offsets |
 | [`grepl()`](https://rdrr.io/r/base/grep.html) with regex | 1,000 rows | `dynamic, 64` | Per-thread regex compilation for thread safety |
 | `levenshtein()`, `dl_dist()`, `jaro_winkler()` | 1,000 rows | `dynamic, 64` | Fuzzy string distance in mutate expressions |
-| Sort (merge sort) | 32,768 rows | `task` | Recursive task spawning for parallel merge sort |
-| Sort (key extraction) | 32,768 rows | `static` | Parallel extraction of sort keys into index arrays |
+| Sort (merge sort) | 32,768 rows | `task` | Recursive task spawning for parallel merge sort; a single numeric key uses a radix sort instead |
+| Sort (emit gather) | 32,768 rows x columns | `static` | Fixed-width columns of each emitted batch gathered in one parallel loop |
 | Join (build-side hashing) | 32,768 rows | `static` | Parallel hash computation for build-side keys |
 | Join (probe-side hashing) | 32,768 rows | `static` | Parallel hash computation for probe-side keys |
+| Grouped aggregation (key hashing) | 32,768 rows | `static` | Hash and shard assignment per row |
+| Grouped aggregation (shards) | 32,768 rows | `dynamic, 1` | One hash-table shard per thread |
 | Window (data copy) | 32,768 rows | `static` | Parallel copy of partition data |
 | Window (group dispatch) | 64 groups | `dynamic` | Parallel window computation across groups |
 | Collect (column append) | 8 columns | `static` | Parallel column-by-column append to R vectors |
-| Zone-map stat computation | 32,768 rows | `static` with `reduction` | Parallel min/max scan during write |
+| [`collect()`](https://gillescolling.com/vectra/reference/collect.md) of a plain `.vtr` scan | always | `dynamic` | Row groups decoded in parallel straight into the R vectors |
+| `write_vtr(compress = "small")` | 32,768 values | `dynamic` | Candidate encodings tried in parallel |
+| Parquet read (columns) | 32,768 values | `dynamic, 1` | Column chunks of a row group decoded in parallel |
 | Block fuzzy lookup | always (if \> 0 keys) | `dynamic, 1` per key / `dynamic, 16` per row | Parallelized by query key and by block row |
 | Literal fill (broadcast) | 32,768 rows | `static` | Parallel fill for constant columns |
 
@@ -843,19 +968,27 @@ at its computed offset.
 - **distinct with .keep_all**: Falls back to R when `.keep_all = TRUE`
   with a column subset.
 
-- **Predicate pushdown is .vtr only**: CSV, SQLite, and TIFF scans do
-  not benefit from predicate pushdown, column pruning, or hash index
-  acceleration.
+- **Predicate pushdown covers .vtr and Parquet only**: CSV, SQLite,
+  TIFF, FASTA/FASTQ and BED scans do not benefit from predicate
+  pushdown, column pruning, or hash index acceleration. Parquet scans
+  get column pruning and row-group pruning from footer statistics, but
+  no hash indexes.
+
+- **Joins are not rewritten by the optimizer**: a join reads every
+  column of both inputs, and filters above a join are not pushed into
+  its inputs. Filter and select before the join to limit what it reads.
 
 - **No SIMD**: Arithmetic and comparison operations use scalar loops.
   The compiler may auto-vectorize some patterns, but there are no
   explicit SIMD intrinsics.
 
-- **OpenMP availability varies**: On macOS, R ships without OpenMP by
-  default. Users must install `libomp` (e.g. via Homebrew) and configure
-  the compiler flags. On Windows (rtools) and Linux, OpenMP is typically
-  available out of the box. When OpenMP is not available, all operations
-  run single-threaded with no functional difference.
+- **OpenMP availability varies**: when vectra is built from source,
+  `configure` compiles, loads and runs a small OpenMP test for each
+  candidate set of compiler flags and uses the first that works. On
+  macOS it tries the OpenMP runtime that CRAN’s R ships in `R_HOME/lib`
+  first, then a Homebrew `libomp`. If none works, vectra is built
+  single-threaded, which changes speed but not results. On Windows
+  (Rtools) and Linux, OpenMP is typically available out of the box.
 
 ## Fallback behavior
 

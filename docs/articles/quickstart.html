@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-08-03</h4>
+            <h4 data-toc-skip class="date">2026-10-01</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/quickstart.Rmd" class="external-link"><code>vignettes/quickstart.Rmd</code></a></small>
       <div class="d-none name"><code>quickstart.Rmd</code></div>
@@ -575,13 +575,7 @@ where predicate pushdown applies.</p>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   mpg &lt;double&gt;</span></span>
 <span><span class="co">#&gt;   cyl &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   hp &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   hp &lt;double&gt;</span></span></code></pre></div>
 <p>The ProjectNode prunes columns before the data reaches R. The
 FilterNode sits below it, and the ScanNode reads from disk. When a hash
 index exists on the filter column, the scan node probes the
@@ -623,13 +617,19 @@ rows runs at C speed regardless of expression complexity.</p>
 <span><span class="co">#&gt; 5 18.7 7.950193 175 3.440  50.87209</span></span>
 <span><span class="co">#&gt; 6 18.1 7.695106 105 3.460  30.34682</span></span></code></pre></div>
 <p>Math functions are evaluated natively in C: <code><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">abs()</a></code>,
-<code><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">sqrt()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log2()</a></code>,
-<code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log10()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">exp()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">floor()</a></code>,
-<code><a href="https://rdrr.io/r/base/Round.html" class="external-link">ceiling()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">round()</a></code>, <code><a href="https://rdrr.io/r/base/sign.html" class="external-link">sign()</a></code>,
-<code><a href="https://rdrr.io/r/base/Round.html" class="external-link">trunc()</a></code>. For element-wise binary min/max,
-<code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin()</a></code> and <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax()</a></code> take two arguments (columns
-or literals) and return the smaller or larger of each pair. These
-compose with arithmetic to build clamping expressions.</p>
+<code><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">sqrt()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">exp()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">expm1()</a></code>,
+<code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log1p()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log2()</a></code>,
+<code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log10()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">floor()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">ceiling()</a></code>,
+<code><a href="https://rdrr.io/r/base/Round.html" class="external-link">round()</a></code>, <code><a href="https://rdrr.io/r/base/sign.html" class="external-link">sign()</a></code>, <code><a href="https://rdrr.io/r/base/Round.html" class="external-link">trunc()</a></code>, the
+trigonometric <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">sin()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">cos()</a></code>,
+<code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">tan()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">asin()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">acos()</a></code>,
+<code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">atan()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">atan2()</a></code>, the hyperbolic
+<code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">sinh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">cosh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">tanh()</a></code>,
+<code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">asinh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">acosh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">atanh()</a></code>, and
+powers with <code>^</code>. For element-wise min/max,
+<code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin()</a></code> and <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax()</a></code> take two or more arguments
+(columns or literals) and return the smallest or largest of each row.
+These compose with arithmetic to build clamping expressions.</p>
 <div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
@@ -1071,10 +1071,10 @@ equal sort keys preserve their original order.</p>
 <span><span class="co">#&gt; 7 24.4   4  62</span></span>
 <span><span class="co">#&gt; 8 22.8   4  93</span></span></code></pre></div>
 <p>Under the hood, <code><a href="../reference/arrange.html">arrange()</a></code> uses an external merge sort
-with a 1 GB memory budget. When data exceeds that limit, sorted runs
-spill to temporary <code>.vtr</code> files and merge via a k-way
-min-heap. NAs sort last in ascending order and first in descending
-order.</p>
+bounded by the memory budget (<code><a href="../reference/vectra_mem.html">vectra_mem()</a></code>). When data
+exceeds it, sorted runs spill to temporary <code>.vtr</code> files and
+merge via a k-way min-heap. <code>NA</code>s sort last in both ascending
+and descending order.</p>
 <p><code><a href="../reference/slice_head.html">slice_head()</a></code> and <code><a href="../reference/slice_head.html">slice_tail()</a></code> return the
 first or last <code>n</code> rows. <code><a href="../reference/slice_head.html">slice_head()</a></code> is
 streaming (it creates a LimitNode that stops pulling after
@@ -1973,13 +1973,7 @@ output column schema at each level.</p>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   mpg &lt;double&gt;</span></span>
 <span><span class="co">#&gt;   cyl &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   hp &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   hp &lt;double&gt;</span></span></code></pre></div>
 <p>Several things to look for in the plan:</p>
 <p><strong>Streaming vs. materializing.</strong> FilterNode and
 ProjectNode are streaming: they process one batch at a time in constant
@@ -2058,7 +2052,7 @@ families this tour samples.</p></li>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer>

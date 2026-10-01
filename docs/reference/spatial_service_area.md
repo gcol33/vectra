@@ -109,8 +109,8 @@ network. The sf package is an optional dependency (Suggests).
 to build the graph,
 [`spatial_route()`](https://gillescolling.com/vectra/reference/spatial_route.md)
 for shortest paths,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -128,6 +128,14 @@ write_vtr(data.frame(id = 1L, x = 0, y = 0), f)
 tbl(f) |>
   spatial_service_area(net, cost = c(1, 2), output = "lines",
                        coords = c("x", "y")) |>
-  collect_sf()
+  collect()
+#> Simple feature collection with 2 features and 4 fields
+#> Geometry type: MULTILINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
+#> CRS:           NA
+#>   id x y band                       geometry
+#> 1  1 0 0    1 MULTILINESTRING ((0 0, 1 0)...
+#> 2  1 0 0    2 MULTILINESTRING ((0 0, 1 0)...
 unlink(f)
 ```

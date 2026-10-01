@@ -6,7 +6,9 @@ layout; the writer supports `"none"`, `"deflate"`, and `"lzw"`
 compression. LZW also applies horizontal differencing (Predictor 2) for
 integer pixel types, which dramatically improves compression on smooth
 raster data and matches the layout most production GIS tools produce by
-default. Tiled and BigTIFF output land in a follow-up.
+default.
+[`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md)
+reads all three back.
 
 ## Usage
 

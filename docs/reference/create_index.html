@@ -26,7 +26,7 @@ hold a key without reading any column data."><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -121,23 +121,37 @@ memory budget (<code><a href="vectra_mem.html">vectra_mem()</a></code>) and writ
 a store larger than memory costs disk rather than RAM.</p>
 <p><code><a href="append_vtr.html">append_vtr()</a></code> leaves the existing row groups where they are, so an index
 stays valid across an append: it takes in the row groups just appended and
-keeps the rest, reading only the new data rather than the whole store.</p>
-<p>An index left behind by any other change of the store is reported as absent
-by <code><a href="has_index.html">has_index()</a></code> and ignored by queries rather than pruning row groups that
-may now hold matching rows. The same goes for one that cannot be read at all:
-an index only ever saves a scan work, so an unusable one costs speed and
-never rows. Indexes written by vectra 0.11.8 and earlier are superseded and
-read as absent; call <code>create_index()</code> again to rebuild them.</p>
+keeps the rest, reading only the new data rather than the whole store.
+<code><a href="write_vtr.html">write_vtr()</a></code> replaces a store, and removes the indexes of the store it
+replaces.</p>
+<p>An index records the store it was built on, by the store's row and row-group
+counts and a fingerprint of its bytes. An index left behind by any other
+change of the store – including a store replaced outside vectra by one of
+the same shape, such as a download or a file renamed over the old path – is
+reported as absent by <code><a href="has_index.html">has_index()</a></code> and ignored by queries rather than
+pruning row groups that may now hold matching rows. The same goes for one
+that cannot be read at all: an index only ever saves a scan work, so an
+unusable one costs speed and never rows. Indexes written by vectra 0.12.3
+and earlier are superseded and read as absent; call <code>create_index()</code> again
+to rebuild them.</p>
+<p>A store written by vectra 0.12.3 or earlier carries no digest of its bytes,
+so its fingerprint covers its layout (row-group sizes, block sizes and
+column statistics) only. Such a store cannot be told apart from a
+replacement whose blocks agree with it on all of those; rewriting it with
+<code><a href="write_vtr.html">write_vtr()</a></code> gives it a digest.</p>
     </div>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
-<span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="va">letters</span>, val <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">26</span>, stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span>
-<span><span class="fu">create_index</span><span class="op">(</span><span class="va">f</span>, <span class="st">"id"</span><span class="op">)</span></span>
-<span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="filter.html">filter</a></span><span class="op">(</span><span class="va">id</span> <span class="op">==</span> <span class="st">"m"</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">f</span>, <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">f</span>, <span class="st">".id.vtri"</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
-<span></span></code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="va">letters</span>, val <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">26</span>, stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu">create_index</span><span class="op">(</span><span class="va">f</span>, <span class="st">"id"</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="filter.html">filter</a></span><span class="op">(</span><span class="va">id</span> <span class="op">==</span> <span class="st">"m"</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   id val</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1  m  13</span>
+<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">f</span>, <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">f</span>, <span class="st">".id.vtri"</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-in"><span></span></span>
+</code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>
@@ -148,7 +162,7 @@ read as absent; call <code>create_index()</code> again to rebuild them.</p>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer></div>

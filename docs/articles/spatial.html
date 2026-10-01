@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-08-03</h4>
+            <h4 data-toc-skip class="date">2026-10-01</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/spatial.Rmd" class="external-link"><code>vignettes/spatial.Rmd</code></a></small>
       <div class="d-none name"><code>spatial.Rmd</code></div>
@@ -266,12 +266,15 @@ on the batch in front of it, and the transformed batch spills back to
 disk as a fresh lazy node. Peak memory is one batch and whatever small
 resident layer the step needs, so a billion-row layer flows past a fixed
 memory budget.</p>
-<p>Topology stays with <a href="https://r-spatial.github.io/sf/" class="external-link">sf</a>
-and <a href="https://rspatial.github.io/terra/" class="external-link">terra</a>: vectra adds
-no GEOS or GDAL link. Geometry rides through the engine as hex-encoded
-WKB in an ordinary string column, and the coordinate reference system is
-carried on the node. What vectra contributes is the streaming envelope
-around the operations a desktop GIS keeps resident.</p>
+<p>Geometry rides through the engine as hex-encoded WKB in an ordinary
+string column, and the coordinate reference system is carried on the
+node. The recognised geometry operations run on the GEOS C API, which
+vectra links through the <a href="https://paleolimbot.github.io/libgeos/" class="external-link">libgeos</a> package,
+straight off that column; <a href="https://r-spatial.github.io/sf/" class="external-link">sf</a> handles the rest, and
+vectra has no GDAL link, so vector file formats and reprojection stay
+with sf and <a href="https://rspatial.github.io/terra/" class="external-link">terra</a>. What
+vectra contributes is the streaming envelope around the operations a
+desktop GIS keeps resident.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span></code></pre></div>
 </div>
@@ -606,7 +609,7 @@ arguments.</p></li>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer>

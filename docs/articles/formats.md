@@ -2,12 +2,17 @@
 
 ## Introduction
 
-vectra reads and writes five formats: its native `.vtr`, CSV, SQLite,
-Excel, and GeoTIFF. Each reader returns the same `vectra_node` object.
-Once a node exists, the engine treats it identically regardless of where
-the data came from. A filter on a CSV scan produces the same plan tree
-as a filter on a `.vtr` scan. The same verbs work, the same expressions
-evaluate, and
+vectra reads its native `.vtr`, Parquet, CSV, SQLite, Excel and GeoTIFF,
+and writes `.vtr`, CSV, SQLite and GeoTIFF. (Sequence and genome files
+have their own readers,
+[`tbl_fasta()`](https://gillescolling.com/vectra/reference/tbl_fasta.md),
+[`tbl_fastq()`](https://gillescolling.com/vectra/reference/tbl_fastq.md)
+and
+[`tbl_bed()`](https://gillescolling.com/vectra/reference/tbl_bed.md).)
+Each reader returns the same `vectra_node` object. Once a node exists,
+the engine treats it identically regardless of where the data came from.
+A filter on a CSV scan produces the same plan tree as a filter on a
+`.vtr` scan. The same verbs work, the same expressions evaluate, and
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 materializes an R data.frame either way.
 
@@ -107,7 +112,7 @@ When we call
 with a `vectra_node` input, the writer streams batches from the upstream
 plan and writes each batch as one row group. The full result never
 materializes in memory. For `data.frame` inputs, the data is written
-directly from R’s memory in a single row group.
+directly from R’s memory in row groups of 131,072 rows by default.
 
 The `batch_size` parameter on
 [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
@@ -297,6 +302,52 @@ tbl_sqlite(db, "v8_cars") |> collect()
 #> 13 15.8   8 351.0 264 4.22 3.170 14.50  0  1    5    4
 #> 14 15.0   8 301.0 335 3.54 3.570 14.60  0  1    5    8
 ```
+
+## Parquet
+
+[`tbl_parquet()`](https://gillescolling.com/vectra/reference/tbl_parquet.md)
+reads Parquet files with vectra’s own reader, so no arrow installation
+is needed. It takes one file, a vector of files, or a directory: a
+directory is read recursively, skipping files whose name starts with `_`
+or `.` (the `_SUCCESS` markers and checksum files Spark and Hive leave
+behind), so a partitioned dataset folder or a GBIF snapshot can be
+passed as is. All files must share the first file’s columns and types.
+
+``` r
+
+pq <- system.file("extdata", "example.parquet", package = "vectra")
+tbl_parquet(pq) |>
+  filter(dbh_cm > 60) |>
+  select(id, species, dbh_cm) |>
+  collect() |>
+  head()
+#>   id          species dbh_cm
+#> 1  8      Picea abies   61.1
+#> 2  9 Pinus sylvestris   68.4
+#> 3 17  Fagus sylvatica   66.8
+#> 4 25       Abies alba   65.2
+#> 5 33      Picea abies   63.6
+#> 6 41    Quercus robur   62.0
+```
+
+The scan reads only the columns a query uses, and a filter skips any row
+group whose min/max statistics in the Parquet footer show it cannot
+match, the same check a `.vtr` scan makes against its zone maps.
+[`nrow()`](https://rdrr.io/r/base/nrow.html) answers from the footer
+without reading data.
+
+The reader covers data pages v1 and v2, the dictionary, run-length,
+delta and byte-stream-split encodings, and `SNAPPY`, `GZIP`, `ZSTD` and
+`LZ4` compression; `BROTLI` and `LZO` columns raise an error naming the
+column. Struct fields are flattened into one column each
+(`address.city`), and a one-level list or map column is read as text
+with its elements joined by `list_sep`.
+[`?tbl_parquet`](https://gillescolling.com/vectra/reference/tbl_parquet.md)
+lists how each Parquet type maps to an R type.
+
+Parquet is read-only in vectra. To query the same data repeatedly,
+convert it once with `tbl_parquet(path) |> write_vtr(f)`, which streams
+one row group at a time.
 
 ## Excel
 
@@ -603,9 +654,9 @@ f_default <- tempfile(fileext = ".vtr")
 tbl_csv(csv) |> write_vtr(f_default)
 
 cat("Small batches:", file.size(f_small), "bytes\n")
-#> Small batches: 8251 bytes
+#> Small batches: 8428 bytes
 cat("Default:      ", file.size(f_default), "bytes\n")
-#> Default:       8251 bytes
+#> Default:       8428 bytes
 ```
 
 For `tbl_tiff`, the default batch size is 256 raster rows, reflecting
@@ -626,18 +677,18 @@ depends on the workload: `.vtr` for repeated analytical queries, CSV for
 interchange, SQLite for multi-tool access, Excel for one-off imports,
 GeoTIFF for raster data.
 
-| Feature | .vtr | CSV | SQLite | Excel | GeoTIFF |
-|:---|:---|:---|:---|:---|:---|
-| Streaming read | yes | yes | yes | no | yes |
-| Streaming write | yes | yes | yes | – | yes |
-| Predicate pushdown | yes | no | no | no | no |
-| Column pruning | yes | no | no | no | no |
-| Zone-map skip | yes | no | no | no | no |
-| Hash index support | yes | no | no | no | no |
-| Compression | tdc (dict/delta + LZ) | gzip (read) | – | – | deflate |
-| Size on disk | small | large | medium | medium | variable |
-| Random access | by row group | no | by rowid | no | by raster row |
-| External tool support | vectra only | universal | wide | wide | GIS tools |
+| Feature | .vtr | Parquet | CSV | SQLite | Excel | GeoTIFF |
+|:---|:---|:---|:---|:---|:---|:---|
+| Streaming read | yes | yes | yes | yes | no | yes |
+| Streaming write | yes | – | yes | yes | – | yes |
+| Predicate pushdown | yes | yes | no | no | no | no |
+| Column pruning | yes | yes | no | no | no | no |
+| Zone-map skip | yes | yes (footer stats) | no | no | no | no |
+| Hash index support | yes | no | no | no | no | no |
+| Compression | tdc (dict/delta + LZ) | snappy, gzip, zstd, lz4 (read) | gzip (read) | – | – | deflate, LZW |
+| Size on disk | small | small | large | medium | medium | variable |
+| Random access | by row group | by row group | no | by rowid | no | by raster row |
+| External tool support | vectra only | wide | universal | wide | wide | GIS tools |
 
 `.vtr` wins on query performance because it is the only format where the
 scanner can skip data before reading it. Zone maps, column pruning, and

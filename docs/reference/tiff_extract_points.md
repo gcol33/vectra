@@ -49,9 +49,15 @@ write_tiff(df, f)
 # Sample at specific locations via data.frame
 pts <- data.frame(x = c(2, 3), y = c(1, 2))
 tiff_extract_points(f, pts)
+#>   x y band1
+#> 1 2 1     2
+#> 2 3 2     7
 
 # Or pass x and y separately
 tiff_extract_points(f, x = c(2, 3), y = c(1, 2))
+#>   x y band1
+#> 1 2 1     2
+#> 2 3 2     7
 unlink(f)
 # }
 ```

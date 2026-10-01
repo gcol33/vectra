@@ -193,7 +193,7 @@ spatial_overlay(
 A `vectra_node` over the exploded overlay, backed by temporary `.vtr`
 spills removed when the node is garbage-collected, carrying the CRS of
 `x` for
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 For a self-union it is one row per piece per covering polygon; for a
 two-layer overlay one row per piece per covering `x`-record / `y`-record
 pair, with the columns of both layers.
@@ -206,7 +206,7 @@ and bounded in memory), then the exploded pieces are streamed to a
 `.vtr` and handed back as a lazy node. Geometry rides through the engine
 as hex-encoded WKB in a string column; the CRS is carried on the node
 for
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 The overlay runs on a fixed-precision model: coordinates are snapped to
 a grid derived from their own magnitude so the pieces come out disjoint
@@ -230,8 +230,8 @@ self-unions `x` and `how` is ignored.
 /
 [`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md)
 to resolve each piece to one winner,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -246,13 +246,34 @@ polys <- sf::st_sf(year = c(1990L, 2010L),
 first <- spatial_overlay(polys) |>
   group_by(piece_id) |>
   slice_min(year, n = 1, with_ties = FALSE) |>
-  collect_sf()
+  collect()
 first
+#> Simple feature collection with 3 features and 2 fields
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 1
+#> CRS:           NA
+#>   year piece_id                       geometry
+#> 1 1990        1 POLYGON ((0 1, 1 1, 1 0, 0 ...
+#> 2 1990        2 POLYGON ((1 1, 2 1, 2 0, 1 ...
+#> 3 2010        3 POLYGON ((2 0, 2 1, 3 1, 3 ...
 
 # Two-layer overlay: intersect the squares with a zone layer, keeping both
 # sets of attributes on each overlapping piece.
 zones <- sf::st_sf(zone = c("A", "B"),
                    geometry = sf::st_sfc(sq(0, 1.5), sq(1.5, 3)))
-inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+inter <- spatial_overlay(polys, zones, how = "intersection") |> collect()
 inter
+#> Simple feature collection with 6 features and 3 fields
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 1
+#> CRS:           NA
+#>   year zone piece_id                       geometry
+#> 1 1990    A        1 POLYGON ((0 1, 1 1, 1 0, 0 ...
+#> 2 1990    A        2 POLYGON ((1 1, 1.5 1, 1.5 0...
+#> 3 2010    A        2 POLYGON ((1 1, 1.5 1, 1.5 0...
+#> 4 1990    B        3 POLYGON ((1.5 1, 2 1, 2 0, ...
+#> 5 2010    B        3 POLYGON ((1.5 1, 2 1, 2 0, ...
+#> 6 2010    B        4 POLYGON ((2 0, 2 1, 3 1, 3 ...
 ```

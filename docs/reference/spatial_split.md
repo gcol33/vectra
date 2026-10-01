@@ -95,8 +95,8 @@ The sf package is an optional dependency (Suggests).
 to cut against a mask without dividing into pieces,
 [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
 to node two polygon layers into a partition,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -109,6 +109,14 @@ write_vtr(data.frame(
 ), f)
 
 # Split the square into two halves along the blade.
-tbl(f) |> spatial_split(blade) |> collect_sf()
+tbl(f) |> spatial_split(blade) |> collect()
+#> Simple feature collection with 2 features and 1 field
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 4 ymax: 4
+#> CRS:           NA
+#>   id                       geometry
+#> 1  1 POLYGON ((2 0, 0 0, 0 4, 2 ...
+#> 2  1 POLYGON ((2 4, 4 4, 4 0, 2 ...
 unlink(f)
 ```

@@ -33,5 +33,10 @@ A data.frame (not a lazy node).
 f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(g = c("a", "a", "b"), x = c(1, 2, 3)), f)
 tbl(f) |> group_by(g) |> reframe(range_x = range(x))
+#>   g range_x
+#> 1 a       1
+#> 2 a       2
+#> 3 b       3
+#> 4 b       3
 unlink(f)
 ```

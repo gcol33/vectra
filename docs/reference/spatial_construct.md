@@ -142,8 +142,8 @@ values.
 
 Geometry travels through the engine as hex-encoded WKB in a string
 column and the CRS is carried on the returned node; use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize. Topology is sf/GEOS throughout (an optional dependency,
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize. Topology is sf/GEOS throughout (an optional dependency,
 Suggests); some constructions need projected coordinates.
 
 ## See also
@@ -152,8 +152,8 @@ Suggests); some constructions need projected coordinates.
 to merge a group into one feature,
 [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
 for per-feature transforms,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize.
 
 ## Examples
 
@@ -169,6 +169,14 @@ write_vtr(data.frame(
 # One convex hull per band.
 tbl(f) |>
   spatial_construct("convex_hull", by = "band", crs = sf::st_crs(nc)) |>
-  collect_sf()
+  collect()
+#> Simple feature collection with 2 features and 1 field
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: -84.32385 ymin: 33.88199 xmax: -75.45698 ymax: 36.58965
+#> Geodetic CRS:  NAD27
+#>    band                       geometry
+#> 1 FALSE POLYGON ((-84.32385 34.9890...
+#> 2  TRUE POLYGON ((-82.88111 35.6735...
 unlink(f)
 ```

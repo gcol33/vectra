@@ -21,7 +21,7 @@ a grouped
 over a `vectra_node`. The geometry argument is the hex-WKB column (named
 `geometry` by convention). A function that returns a geometry produces
 another hex-WKB column; materialize it with
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 (point it at the column with `geom =`), or write it with
 [`write_tiff()`](https://gillescolling.com/vectra/reference/write_tiff.md)/[`sf::st_write()`](https://r-spatial.github.io/sf/reference/st_write.html).
 
@@ -123,8 +123,8 @@ yields `NA` for that row rather than an error.
 
 [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
 [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize a geometry result as `sf`;
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize a geometry result as `sf`;
 [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
 for an arbitrary per-feature sf transform;
 [`spatial_filter()`](https://gillescolling.com/vectra/reference/spatial_filter.md)
@@ -159,7 +159,7 @@ if (requireNamespace("sf", quietly = TRUE)) {
   tbl(f) |>
     mutate(geometry = st_centroid(geometry)) |>
     select(NAME, geometry) |>
-    collect_sf()
+    collect()
 
   unlink(f)
 }

@@ -120,5 +120,8 @@ write_vtr(qy, f)
 tbl(f) |>
   feature_knn(ref, percentage = 5) |>
   collect()
+#>   bio1 bio12 knn_distance
+#> 1   10   800     2.598861
+#> 2   20   400   285.890007
 unlink(f)
 ```

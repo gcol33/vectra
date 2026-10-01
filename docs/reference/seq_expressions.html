@@ -32,7 +32,7 @@ GC-content column; filter(seq_dist(seq, ref) &amp;lt;= 3) prunes the stream in C
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -173,25 +173,30 @@ families.</p></div>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">reads</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
-<span>  id  <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"r1"</span>, <span class="st">"r2"</span>, <span class="st">"r3"</span><span class="op">)</span>,</span>
-<span>  seq <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"ATGGCCATTGTA"</span>, <span class="st">"GGGCCCTTTAAA"</span>, <span class="st">"ATGTAA"</span><span class="op">)</span>,</span>
-<span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span>
-<span><span class="op">)</span></span>
-<span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
-<span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">reads</span>, <span class="va">f</span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="mutate.html">mutate</a></span><span class="op">(</span></span>
-<span>    len <span class="op">=</span> <span class="fu">seq_length</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span>
-<span>    gc  <span class="op">=</span> <span class="fu">seq_gc</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span>
-<span>    rc  <span class="op">=</span> <span class="fu">seq_revcomp</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span>
-<span>    aa  <span class="op">=</span> <span class="fu">seq_translate</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span>
-<span>    d   <span class="op">=</span> <span class="fu">seq_dist</span><span class="op">(</span><span class="va">seq</span>, <span class="st">"ATGGCCATTGTA"</span><span class="op">)</span></span>
-<span>  <span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">reads</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span></span>
+<span class="r-in"><span>  id  <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"r1"</span>, <span class="st">"r2"</span>, <span class="st">"r3"</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>  seq <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"ATGGCCATTGTA"</span>, <span class="st">"GGGCCCTTTAAA"</span>, <span class="st">"ATGTAA"</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span></span>
+<span class="r-in"><span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">reads</span>, <span class="va">f</span><span class="op">)</span></span></span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
+<span class="r-in"><span>  <span class="fu"><a href="mutate.html">mutate</a></span><span class="op">(</span></span></span>
+<span class="r-in"><span>    len <span class="op">=</span> <span class="fu">seq_length</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>    gc  <span class="op">=</span> <span class="fu">seq_gc</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>    rc  <span class="op">=</span> <span class="fu">seq_revcomp</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>    aa  <span class="op">=</span> <span class="fu">seq_translate</span><span class="op">(</span><span class="va">seq</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>    d   <span class="op">=</span> <span class="fu">seq_dist</span><span class="op">(</span><span class="va">seq</span>, <span class="st">"ATGGCCATTGTA"</span><span class="op">)</span></span></span>
+<span class="r-in"><span>  <span class="op">)</span> <span class="op">|&gt;</span></span></span>
+<span class="r-in"><span>  <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   id          seq len        gc           rc   aa d</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 r1 ATGGCCATTGTA  12 0.4166667 TACAATGGCCAT MAIV 0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2 r2 GGGCCCTTTAAA  12 0.5000000 TTTAAAGGGCCC GPFK 6</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3 r3       ATGTAA   6 0.1666667       TTACAT   M* 7</span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></span>
+</code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>
@@ -202,7 +207,7 @@ families.</p></div>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer></div>

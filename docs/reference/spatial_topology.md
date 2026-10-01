@@ -97,8 +97,8 @@ is an optional dependency (Suggests).
 to rebuild faces from arcs,
 [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
 to merge geometries by group,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -113,5 +113,15 @@ write_vtr(data.frame(
 
 # The shared edge appears once, tagged with both neighbours.
 tbl(f) |> spatial_topology(id = "id") |> collect()
+#> Simple feature collection with 4 features and 2 fields
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
+#> CRS:           NA
+#>   face1 face2                       geometry
+#> 1     a  <NA>          LINESTRING (0 0, 1 0)
+#> 2     a     b          LINESTRING (1 0, 1 1)
+#> 3     a  <NA>     LINESTRING (1 1, 0 1, 0 0)
+#> 4     b  <NA> LINESTRING (1 0, 2 0, 2 1, ...
 unlink(f)
 ```

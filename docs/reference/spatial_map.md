@@ -77,7 +77,7 @@ spatial_map(
 
 A `vectra_node` backed by temporary `.vtr` spills (removed when the node
 is garbage-collected), carrying the output CRS for
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Details
 
@@ -85,8 +85,8 @@ Geometry travels through the engine as hex-encoded WKB in an ordinary
 string column (vectra has no native geometry type), and the coordinate
 reference system is carried on the returned node rather than in the
 `.vtr` file. Use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize the result as an `sf` object, or
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize the result as an `sf` object, or
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
 get the underlying data.frame with the WKB string column.
 
@@ -97,8 +97,8 @@ streaming. The `sf` package is an optional dependency (Suggests).
 
 [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
 to join a streamed side against a resident `sf` object,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -114,6 +114,23 @@ write_vtr(data.frame(
 # Buffer every county centroid by 0.1 degree, streaming.
 buffered <- tbl(f) |>
   spatial_map(~ sf::st_buffer(.x, 0.1), crs = sf::st_crs(nc))
-collect_sf(buffered)
+collect(buffered)
+#> Simple feature collection with 100 features and 1 field
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: -84.05986 ymin: 34.07671 xmax: -75.8095 ymax: 36.49111
+#> Geodetic CRS:  NAD27
+#> First 10 features:
+#>           NAME                       geometry
+#> 1         Ashe POLYGON ((-81.49823 36.4313...
+#> 2    Alleghany POLYGON ((-81.12513 36.4911...
+#> 3        Surry POLYGON ((-80.68573 36.4125...
+#> 4    Currituck POLYGON ((-76.02719 36.4071...
+#> 5  Northampton POLYGON ((-77.41046 36.4223...
+#> 6     Hertford POLYGON ((-76.99472 36.3614...
+#> 7       Camden POLYGON ((-76.23402 36.4012...
+#> 8        Gates POLYGON ((-76.70446 36.4442...
+#> 9       Warren POLYGON ((-78.11042 36.3969...
+#> 10      Stokes POLYGON ((-80.23429 36.4004...
 unlink(f)
 ```

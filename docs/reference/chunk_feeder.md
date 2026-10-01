@@ -69,6 +69,13 @@ feed <- chunk_feeder(function() tbl(f) |> select(mpg, wt, hp))
 feed(reset = TRUE)       # rewind to the start of the stream
 first <- feed()          # first chunk as a data.frame
 head(first)
+#>    mpg    wt  hp
+#> 1 21.0 2.620 110
+#> 2 21.0 2.875 110
+#> 3 22.8 2.320  93
+#> 4 21.4 3.215 110
+#> 5 18.7 3.440 175
+#> 6 18.1 3.460 105
 
 # \donttest{
 # Out-of-core GLM: prepare once with offload(), then bigglm() replays it.
@@ -78,6 +85,8 @@ if (requireNamespace("biglm", quietly = TRUE)) {
                        family = gaussian())
   coef(fit)
 }
+#> (Intercept)          wt          hp 
+#> 37.22727012 -3.87783074 -0.03177295 
 # }
 unlink(f)
 ```

@@ -78,5 +78,8 @@ writeLines(c("chr1\t100\t200\tfeatA\t0\t+",
              "chr2\t500\t900\tfeatC\t0\t+"), f)
 node <- tbl_bed(f, quiet = TRUE)
 node |> filter(chrom == "chr1") |> collect()
+#>   chrom start end  name score strand
+#> 1  chr1   100 200 featA     0      +
+#> 2  chr1   150 400 featB     0      -
 unlink(f)
 ```

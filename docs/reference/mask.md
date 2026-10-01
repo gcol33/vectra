@@ -101,5 +101,6 @@ vec_write_raster(vals, f, dtype = "f64", extent = c(0, 0, 10, 10))
 disc <- sf::st_buffer(sf::st_sfc(sf::st_point(c(5, 5))), 3)
 inside <- mask(f, disc)
 sum(!is.na(inside))
+#> [1] 32
 unlink(f)
 ```

@@ -61,5 +61,8 @@ f <- tempfile(fileext = ".fasta")
 writeLines(c(">seq1 first", "ACGTACGT", ">seq2 second", "GGGGCCCC"), f)
 node <- tbl_fasta(f, quiet = TRUE)
 node |> mutate(gc = seq_gc(seq)) |> collect()
+#>     id   desc      seq  gc
+#> 1 seq1  first ACGTACGT 0.5
+#> 2 seq2 second GGGGCCCC 1.0
 unlink(f)
 ```

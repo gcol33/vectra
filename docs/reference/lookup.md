@@ -71,7 +71,14 @@ s <- vtr_schema(
 
 # Pull columns from any linked dimension
 result <- lookup(s, value, species$name, country$gdp)
+#> species: 1/4 unmatched keys (4)
+#> country: 1/4 unmatched keys (XX)
 collect(result)
+#>   value  name  gdp
+#> 1    10   Oak  400
+#> 2    11 Beech 3800
+#> 3    12  Pine 2700
+#> 4    13  <NA>   NA
 
 unlink(c(f_obs, f_sp, f_ct))
 # }

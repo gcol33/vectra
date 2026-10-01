@@ -29,5 +29,12 @@ A new `vectra_node` with only the computed columns.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> transmute(kpl = mpg * 0.425) |> collect() |> head()
+#>      kpl
+#> 1 8.9250
+#> 2 8.9250
+#> 3 9.6900
+#> 4 9.0950
+#> 5 7.9475
+#> 6 7.6925
 unlink(f)
 ```

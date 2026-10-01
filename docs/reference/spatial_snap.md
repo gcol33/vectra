@@ -88,8 +88,8 @@ carrying the input CRS.
 
 Geometry travels through the engine as hex-encoded WKB in a string
 column and the CRS is carried on the returned node; use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize. When `y` carries no CRS it inherits the stream's. The sf
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize. When `y` carries no CRS it inherits the stream's. The sf
 package is an optional dependency (Suggests).
 
 ## See also
@@ -98,7 +98,7 @@ package is an optional dependency (Suggests).
 to snap to a grid instead of a layer,
 [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md)
 for the resident-mask streaming pattern,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Examples
 
@@ -111,6 +111,13 @@ write_vtr(data.frame(
 ), f)
 
 # Pull the near-zero vertices down onto the reference line.
-tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect()
+#> Simple feature collection with 1 feature and 1 field
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 10 ymax: 0.1
+#> CRS:           NA
+#>   id                      geometry
+#> 1  1 LINESTRING (0 0, 5 0.1, 10 0)
 unlink(f)
 ```

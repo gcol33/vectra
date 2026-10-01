@@ -98,6 +98,12 @@ df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = c(100, 200, 300, 400))
 f <- tempfile(fileext = ".tif")
 write_tiff(df, f, compress = TRUE, pixel_type = "int16", crs = 4326L)
 tiff_crs(f)
+#> $epsg
+#> [1] 4326
+#> 
+#> $citation
+#> [1] NA
+#> 
 unlink(f)
 # }
 ```

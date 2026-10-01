@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-08-03</h4>
+            <h4 data-toc-skip class="date">2026-10-01</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/sdm.Rmd" class="external-link"><code>vignettes/sdm.Rmd</code></a></small>
       <div class="d-none name"><code>sdm.Rmd</code></div>
@@ -122,12 +122,12 @@ extraction:</p>
 <strong>Vector geometry.</strong> vectra streams the vector verbs
 (<code><a href="../reference/spatial_join.html">spatial_join()</a></code>, <code><a href="../reference/spatial_filter.html">spatial_filter()</a></code>,
 <code><a href="../reference/spatial_clip.html">spatial_clip()</a></code>, <code><a href="../reference/spatial_overlay.html">spatial_overlay()</a></code>,
-<code><a href="../reference/rasterize.html">rasterize()</a></code>, …) around <code>sf</code>, one batch at a time
-– see <a href="streaming-spatial.html">Streaming spatial operations</a>.
-It carries no geometry type of its own, so the topology comes from
-<code>sf</code> and GEOS. This article stays on the raster-sampling path
-and assumes any range-map intersection or study-region buffer is
-prepared before extraction.</li>
+<code><a href="../reference/rasterize.html">rasterize()</a></code>, …) one batch at a time – see <a href="streaming-spatial.html">Streaming spatial operations</a>. Geometry
+travels as WKB in a string column; the recognised operations run on the
+GEOS C API through the libgeos package, the rest through
+<code>sf</code>. This article stays on the raster-sampling path and
+assumes any range-map intersection or study-region buffer is prepared
+before extraction.</li>
 <li>
 <strong>Reprojection.</strong> vectra reads the coordinate reference
 system of a <code>GeoTIFF</code> with <code><a href="../reference/tiff_crs.html">tiff_crs()</a></code> but does
@@ -394,7 +394,7 @@ surface. ```</li>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer>

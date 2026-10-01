@@ -22,6 +22,7 @@ OpenMP, so a measure over a large layer uses every core.
 
 library(vectra)
 library(sf)
+#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## A layer to work on
@@ -220,7 +221,7 @@ tbl(f) |>
 
 A transform returns a geometry, so it builds a new WKB column.
 Materialise it with
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md),
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md),
 which reads the WKB column back into an `sf` object (point it at the
 column with `geom =`, and pass the `crs` the layer was stored in).
 
@@ -229,7 +230,7 @@ column with `geom =`, and pass the `crs` the layer was stored in).
 hulls <- tbl(f) |>
   mutate(geometry = st_convex_hull(geometry)) |>
   select(NAME, geometry) |>
-  collect_sf(crs = st_crs(nc))
+  collect(geom = "geometry", crs = st_crs(nc))
 
 hulls
 #> Simple feature collection with 100 features and 1 field
@@ -268,7 +269,7 @@ and reading the areas back:
 tbl(f) |>
   mutate(geometry = st_buffer(geometry, 0.1)) |>
   select(NAME, geometry) |>
-  collect_sf(crs = st_crs(nc)) |>
+  collect(geom = "geometry", crs = st_crs(nc)) |>
   st_area() |>
   head()
 #> Units: [m^2]
@@ -309,21 +310,16 @@ write_vtr(data.frame(
 tbl(g) |>
   mutate(area = st_area(geometry)) |>
   collect()
-#>   id
-#> 1  1
-#> 2  2
-#> 3  3
-#> 4  4
-#>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       geometry
-#> 1                                 0106000000010000000103000000010000001b000000000000a0415e54c000000060ff1d4240000000209d6254c000000080e122424000000080f76354c0000000200523424000000020846854c0000000a09b2b4240000000c06d6f54c00000000026324240000000a0b06c54c000000040633c4240000000a0fa6c54c0000000c07942424000000040e16a54c0000000a0794b424000000060195654c0000000a053494240000000203e5654c000000060da44424000000020c95454c000000040c0414240000000800d5454c000000080873d4240000000000a5154c000000060f637424000000060d25054c000000060d833424000000080674f54c0000000c090304240000000605a4f54c000000040c42e424000000060e95054c0000000e01b2d4240000000400e5554c000000040872e4240000000c0205754c000000060342d424000000080675754c000000000662b424000000020aa5654c0000000205d26424000000060845754c000000060ac23424000000040025a54c0000000a07c244240000000a0635a54c0000000a03622424000000020965b54c0000000405f21424000000020fc5c54c0000000c0aa1e4240000000a0415e54c000000060ff1d4240
-#> 2                                                                 0106000000010000000103000000010000001a000000000000605a4f54c000000040c42e424000000080674f54c0000000c09030424000000060d25054c000000060d8334240000000000a5154c000000060f6374240000000800d5454c000000080873d424000000020c95454c000000040c0414240000000203e5654c000000060da44424000000060195654c0000000a05349424000000000d23954c0000000e05848424000000040bf3b54c0000000c0c83f424000000040cf3d54c0000000e0cd3b424000000060c73c54c0000000001635424000000080353d54c0000000a0af334240000000c0963e54c0000000a018324240000000e0e63e54c000000040982f4240000000802d4054c000000060ef2e4240000000c0934154c0000000e05c30424000000040bd4254c0000000e08534424000000060644554c0000000a007374240000000e04e4654c0000000003037424000000080404754c00000000020364240000000c0474854c0000000009236424000000080db4854c0000000c074354240000000c0d04954c0000000e05d364240000000a04e4b54c0000000402d354240000000605a4f54c000000040c42e4240
-#> 3 0106000000010000000103000000010000001c000000000000c0341d54c0000000200c1f4240000000207d1e54c0000000e09a204240000000405c2254c0000000c0dc20424000000080e12254c0000000806923424000000040772354c0000000a0a323424000000060cc2554c0000000e056224240000000c0f42754c0000000e0f422424000000060b72a54c000000040801f424000000000962c54c0000000e029214240000000a0562e54c0000000a015214240000000e0ff2e54c0000000a0e3214240000000002a3054c0000000e00f214240000000000b3154c0000000e083214240000000c0173254c000000060d11f4240000000e0f53754c0000000e0ef1d424000000040bc3754c0000000408d29424000000020e43854c0000000e05d2d4240000000202c3b54c000000060b62f424000000080353d54c0000000a0af33424000000060c73c54c0000000001635424000000040cf3d54c0000000e0cd3b424000000040bf3b54c0000000c0c83f424000000000d23954c0000000e05848424000000060a43554c0000000c01e484240000000801b2754c0000000805547424000000020dc1b54c0000000a08846424000000020fe1c54c000000040e8204240000000c0341d54c0000000200c1f4240
-#> 4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         <NA>
-#>         area
-#> 1 0.11428350
-#> 2 0.06139976
-#> 3 0.14301628
-#> 4         NA
+#> Simple feature collection with 4 features and 2 fields (with 1 geometry empty)
+#> Geometry type: GEOMETRY
+#> Dimension:     XY
+#> Bounding box:  xmin: -81.74107 ymin: 36.23388 xmax: -80.43531 ymax: 36.58965
+#> CRS:           NA
+#>   id       area                       geometry
+#> 1  1 0.11428350 MULTIPOLYGON (((-81.47276 3...
+#> 2  2 0.06139976 MULTIPOLYGON (((-81.23989 3...
+#> 3  3 0.14301628 MULTIPOLYGON (((-80.45634 3...
+#> 4  4         NA       GEOMETRYCOLLECTION EMPTY
 ```
 
 ## Where this fits

@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-08-03</h4>
+            <h4 data-toc-skip class="date">2026-10-01</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/offload.Rmd" class="external-link"><code>vignettes/offload.Rmd</code></a></small>
       <div class="d-none name"><code>offload.Rmd</code></div>
@@ -225,9 +225,9 @@ identity on values and changes only the cost profile:</p>
 <span><span class="co">#&gt;   I/O cost         : O(n) to write, O(n) per replay</span></span>
 <span><span class="co">#&gt;   note             : temp spill, removed when the node is garbage-collected</span></span></code></pre></div>
 <p>Printing an offloaded node shows its cost grade, the label for what
-the stream costs. A plain node reports a streaming scan; an offloaded
-node reports the replay cache. <code><a href="../reference/explain.html">explain()</a></code> shows the same
-grade alongside the plan.</p>
+the stream costs: here the replay cache. <code><a href="../reference/explain.html">explain()</a></code> shows
+the same grade below the plan. A plain query node carries no grade; its
+plan tree already marks each node as streaming or materializing.</p>
 <p>Feeding the replay cache to a fit is the point.
 <code><a href="../reference/chunk_feeder.html">chunk_feeder()</a></code> accepts an offloaded node directly, so each
 reweighted pass reads the prepared columns from disk rather than
@@ -468,7 +468,7 @@ externally.</li>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer>

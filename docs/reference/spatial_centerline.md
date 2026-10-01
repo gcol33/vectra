@@ -95,8 +95,8 @@ data. The sf package is an optional dependency (Suggests).
 with `kind = "pole"` for the single deepest interior point,
 [`spatial_simplify()`](https://gillescolling.com/vectra/reference/spatial_simplify.md)
 to simplify a coverage,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -109,6 +109,17 @@ write_vtr(data.frame(
 ), f)
 
 # The centerline runs down the middle of the strip.
-tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
+#> Simple feature collection with 5 features and 0 fields
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0.125 ymin: 0.125 xmax: 9.875 ymax: 1.875
+#> CRS:           NA
+#>                         geometry
+#> 1 LINESTRING (1 1, 0.875 0.87...
+#> 2 LINESTRING (0.125 1.875, 0....
+#> 3 LINESTRING (1 1, 1.125 1, 1...
+#> 4 LINESTRING (9.875 1.875, 9....
+#> 5 LINESTRING (9 1, 9.125 0.87...
 unlink(f)
 ```

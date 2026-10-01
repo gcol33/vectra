@@ -146,10 +146,11 @@ s
 ```
 
 Printing an offloaded node shows its cost grade, the label for what the
-stream costs. A plain node reports a streaming scan; an offloaded node
-reports the replay cache.
+stream costs: here the replay cache.
 [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
-shows the same grade alongside the plan.
+shows the same grade below the plan. A plain query node carries no
+grade; its plan tree already marks each node as streaming or
+materializing.
 
 Feeding the replay cache to a fit is the point.
 [`chunk_feeder()`](https://gillescolling.com/vectra/reference/chunk_feeder.md)

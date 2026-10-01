@@ -33,7 +33,9 @@ Logical scalar: `TRUE` if the index exists and can be used.
 f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = letters, val = 1:26, stringsAsFactors = FALSE), f)
 has_index(f, "id")   # FALSE
+#> [1] FALSE
 create_index(f, "id")
 has_index(f, "id")   # TRUE
+#> [1] TRUE
 unlink(c(f, paste0(f, ".id.vtri")))
 ```

@@ -44,6 +44,17 @@ f2 <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(x = 1:3, y = 4:6), f1)
 write_vtr(data.frame(x = 7:9, y = 10:12), f2)
 bind_rows(tbl(f1), tbl(f2)) |> collect()
+#>   x  y
+#> 1 1  4
+#> 2 2  5
+#> 3 3  6
+#> 4 7 10
+#> 5 8 11
+#> 6 9 12
 bind_cols(tbl(f1), tbl(f2))
+#>   x y x  y
+#> 1 1 4 7 10
+#> 2 2 5 8 11
+#> 3 3 6 9 12
 unlink(c(f1, f2))
 ```

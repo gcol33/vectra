@@ -84,7 +84,8 @@ are matched to the store's rows by position.
 Existing row-group boundaries and column data are untouched, so any
 `.vtri` index built with
 [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
-over the original columns stays valid across a column append.
+over the original columns stays valid across a column append: it is
+restamped for the grown store without being rebuilt.
 
 ## Interruption
 

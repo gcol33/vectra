@@ -85,9 +85,25 @@ p <- offload(tbl(f), by = "cyl")
 # One fit per shard, returned as a named list keyed by cyl.
 fits <- group_map(p, function(d, cyl) coef(lm(mpg ~ wt, data = d)))
 fits
+#> $`[4, 4.5)`
+#> (Intercept)          wt 
+#>   39.571196   -5.647025 
+#> 
+#> $`[6, 6.5)`
+#> (Intercept)          wt 
+#>   28.408845   -2.780106 
+#> 
+#> $`[7.5, 8]`
+#> (Intercept)          wt 
+#>   23.868029   -2.192438 
+#> 
 
 # Per-shard summaries recombined into one table, key restored as a column.
 group_modify(p, function(d, cyl)
   data.frame(n = nrow(d), mean_mpg = mean(d$mpg)))
+#>        cyl  n mean_mpg
+#> 1 [4, 4.5) 11 26.66364
+#> 2 [6, 6.5)  7 19.74286
+#> 3 [7.5, 8] 14 15.10000
 unlink(f)
 ```

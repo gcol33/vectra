@@ -87,8 +87,8 @@ temporary `.vtr` spills and carrying the input CRS.
 
 Geometry travels through the engine as hex-encoded WKB in a string
 column and the CRS is carried on the returned node; use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize. On projected or unprojected planar data the cut runs
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize. On projected or unprojected planar data the cut runs
 natively on the GEOS C API straight off the hex-WKB column (the mask
 parsed once); geographic coordinates with spherical geometry on
 ([`sf::sf_use_s2()`](https://r-spatial.github.io/sf/reference/s2.html))
@@ -101,7 +101,7 @@ and coordinate-assembled (`coords`) input cut through sf instead. When
 to keep whole features by location without cutting them,
 [`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
 for per-feature transforms,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Examples
 
@@ -117,6 +117,16 @@ write_vtr(data.frame(
 
 # Clip every county polygon to the two-county mask, streaming.
 clipped <- tbl(f) |> spatial_clip(mask, crs = sf::st_crs(nc))
-collect_sf(clipped)
+collect(clipped)
+#> Simple feature collection with 4 features and 1 field
+#> Geometry type: GEOMETRY
+#> Dimension:     XY
+#> Bounding box:  xmin: -81.74107 ymin: 36.23436 xmax: -80.90344 ymax: 36.58965
+#> Geodetic CRS:  NAD27
+#>        NAME                       geometry
+#> 1      Ashe POLYGON ((-81.23989 36.3653...
+#> 2 Alleghany POLYGON ((-81.17667 36.4154...
+#> 3    Wilkes GEOMETRYCOLLECTION (MULTILI...
+#> 4   Watauga GEOMETRYCOLLECTION (MULTILI...
 unlink(f)
 ```

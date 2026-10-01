@@ -58,15 +58,28 @@ memory costs disk rather than RAM.
 leaves the existing row groups where they are, so an index stays valid
 across an append: it takes in the row groups just appended and keeps the
 rest, reading only the new data rather than the whole store.
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+replaces a store, and removes the indexes of the store it replaces.
 
-An index left behind by any other change of the store is reported as
-absent by
+An index records the store it was built on, by the store's row and
+row-group counts and a fingerprint of its bytes. An index left behind by
+any other change of the store – including a store replaced outside
+vectra by one of the same shape, such as a download or a file renamed
+over the old path – is reported as absent by
 [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
 and ignored by queries rather than pruning row groups that may now hold
 matching rows. The same goes for one that cannot be read at all: an
 index only ever saves a scan work, so an unusable one costs speed and
-never rows. Indexes written by vectra 0.11.8 and earlier are superseded
+never rows. Indexes written by vectra 0.12.3 and earlier are superseded
 and read as absent; call `create_index()` again to rebuild them.
+
+A store written by vectra 0.12.3 or earlier carries no digest of its
+bytes, so its fingerprint covers its layout (row-group sizes, block
+sizes and column statistics) only. Such a store cannot be told apart
+from a replacement whose blocks agree with it on all of those; rewriting
+it with
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+gives it a digest.
 
 ## Examples
 
@@ -75,5 +88,7 @@ f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = letters, val = 1:26, stringsAsFactors = FALSE), f)
 create_index(f, "id")
 tbl(f) |> filter(id == "m") |> collect()
+#>   id val
+#> 1  m  13
 unlink(c(f, paste0(f, ".id.vtri")))
 ```

@@ -16,6 +16,7 @@ solver parallelises over a batch of origins with OpenMP.
 
 library(vectra)
 library(sf)
+#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## Building a network
@@ -75,13 +76,13 @@ tbl(f) |>
 The cost is the five unit steps from the bottom-left corner to the
 top-right. With `geometry = TRUE` (the default) each row also carries
 the route line, ready to materialise with
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md):
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md):
 
 ``` r
 
 tbl(f) |>
   spatial_route(net, to = dest, coords = c("x", "y")) |>
-  collect_sf()
+  collect()
 #> Simple feature collection with 1 feature and 5 fields
 #> Geometry type: LINESTRING
 #> Dimension:     XY
@@ -131,7 +132,7 @@ convex hull as a service-area polygon.
 tbl(f) |>
   spatial_service_area(net, cost = c(1, 2), output = "nodes",
                        coords = c("x", "y")) |>
-  collect_sf()
+  collect()
 #> Simple feature collection with 2 features and 4 fields
 #> Geometry type: MULTIPOINT
 #> Dimension:     XY
@@ -152,7 +153,7 @@ catchment:
 tbl(f) |>
   spatial_service_area(net, cost = 2, output = "polygon",
                        coords = c("x", "y")) |>
-  collect_sf() |>
+  collect() |>
   st_area()
 #> [1] 2
 ```

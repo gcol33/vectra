@@ -35,7 +35,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-08-03</h4>
+            <h4 data-toc-skip class="date">2026-10-01</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/indexing.Rmd" class="external-link"><code>vignettes/indexing.Rmd</code></a></small>
       <div class="d-none name"><code>indexing.Rmd</code></div>
@@ -176,16 +176,14 @@ group is uniformly one value.</p>
 <p>Not all column types benefit equally. Numeric columns with natural
 ordering produce the tightest zone maps: timestamps that increase over
 time, sensor readings that cluster by location, sequential IDs. String
-columns can also prune well if the values have a predictable
-lexicographic distribution (e.g., ISO country codes or zero-padded
-identifiers like <code>"site_042"</code>), but free-text strings with
-arbitrary prefixes tend to span the full alphabet in every row group,
-making the min/max bounds too wide to exclude anything.</p>
+columns store only a null count per row group, no min/max, so a zone map
+can skip a row group for a string predicate only when the column is
+entirely <code>NA</code> there. Equality lookups on strings are what
+hash indexes (below) are for.</p>
 <p>This works for numeric comparisons: <code>&gt;</code>,
 <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code>,
-<code>==</code>, <code>!=</code>, and combinations that define a range.
-It also works for string columns where lexicographic ordering makes the
-min/max bounds meaningful.</p>
+<code>==</code>, <code>!=</code>, and combinations that define a
+range.</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">value</span> <span class="op">&gt;</span> <span class="fl">95</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -200,14 +198,8 @@ min/max bounds meaningful.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
-<p>The plan output shows <code>v4 stats</code> on the ScanNode,
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
+<p>The plan output shows <code>tdc stats</code> on the ScanNode,
 indicating that zone-map statistics are available and the engine will
 use them. With our uniform random data, roughly 5% of rows have
 <code>value &gt; 95</code>. Some row groups will have a max below 95 and
@@ -240,13 +232,7 @@ a contiguous slice of the value range. A filter for
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>Row group size is a trade-off. Smaller row groups give finer-grained
 pruning boundaries but increase the number of zone-map entries in the
 header and the number of read operations. Each row group carries its own
@@ -330,13 +316,7 @@ constant time, skipping all others without reading their data.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>Without an index, the plan shows a FilterNode above a ScanNode with
 predicate pushdown and zone-map stats, but no index annotation. The
 engine reads every row group and filters in-memory.</p>
@@ -359,13 +339,7 @@ engine reads every row group and filters in-memory.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>The plan now shows <code>hash index</code> (or equivalent annotation)
 on the ScanNode. Instead of scanning all 10 row groups, the engine
 probes the index to find which row groups contain
@@ -396,9 +370,9 @@ The effect is most pronounced when the predicate is highly selective
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"Without index:"</span>, <span class="va">t_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; Without index: 0.13 s</span></span>
+<span><span class="co">#&gt; Without index: 0.14 s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index:   "</span>, <span class="va">t_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index:    0.11 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index:    0.14 s</span></span></code></pre></div>
 <p>The magnitude of the speedup depends on how many row groups the index
 can eliminate. On this small dataset with only 10 row groups and
 uniformly distributed site names, the difference may be modest. On a
@@ -438,13 +412,7 @@ columns at once.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>The engine detects that both predicates in the AND-combination match
 the composite index columns and probes the index with the combined hash.
 This is more selective than probing two single-column indexes
@@ -524,13 +492,7 @@ the union of matching row groups.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>The scan node probes the site index four times and builds a bitmap of
 row groups that contain at least one of the target values. Only those
 row groups are read from disk.</p>
@@ -554,7 +516,7 @@ site, or sample ID.</p>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="st">"With index, %in% filter:"</span>, <span class="va">t_in_no_idx</span><span class="op">[</span><span class="st">"elapsed"</span><span class="op">]</span>, <span class="st">"s\n"</span><span class="op">)</span></span>
-<span><span class="co">#&gt; With index, %in% filter: 0.11 s</span></span></code></pre></div>
+<span><span class="co">#&gt; With index, %in% filter: 0.16 s</span></span></code></pre></div>
 <p>Without an index, the same query reads all row groups and filters in
 memory. The difference grows with file size.</p>
 </div>
@@ -579,13 +541,7 @@ entirely.</p>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (2):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
-<span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   value &lt;double&gt;</span></span></code></pre></div>
 <p>The ScanNode annotation shows something like
 <code>2/5 cols (pruned)</code> or <code>3/5 cols (pruned)</code>,
 depending on how many columns the filter and select together require.
@@ -616,13 +572,7 @@ range on disk.</p>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   id &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   v1 &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   v2 &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   v2 &lt;double&gt;</span></span></code></pre></div>
 <p>The plan shows that only 3 of 21 columns are read. The remaining 18
 columns never touch memory. This optimization is always active and
 requires no user action.</p>
@@ -648,13 +598,7 @@ materialized.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>The plan annotates the ScanNode with <code>predicate pushdown</code>,
 indicating that the filter condition has been absorbed into the scan.
 The separate FilterNode still appears in the plan (it handles any
@@ -683,13 +627,7 @@ creates.</p>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
 <span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt;   scaled &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   scaled &lt;double&gt;</span></span></code></pre></div>
 <p>Here the filter references <code>scaled</code>, which is created by
 the mutate. The predicate stays on the FilterNode above the ProjectNode.
 The ScanNode has no predicate pushdown annotation. To recover pushdown
@@ -712,13 +650,7 @@ in this situation, restructure the query so the filter on
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
 <span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt;   scaled &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   scaled &lt;double&gt;</span></span></code></pre></div>
 <p>Now the filter on <code>value</code> pushes down to the scan, and the
 mutate operates only on the surviving rows. Query structure matters.</p>
 </div>
@@ -746,13 +678,7 @@ understand what the engine will do.</p>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   decade &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   decade &lt;double&gt;</span></span></code></pre></div>
 <p>The tree reads bottom-up (scan at the bottom, output at the top).
 Each node pulls batches from its child. The annotations on each line
 tell us:</p>
@@ -760,7 +686,7 @@ tell us:</p>
 <ul>
 <li><p><code>ScanNode</code>: reads from disk. Annotations include
 column count, pruning info, predicate pushdown, zone-map stats
-(<code>v4 stats</code>), hash index usage.</p></li>
+(<code>tdc stats</code>), hash index usage.</p></li>
 <li><p><code>FilterNode</code>: applies a predicate row-by-row. When
 pushdown succeeds, this node still appears but does less work.</p></li>
 <li><p><code>ProjectNode</code>: handles <code><a href="../reference/select.html">select()</a></code>,
@@ -769,11 +695,11 @@ streaming.</p></li>
 <li><p><code>SortNode</code>: materializes all input, sorts, then
 streams output.</p></li>
 <li><p><code>GroupAggNode</code>: hash-based grouping and aggregation.
-Materializes groups.</p></li>
-<li><p><code>JoinNode</code>: hash join. Materializes the build side
-(right table).</p></li>
-<li><p><code>WindowNode</code>: window functions. May materialize
-partitions.</p></li>
+Holds the groups, spilling to disk past the memory budget.</p></li>
+<li><p><code>JoinNode</code>: hash join. Holds the build side (right
+table), spilling to disk past the memory budget.</p></li>
+<li><p><code>WindowNode</code>: window functions. Grouped windows hold
+one group at a time; ungrouped windows stream.</p></li>
 <li><p><code>TopNNode</code>: combined sort + limit. More efficient than
 separate sort and limit for small N.</p></li>
 <li><p><code>ConcatNode</code>: union of multiple inputs
@@ -789,7 +715,7 @@ before producing output. Sorts and some aggregations are
 materializing.</p></li>
 <li><p><code>predicate pushdown</code>: filter condition was absorbed
 into the scan.</p></li>
-<li><p><code>v4 stats</code>: zone-map statistics are available for row
+<li><p><code>tdc stats</code>: zone-map statistics are available for row
 group pruning.</p></li>
 <li><p><code>hash index</code>: a <code>.vtri</code> index is being used
 for row group identification.</p></li>
@@ -836,20 +762,13 @@ stale state to worry about.</p>
 <span><span class="co">#&gt; vectra execution plan</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; GroupAggNode [materializes, 1 keys] </span></span>
-<span><span class="co">#&gt;   SortNode [materializes] </span></span>
-<span><span class="co">#&gt;     FilterNode [streaming] </span></span>
-<span><span class="co">#&gt;       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
+<span><span class="co">#&gt;   FilterNode [streaming] </span></span>
+<span><span class="co">#&gt;     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] </span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   avg &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   n &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   n &lt;double&gt;</span></span></code></pre></div>
 <p>This plan shows a GroupAggNode above a FilterNode above a ScanNode.
 The filter pushes down, zone maps may prune row groups where all years
 are below 2020, and the aggregation hashes on <code>site</code>. Column
@@ -1030,24 +949,18 @@ filter on one of these.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>When data is sorted by <code>site</code>, each site occupies a
-contiguous range of row groups. Zone maps on string columns prune all
-row groups outside that range, and an index can pinpoint the exact
-groups.</p>
-<p><strong>Index maintenance.</strong> A row append rewrites every row
-group, which moves the rows a key sits in, so each of the store’s
-indexes is rebuilt as part of <code>append_vtr(along = "rows")</code>.
-The rebuild is a single sequential pass over the indexed column, hashing
-each value and recording its row group membership; on a file of a few
-million rows it takes well under a second, against the full restream the
-row append itself performs.</p>
+contiguous range of row groups, and an index on <code>site</code>
+pinpoints exactly those groups.</p>
+<p><strong>Index maintenance.</strong> A row append leaves the existing
+row groups where they are and adds new ones after them, so the entries
+an index already holds stay true.
+<code>append_vtr(along = "rows")</code> therefore extends each of the
+store’s indexes rather than rebuilding it: it reads only the appended
+row groups, and merges their entries into the sorted index as the new
+sidecar is written. The extended index is byte-identical to one built
+from scratch.</p>
 <div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">eco</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">100</span>, <span class="op">]</span>, <span class="va">f</span><span class="op">)</span></span>
 <span></span>
@@ -1067,23 +980,19 @@ row append itself performs.</p>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
 <span><span class="co">#&gt;   species &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt;   quality &lt;string&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   quality &lt;string&gt;</span></span></code></pre></div>
 <p>A column append (<code>along = "cols"</code>) leaves row group
 boundaries and existing column data untouched, so an index over the
 original columns stays valid and is not rebuilt.</p>
-<p>An index records the row and row-group counts of the store it was
-built against. A query that finds those changed reads the store and
-leaves the index alone. An index invalidated some other way, such as
-overwriting the file with <code><a href="../reference/write_vtr.html">write_vtr()</a></code>, therefore costs the
-acceleration and never the rows. <code><a href="../reference/has_index.html">has_index()</a></code> reports
-<code>FALSE</code> in that state, which is the signal to call
-<code><a href="../reference/create_index.html">create_index()</a></code> again:</p>
+<p>An index records the row count, row-group count and a fingerprint of
+the store it was built against. A query that finds any of them changed
+reads the store and leaves the index alone, so an index that no longer
+describes its store, for instance after the file was replaced by a
+download, costs the acceleration and never the rows.
+<code><a href="../reference/write_vtr.html">write_vtr()</a></code> over an indexed file also removes the old
+sidecars. <code><a href="../reference/has_index.html">has_index()</a></code> reports <code>FALSE</code> in either
+state, which is the signal to call <code><a href="../reference/create_index.html">create_index()</a></code>
+again:</p>
 <div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">g</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">eco</span>, <span class="va">g</span>, batch_size <span class="op">=</span> <span class="fl">5000</span><span class="op">)</span></span>
@@ -1128,13 +1037,7 @@ technique automatically. The only manual step is creating indexes.</p>
 <span><span class="co">#&gt; Output columns (3):</span></span>
 <span><span class="co">#&gt;   site &lt;string&gt;</span></span>
 <span><span class="co">#&gt;   year &lt;int64&gt;</span></span>
-<span><span class="co">#&gt;   value &lt;double&gt;</span></span>
-<span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; &lt;offload grade: streaming scan&gt;</span></span>
-<span><span class="co">#&gt;   passes over data : 1 per consumption (lazy)</span></span>
-<span><span class="co">#&gt;   peak memory      : O(one batch)</span></span>
-<span><span class="co">#&gt;   I/O cost         : O(n) per pass</span></span>
-<span><span class="co">#&gt;   note             : plain query node; re-reading re-runs the upstream pipeline</span></span></code></pre></div>
+<span><span class="co">#&gt;   value &lt;double&gt;</span></span></code></pre></div>
 <p>This plan uses the hash index on <code>site</code> to identify
 candidate row groups, zone maps on <code>value</code> to further prune
 within those groups, reads only 3 of 5 columns, and pushes both
@@ -1151,7 +1054,7 @@ predicates into the scan.</p>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer>

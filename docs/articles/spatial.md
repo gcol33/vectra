@@ -13,12 +13,16 @@ disk as a fresh lazy node. Peak memory is one batch and whatever small
 resident layer the step needs, so a billion-row layer flows past a fixed
 memory budget.
 
-Topology stays with [sf](https://r-spatial.github.io/sf/) and
-[terra](https://rspatial.github.io/terra/): vectra adds no GEOS or GDAL
-link. Geometry rides through the engine as hex-encoded WKB in an
-ordinary string column, and the coordinate reference system is carried
-on the node. What vectra contributes is the streaming envelope around
-the operations a desktop GIS keeps resident.
+Geometry rides through the engine as hex-encoded WKB in an ordinary
+string column, and the coordinate reference system is carried on the
+node. The recognised geometry operations run on the GEOS C API, which
+vectra links through the
+[libgeos](https://paleolimbot.github.io/libgeos/) package, straight off
+that column; [sf](https://r-spatial.github.io/sf/) handles the rest, and
+vectra has no GDAL link, so vector file formats and reprojection stay
+with sf and [terra](https://rspatial.github.io/terra/). What vectra
+contributes is the streaming envelope around the operations a desktop
+GIS keeps resident.
 
 ``` r
 

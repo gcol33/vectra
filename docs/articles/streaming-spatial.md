@@ -5,13 +5,15 @@ vectra](https://gillescolling.com/vectra/articles/spatial.md). That
 article lays out the cost model; this one runs the streaming vector
 verbs end to end on a real layer, so every block below is code you can
 execute and check. It needs the optional
-[sf](https://r-spatial.github.io/sf/) package, which supplies the
-geometry engine vectra streams around.
+[sf](https://r-spatial.github.io/sf/) package, which the spatial verbs
+use to take layers and coordinate reference systems as arguments, and
+which runs the operations vectra has no native path for.
 
 ``` r
 
 library(vectra)
 library(sf)
+#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## The problem
@@ -42,15 +44,21 @@ and
 vectra has no geometry type. A geometry rides through the engine as
 hex-encoded WKB in an ordinary string column, and the coordinate
 reference system is carried on the returned node rather than written
-into the `.vtr` file. Topology stays with sf and the GEOS library it
-links: vectra contributes the streaming, the spill machinery, and a
-native fast path, not the geometry algorithms.
+into the `.vtr` file. The geometry algorithms come from GEOS. For the
+operations vectra recognises (the common predicates, clipping,
+buffering, measures and the like on planar data) it calls the GEOS C API
+directly, through the [libgeos](https://paleolimbot.github.io/libgeos/)
+package it links against, and works straight off the WKB column in C.
+Everything else, such as an arbitrary function passed to
+[`spatial_map()`](https://gillescolling.com/vectra/reference/spatial_map.md)
+or geographic data with spherical geometry switched on, runs through sf
+batch by batch.
 
-One streamed step is a loop. Pull a batch, decode its WKB column into an
-`sf` object, run the operation, encode the result back into a WKB string
-column, and append it to a run-file. When the loop finishes, the
-run-files become a single lazy node you can carry on querying. The
-memory a run holds is
+On that sf path, one streamed step is a loop. Pull a batch, decode its
+WKB column into an `sf` object, run the operation, encode the result
+back into a WKB string column, and append it to a run-file. When the
+loop finishes, the run-files become a single lazy node you can carry on
+querying. The memory a run holds is
 
     peak  =  one batch  +  the resident comparison layer
 
@@ -94,7 +102,7 @@ write_vtr(data.frame(
 until a verb pulls it. Two functions bring a streamed result back to R:
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 returns the underlying data.frame, geometry still a WKB string;
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 decodes that string and reattaches the node’s CRS, giving an ordinary
 `sf` object ready to plot or hand to any sf function.
 
@@ -130,12 +138,12 @@ buffered
 
 `buffered` is a lazy node, not a materialized layer: the buffer has not
 run yet.
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 pulls it through and decodes the geometry.
 
 ``` r
 
-b_sf <- collect_sf(buffered)
+b_sf <- collect(buffered)
 plot(st_geometry(nc), border = "grey80", col = NA,
      main = "County centroids buffered by 15 km")
 plot(st_geometry(b_sf), border = "#3366cc", col = "#3366cc22", add = TRUE)
@@ -191,7 +199,7 @@ f_zig <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(
   id = 1L, geometry = st_as_binary(st_sfc(zig), hex = TRUE)), f_zig)
 
-tbl(f_zig) |> spatial_smooth(iterations = 3) |> collect_sf()
+tbl(f_zig) |> spatial_smooth(iterations = 3) |> collect()
 #> Simple feature collection with 1 feature and 1 field
 #> Geometry type: LINESTRING
 #> Dimension:     XY
@@ -293,7 +301,7 @@ against a fixed boundary. `erase = TRUE` keeps the part outside instead.
 mask_region <- st_union(st_geometry(region))
 
 clipped <- tbl(f_poly) |> spatial_clip(mask_region, crs = crs_nc)
-c_sf <- collect_sf(clipped)
+c_sf <- collect(clipped)
 nrow(c_sf)
 #> [1] 12
 ```
@@ -342,7 +350,7 @@ f_sq <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(
   id = 1L, geometry = st_as_binary(st_sfc(square), hex = TRUE)), f_sq)
 
-tbl(f_sq) |> spatial_split(blade) |> collect_sf()
+tbl(f_sq) |> spatial_split(blade) |> collect()
 #> Simple feature collection with 2 features and 1 field
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -362,7 +370,12 @@ streams the large left side and joins each batch against a small
 resident right side. The dominant workload is tagging a huge point set
 with the polygon it falls in: which county each occurrence sits in,
 which census tract each address belongs to. The billion-row left stream
-never materializes while the polygon layer stays in RAM.
+never materializes while the polygon layer stays in RAM. On the native
+path the join is a lazy node like any other verb: the joined rows stream
+straight into whatever comes next, a
+[`count()`](https://gillescolling.com/vectra/reference/count.md) or a
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md),
+without being spilled first.
 
 ``` r
 
@@ -370,13 +383,18 @@ tagged <- tbl(fp) |>
   spatial_join(nc["NAME"], coords = c("x", "y"), crs = crs_nc)
 tdf <- collect(tagged)
 head(tdf[, c("id", "NAME")])
-#>   id       NAME
-#> 1  1       Hoke
-#> 2  2 Pasquotank
-#> 3  3    Tyrrell
-#> 4  4   Johnston
-#> 5  5 Cumberland
-#> 6  6  Brunswick
+#> Simple feature collection with 6 features and 2 fields
+#> Geometry type: POINT
+#> Dimension:     XY
+#> Bounding box:  xmin: 585944.2 ymin: 22100.77 xmax: 856470.9 ymax: 285752.2
+#> Projected CRS: NAD83 / North Carolina
+#>   id       NAME                  geometry
+#> 1  1       Hoke POINT (585944.2 123589.7)
+#> 2  2 Pasquotank POINT (856470.9 285752.2)
+#> 3  3    Tyrrell POINT (848550.7 237041.2)
+#> 4  4   Johnston   POINT (656888 178574.5)
+#> 5  5 Cumberland POINT (631329.1 146405.6)
+#> 6  6  Brunswick POINT (678043.5 22100.77)
 ```
 
 Every point now carries the `NAME` of its county. The default predicate
@@ -394,6 +412,27 @@ plot(tagged_sf["NAME"], pch = 16, cex = 0.5, add = TRUE)
 ```
 
 ![](streaming-spatial_files/figure-html/join-plot-1.png)
+
+When only the attributes matter, `keep_geom = FALSE` drops the left
+geometry column. With `coords =` the point geometries are then never
+built at all, which is the cheap way to tag points and aggregate:
+
+``` r
+
+tbl(fp) |>
+  spatial_join(nc["NAME"], coords = c("x", "y"), crs = crs_nc,
+               keep_geom = FALSE) |>
+  count(NAME) |>
+  collect() |>
+  head()
+#>        NAME n
+#> 1  Alamance 2
+#> 2 Alexander 6
+#> 3 Alleghany 4
+#> 4     Anson 4
+#> 5      Ashe 5
+#> 6     Avery 4
+```
 
 Columns present on both sides are disambiguated with `suffix` (default
 `c(".x", ".y")`), exactly as
@@ -534,20 +573,18 @@ write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f_pts
 tbl(f_pts) |>
   spatial_knn(towns, k = 2, coords = c("x", "y"), crs = crs_nc, y_id = "town") |>
   collect() |> head()
-#>   id        x         y rank    neighbor distance
-#> 1  1 585944.2 193988.16    1       Surry 163726.1
-#> 2  1 585944.2 193988.16    2 Northampton 195894.6
-#> 3  2 656888.0  95932.95    1 Northampton 223065.3
-#> 4  2 656888.0  95932.95    2       Surry 282285.8
-#> 5  3 631329.1  81102.29    1 Northampton 247961.5
-#> 6  3 631329.1  81102.29    2       Surry 276346.2
-#>                                     geometry
-#> 1 010100000054a8e56bb0e1214162e33d4321ae0741
-#> 2 010100000054a8e56bb0e1214162e33d4321ae0741
-#> 3 0101000000bcf0a5feef0b244177a04720cf6bf740
-#> 4 0101000000bcf0a5feef0b244177a04720cf6bf740
-#> 5 01010000007f67de2442442341cd80edace4ccf340
-#> 6 01010000007f67de2442442341cd80edace4ccf340
+#> Simple feature collection with 6 features and 6 fields
+#> Geometry type: POINT
+#> Dimension:     XY
+#> Bounding box:  xmin: 585944.2 ymin: 81102.29 xmax: 656888 ymax: 193988.2
+#> Projected CRS: NAD83 / North Carolina
+#>   id        x         y rank    neighbor distance                  geometry
+#> 1  1 585944.2 193988.16    1       Surry 163726.1 POINT (585944.2 193988.2)
+#> 2  1 585944.2 193988.16    2 Northampton 195894.6 POINT (585944.2 193988.2)
+#> 3  2 656888.0  95932.95    1 Northampton 223065.3   POINT (656888 95932.95)
+#> 4  2 656888.0  95932.95    2       Surry 282285.8   POINT (656888 95932.95)
+#> 5  3 631329.1  81102.29    1 Northampton 247961.5 POINT (631329.1 81102.29)
+#> 6  3 631329.1  81102.29    2       Surry 276346.2 POINT (631329.1 81102.29)
 unlink(f_pts)
 ```
 
@@ -577,7 +614,7 @@ write_vtr(data.frame(
 merged <- tbl(fb) |>
   spatial_dissolve(by = "band", crs = crs_nc,
                    .fun = list(births = function(d) sum(d$BIR74)))
-m_sf <- collect_sf(merged)
+m_sf <- collect(merged)
 m_sf
 #> Simple feature collection with 2 features and 2 fields
 #> Geometry type: MULTIPOLYGON
@@ -631,7 +668,7 @@ sq <- function(a, b) st_polygon(list(rbind(
 polys <- st_sf(year = c(1990L, 2010L, 2000L),
                geometry = st_sfc(sq(0, 2), sq(1, 3), sq(1.5, 3.5)))
 
-pieces <- collect_sf(spatial_overlay(polys))
+pieces <- collect(spatial_overlay(polys))
 nrow(pieces)
 #> [1] 9
 length(unique(pieces$piece_id))
@@ -649,7 +686,7 @@ the duplication with a grouped slice. Earliest designation year wins:
 first <- spatial_overlay(polys) |>
   group_by(piece_id) |>
   slice_min(year, n = 1, with_ties = FALSE) |>
-  collect_sf()
+  collect()
 nrow(first)
 #> [1] 5
 
@@ -699,7 +736,7 @@ split by `y`), or `"symdiff"` (pieces in exactly one layer).
 zones <- st_sf(zone = c("A", "B"),
                geometry = st_sfc(sq(0, 1.5), sq(1.5, 3)))
 
-inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+inter <- spatial_overlay(polys, zones, how = "intersection") |> collect()
 inter
 #> Simple feature collection with 8 features and 3 fields
 #> Geometry type: POLYGON
@@ -729,7 +766,7 @@ Three exits bring a streamed result out.
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 returns the data.frame with geometry still a WKB string, useful when the
 next step is a non-spatial verb or another `.vtr` write.
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 decodes the WKB and reattaches the node’s CRS, giving an `sf` object.
 [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
 on a node streams the result straight to a new `.vtr` file without ever
@@ -752,7 +789,7 @@ each verb carries it forward; you state `crs =` once at the first step
 that needs it, or let it inherit from the upstream node. The `.vtr` file
 itself stores only the WKB bytes, so reopening a written file and
 calling
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
 needs the CRS supplied again if you want it labelled.
 
 ## The cost model
@@ -774,8 +811,8 @@ inherently resident because the operation is global, and the overlay
 bounds it by tiling overlap clusters. Operations that are global by
 nature and not tiled, such as Voronoi diagrams, Delaunay triangulation,
 convex hulls, and neighbour graphs, are not streamed at all:
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-the layer and run sf or terra on it.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) the
+layer and run sf or terra on it.
 
 A second axis is whether a step runs natively or through sf. The
 recognised predicates and operations run in C straight off the WKB

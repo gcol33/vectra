@@ -264,19 +264,22 @@ overhead, but each batch consumes more memory during processing. Smaller
 batches mean the zone-map statistics cover a narrower range of values,
 so filter predicates can skip more groups entirely.
 
-The default batch size is 65,536 rows. This is a reasonable middle
-ground for most workloads: large enough that per-batch overhead (reading
-the row group header, allocating column arrays, setting up validity
-bitmaps) is amortized across many rows, but small enough that each batch
-stays in the low megabytes for typical column counts. When choosing a
-different batch size, the decision depends on the query pattern.
-Analytical workloads that scan most of the file (aggregations,
-full-table joins) benefit from large batches because they reduce the
-number of `next_batch()` calls and the associated per-group bookkeeping.
-Point queries that target a few matching rows benefit from small
-batches, especially when combined with indexes or sorted columns,
-because the engine can skip entire row groups whose zone-map ranges do
-not overlap the predicate.
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+on a data.frame writes row groups of 131,072 rows by default (about 1 MB
+per double column). Written from a query node, the default keeps one row
+group per incoming batch, and `batch_size` sets a target instead. This
+is a reasonable middle ground for most workloads: large enough that
+per-batch overhead (reading the row group header, allocating column
+arrays, setting up validity bitmaps) is amortized across many rows, but
+small enough that each batch stays in the low megabytes for typical
+column counts. When choosing a different batch size, the decision
+depends on the query pattern. Analytical workloads that scan most of the
+file (aggregations, full-table joins) benefit from large batches because
+they reduce the number of `next_batch()` calls and the associated
+per-group bookkeeping. Point queries that target a few matching rows
+benefit from small batches, especially when combined with indexes or
+sorted columns, because the engine can skip entire row groups whose
+zone-map ranges do not overlap the predicate.
 
 For analytical workloads with selective filters, smaller row groups
 often pay off. If each row group spans a narrow range of `year` values,
@@ -322,19 +325,13 @@ tbl(small_groups) |>
 #>   abundance <int64>
 #>   cover_pct <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 CSV and SQLite sources also have a `batch_size` parameter, but it
 controls how many rows the scanner reads per pull rather than how the
-file is structured on disk. The default of 65,536 works well for most
-cases. Reducing it lowers peak memory; increasing it reduces per-batch
-overhead for simple pass-through pipelines.
+file is structured on disk. Their default of 65,536 rows works well for
+most cases. Reducing it lowers peak memory; increasing it reduces
+per-batch overhead for simple pass-through pipelines.
 
 ``` r
 
@@ -597,11 +594,12 @@ identifying shared keys.
 Sorting a dataset that does not fit in memory requires an external merge
 sort. vectra’s
 [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
-handles this automatically. The engine maintains a 1 GB memory budget.
-As data flows through, it accumulates rows in memory. When the budget is
-reached, the accumulated rows are sorted and written to a temporary
-`.vtr` file on disk (a “sorted run”). After all input has been consumed,
-a k-way merge reads from all sorted runs simultaneously using a
+handles this automatically. As data flows through, the sort accumulates
+rows in memory. When they reach the memory budget
+([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md),
+see Memory budget planning below), the accumulated rows are sorted and
+written to a temporary `.vtr` file on disk (a “sorted run”). After all
+input has been consumed, a k-way merge combines the runs using a
 min-heap, producing the final sorted output one batch at a time.
 
 From the user’s perspective, none of this is visible. We just call
@@ -630,31 +628,28 @@ tbl(sorted_path) |>
 #> 8 Acer pseudoplatanus        28 SITE_010
 ```
 
-The sorted output streams to disk. Peak memory stays bounded at the
-spill budget (1 GB) plus overhead for the merge heap, regardless of
-input size. For our 50,000-row example the data fits entirely in memory
-and no spill occurs. But the same code would work on a 500 million row
-file; the sort would produce multiple temporary runs and merge them
-transparently.
+The sorted output streams to disk. Peak memory stays bounded by the
+budget, regardless of input size. For our 50,000-row example the data
+fits entirely in memory and no spill occurs. But the same code would
+work on a 500 million row file; the sort would produce multiple
+temporary runs and merge them transparently.
 
-The 1 GB budget governs how much unsorted data the engine accumulates
-before flushing to a temporary file. Each flush produces one sorted run.
-A 10 GB dataset with a 1 GB budget produces roughly 10 runs. The final
-merge opens all runs simultaneously and maintains a min-heap with one
-entry per run. At each step, the smallest element across all runs is
-popped from the heap and emitted as the next output row; the run that
-contributed it advances by one row and re-inserts into the heap. Because
-the heap has only as many entries as there are runs (not as many as
-there are rows), the merge phase uses very little memory.
+The budget governs how much unsorted data the engine accumulates before
+flushing to a temporary file. Each flush produces one sorted run, so a
+10 GB dataset under a 1 GB budget produces roughly 10 runs. The merge
+keeps a min-heap with one entry per open run: at each step the smallest
+row across the open runs is emitted and its run advances. Each open run
+holds one row group of 65,536 rows in memory, so the number of runs
+merged at once is capped from the measured row width, to keep the open
+row groups within half the budget. When there are more runs than that,
+groups of runs are first merged into longer runs, and the final merge
+streams the result. The merge therefore uses memory set by the budget
+and the row width, never by the number of rows.
 
-Data that is already partially sorted produces fewer runs. If the input
-is sorted on a prefix of the sort key, long stretches of rows will
-already be in order, so the engine can absorb more rows before hitting
-the budget and flushing. In the best case (fully sorted input), no spill
-occurs at all and the sort reduces to a streaming pass-through. There is
-nothing to tune here. The engine detects the budget internally and
-manages spill files in the system temp directory. They are cleaned up
-after the merge completes.
+There is nothing to tune here. The engine manages spill files in R’s
+session temporary directory
+([`tempdir()`](https://rdrr.io/r/base/tempfile.html)) and deletes them
+when the sort is done.
 
 Writing the sorted data to a new `.vtr` file also improves query
 performance. Once the file is sorted on `species`, zone-map statistics
@@ -665,10 +660,13 @@ effective optimizations available.
 ## Streaming joins
 
 vectra’s join engine uses a build-right, probe-left strategy. The
-right-side table is fully materialized into a hash table in memory. Then
-the left-side table streams through, probing the hash table for matches
-one batch at a time. This means the left side can be arbitrarily large,
-because only the right side needs to fit in memory.
+right-side table is read into a hash table in memory. Then the left-side
+table streams through, probing the hash table for matches one batch at a
+time. The left side can be arbitrarily large. The right side does not
+have to fit in memory either: when it outgrows the memory budget, both
+sides are split by key hash into partition files on disk and joined one
+partition at a time. That fallback costs extra reads and writes, so a
+right side that fits in memory is still the fast path.
 
 The natural pattern for large-data joins is: huge fact table on the
 left, small dimension table on the right.
@@ -892,8 +890,10 @@ partitions can then be archived or deleted.
 ## Format conversion ETL
 
 A one-time conversion from CSV to `.vtr` pays off every time we query
-the data afterwards. The `.vtr` format supports dictionary encoding,
-delta encoding, zstd compression, and zone-map statistics. Repeated
+the data afterwards. A `.vtr` file stores strings as dictionaries,
+compresses numeric columns (byte-shuffling plus LZ by default, or the
+smallest of several encodings with `compress = "small"`), and records
+per-row-group min/max and null counts for zone-map pruning. Repeated
 queries on a `.vtr` file are faster because the engine can skip row
 groups and decompress only the columns it needs. CSV requires a full
 parse every time.
@@ -1015,36 +1015,50 @@ and the number of columns, not the total row count. For a typical batch
 of 50,000 rows with 10 columns, each batch might occupy a few megabytes.
 These operations are safe for any dataset size.
 
-**External sort (arrange).** vectra’s sort node accumulates data in
-memory up to a 1 GB budget. When the budget is exceeded, it flushes a
-sorted run to a temporary file and continues. The final merge reads from
-all runs simultaneously, using a heap that holds one row per run. Peak
-memory is bounded at 1 GB plus the merge overhead. For datasets smaller
-than 1 GB the sort completes entirely in memory.
+The operations below that buffer data all work against one memory
+budget,
+[`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md).
+It defaults to half of physical RAM (at least 1 GB) and is set with
+`options(vectra.memory = "2GB")`. The budget covers the whole query:
+every buffering step in it (a sort, a join, a grouped aggregate)
+reserves what it actually allocates from one shared pool of that size,
+so a step that needs little leaves the rest to the others, and each is
+guaranteed a share of a quarter of the budget divided by the number of
+buffering steps. When a step’s reservation is refused it writes to
+temporary files and keeps going, so the budget trades memory for disk
+passes rather than deciding whether a query can run. The temporary files
+are written uncompressed, since each is read back once.
 
-**Hash aggregation (group_by + summarise).** The `group_agg` node
-maintains one accumulator per distinct group key, so memory scales with
-the number of distinct groups rather than the number of input rows. If
-we group by `species` (12 values), the hash table is tiny. If we group
-by `obs_id` (50,000 distinct values), it is larger. Grouping by a
-high-cardinality column on a billion-row dataset could create millions
-of accumulators, so it is worth checking the expected group count.
+**External sort (arrange).** The sort node accumulates data in memory up
+to the budget. Past it, it flushes a sorted run to a temporary file and
+continues; the merge then holds one row group per open run, with the
+number of open runs capped to fit the budget. For inputs that fit in the
+budget the sort completes entirely in memory.
 
-**Hash join (build side).** The right-side table is fully materialized
-in a hash table. Memory cost equals the right-side data size. A 1
-million row reference table with 5 columns might consume 50 to 100 MB. A
-100 million row table would require several gigabytes. The left side
-streams and adds no persistent memory. String columns on the build side
+**Grouped aggregation (group_by + summarise, distinct, count).** The
+`group_agg` node keeps one accumulator per group in hash tables, so
+memory scales with the number of distinct groups rather than the number
+of input rows. Grouping by `species` (12 values) needs a tiny table.
+When a high-cardinality grouping outgrows the budget, rows of groups not
+already held are written by key hash to partition files, and each
+partition is aggregated on its own afterwards, so the group count costs
+disk passes rather than memory.
+[`median()`](https://rdrr.io/r/stats/median.html) and `n_distinct()`
+need every value of a group; with them the input goes through the
+external sort and one group is aggregated at a time.
+
+**Hash join (build side).** The right-side table is held in a hash table
+while it fits in the budget. A 1 million row reference table with 5
+columns might consume 50 to 100 MB. String columns on the build side
 cost more than numeric columns because each string value has variable
-length and requires its own allocation. A build side with 1 million rows
-and a 200-character text column will consume substantially more memory
-than one with only integer and double columns.
+length. A build side larger than the budget is split with the left side
+into partition files by key hash and joined partition by partition; the
+left side streams in both cases.
 
-**Window functions.** Window operations (`row_number`, `lag`, `lead`,
-`cumsum`, etc.) operate on the current batch. Memory scales with batch
-size. Partitioned windows (via `group_by`) hold data for the current
-partition. If partitions are balanced and moderately sized, memory stays
-bounded.
+**Window functions.** Ungrouped window functions (`row_number`, `lag`,
+`lead`, `cumsum`, etc.) stream the table in one pass. Grouped windows go
+through the external sort and then hold one group at a time, so their
+peak is the largest group.
 
 To estimate memory for a pipeline, we identify the materializing
 operations and estimate their footprints:
@@ -1063,10 +1077,10 @@ operations and estimate their footprints:
 
 # Compare to:
 # tbl(huge.vtr) |>
-#   arrange(species)               -> external sort, up to 1 GB
-#   left_join(big_ref, by = "id")  -> build side = big_ref size
+#   arrange(species)               -> external sort, up to the budget
+#   left_join(big_ref, by = "id")  -> build side = big_ref, up to the budget
 #
-# Total peak: 1 GB (sort) + big_ref size
+# Peak bounded by the budget; anything beyond it goes to temporary files
 ```
 
 The general strategy: stream everything we can, materialize only what we
@@ -1085,8 +1099,8 @@ right-side node in isolation and check
 [`object.size()`](https://rdrr.io/r/utils/object.size.html) on the
 resulting data.frame. That gives us the R-level footprint, which is a
 reasonable upper bound on the C-level hash table size. For sort
-operations, the question is simpler: if the total input is under 1 GB,
-the sort completes in memory; otherwise, it spills.
+operations, the question is simpler: if the total input fits in the
+budget, the sort completes in memory; otherwise, it spills.
 
 A practical example that puts these principles together:
 

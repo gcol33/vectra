@@ -18,7 +18,8 @@ tally(x, wt = NULL, sort = FALSE, name = NULL)
 
 - ...:
 
-  Grouping columns (unquoted).
+  Grouping columns, resolved as in
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md).
 
 - wt:
 
@@ -48,5 +49,9 @@ are sorted in descending order of the count column.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> count(cyl) |> collect()
+#>   cyl  n
+#> 1   4 11
+#> 2   6  7
+#> 3   8 14
 unlink(f)
 ```

@@ -30,7 +30,7 @@ segments of each level are joined into continuous lines."><script>
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -129,7 +129,7 @@ many rows.</p></dd>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>A <code>vectra_node</code> with a <code>level</code> column and a hex-WKB <code>geometry</code> column,
-materialise it with <code><a href="collect_sf.html">collect_sf()</a></code>.</p>
+materialise it with <code><a href="collect.html">collect()</a></code>.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -142,18 +142,28 @@ the merge are delegated to <span class="pkg">sf</span> (an optional dependency).
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
     <div class="dont-index"><p><code><a href="polygonize.html">polygonize()</a></code> for area features, <code><a href="terrain.html">terrain()</a></code> for the DEM
-derivatives contours often accompany, <code><a href="collect_sf.html">collect_sf()</a></code> to materialise as <code>sf</code>.</p></div>
+derivatives contours often accompany, <code><a href="collect.html">collect()</a></code> to materialise as <code>sf</code>.</p></div>
     </div>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">z</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/outer.html" class="external-link">outer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">20</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">20</span>, <span class="kw">function</span><span class="op">(</span><span class="va">r</span>, <span class="va">c</span><span class="op">)</span> <span class="va">r</span> <span class="op">+</span> <span class="va">c</span><span class="op">)</span></span>
-<span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vec"</span><span class="op">)</span></span>
-<span><span class="fu"><a href="vec_write_raster.html">vec_write_raster</a></span><span class="op">(</span><span class="va">z</span>, <span class="va">f</span>, dtype <span class="op">=</span> <span class="st">"f64"</span>, extent <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">0</span>, <span class="fl">20</span>, <span class="fl">20</span><span class="op">)</span><span class="op">)</span></span>
-<span></span>
-<span><span class="va">iso</span> <span class="op">&lt;-</span> <span class="fu">contours</span><span class="op">(</span><span class="va">f</span>, levels <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">15</span>, <span class="fl">25</span>, <span class="fl">35</span><span class="op">)</span><span class="op">)</span></span>
-<span><span class="fu"><a href="collect_sf.html">collect_sf</a></span><span class="op">(</span><span class="va">iso</span><span class="op">)</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">z</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/outer.html" class="external-link">outer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">20</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">20</span>, <span class="kw">function</span><span class="op">(</span><span class="va">r</span>, <span class="va">c</span><span class="op">)</span> <span class="va">r</span> <span class="op">+</span> <span class="va">c</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vec"</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="vec_write_raster.html">vec_write_raster</a></span><span class="op">(</span><span class="va">z</span>, <span class="va">f</span>, dtype <span class="op">=</span> <span class="st">"f64"</span>, extent <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">0</span>, <span class="fl">20</span>, <span class="fl">20</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="va">iso</span> <span class="op">&lt;-</span> <span class="fu">contours</span><span class="op">(</span><span class="va">f</span>, levels <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">15</span>, <span class="fl">25</span>, <span class="fl">35</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">iso</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> Simple feature collection with 3 features and 1 field</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> Geometry type: LINESTRING</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> Dimension:     XY</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> Bounding box:  xmin: 0.5 ymin: 0.5 xmax: 19.5 ymax: 19.5</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> CRS:           NA</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   level                       geometry</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    15 LINESTRING (0.5 6.5, 1.5 7....</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2    25 LINESTRING (4.5 0.5, 5.5 1....</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3    35 LINESTRING (14.5 0.5, 15.5 ...</span>
+<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></span>
+</code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>
@@ -164,7 +174,7 @@ derivatives contours often accompany, <code><a href="collect_sf.html">collect_sf
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer></div>

@@ -93,15 +93,13 @@ value.
 Not all column types benefit equally. Numeric columns with natural
 ordering produce the tightest zone maps: timestamps that increase over
 time, sensor readings that cluster by location, sequential IDs. String
-columns can also prune well if the values have a predictable
-lexicographic distribution (e.g., ISO country codes or zero-padded
-identifiers like `"site_042"`), but free-text strings with arbitrary
-prefixes tend to span the full alphabet in every row group, making the
-min/max bounds too wide to exclude anything.
+columns store only a null count per row group, no min/max, so a zone map
+can skip a row group for a string predicate only when the column is
+entirely `NA` there. Equality lookups on strings are what hash indexes
+(below) are for.
 
 This works for numeric comparisons: `>`, `<`, `>=`, `<=`, `==`, `!=`,
-and combinations that define a range. It also works for string columns
-where lexicographic ordering makes the min/max bounds meaningful.
+and combinations that define a range.
 
 ``` r
 
@@ -119,15 +117,9 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
-The plan output shows `v4 stats` on the ScanNode, indicating that
+The plan output shows `tdc stats` on the ScanNode, indicating that
 zone-map statistics are available and the engine will use them. With our
 uniform random data, roughly 5% of rows have `value > 95`. Some row
 groups will have a max below 95 and be skipped entirely; others will be
@@ -167,12 +159,6 @@ tbl(f_sorted) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Row group size is a trade-off. Smaller row groups give finer-grained
@@ -267,12 +253,6 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Without an index, the plan shows a FilterNode above a ScanNode with
@@ -304,12 +284,6 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan now shows `hash index` (or equivalent annotation) on the
@@ -344,9 +318,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.13 s
+#> Without index: 0.14 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.11 s
+#> With index:    0.14 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -394,12 +368,6 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The engine detects that both predicates in the AND-combination match the
@@ -487,12 +455,6 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The scan node probes the site index four times and builds a bitmap of
@@ -521,7 +483,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.11 s
+#> With index, %in% filter: 0.16 s
 ```
 
 Without an index, the same query reads all row groups and filters in
@@ -550,12 +512,6 @@ tbl(f) |>
 #> Output columns (2):
 #>   site <string>
 #>   value <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The ScanNode annotation shows something like `2/5 cols (pruned)` or
@@ -590,12 +546,6 @@ tbl(f_wide) |>
 #>   id <int64>
 #>   v1 <double>
 #>   v2 <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan shows that only 3 of 21 columns are read. The remaining 18
@@ -626,12 +576,6 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The plan annotates the ScanNode with `predicate pushdown`, indicating
@@ -665,12 +609,6 @@ tbl(f) |>
 #>   value <double>
 #>   quality <string>
 #>   scaled <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Here the filter references `scaled`, which is created by the mutate. The
@@ -698,12 +636,6 @@ tbl(f) |>
 #>   value <double>
 #>   quality <string>
 #>   scaled <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Now the filter on `value` pushes down to the scan, and the mutate
@@ -735,12 +667,6 @@ tbl(f) |>
 #>   year <int64>
 #>   value <double>
 #>   decade <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The tree reads bottom-up (scan at the bottom, output at the top). Each
@@ -749,7 +675,7 @@ node pulls batches from its child. The annotations on each line tell us:
 **Node types:**
 
 - `ScanNode`: reads from disk. Annotations include column count, pruning
-  info, predicate pushdown, zone-map stats (`v4 stats`), hash index
+  info, predicate pushdown, zone-map stats (`tdc stats`), hash index
   usage.
 
 - `FilterNode`: applies a predicate row-by-row. When pushdown succeeds,
@@ -764,12 +690,14 @@ node pulls batches from its child. The annotations on each line tell us:
 
 - `SortNode`: materializes all input, sorts, then streams output.
 
-- `GroupAggNode`: hash-based grouping and aggregation. Materializes
-  groups.
+- `GroupAggNode`: hash-based grouping and aggregation. Holds the groups,
+  spilling to disk past the memory budget.
 
-- `JoinNode`: hash join. Materializes the build side (right table).
+- `JoinNode`: hash join. Holds the build side (right table), spilling to
+  disk past the memory budget.
 
-- `WindowNode`: window functions. May materialize partitions.
+- `WindowNode`: window functions. Grouped windows hold one group at a
+  time; ungrouped windows stream.
 
 - `TopNNode`: combined sort + limit. More efficient than separate sort
   and limit for small N.
@@ -788,7 +716,7 @@ node pulls batches from its child. The annotations on each line tell us:
 
 - `predicate pushdown`: filter condition was absorbed into the scan.
 
-- `v4 stats`: zone-map statistics are available for row group pruning.
+- `tdc stats`: zone-map statistics are available for row group pruning.
 
 - `hash index`: a `.vtri` index is being used for row group
   identification.
@@ -847,20 +775,13 @@ tbl(f) |>
 #> vectra execution plan
 #> 
 #> GroupAggNode [materializes, 1 keys] 
-#>   SortNode [materializes] 
-#>     FilterNode [streaming] 
-#>       ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
+#>   FilterNode [streaming] 
+#>     ScanNode [streaming, 3/5 cols (pruned), predicate pushdown, tdc stats] 
 #> 
 #> Output columns (3):
 #>   site <string>
 #>   avg <double>
 #>   n <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 This plan shows a GroupAggNode above a FilterNode above a ScanNode. The
@@ -1069,25 +990,18 @@ tbl(f_by_site) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 When data is sorted by `site`, each site occupies a contiguous range of
-row groups. Zone maps on string columns prune all row groups outside
-that range, and an index can pinpoint the exact groups.
+row groups, and an index on `site` pinpoints exactly those groups.
 
-**Index maintenance.** A row append rewrites every row group, which
-moves the rows a key sits in, so each of the store’s indexes is rebuilt
-as part of `append_vtr(along = "rows")`. The rebuild is a single
-sequential pass over the indexed column, hashing each value and
-recording its row group membership; on a file of a few million rows it
-takes well under a second, against the full restream the row append
-itself performs.
+**Index maintenance.** A row append leaves the existing row groups where
+they are and adds new ones after them, so the entries an index already
+holds stay true. `append_vtr(along = "rows")` therefore extends each of
+the store’s indexes rather than rebuilding it: it reads only the
+appended row groups, and merges their entries into the sorted index as
+the new sidecar is written. The extended index is byte-identical to one
+built from scratch.
 
 ``` r
 
@@ -1110,26 +1024,21 @@ tbl(f) |>
 #>   species <string>
 #>   value <double>
 #>   quality <string>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 A column append (`along = "cols"`) leaves row group boundaries and
 existing column data untouched, so an index over the original columns
 stays valid and is not rebuilt.
 
-An index records the row and row-group counts of the store it was built
-against. A query that finds those changed reads the store and leaves the
-index alone. An index invalidated some other way, such as overwriting
-the file with
-[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md),
-therefore costs the acceleration and never the rows.
+An index records the row count, row-group count and a fingerprint of the
+store it was built against. A query that finds any of them changed reads
+the store and leaves the index alone, so an index that no longer
+describes its store, for instance after the file was replaced by a
+download, costs the acceleration and never the rows.
+[`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+over an indexed file also removes the old sidecars.
 [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
-reports `FALSE` in that state, which is the signal to call
+reports `FALSE` in either state, which is the signal to call
 [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
 again:
 
@@ -1185,12 +1094,6 @@ tbl(f) |>
 #>   site <string>
 #>   year <int64>
 #>   value <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 This plan uses the hash index on `site` to identify candidate row

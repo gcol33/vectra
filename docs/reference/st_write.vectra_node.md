@@ -6,7 +6,7 @@ method (also reached through
 [`sf::write_sf()`](https://r-spatial.github.io/sf/reference/st_write.html))
 for a `vectra_node`: writes the result a batch at a time, appending
 each, so the whole layer is never held in memory. This is the streaming
-counterpart to `collect_sf(x) |> sf::st_write(...)` – that route
+counterpart to `collect(x) |> sf::st_write(...)` – that route
 materializes every feature as an `sf` object first, which for a
 multi-million-feature result dominates memory; this route's peak is one
 batch.
@@ -74,5 +74,5 @@ The `dsn`, invisibly.
 
 ## See also
 
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize the whole result as one `sf` object.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize the whole result as one `sf` object.

@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -63,6 +63,98 @@
       <small>Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.13.1" id="vectra-0131">vectra 0.13.1<a class="anchor" aria-label="anchor" href="#vectra-0131"></a></h2>
+<div class="section level3">
+<h3 id="changes-0-13-1">Changes<a class="anchor" aria-label="anchor" href="#changes-0-13-1"></a></h3>
+<ul><li><p><code><a href="../reference/collect.html">collect()</a></code> returns an <code>sf</code> object when the query still carries a geometry column, or when a string column holds hex-encoded WKB (recognised from the first values of the column, so a stored geometry column comes back as <code>sf</code> from a plain <code><a href="../reference/tbl.html">tbl()</a></code>), so <code>tbl(f) |&gt; spatial_map(...) |&gt; filter(...) |&gt; collect()</code> needs no second verb. The spatial verbs, and <code><a href="../reference/mutate.html">mutate()</a></code> with a geometry-producing <code>st_*</code> expression, mark the geometry column on the node together with its CRS; <code><a href="../reference/filter.html">filter()</a></code>, <code><a href="../reference/select.html">select()</a></code>, <code><a href="../reference/rename.html">rename()</a></code>, <code><a href="../reference/mutate.html">mutate()</a></code>, the window, grouping and join verbs carry the mark, and it is dropped when the column is. <code>collect(x, sf = FALSE)</code> returns the hex-WKB string column, and <code>collect(x, geom =, crs =)</code> decodes a geometry column the node does not carry.</p></li>
+<li><p><code><a href="../reference/collect_sf.html">collect_sf()</a></code> is deprecated in favour of <code><a href="../reference/collect.html">collect()</a></code>.</p></li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.13.0" id="vectra-0130">vectra 0.13.0<a class="anchor" aria-label="anchor" href="#vectra-0130"></a></h2><p class="text-muted">CRAN release: 2026-09-30</p>
+<div class="section level3">
+<h3 id="new-features-0-13-0">New features<a class="anchor" aria-label="anchor" href="#new-features-0-13-0"></a></h3>
+<ul><li><p><code><a href="../reference/tbl_parquet.html">tbl_parquet()</a></code> reads Parquet files natively, with no arrow dependency (<a href="https://github.com/gcol33/vectra/issues/25" class="external-link">#25</a>): data page v1 and v2, the dictionary, RLE/bit-packed, delta and byte-stream-split encodings, and UNCOMPRESSED, SNAPPY, GZIP, ZSTD and LZ4 pages. Logical types map to <code>Date</code>, <code>POSIXct</code>, int64 and double; struct fields are flattened and one-level lists and maps are read as joined text (<code>list_sep</code>). Only the columns a query uses are read, row-group statistics skip groups a filter cannot match, and a vector of files or a directory reads as one table. BROTLI and LZO pages, and lists of lists, raise an error naming the column.</p></li>
+<li><p><code><a href="../reference/tbl_tiff.html">tbl_tiff()</a></code> reads LZW-compressed GeoTIFFs, including those <code>vec_to_tiff(compression = "lzw")</code> writes, and undoes predictor 2 (horizontal differencing) and predictor 3 (floating point) for LZW and DEFLATE strips and tiles (<a href="https://github.com/gcol33/vectra/issues/21" class="external-link">#21</a>).</p></li>
+<li><p>Expressions support <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">sin()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">cos()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">tan()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">asin()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">acos()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">atan()</a></code>, <code><a href="https://rdrr.io/r/base/Trig.html" class="external-link">atan2()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">sinh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">cosh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">tanh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">asinh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">acosh()</a></code>, <code><a href="https://rdrr.io/r/base/Hyperbolic.html" class="external-link">atanh()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">expm1()</a></code>, <code><a href="https://rdrr.io/r/base/Log.html" class="external-link">log1p()</a></code> and <code>^</code> (<a href="https://github.com/gcol33/vectra/issues/22" class="external-link">#22</a>). A math call with the wrong number of arguments is now an error instead of dropping the extra ones, and <code><a href="https://rdrr.io/r/base/sign.html" class="external-link">sign()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin()</a></code>/<code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax()</a></code> follow base R on <code>NaN</code>.</p></li>
+<li><p>Every verb that takes expressions captures them through rlang, so <code>!!</code>, <code>!!!</code>, <code>{{ }}</code>, <code>:=</code>, <code>.data</code> and <code>.env</code> work as in dplyr (<a href="https://github.com/gcol33/vectra/issues/24" class="external-link">#24</a>). <code><a href="../reference/group_by.html">group_by()</a></code> and <code><a href="../reference/count.html">count()</a></code> accept <code>!!sym(k)</code>, <code>.data[[k]]</code>, <code>across(all_of(k))</code>, <code>pick()</code> and computed groups (<code>group_by(odd = x %% 2)</code>), and gain <code>.add</code>.</p></li>
+<li><p><code><a href="../reference/spatial_join.html">spatial_join()</a></code> gains <code>keep_geom</code>. <code>keep_geom = FALSE</code> drops the left geometry, and with <code>coords =</code> the points are never encoded (<a href="https://github.com/gcol33/vectra/issues/23" class="external-link">#23</a>).</p></li>
+</ul></div>
+<div class="section level3">
+<h3 id="performance-and-memory-0-13-0">Performance and memory<a class="anchor" aria-label="anchor" href="#performance-and-memory-0-13-0"></a></h3>
+<ul><li><p><code><a href="../reference/vectra_mem.html">vectra_mem()</a></code> is now a bound on what a query allocates (<a href="https://github.com/gcol33/vectra/issues/19" class="external-link">#19</a>, <a href="https://github.com/gcol33/vectra/issues/28" class="external-link">#28</a>). All the buffering steps of a query (sorts, joins, grouped aggregates, fuzzy joins, k-mer counts) reserve the bytes they actually allocate from one shared pool of <code><a href="../reference/vectra_mem.html">vectra_mem()</a></code> bytes, and spill when it is exhausted; each is guaranteed a quarter of an equal share. Previously each step received the whole budget and counted only part of what it allocated, so a join feeding a grouped aggregate could peak at several times the budget. Temporary spill files are written uncompressed, which is faster at the same peak memory. On 2e7 rows with a 256 MB budget, a join followed by a grouped summary went from 50.1 s and 427 MB above idle to 7.7 s and 168 MB.</p></li>
+<li><p>Grouped <code><a href="../reference/summarise.html">summarise()</a></code> aggregates in hash tables instead of always sorting its input (<a href="https://github.com/gcol33/vectra/issues/16" class="external-link">#16</a>). When the groups outgrow their share of the budget, the rest of the input is hash-partitioned to disk and each partition aggregated in turn; results stay sorted by key, and <code><a href="https://rdrr.io/r/stats/median.html" class="external-link">median()</a></code>/<code>n_distinct()</code> keep their spilling path. On 2e7 rows and 1,000 groups this took 0.9 s instead of 1.9 s, with memory falling from 1.16 GB to under 100 MB.</p></li>
+<li><p><code><a href="../reference/arrange.html">arrange()</a></code> with enough memory emits its result in 131,072-row batches from one permutation instead of as a single batch holding a second copy of the data (<a href="https://github.com/gcol33/vectra/issues/20" class="external-link">#20</a>). <code><a href="../reference/arrange.html">arrange()</a></code> followed by <code><a href="../reference/write_vtr.html">write_vtr()</a></code> on 2e7 rows went from 54.8 s to 3.5 s.</p></li>
+<li><p>Column pruning passes through <code><a href="../reference/mutate.html">mutate()</a></code>, <code><a href="../reference/select.html">select()</a></code> and <code><a href="../reference/rename.html">rename()</a></code>, so a scan reads only the columns a query uses (<a href="https://github.com/gcol33/vectra/issues/17" class="external-link">#17</a>). Filters prune row groups by zone map, sorted-column search and index even when written after a <code><a href="../reference/mutate.html">mutate()</a></code>, <code><a href="../reference/select.html">select()</a></code>, <code><a href="../reference/arrange.html">arrange()</a></code> or another filter, and in every input of <code><a href="../reference/bind_rows.html">bind_rows()</a></code> (<a href="https://github.com/gcol33/vectra/issues/18" class="external-link">#18</a>); the plan no longer depends on the order the verbs are written in.</p></li>
+<li><p><code><a href="../reference/spatial_join.html">spatial_join()</a></code>’s native path is a lazy streaming node: the result flows into the next verb without a spill and without buffering R data frames (<a href="https://github.com/gcol33/vectra/issues/23" class="external-link">#23</a>). Tagging 1e7 points and counting went from 72.5 s to 6.9 s.</p></li>
+<li><p><code>compress = "fast"</code>, the <code><a href="../reference/write_vtr.html">write_vtr()</a></code> default, runs its LZ stage at the fastest match-search level; streaming a filtered result to <code>.vtr</code> is about 2.8x faster for files about 3.6% larger (<a href="https://github.com/gcol33/vectra/issues/26" class="external-link">#26</a>). <code>compress = "small"</code> also tries that setting, so it is still never larger than <code>"fast"</code>.</p></li>
+</ul></div>
+<div class="section level3">
+<h3 id="bug-fixes-0-13-0">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-13-0"></a></h3>
+<ul><li><p><code><a href="../reference/bind_rows.html">bind_rows()</a></code> of stores whose column types differ keeps the widened type after column pruning instead of narrowing a double to an integer.</p></li>
+<li><p>Filter pushdown no longer stops after the 16th input of <code><a href="../reference/bind_rows.html">bind_rows()</a></code>.</p></li>
+<li><p><code><a href="../reference/arrange.html">arrange()</a></code> documentation now states that <code>NA</code> sorts last in both directions, which is what it has always done.</p></li>
+<li><p><code><a href="../reference/explain.html">explain()</a></code> no longer prints an offload grade of “streaming scan” for plans that contain a sort or a join; the grade is shown only for replay caches and partitions that carry one (<a href="https://github.com/gcol33/vectra/issues/27" class="external-link">#27</a>).</p></li>
+</ul></div>
+<div class="section level3">
+<h3 id="installation-0-13-0">Installation<a class="anchor" aria-label="anchor" href="#installation-0-13-0"></a></h3>
+<ul><li>
+<code>configure</code> now tests the candidate OpenMP flags by building, loading and calling a small parallel routine, and keeps the first that works (<a href="https://github.com/gcol33/vectra/issues/15" class="external-link">#15</a>). On macOS it tries <code>-Xclang -fopenmp -lomp</code> first, so a binary that uses OpenMP records a real dependency on the <code>libomp.dylib</code> that CRAN’s R ships instead of looking its symbols up at load time; if nothing works the package builds single-threaded and says so. The package now compiles without warnings when OpenMP is unavailable.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="documentation-0-13-0">Documentation<a class="anchor" aria-label="anchor" href="#documentation-0-13-0"></a></h3>
+<ul><li>The engine, large-data, spatial, formats and indexing vignettes, and the README, describe the current engine: the tdc container format, hash-first aggregation, the shared memory pool, spilling joins, streaming windows and mapped hash indexes (<a href="https://github.com/gcol33/vectra/issues/27" class="external-link">#27</a>).</li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.12.4" id="vectra-0124">vectra 0.12.4<a class="anchor" aria-label="anchor" href="#vectra-0124"></a></h2><p class="text-muted">CRAN release: 2026-09-16</p>
+<div class="section level3">
+<h3 id="bug-fixes-0-12-4">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-12-4"></a></h3>
+<ul><li>
+<p><code><a href="../reference/filter.html">filter()</a></code> no longer drops rows through a <code>.vtri</code> index left behind by a store it was not built on (<a href="https://github.com/gcol33/vectra/issues/13" class="external-link">#13</a>). An index stamped only the store’s row count and row-group count, so a store replaced by another of the same shape – written again with <code><a href="../reference/write_vtr.html">write_vtr()</a></code>, downloaded, or renamed over the old path – passed the check, and a filter pruned row groups by the previous store’s keys: <code>write_vtr(old, f); create_index(f, "id"); write_vtr(new, f)</code> left <code>filter(tbl(f), id == "new042")</code> returning zero rows and <code><a href="../reference/has_index.html">has_index()</a></code> reporting <code>TRUE</code>. Two changes close it.</p>
+<p><code><a href="../reference/write_vtr.html">write_vtr()</a></code> removes the <code>.vtri</code> indexes of the store it replaces.</p>
+<p>An index now also stamps a fingerprint of the store, and is ignored, and reported absent by <code><a href="../reference/has_index.html">has_index()</a></code>, whenever the store’s fingerprint differs, however the store came to be replaced. The fingerprint digests the store’s row-group index and the digest of its bytes that the store now records (see below), so it costs the store’s metadata to check, never its data. A row or column append carries each index over and restamps it only when the index described the store before the append; an index that was already stale is rebuilt instead.</p>
+</li>
+<li><p>A source install works in a non-UTF-8 locale again (<a href="https://github.com/gcol33/vectra/issues/14" class="external-link">#14</a>). <code>R/verbs.R</code> began with a UTF-8 byte-order mark, which the R parser reads as a token under <code>LC_CTYPE=C</code>, so <code>R CMD INSTALL</code> from an SSH session, cron job or CI image without a UTF-8 locale stopped with “unable to collate and parse R files”.</p></li>
+</ul></div>
+<div class="section level3">
+<h3 id="on-disk-format-0-12-4">On-disk format<a class="anchor" aria-label="anchor" href="#on-disk-format-0-12-4"></a></h3>
+<ul><li><p>A <code>.vtr</code> file now ends in a 24-byte trailer after the tdc container: the container’s length, a 64-bit digest of every byte written to it, a version and the magic <code>VTRD</code>. The writers compute the digest as they write, so it costs no extra pass; an append seeds it with the store’s fingerprint before the append and moves the trailer to the new end, and an aborted append puts the old one back. The trailer lies past everything the container addresses, so earlier vectra versions read these files unchanged, and files without one still read: their fingerprint covers their layout (row-group, block sizes and column statistics) only, which does not separate two stores whose blocks agree on all of those. Rewriting such a store with <code><a href="../reference/write_vtr.html">write_vtr()</a></code> gives it a digest.</p></li>
+<li><p><code>.vtri</code> indexes are format version 5, which adds the store fingerprint to the header. Version 4 indexes read as absent, as earlier superseded versions do; <code><a href="../reference/create_index.html">create_index()</a></code> rebuilds them, and <code><a href="../reference/append_vtr.html">append_vtr()</a></code> rebuilds any it finds.</p></li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.12.3" id="vectra-0123">vectra 0.12.3<a class="anchor" aria-label="anchor" href="#vectra-0123"></a></h2><p class="text-muted">CRAN release: 2026-09-14</p>
+<div class="section level3">
+<h3 id="tests-0-12-3">Tests<a class="anchor" aria-label="anchor" href="#tests-0-12-3"></a></h3>
+<ul><li>The BED interval-overlap test checks <code><a href="../reference/interval_join.html">interval_join()</a></code> against an all-pairs overlap computed in base R instead of <code><a href="https://rdrr.io/pkg/IRanges/man/findOverlaps-methods.html" class="external-link">GenomicRanges::findOverlaps()</a></code>, so GenomicRanges, IRanges and S4Vectors are no longer suggested.</li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.12.2" id="vectra-0122">vectra 0.12.2<a class="anchor" aria-label="anchor" href="#vectra-0122"></a></h2>
+<div class="section level3">
+<h3 id="bug-fixes-0-12-2">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-12-2"></a></h3>
+<ul><li><p>The geometry expressions (<code><a href="https://r-spatial.github.io/sf/reference/geos_measures.html" class="external-link">st_area()</a></code>, <code><a href="https://r-spatial.github.io/sf/reference/geos_binary_pred.html" class="external-link">st_intersects()</a></code>, …), the streamed spatial verbs and <code><a href="../reference/spatial_overlay.html">spatial_overlay()</a></code> no longer trigger clang’s <code>-fsanitize=function</code> on every GEOS call. vectra calls the GEOS C API through the function pointers libgeos hands out, declared in C with opaque struct handles; GEOS defines the same functions in C++ with class handles. The types are ABI-identical, so results were never affected, but the sanitizer compares them by name. That one check is now turned off for the code calling GEOS, and a clang job building libgeos and vectra under the sanitizer runs in CI.</p></li>
+<li><p>A string column whose values are all empty no longer reaches pointer arithmetic on a NULL buffer. Reading one from a <code>.vtr</code> store gave the column no string data, which a fuzzy join then offset, and the tdc dictionary encoder did the same when writing one. Both were undefined behaviour in C reported by clang’s UBSAN (<code>applying zero offset to null pointer</code>); results were not affected.</p></li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.12.1" id="vectra-0121">vectra 0.12.1<a class="anchor" aria-label="anchor" href="#vectra-0121"></a></h2>
+<div class="section level3">
+<h3 id="bug-fixes-0-12-1">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-12-1"></a></h3>
+<ul><li>
+<code><a href="../reference/filter.html">filter()</a></code> on a sorted integer column no longer drops rows when the literal it is compared with lies outside the integer range. The scan converted the literal to a 64-bit integer to search the sorted row groups, and a value past that range has no integer to convert to: <code>filter(k &lt; 1e300)</code> returned zero rows where every row matches. A double literal past 2^53, or <code>NaN</code>, now leaves the search off and the filter decides every row. The composite-index probe applies the same range check the single-column probe already did. The conversion was reported by the clang-UBSAN check as <code>1e+300 is outside the range of representable values of type 'long'</code>.</li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.12.0" id="vectra-0120">vectra 0.12.0<a class="anchor" aria-label="anchor" href="#vectra-0120"></a></h2><p class="text-muted">CRAN release: 2026-09-09</p>
+<div class="section level3">
+<h3 id="bug-fixes-0-12-0">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-12-0"></a></h3>
+<ul><li>
+<code><a href="../reference/spatial_line_merge.html">spatial_line_merge()</a></code>, <code><a href="../reference/spatial_centerline.html">spatial_centerline()</a></code> and <code>contours(merge = TRUE)</code> no longer fail when a group’s linework unions to a single chain. <code><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">sf::st_line_merge()</a></code> accepts only a <code>MULTILINESTRING</code>, and the union of a set of lines carries that type only while it has more than one part: a group of one segment, or of segments that GEOS collapses to one chain, unions to a <code>LINESTRING</code> and tripped the assertion with <code>inherits(x, "sfc_MULTILINESTRING") is not TRUE</code>. Which of the two a given input yields depends on the GEOS build and on whether the union runs through <code>s2</code>, as it does for geographic coordinates, so the union type is now dispatched on rather than assumed, and a union that is already maximal is passed through. A union that leaves non-linear parts (<code>GEOMETRYCOLLECTION</code>) has its linear parts extracted and merged. Results are unchanged wherever the union was a <code>MULTILINESTRING</code>.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.11.9" id="vectra-0119">vectra 0.11.9<a class="anchor" aria-label="anchor" href="#vectra-0119"></a></h2>
 <div class="section level3">
@@ -1034,7 +1126,7 @@
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer></div>

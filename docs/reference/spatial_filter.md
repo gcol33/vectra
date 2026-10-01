@@ -131,6 +131,7 @@ region <- nc[nc$NAME %in% c("Ashe", "Alleghany", "Surry"), "NAME"]
 
 set.seed(1)
 pts <- sf::st_coordinates(sf::st_sample(nc, 300))
+#> Warning: coordinate ranges not computed along great circles; install package lwgeom to get rid of this warning
 f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f)
 
@@ -138,5 +139,6 @@ write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f)
 inside <- tbl(f) |>
   spatial_filter(region, coords = c("x", "y"), crs = sf::st_crs(nc))
 nrow(collect(inside))
+#> [1] 11
 unlink(f)
 ```

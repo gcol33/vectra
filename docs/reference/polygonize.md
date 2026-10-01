@@ -67,7 +67,7 @@ polygonize(
 
 A `vectra_node` with the value column and a hex-WKB `geometry` column,
 materialise it with
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Details
 
@@ -83,8 +83,8 @@ delegated to sf (an optional dependency).
 for the inverse,
 [`contours()`](https://gillescolling.com/vectra/reference/contours.md)
 for iso-lines,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialise as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialise as `sf`.
 
 ## Examples
 
@@ -95,6 +95,15 @@ f <- tempfile(fileext = ".vec")
 vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 4, 4))
 
 polys <- polygonize(f)
-collect_sf(polys)
+collect(polys)
+#> Simple feature collection with 3 features and 1 field
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 4 ymax: 4
+#> CRS:           NA
+#>   value                       geometry
+#> 1     1 POLYGON ((2 2, 0 2, 0 3, 0 ...
+#> 2     2 POLYGON ((4 2, 2 2, 2 3, 2 ...
+#> 3     3 POLYGON ((4 0, 0 0, 0 1, 0 ...
 unlink(f)
 ```

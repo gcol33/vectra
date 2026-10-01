@@ -28,5 +28,18 @@ f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 node <- tbl(f)
 print(node)
+#> vectra query node
+#> Columns (11):
+#>   mpg <double>
+#>   cyl <double>
+#>   disp <double>
+#>   hp <double>
+#>   drat <double>
+#>   wt <double>
+#>   qsec <double>
+#>   vs <double>
+#>   am <double>
+#>   gear <double>
+#>   carb <double>
 unlink(f)
 ```

@@ -76,8 +76,8 @@ carrying the input CRS.
 
 Geometry travels through the engine as hex-encoded WKB in a string
 column and the CRS is carried on the returned node; use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize. The sf package is an optional dependency (Suggests).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize. The sf package is an optional dependency (Suggests).
 
 ## See also
 
@@ -85,7 +85,7 @@ to materialize. The sf package is an optional dependency (Suggests).
 to snap toward another layer instead of a grid,
 [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
 whose noding uses the same snap-rounding,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Examples
 
@@ -98,6 +98,13 @@ write_vtr(data.frame(
 ), f)
 
 # Snap the jittered corners back onto a 0.1 grid.
-tbl(f) |> spatial_snap_grid(0.1) |> collect_sf()
+tbl(f) |> spatial_snap_grid(0.1) |> collect()
+#> Simple feature collection with 1 feature and 1 field
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 1 ymax: 1
+#> CRS:           NA
+#>   id                       geometry
+#> 1  1 POLYGON ((0 1, 1 1, 1 0, 0 ...
 unlink(f)
 ```

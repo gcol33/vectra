@@ -82,8 +82,8 @@ tracks one batch and its parts, not the whole layer.
 for per-feature transforms,
 [`spatial_dissolve()`](https://gillescolling.com/vectra/reference/spatial_dissolve.md)
 to merge features the other way,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -98,6 +98,14 @@ write_vtr(data.frame(
 ), f)
 
 # One row per polygon, attributes copied, parts numbered.
-tbl(f) |> spatial_explode(part = "part_id") |> collect_sf()
+tbl(f) |> spatial_explode(part = "part_id") |> collect()
+#> Simple feature collection with 2 features and 2 fields
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 3
+#> CRS:           NA
+#>   id part_id                       geometry
+#> 1  1       1 POLYGON ((0 0, 1 0, 1 1, 0 ...
+#> 2  1       2 POLYGON ((2 2, 3 2, 3 3, 2 ...
 unlink(f)
 ```

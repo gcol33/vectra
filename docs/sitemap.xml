@@ -17,6 +17,7 @@
 <url><loc>https://gillescolling.com/vectra/articles/streaming-spatial.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/articles/string-ops.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/authors.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/CLAUDE.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/index.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/LICENSE-text.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/LICENSE.html</loc></url>
@@ -112,6 +113,7 @@
 <url><loc>https://gillescolling.com/vectra/reference/tbl_csv.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_fasta.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_fastq.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/reference/tbl_parquet.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_sqlite.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_tiff.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/tbl_xlsx.html</loc></url>
@@ -142,5 +144,6 @@
 <url><loc>https://gillescolling.com/vectra/reference/write_tiff.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/write_vtr.html</loc></url>
 <url><loc>https://gillescolling.com/vectra/reference/zonal.html</loc></url>
+<url><loc>https://gillescolling.com/vectra/ROADMAP.html</loc></url>
 </urlset>
 

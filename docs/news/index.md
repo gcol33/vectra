@@ -1,5 +1,340 @@
 # Changelog
 
+## vectra 0.13.1
+
+### Changes
+
+- [`collect()`](https://gillescolling.com/vectra/reference/collect.md)
+  returns an `sf` object when the query still carries a geometry column,
+  or when a string column holds hex-encoded WKB (recognised from the
+  first values of the column, so a stored geometry column comes back as
+  `sf` from a plain
+  [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md)), so
+  `tbl(f) |> spatial_map(...) |> filter(...) |> collect()` needs no
+  second verb. The spatial verbs, and
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md)
+  with a geometry-producing `st_*` expression, mark the geometry column
+  on the node together with its CRS;
+  [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
+  [`select()`](https://gillescolling.com/vectra/reference/select.md),
+  [`rename()`](https://gillescolling.com/vectra/reference/rename.md),
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  the window, grouping and join verbs carry the mark, and it is dropped
+  when the column is. `collect(x, sf = FALSE)` returns the hex-WKB
+  string column, and `collect(x, geom =, crs =)` decodes a geometry
+  column the node does not carry.
+
+- [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
+  is deprecated in favour of
+  [`collect()`](https://gillescolling.com/vectra/reference/collect.md).
+
+## vectra 0.13.0
+
+CRAN release: 2026-09-30
+
+### New features
+
+- [`tbl_parquet()`](https://gillescolling.com/vectra/reference/tbl_parquet.md)
+  reads Parquet files natively, with no arrow dependency
+  ([\#25](https://github.com/gcol33/vectra/issues/25)): data page v1 and
+  v2, the dictionary, RLE/bit-packed, delta and byte-stream-split
+  encodings, and UNCOMPRESSED, SNAPPY, GZIP, ZSTD and LZ4 pages. Logical
+  types map to `Date`, `POSIXct`, int64 and double; struct fields are
+  flattened and one-level lists and maps are read as joined text
+  (`list_sep`). Only the columns a query uses are read, row-group
+  statistics skip groups a filter cannot match, and a vector of files or
+  a directory reads as one table. BROTLI and LZO pages, and lists of
+  lists, raise an error naming the column.
+
+- [`tbl_tiff()`](https://gillescolling.com/vectra/reference/tbl_tiff.md)
+  reads LZW-compressed GeoTIFFs, including those
+  `vec_to_tiff(compression = "lzw")` writes, and undoes predictor 2
+  (horizontal differencing) and predictor 3 (floating point) for LZW and
+  DEFLATE strips and tiles
+  ([\#21](https://github.com/gcol33/vectra/issues/21)).
+
+- Expressions support [`sin()`](https://rdrr.io/r/base/Trig.html),
+  [`cos()`](https://rdrr.io/r/base/Trig.html),
+  [`tan()`](https://rdrr.io/r/base/Trig.html),
+  [`asin()`](https://rdrr.io/r/base/Trig.html),
+  [`acos()`](https://rdrr.io/r/base/Trig.html),
+  [`atan()`](https://rdrr.io/r/base/Trig.html),
+  [`atan2()`](https://rdrr.io/r/base/Trig.html),
+  [`sinh()`](https://rdrr.io/r/base/Hyperbolic.html),
+  [`cosh()`](https://rdrr.io/r/base/Hyperbolic.html),
+  [`tanh()`](https://rdrr.io/r/base/Hyperbolic.html),
+  [`asinh()`](https://rdrr.io/r/base/Hyperbolic.html),
+  [`acosh()`](https://rdrr.io/r/base/Hyperbolic.html),
+  [`atanh()`](https://rdrr.io/r/base/Hyperbolic.html),
+  [`expm1()`](https://rdrr.io/r/base/Log.html),
+  [`log1p()`](https://rdrr.io/r/base/Log.html) and `^`
+  ([\#22](https://github.com/gcol33/vectra/issues/22)). A math call with
+  the wrong number of arguments is now an error instead of dropping the
+  extra ones, and [`sign()`](https://rdrr.io/r/base/sign.html),
+  [`pmin()`](https://rdrr.io/r/base/Extremes.html)/[`pmax()`](https://rdrr.io/r/base/Extremes.html)
+  follow base R on `NaN`.
+
+- Every verb that takes expressions captures them through rlang, so
+  `!!`, `!!!`, `{{ }}`, `:=`, `.data` and `.env` work as in dplyr
+  ([\#24](https://github.com/gcol33/vectra/issues/24)).
+  [`group_by()`](https://gillescolling.com/vectra/reference/group_by.md)
+  and [`count()`](https://gillescolling.com/vectra/reference/count.md)
+  accept `!!sym(k)`, `.data[[k]]`, `across(all_of(k))`, `pick()` and
+  computed groups (`group_by(odd = x %% 2)`), and gain `.add`.
+
+- [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)
+  gains `keep_geom`. `keep_geom = FALSE` drops the left geometry, and
+  with `coords =` the points are never encoded
+  ([\#23](https://github.com/gcol33/vectra/issues/23)).
+
+### Performance and memory
+
+- [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+  is now a bound on what a query allocates
+  ([\#19](https://github.com/gcol33/vectra/issues/19),
+  [\#28](https://github.com/gcol33/vectra/issues/28)). All the buffering
+  steps of a query (sorts, joins, grouped aggregates, fuzzy joins, k-mer
+  counts) reserve the bytes they actually allocate from one shared pool
+  of
+  [`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)
+  bytes, and spill when it is exhausted; each is guaranteed a quarter of
+  an equal share. Previously each step received the whole budget and
+  counted only part of what it allocated, so a join feeding a grouped
+  aggregate could peak at several times the budget. Temporary spill
+  files are written uncompressed, which is faster at the same peak
+  memory. On 2e7 rows with a 256 MB budget, a join followed by a grouped
+  summary went from 50.1 s and 427 MB above idle to 7.7 s and 168 MB.
+
+- Grouped
+  [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md)
+  aggregates in hash tables instead of always sorting its input
+  ([\#16](https://github.com/gcol33/vectra/issues/16)). When the groups
+  outgrow their share of the budget, the rest of the input is
+  hash-partitioned to disk and each partition aggregated in turn;
+  results stay sorted by key, and
+  [`median()`](https://rdrr.io/r/stats/median.html)/`n_distinct()` keep
+  their spilling path. On 2e7 rows and 1,000 groups this took 0.9 s
+  instead of 1.9 s, with memory falling from 1.16 GB to under 100 MB.
+
+- [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
+  with enough memory emits its result in 131,072-row batches from one
+  permutation instead of as a single batch holding a second copy of the
+  data ([\#20](https://github.com/gcol33/vectra/issues/20)).
+  [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
+  followed by
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+  on 2e7 rows went from 54.8 s to 3.5 s.
+
+- Column pruning passes through
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  [`select()`](https://gillescolling.com/vectra/reference/select.md) and
+  [`rename()`](https://gillescolling.com/vectra/reference/rename.md), so
+  a scan reads only the columns a query uses
+  ([\#17](https://github.com/gcol33/vectra/issues/17)). Filters prune
+  row groups by zone map, sorted-column search and index even when
+  written after a
+  [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),
+  [`select()`](https://gillescolling.com/vectra/reference/select.md),
+  [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
+  or another filter, and in every input of
+  [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md)
+  ([\#18](https://github.com/gcol33/vectra/issues/18)); the plan no
+  longer depends on the order the verbs are written in.
+
+- [`spatial_join()`](https://gillescolling.com/vectra/reference/spatial_join.md)’s
+  native path is a lazy streaming node: the result flows into the next
+  verb without a spill and without buffering R data frames
+  ([\#23](https://github.com/gcol33/vectra/issues/23)). Tagging 1e7
+  points and counting went from 72.5 s to 6.9 s.
+
+- `compress = "fast"`, the
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+  default, runs its LZ stage at the fastest match-search level;
+  streaming a filtered result to `.vtr` is about 2.8x faster for files
+  about 3.6% larger
+  ([\#26](https://github.com/gcol33/vectra/issues/26)).
+  `compress = "small"` also tries that setting, so it is still never
+  larger than `"fast"`.
+
+### Bug fixes
+
+- [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md)
+  of stores whose column types differ keeps the widened type after
+  column pruning instead of narrowing a double to an integer.
+
+- Filter pushdown no longer stops after the 16th input of
+  [`bind_rows()`](https://gillescolling.com/vectra/reference/bind_rows.md).
+
+- [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
+  documentation now states that `NA` sorts last in both directions,
+  which is what it has always done.
+
+- [`explain()`](https://gillescolling.com/vectra/reference/explain.md)
+  no longer prints an offload grade of “streaming scan” for plans that
+  contain a sort or a join; the grade is shown only for replay caches
+  and partitions that carry one
+  ([\#27](https://github.com/gcol33/vectra/issues/27)).
+
+### Installation
+
+- `configure` now tests the candidate OpenMP flags by building, loading
+  and calling a small parallel routine, and keeps the first that works
+  ([\#15](https://github.com/gcol33/vectra/issues/15)). On macOS it
+  tries `-Xclang -fopenmp -lomp` first, so a binary that uses OpenMP
+  records a real dependency on the `libomp.dylib` that CRAN’s R ships
+  instead of looking its symbols up at load time; if nothing works the
+  package builds single-threaded and says so. The package now compiles
+  without warnings when OpenMP is unavailable.
+
+### Documentation
+
+- The engine, large-data, spatial, formats and indexing vignettes, and
+  the README, describe the current engine: the tdc container format,
+  hash-first aggregation, the shared memory pool, spilling joins,
+  streaming windows and mapped hash indexes
+  ([\#27](https://github.com/gcol33/vectra/issues/27)).
+
+## vectra 0.12.4
+
+CRAN release: 2026-09-16
+
+### Bug fixes
+
+- [`filter()`](https://gillescolling.com/vectra/reference/filter.md) no
+  longer drops rows through a `.vtri` index left behind by a store it
+  was not built on ([\#13](https://github.com/gcol33/vectra/issues/13)).
+  An index stamped only the store’s row count and row-group count, so a
+  store replaced by another of the same shape – written again with
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md),
+  downloaded, or renamed over the old path – passed the check, and a
+  filter pruned row groups by the previous store’s keys:
+  `write_vtr(old, f); create_index(f, "id"); write_vtr(new, f)` left
+  `filter(tbl(f), id == "new042")` returning zero rows and
+  [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md)
+  reporting `TRUE`. Two changes close it.
+
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+  removes the `.vtri` indexes of the store it replaces.
+
+  An index now also stamps a fingerprint of the store, and is ignored,
+  and reported absent by
+  [`has_index()`](https://gillescolling.com/vectra/reference/has_index.md),
+  whenever the store’s fingerprint differs, however the store came to be
+  replaced. The fingerprint digests the store’s row-group index and the
+  digest of its bytes that the store now records (see below), so it
+  costs the store’s metadata to check, never its data. A row or column
+  append carries each index over and restamps it only when the index
+  described the store before the append; an index that was already stale
+  is rebuilt instead.
+
+- A source install works in a non-UTF-8 locale again
+  ([\#14](https://github.com/gcol33/vectra/issues/14)). `R/verbs.R`
+  began with a UTF-8 byte-order mark, which the R parser reads as a
+  token under `LC_CTYPE=C`, so `R CMD INSTALL` from an SSH session, cron
+  job or CI image without a UTF-8 locale stopped with “unable to collate
+  and parse R files”.
+
+### On-disk format
+
+- A `.vtr` file now ends in a 24-byte trailer after the tdc container:
+  the container’s length, a 64-bit digest of every byte written to it, a
+  version and the magic `VTRD`. The writers compute the digest as they
+  write, so it costs no extra pass; an append seeds it with the store’s
+  fingerprint before the append and moves the trailer to the new end,
+  and an aborted append puts the old one back. The trailer lies past
+  everything the container addresses, so earlier vectra versions read
+  these files unchanged, and files without one still read: their
+  fingerprint covers their layout (row-group, block sizes and column
+  statistics) only, which does not separate two stores whose blocks
+  agree on all of those. Rewriting such a store with
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md)
+  gives it a digest.
+
+- `.vtri` indexes are format version 5, which adds the store fingerprint
+  to the header. Version 4 indexes read as absent, as earlier superseded
+  versions do;
+  [`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)
+  rebuilds them, and
+  [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  rebuilds any it finds.
+
+## vectra 0.12.3
+
+CRAN release: 2026-09-14
+
+### Tests
+
+- The BED interval-overlap test checks
+  [`interval_join()`](https://gillescolling.com/vectra/reference/interval_join.md)
+  against an all-pairs overlap computed in base R instead of
+  [`GenomicRanges::findOverlaps()`](https://rdrr.io/pkg/IRanges/man/findOverlaps-methods.html),
+  so GenomicRanges, IRanges and S4Vectors are no longer suggested.
+
+## vectra 0.12.2
+
+### Bug fixes
+
+- The geometry expressions
+  ([`st_area()`](https://r-spatial.github.io/sf/reference/geos_measures.html),
+  [`st_intersects()`](https://r-spatial.github.io/sf/reference/geos_binary_pred.html),
+  …), the streamed spatial verbs and
+  [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md)
+  no longer trigger clang’s `-fsanitize=function` on every GEOS call.
+  vectra calls the GEOS C API through the function pointers libgeos
+  hands out, declared in C with opaque struct handles; GEOS defines the
+  same functions in C++ with class handles. The types are ABI-identical,
+  so results were never affected, but the sanitizer compares them by
+  name. That one check is now turned off for the code calling GEOS, and
+  a clang job building libgeos and vectra under the sanitizer runs in
+  CI.
+
+- A string column whose values are all empty no longer reaches pointer
+  arithmetic on a NULL buffer. Reading one from a `.vtr` store gave the
+  column no string data, which a fuzzy join then offset, and the tdc
+  dictionary encoder did the same when writing one. Both were undefined
+  behaviour in C reported by clang’s UBSAN
+  (`applying zero offset to null pointer`); results were not affected.
+
+## vectra 0.12.1
+
+### Bug fixes
+
+- [`filter()`](https://gillescolling.com/vectra/reference/filter.md) on
+  a sorted integer column no longer drops rows when the literal it is
+  compared with lies outside the integer range. The scan converted the
+  literal to a 64-bit integer to search the sorted row groups, and a
+  value past that range has no integer to convert to:
+  `filter(k < 1e300)` returned zero rows where every row matches. A
+  double literal past 2^53, or `NaN`, now leaves the search off and the
+  filter decides every row. The composite-index probe applies the same
+  range check the single-column probe already did. The conversion was
+  reported by the clang-UBSAN check as
+  `1e+300 is outside the range of representable values of type 'long'`.
+
+## vectra 0.12.0
+
+CRAN release: 2026-09-09
+
+### Bug fixes
+
+- [`spatial_line_merge()`](https://gillescolling.com/vectra/reference/spatial_line_merge.md),
+  [`spatial_centerline()`](https://gillescolling.com/vectra/reference/spatial_centerline.md)
+  and `contours(merge = TRUE)` no longer fail when a group’s linework
+  unions to a single chain.
+  [`sf::st_line_merge()`](https://r-spatial.github.io/sf/reference/geos_unary.html)
+  accepts only a `MULTILINESTRING`, and the union of a set of lines
+  carries that type only while it has more than one part: a group of one
+  segment, or of segments that GEOS collapses to one chain, unions to a
+  `LINESTRING` and tripped the assertion with
+  `inherits(x, "sfc_MULTILINESTRING") is not TRUE`. Which of the two a
+  given input yields depends on the GEOS build and on whether the union
+  runs through `s2`, as it does for geographic coordinates, so the union
+  type is now dispatched on rather than assumed, and a union that is
+  already maximal is passed through. A union that leaves non-linear
+  parts (`GEOMETRYCOLLECTION`) has its linear parts extracted and
+  merged. Results are unchanged wherever the union was a
+  `MULTILINESTRING`.
+
 ## vectra 0.11.9
 
 ### Bug fixes

@@ -19,6 +19,7 @@ and linear referencing. Every block runs on the optional
 
 library(vectra)
 library(sf)
+#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## From lines to polygons
@@ -41,7 +42,7 @@ grid <- st_sfc(
 f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(grid, hex = TRUE)), f)
 
-tbl(f) |> spatial_polygonize() |> collect_sf()
+tbl(f) |> spatial_polygonize() |> collect()
 #> Simple feature collection with 4 features and 0 fields
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -69,7 +70,7 @@ seg <- st_sfc(
 g <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(seg, hex = TRUE)), g)
 
-tbl(g) |> spatial_line_merge() |> collect_sf()
+tbl(g) |> spatial_line_merge() |> collect()
 #> Simple feature collection with 1 feature and 0 fields
 #> Geometry type: LINESTRING
 #> Dimension:     XY
@@ -99,7 +100,7 @@ p <- st_polygon(list(rbind(c(0.04, 0.03), c(1.02, 0.01),
 h <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = 1L, geometry = st_as_binary(st_sfc(p), hex = TRUE)), h)
 
-tbl(h) |> spatial_snap_grid(0.1) |> collect_sf()
+tbl(h) |> spatial_snap_grid(0.1) |> collect()
 #> Simple feature collection with 1 feature and 1 field
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -122,7 +123,7 @@ line <- st_linestring(rbind(c(0, 0.2), c(5, 0.1), c(10, 0.2)))
 sn <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = 1L, geometry = st_as_binary(st_sfc(line), hex = TRUE)), sn)
 
-tbl(sn) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+tbl(sn) |> spatial_snap(ref, tolerance = 0.5) |> collect()
 #> Simple feature collection with 1 feature and 1 field
 #> Geometry type: LINESTRING
 #> Dimension:     XY
@@ -152,7 +153,7 @@ write_vtr(data.frame(
   id = c("keep", "sliver"),
   geometry = st_as_binary(st_sfc(big, sliver), hex = TRUE)), e)
 
-tbl(e) |> spatial_eliminate(max_area = 5) |> collect_sf()
+tbl(e) |> spatial_eliminate(max_area = 5) |> collect()
 #> Simple feature collection with 1 feature and 1 field
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -186,7 +187,7 @@ write_vtr(data.frame(
   id = c("a", "b"),
   geometry = st_as_binary(st_sfc(p1, p2), hex = TRUE)), s)
 
-tbl(s) |> spatial_simplify(tolerance = 0.6) |> collect_sf()
+tbl(s) |> spatial_simplify(tolerance = 0.6) |> collect()
 #> Simple feature collection with 2 features and 1 field
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -217,7 +218,7 @@ m <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(
   id = 1L, geometry = st_as_binary(st_sfc(mp), hex = TRUE)), m)
 
-tbl(m) |> spatial_explode(part = "part_id") |> collect_sf()
+tbl(m) |> spatial_explode(part = "part_id") |> collect()
 #> Simple feature collection with 2 features and 2 fields
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -246,16 +247,16 @@ write_vtr(data.frame(
   geometry = st_as_binary(st_sfc(q1, q2), hex = TRUE)), tp)
 
 tbl(tp) |> spatial_topology(id = "id") |> collect()
-#>   face1 face2
-#> 1     a  <NA>
-#> 2     a     b
-#> 3     a  <NA>
-#> 4     b  <NA>
-#>                                                                                                                                             geometry
-#> 1                                                                 01020000000200000000000000000000000000000000000000000000000000f03f0000000000000000
-#> 2                                                                 010200000002000000000000000000f03f0000000000000000000000000000f03f000000000000f03f
-#> 3                                 010200000003000000000000000000f03f000000000000f03f0000000000000000000000000000f03f00000000000000000000000000000000
-#> 4 010200000004000000000000000000f03f0000000000000000000000000000004000000000000000000000000000000040000000000000f03f000000000000f03f000000000000f03f
+#> Simple feature collection with 4 features and 2 fields
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
+#> CRS:           NA
+#>   face1 face2                       geometry
+#> 1     a  <NA>          LINESTRING (0 0, 1 0)
+#> 2     a     b          LINESTRING (1 0, 1 1)
+#> 3     a  <NA>     LINESTRING (1 1, 0 1, 0 0)
+#> 4     b  <NA> LINESTRING (1 0, 2 0, 2 1, ...
 ```
 
 The shared edge between `a` and `b` appears once, with both face columns
@@ -278,7 +279,7 @@ strip <- st_polygon(list(rbind(
 cl <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(st_sfc(strip), hex = TRUE)), cl)
 
-tbl(cl) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+tbl(cl) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
 #> Simple feature collection with 5 features and 0 fields
 #> Geometry type: LINESTRING
 #> Dimension:     XY
@@ -317,7 +318,7 @@ write_vtr(data.frame(
 
 tbl(n) |>
   spatial_construct("convex_hull", by = "band", crs = st_crs(nc)) |>
-  collect_sf()
+  collect()
 #> Simple feature collection with 2 features and 1 field
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -339,7 +340,7 @@ cloud <- st_sfc(lapply(seq_len(nrow(xy)), function(i) st_point(xy[i, ])))
 v <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(cloud, hex = TRUE)), v)
 
-tbl(v) |> spatial_construct("voronoi") |> collect_sf()
+tbl(v) |> spatial_construct("voronoi") |> collect()
 #> Simple feature collection with 5 features and 0 fields
 #> Geometry type: POLYGON
 #> Dimension:     XY
@@ -377,9 +378,14 @@ write_vtr(pts, l)
 tbl(l) |>
   spatial_locate(roads, coords = c("x", "y"), y_id = "road") |>
   collect()
-#>   id x y line measure distance                                   geometry
-#> 1  1 3 1 main       3        1 01010000000000000000000840000000000000f03f
-#> 2  2 1 9 side       4        1 0101000000000000000000f03f0000000000002240
+#> Simple feature collection with 2 features and 6 fields
+#> Geometry type: POINT
+#> Dimension:     XY
+#> Bounding box:  xmin: 1 ymin: 1 xmax: 3 ymax: 9
+#> CRS:           NA
+#>   id x y line measure distance    geometry
+#> 1  1 3 1 main       3        1 POINT (3 1)
+#> 2  2 1 9 side       4        1 POINT (1 9)
 ```
 
 Point 1 is one unit off `main` at measure 3; point 2 is one unit off

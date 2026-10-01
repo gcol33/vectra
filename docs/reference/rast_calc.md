@@ -89,5 +89,14 @@ vec_write_raster(red, fr, dtype = "f64", extent = c(0, 0, 2, 2))
 
 ndvi <- rast_calc(list(nir = fn, red = fr), (nir - red) / (nir + red))
 round(ndvi, 3)
+#>       [,1]  [,2]
+#> [1,] 0.600 0.333
+#> [2,] 0.429 0.273
+#> attr(,"gt")
+#> [1]  0  1  0  2  0 -1
+#> attr(,"extent")
+#> [1] 0 0 2 2
+#> attr(,"crs")
+#> [1] NA
 unlink(c(fn, fr))
 ```

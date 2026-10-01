@@ -53,6 +53,10 @@ s <- vtr_schema(
   country = link("ct_code", tbl(f_ct))
 )
 print(s)
+#> vectra schema
+#> Fact table: 3 columns
+#>   species: 2 columns (key: sp_id)
+#>   country: 2 columns (key: ct_code)
 unlink(c(f_obs, f_sp, f_ct))
 # }
 ```

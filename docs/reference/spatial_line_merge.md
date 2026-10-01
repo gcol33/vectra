@@ -85,8 +85,8 @@ package is an optional dependency (Suggests).
 to union geometries by group,
 [`spatial_explode()`](https://gillescolling.com/vectra/reference/spatial_explode.md)
 for the opposite direction (multipart to single part),
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -101,6 +101,13 @@ write_vtr(data.frame(
 ), f)
 
 # The three end-to-end segments become one line.
-tbl(f) |> spatial_line_merge() |> collect_sf()
+tbl(f) |> spatial_line_merge() |> collect()
+#> Simple feature collection with 1 feature and 0 fields
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 0
+#> CRS:           NA
+#>                         geometry
+#> 1 LINESTRING (0 0, 1 0, 2 0, ...
 unlink(f)
 ```

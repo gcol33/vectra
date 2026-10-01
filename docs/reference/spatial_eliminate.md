@@ -106,8 +106,8 @@ to merge geometries by attribute,
 for coverage-preserving simplification,
 [`spatial_topology()`](https://gillescolling.com/vectra/reference/spatial_topology.md)
 for the shared-edge adjacency,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -123,6 +123,13 @@ write_vtr(data.frame(
 ), f)
 
 # The thin sliver is absorbed into the square it borders.
-tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
+#> Simple feature collection with 1 feature and 1 field
+#> Geometry type: POLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 10.3 ymax: 10
+#> CRS:           NA
+#>     id                       geometry
+#> 1 keep POLYGON ((0 0, 0 10, 10 10,...
 unlink(f)
 ```

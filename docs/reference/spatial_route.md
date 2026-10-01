@@ -118,8 +118,8 @@ geometry length). The sf package is an optional dependency (Suggests).
 to build the graph,
 [`spatial_service_area()`](https://gillescolling.com/vectra/reference/spatial_service_area.md)
 for reachability,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize routes as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize routes as `sf`.
 
 ## Examples
 
@@ -137,6 +137,14 @@ dest <- sf::st_sfc(sf::st_point(c(2, 1)))
 
 tbl(f) |>
   spatial_route(net, to = dest, coords = c("x", "y")) |>
-  collect_sf()
+  collect()
+#> Simple feature collection with 2 features and 5 fields
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
+#> CRS:           NA
+#>   id x y destination cost                       geometry
+#> 1  1 0 0           1    3 LINESTRING (0 0, 1 0, 1 1, ...
+#> 2  2 0 1           1    2     LINESTRING (0 1, 1 1, 2 1)
 unlink(f)
 ```

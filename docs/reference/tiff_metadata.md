@@ -27,6 +27,7 @@ f <- tempfile(fileext = ".tif")
 df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = as.double(1:4))
 write_tiff(df, f, metadata = "<GDALMetadata></GDALMetadata>")
 tiff_metadata(f)
+#> [1] "<GDALMetadata></GDALMetadata>"
 unlink(f)
 # }
 ```

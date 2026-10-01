@@ -31,12 +31,13 @@ extraction:
   [`spatial_clip()`](https://gillescolling.com/vectra/reference/spatial_clip.md),
   [`spatial_overlay()`](https://gillescolling.com/vectra/reference/spatial_overlay.md),
   [`rasterize()`](https://gillescolling.com/vectra/reference/rasterize.md),
-  …) around `sf`, one batch at a time – see [Streaming spatial
+  …) one batch at a time – see [Streaming spatial
   operations](https://gillescolling.com/vectra/articles/streaming-spatial.md).
-  It carries no geometry type of its own, so the topology comes from
-  `sf` and GEOS. This article stays on the raster-sampling path and
-  assumes any range-map intersection or study-region buffer is prepared
-  before extraction.
+  Geometry travels as WKB in a string column; the recognised operations
+  run on the GEOS C API through the libgeos package, the rest through
+  `sf`. This article stays on the raster-sampling path and assumes any
+  range-map intersection or study-region buffer is prepared before
+  extraction.
 - **Reprojection.** vectra reads the coordinate reference system of a
   `GeoTIFF` with
   [`tiff_crs()`](https://gillescolling.com/vectra/reference/tiff_crs.md)

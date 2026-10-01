@@ -299,12 +299,6 @@ tbl(f) |>
 #>   mpg <double>
 #>   cyl <double>
 #>   hp <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 The ProjectNode prunes columns before the data reaches R. The FilterNode
@@ -352,19 +346,35 @@ tbl(f) |>
 Math functions are evaluated natively in C:
 [`abs()`](https://rdrr.io/r/base/MathFun.html),
 [`sqrt()`](https://rdrr.io/r/base/MathFun.html),
+[`exp()`](https://rdrr.io/r/base/Log.html),
+[`expm1()`](https://rdrr.io/r/base/Log.html),
 [`log()`](https://rdrr.io/r/base/Log.html),
+[`log1p()`](https://rdrr.io/r/base/Log.html),
 [`log2()`](https://rdrr.io/r/base/Log.html),
 [`log10()`](https://rdrr.io/r/base/Log.html),
-[`exp()`](https://rdrr.io/r/base/Log.html),
 [`floor()`](https://rdrr.io/r/base/Round.html),
 [`ceiling()`](https://rdrr.io/r/base/Round.html),
 [`round()`](https://rdrr.io/r/base/Round.html),
 [`sign()`](https://rdrr.io/r/base/sign.html),
-[`trunc()`](https://rdrr.io/r/base/Round.html). For element-wise binary
-min/max, [`pmin()`](https://rdrr.io/r/base/Extremes.html) and
-[`pmax()`](https://rdrr.io/r/base/Extremes.html) take two arguments
-(columns or literals) and return the smaller or larger of each pair.
-These compose with arithmetic to build clamping expressions.
+[`trunc()`](https://rdrr.io/r/base/Round.html), the trigonometric
+[`sin()`](https://rdrr.io/r/base/Trig.html),
+[`cos()`](https://rdrr.io/r/base/Trig.html),
+[`tan()`](https://rdrr.io/r/base/Trig.html),
+[`asin()`](https://rdrr.io/r/base/Trig.html),
+[`acos()`](https://rdrr.io/r/base/Trig.html),
+[`atan()`](https://rdrr.io/r/base/Trig.html),
+[`atan2()`](https://rdrr.io/r/base/Trig.html), the hyperbolic
+[`sinh()`](https://rdrr.io/r/base/Hyperbolic.html),
+[`cosh()`](https://rdrr.io/r/base/Hyperbolic.html),
+[`tanh()`](https://rdrr.io/r/base/Hyperbolic.html),
+[`asinh()`](https://rdrr.io/r/base/Hyperbolic.html),
+[`acosh()`](https://rdrr.io/r/base/Hyperbolic.html),
+[`atanh()`](https://rdrr.io/r/base/Hyperbolic.html), and powers with
+`^`. For element-wise min/max,
+[`pmin()`](https://rdrr.io/r/base/Extremes.html) and
+[`pmax()`](https://rdrr.io/r/base/Extremes.html) take two or more
+arguments (columns or literals) and return the smallest or largest of
+each row. These compose with arithmetic to build clamping expressions.
 
 ``` r
 
@@ -919,10 +929,11 @@ tbl(f) |>
 
 Under the hood,
 [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md)
-uses an external merge sort with a 1 GB memory budget. When data exceeds
-that limit, sorted runs spill to temporary `.vtr` files and merge via a
-k-way min-heap. NAs sort last in ascending order and first in descending
-order.
+uses an external merge sort bounded by the memory budget
+([`vectra_mem()`](https://gillescolling.com/vectra/reference/vectra_mem.md)).
+When data exceeds it, sorted runs spill to temporary `.vtr` files and
+merge via a k-way min-heap. `NA`s sort last in both ascending and
+descending order.
 
 [`slice_head()`](https://gillescolling.com/vectra/reference/slice_head.md)
 and
@@ -2005,12 +2016,6 @@ tbl(f) |>
 #>   mpg <double>
 #>   cyl <double>
 #>   hp <double>
-#> 
-#> <offload grade: streaming scan>
-#>   passes over data : 1 per consumption (lazy)
-#>   peak memory      : O(one batch)
-#>   I/O cost         : O(n) per pass
-#>   note             : plain query node; re-reading re-runs the upstream pipeline
 ```
 
 Several things to look for in the plan:

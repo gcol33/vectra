@@ -37,7 +37,7 @@
 
     <a class="navbar-brand me-2" href="index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.9</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -87,7 +87,7 @@
 <p><em>querying data that won’t fit in memory</em></p>
 <p><a href="https://CRAN.R-project.org/package=vectra" class="external-link"><img src="https://www.r-pkg.org/badges/version/vectra" alt="CRAN status"></a> <a href="https://cran.r-project.org/package=vectra" class="external-link"><img src="https://cranlogs.r-pkg.org/badges/grand-total/vectra" alt="CRAN downloads"></a> <a href="https://cran.r-project.org/package=vectra" class="external-link"><img src="https://cranlogs.r-pkg.org/badges/vectra" alt="Monthly downloads"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg" alt="R-CMD-check"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg" alt="ASAN/UBSAN"></a> <a href="https://app.codecov.io/gh/gcol33/vectra" class="external-link"><img src="https://codecov.io/gh/gcol33/vectra/graph/badge.svg" alt="Codecov test coverage"></a> <a href="https://opensource.org/licenses/MIT" class="external-link"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a></p>
 <p><strong>dplyr-style queries on larger-than-RAM data, backed by a pull-based columnar engine written in C11.</strong></p>
-<p>Point vectra at a file too big to load and query it with the verbs you already use. Data flows through the engine one row group at a time, so peak memory stays bounded no matter how large the file gets. Arrow needs compiled binaries that match your platform, DuckDB links a bundled library, Spark wants a JVM. vectra is a standard R extension with no external dependencies: it compiles where R compiles.</p>
+<p>Point vectra at a file too big to load and query it with the verbs you already use. Data flows through the engine one row group at a time, so peak memory stays bounded no matter how large the file gets. Arrow needs compiled binaries that match your platform, DuckDB links a bundled library, Spark wants a JVM. vectra is a standard R extension that needs no system libraries: its C engine and codecs are compiled from the package sources, and its only compiled R dependency is libgeos (GEOS for the spatial functions), next to tidyselect and rlang.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span></span>
@@ -100,9 +100,15 @@
 <div class="section level2">
 <h2 id="one-engine-several-file-formats">One engine, several file formats<a class="anchor" aria-label="anchor" href="#one-engine-several-file-formats"></a>
 </h2>
-<p><code>.vtr</code> (vectra’s own columnar format), CSV, SQLite, and GeoTIFF all open into the same lazy query nodes, so the same pipeline runs against any of them:</p>
+<p><code>.vtr</code> (vectra’s own columnar format), Parquet, CSV, SQLite, and GeoTIFF all open into the same lazy query nodes, so the same pipeline runs against any of them:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># GeoTIFF climate raster as tidy data</span></span>
+<code class="sourceCode R"><span><span class="co"># A folder of Parquet files (a GBIF snapshot, a Spark export) as one table</span></span>
+<span><span class="fu"><a href="reference/tbl_parquet.html">tbl_parquet</a></span><span class="op">(</span><span class="st">"occurrence.parquet/"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">countrycode</span> <span class="op">==</span> <span class="st">"AT"</span>, <span class="va">year</span> <span class="op">&gt;=</span> <span class="fl">2000</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/count.html">count</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># GeoTIFF climate raster as tidy data</span></span>
 <span><span class="fu"><a href="reference/tbl_tiff.html">tbl_tiff</a></span><span class="op">(</span><span class="st">"worldclim_bio1.tif"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">band1</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/mutate.html">mutate</a></span><span class="op">(</span>temp_c <span class="op">=</span> <span class="va">band1</span> <span class="op">/</span> <span class="fl">10</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -149,7 +155,7 @@
 <span><span class="co">#&gt;</span></span>
 <span><span class="co">#&gt; ProjectNode [streaming]</span></span>
 <span><span class="co">#&gt;   FilterNode [streaming]</span></span>
-<span><span class="co">#&gt;     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, v3 stats]</span></span></code></pre></div>
+<span><span class="co">#&gt;     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, tdc stats]</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="fuzzy-matching-in-the-engine">Fuzzy matching in the engine<a class="anchor" aria-label="anchor" href="#fuzzy-matching-in-the-engine"></a>
@@ -179,7 +185,7 @@
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"parcels.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_measures.html" class="external-link">st_area</a></span><span class="op">(</span><span class="va">geometry</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">1e6</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/mutate.html">mutate</a></span><span class="op">(</span>centroid <span class="op">=</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="va">geometry</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="reference/collect_sf.html">collect_sf</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
+<span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>Raster operations stream strip by strip over the tiled <code>.vec</code> format, so a grid larger than memory passes through <code><a href="reference/zonal.html">zonal()</a></code>, <code><a href="reference/focal.html">focal()</a></code>, <code><a href="reference/terrain.html">terrain()</a></code>, <code><a href="reference/warp.html">warp()</a></code>, and map algebra one tile-row at a time:</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">r</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/vec_open_raster.html">vec_open_raster</a></span><span class="op">(</span><span class="st">"dem.vec"</span><span class="op">)</span></span>
@@ -342,6 +348,7 @@
 <h2 data-toc-skip>Developers</h2>
 <ul class="list-unstyled">
 <li>Gilles Colling <br><small class="roles"> Author, maintainer, copyright holder </small> <a href="https://orcid.org/0000-0003-3070-6066" target="orcid.widget" aria-label="ORCID" class="external-link"><span class="fab fa-orcid orcid" aria-hidden="true"></span></a>  </li>
+<li><a href="authors.html">More about authors...</a></li>
 </ul>
 </div>
 
@@ -356,7 +363,7 @@
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.1.</p>
 </div>
 
     </footer>

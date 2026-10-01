@@ -83,6 +83,10 @@ Invisible `NULL`.
 
 For `data.frame` inputs, the data is written directly from memory.
 
+Writing over an existing `.vtr` replaces it, and removes the `.vtri`
+indexes built on the store it replaces (see
+[`create_index()`](https://gillescolling.com/vectra/reference/create_index.md)).
+
 ## Examples
 
 ``` r

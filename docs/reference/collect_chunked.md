@@ -110,6 +110,7 @@ write_vtr(mtcars, f)
 
 # Row count without materializing the result.
 collect_chunked(tbl(f), function(acc, chunk) acc + nrow(chunk), .init = 0L)
+#> [1] 32
 
 # Accumulate the normal-equation pieces X'X and X'y for an exact OLS fit
 # of mpg ~ wt + hp, in one streaming pass.
@@ -123,5 +124,9 @@ acc <- collect_chunked(
   .init = list(XtX = matrix(0, 3, 3), Xty = matrix(0, 3, 1))
 )
 solve(acc$XtX, acc$Xty)            # same as coef(lm(mpg ~ wt + hp, mtcars))
+#>             [,1]
+#> [1,] 37.22727012
+#> [2,] -3.87783074
+#> [3,] -0.03177295
 unlink(f)
 ```

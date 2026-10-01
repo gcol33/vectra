@@ -82,14 +82,14 @@ A `vectra_node` of one row per group – the `by` columns, any `.fun`
 summaries, and the dissolved geometry – backed by temporary `.vtr`
 spills removed when the node is garbage-collected, carrying the input
 CRS for
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Details
 
 Geometry travels through the engine as hex-encoded WKB in a string
 column and the CRS is carried on the returned node; use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize. On projected or unprojected planar data each group is
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize. On projected or unprojected planar data each group is
 unioned natively on the GEOS C API straight off the hex-WKB column;
 geographic coordinates with spherical geometry on
 ([`sf::sf_use_s2()`](https://r-spatial.github.io/sf/reference/s2.html)),
@@ -104,7 +104,7 @@ package is an optional dependency (Suggests).
 to split overlaps apart rather than merge them,
 [`offload()`](https://gillescolling.com/vectra/reference/offload.md) for
 the partition tier this rides on,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Examples
 
@@ -121,6 +121,14 @@ write_vtr(data.frame(
 merged <- tbl(f) |>
   spatial_dissolve(by = "band", crs = sf::st_crs(nc),
                    .fun = list(births = function(d) sum(d$BIR74)))
-collect_sf(merged)
+collect(merged)
+#> Simple feature collection with 2 features and 2 fields
+#> Geometry type: MULTIPOLYGON
+#> Dimension:     XY
+#> Bounding box:  xmin: -84.32385 ymin: 33.88199 xmax: -75.45698 ymax: 36.58965
+#> Geodetic CRS:  NAD27
+#>    band births                       geometry
+#> 1 FALSE 102349 MULTIPOLYGON (((-75.78317 3...
+#> 2  TRUE 227613 MULTIPOLYGON (((-81.0493 35...
 unlink(f)
 ```

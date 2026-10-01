@@ -81,8 +81,8 @@ The smoothing is computed directly on the coordinates (no GEOS call), so
 it is dependency-light; sf is used only to decode and rebuild each
 batch. Geometry travels through the engine as hex-encoded WKB in a
 string column and the CRS is carried on the returned node; use
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize.
 
 ## See also
 
@@ -90,8 +90,8 @@ to materialize.
 for per-feature transforms such as densifying with
 `~ sf::st_segmentize(.x, dfMaxLength)` or sampling points along a line
 with `~ sf::st_line_sample(.x, n)`,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialize as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialize as `sf`.
 
 ## Examples
 
@@ -103,6 +103,13 @@ write_vtr(data.frame(
 ), f)
 
 # Smooth the zig-zag with three corner-cutting passes.
-tbl(f) |> spatial_smooth(iterations = 3) |> collect_sf()
+tbl(f) |> spatial_smooth(iterations = 3) |> collect()
+#> Simple feature collection with 1 feature and 1 field
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0 ymin: 0 xmax: 4 ymax: 0.75
+#> CRS:           NA
+#>   id                       geometry
+#> 1  1 LINESTRING (0 0, 0.015625 0...
 unlink(f)
 ```

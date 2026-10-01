@@ -20,6 +20,8 @@ Open files for lazy query execution
   : Create a lazy table reference from a FASTQ file
 - [`tbl_bed()`](https://gillescolling.com/vectra/reference/tbl_bed.md) :
   Create a lazy table reference from a BED file
+- [`tbl_parquet()`](https://gillescolling.com/vectra/reference/tbl_parquet.md)
+  : Create a lazy table reference from Parquet files
 
 ## Data sinks
 
@@ -196,7 +198,7 @@ Incremental updates to .vtr files
 - [`explain()`](https://gillescolling.com/vectra/reference/explain.md) :
   Print the execution plan for a vectra query
 - [`collect()`](https://gillescolling.com/vectra/reference/collect.md) :
-  Execute a lazy query and return a data.frame
+  Execute a lazy query and return the result
 - [`glimpse()`](https://gillescolling.com/vectra/reference/glimpse.md) :
   Get a glimpse of a vectra table
 - [`dim(`*`<vectra_node>`*`)`](https://gillescolling.com/vectra/reference/dim.vectra_node.md)
@@ -289,8 +291,6 @@ than RAM
   : Cellwise calculation over aligned rasters (map algebra)
 - [`proximity()`](https://gillescolling.com/vectra/reference/proximity.md)
   : Euclidean distance to the nearest feature (proximity)
-- [`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-  : Materialize a spatial query as an sf object
 - [`geom_expressions`](https://gillescolling.com/vectra/reference/geom_expressions.md)
   : Geometry functions inside mutate(), filter(), and summarise()
 

@@ -66,13 +66,20 @@ f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 
 dim(tbl(f))
+#> [1] 32 11
 nrow(tbl(f))                       # 32, straight from the row-group index
+#> [1] 32
 ncol(tbl(f) |> select(mpg, cyl))   # 2
+#> [1] 2
 nrow(tbl(f) |> head(5))            # 5
+#> [1] 5
 nrow(tbl(f) |> filter(cyl == 4))   # NA: needs the query to run
+#> [1] NA
 
 # exact count for a filtered query
 tbl(f) |> filter(cyl == 4) |> count() |> collect()
+#>    n
+#> 1 11
 
 unlink(f)
 ```

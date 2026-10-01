@@ -58,7 +58,7 @@ contours(x, levels, band = 1L, merge = TRUE, crs = NA, flush_rows = NULL)
 
 A `vectra_node` with a `level` column and a hex-WKB `geometry` column,
 materialise it with
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md).
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ## Details
 
@@ -75,8 +75,8 @@ dependency).
 for area features,
 [`terrain()`](https://gillescolling.com/vectra/reference/terrain.md) for
 the DEM derivatives contours often accompany,
-[`collect_sf()`](https://gillescolling.com/vectra/reference/collect_sf.md)
-to materialise as `sf`.
+[`collect()`](https://gillescolling.com/vectra/reference/collect.md) to
+materialise as `sf`.
 
 ## Examples
 
@@ -86,6 +86,15 @@ f <- tempfile(fileext = ".vec")
 vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 20, 20))
 
 iso <- contours(f, levels = c(15, 25, 35))
-collect_sf(iso)
+collect(iso)
+#> Simple feature collection with 3 features and 1 field
+#> Geometry type: LINESTRING
+#> Dimension:     XY
+#> Bounding box:  xmin: 0.5 ymin: 0.5 xmax: 19.5 ymax: 19.5
+#> CRS:           NA
+#>   level                       geometry
+#> 1    15 LINESTRING (0.5 6.5, 1.5 7....
+#> 2    25 LINESTRING (4.5 0.5, 5.5 1....
+#> 3    35 LINESTRING (14.5 0.5, 15.5 ...
 unlink(f)
 ```
