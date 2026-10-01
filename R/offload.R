@@ -71,7 +71,7 @@ grade_of <- function(x) {
 # further verbs consumes that derived pipeline as usual; the cache itself stays
 # reachable through the same handle.)
 #' @export
-collect.vectra_offload <- function(x, ...) collect(tbl(x$.path))
+collect.vectra_offload <- function(x, ...) collect(tbl(x$.path), ...)
 
 #' @rdname collect_chunked
 #' @export
@@ -349,7 +349,7 @@ offload <- function(x, by = NULL, n = NULL,
 .shard_node <- function(s) .concat_runs(s$paths)
 
 #' @export
-collect.vectra_shard <- function(x, ...) collect(.shard_node(x))
+collect.vectra_shard <- function(x, ...) collect(.shard_node(x), ...)
 
 #' @rdname collect_chunked
 #' @export
@@ -471,7 +471,7 @@ group_map.vectra_partition <- function(.data, .f, ...) {
   .f <- rlang::as_function(.f)
   dots <- list(...)
   shards <- unclass(.data)
-  Map(function(nd, key) do.call(.f, c(list(collect(nd), key), dots)),
+  Map(function(nd, key) do.call(.f, c(list(collect(nd, sf = FALSE), key), dots)),
       shards, names(shards))
 }
 
@@ -489,7 +489,7 @@ group_modify.vectra_partition <- function(.data, .f, ...) {
   by <- attr(.data, "by")
   shards <- unclass(.data)
   parts <- Map(function(nd, key) {
-    res <- do.call(.f, c(list(collect(nd), key), dots))
+    res <- do.call(.f, c(list(collect(nd, sf = FALSE), key), dots))
     if (!is.data.frame(res))
       stop("`.f` must return a data.frame for each shard (group_modify)")
     if (!(by %in% names(res))) {

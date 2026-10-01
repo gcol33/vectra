@@ -280,7 +280,7 @@ report_unmatched <- function(schema, needed_dims) {
 
     if (n_unmatched > 0) {
       # Bounded preview: distinct keys from a small head, never the full set.
-      prev_df <- collect(head(make_anti(lnk)$node, 100L))
+      prev_df <- collect(head(make_anti(lnk)$node, 100L), sf = FALSE)
       shown <- utils::head(unique(prev_df[[a$left_key]]), 5)
       preview <- paste(format(shown, trim = TRUE), collapse = ", ")
       if (n_unmatched > length(shown)) preview <- paste0(preview, ", ...")

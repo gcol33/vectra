@@ -61,7 +61,7 @@ kmer.vectra_node <- function(x, seq, k = 4, by = NULL, canonical = FALSE) {
 
   new_xptr <- .Call(C_kmer_node, x$.node, seq_name, k, canonical, by_names,
                     as.numeric(vectra_mem()))
-  structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+  .derive_node(x, new_xptr, groups = NULL)
 }
 
 # A single column name from a substituted expression (bare name or string).

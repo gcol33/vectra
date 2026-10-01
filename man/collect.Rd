@@ -2,7 +2,7 @@
 % Please edit documentation in R/collect.R
 \name{collect}
 \alias{collect}
-\title{Execute a lazy query and return a data.frame}
+\title{Execute a lazy query and return the result}
 \usage{
 collect(x, ...)
 }
@@ -10,13 +10,37 @@ collect(x, ...)
 \item{x}{A \code{vectra_node} object.}
 
 \item{...}{Ignored.}
+
+\item{sf}{If \code{TRUE} (default), a spatial result is returned as an \code{sf}
+object. \code{FALSE} returns the data.frame with the geometry as a hex-WKB
+string column. Ignored for a non-spatial query.}
+
+\item{geom}{Name of a hex-WKB geometry column to decode when the node does
+not already carry one, for instance a column read straight from a \code{.vtr}
+file. \code{NULL} (default) uses the geometry column the node carries.}
+
+\item{crs}{Coordinate reference system for the \code{sf} result. \code{NULL} (default)
+uses the one the node carries, or leaves it unknown.}
 }
 \value{
-A data.frame with the query results.
+A data.frame, or an \code{sf} object for a spatial query.
 }
 \description{
-Pulls all batches from the execution plan and materializes the result as an
-R data.frame.
+Pulls all batches from the execution plan and materializes the result in
+memory. A plain query returns a data.frame. A query whose output still
+carries a geometry column, which the spatial verbs (\code{\link[=spatial_map]{spatial_map()}},
+\code{\link[=spatial_join]{spatial_join()}}, \code{\link[=spatial_clip]{spatial_clip()}}, \code{\link[=spatial_overlay]{spatial_overlay()}} and the rest) mark on
+the node, returns an \code{sf} object, with the hex-WKB column decoded and the
+node's coordinate reference system set. A string column whose values are
+hex-encoded WKB is recognised from its content, so a stored geometry column
+comes back as \code{sf} without any spatial verb. The geometry marker follows the
+column through \code{\link[=filter]{filter()}}, \code{\link[=select]{select()}}, \code{\link[=rename]{rename()}}, \code{\link[=mutate]{mutate()}} and joins, and
+is dropped once the column is.
+}
+\details{
+For a result still larger than RAM, keep it as a node and write it out with
+\code{\link[=write_vtr]{write_vtr()}}, stream it to a vector file with \code{\link[sf:st_write]{sf::st_write()}}, or reduce it
+with \code{\link[=collect_chunked]{collect_chunked()}}.
 }
 \examples{
 f <- tempfile(fileext = ".vtr")
@@ -25,4 +49,7 @@ result <- tbl(f) |> collect()
 head(result)
 unlink(f)
 
+}
+\seealso{
+\code{\link[=spatial_map]{spatial_map()}}, \code{\link[=collect_chunked]{collect_chunked()}}
 }

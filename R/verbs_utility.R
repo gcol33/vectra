@@ -45,8 +45,11 @@ rename.vectra_node <- function(.data, ...) {
       grps[grps == old_names[i]] <- new_names[i]
     }
   }
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = grps), class = "vectra_node")
+  out <- .derive_node(.data, new_xptr, groups = grps)
+  geom <- .data$.geom
+  if (!is.null(geom) && geom %in% old_names)
+    out$.geom <- new_names[match(geom, old_names)]
+  out
 }
 
 #' Relocate columns
@@ -111,8 +114,7 @@ relocate.vectra_node <- function(.data, ..., .before = NULL, .after = NULL) {
 
   expr_lists <- vector("list", length(out_names))
   new_xptr <- .Call(C_project_node, .data$.node, out_names, expr_lists)
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = .data$.groups), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = .data$.groups)
 }
 
 #' Keep only columns from mutate expressions
@@ -157,8 +159,7 @@ transmute.vectra_node <- function(.data, ...) {
   present <- .Call(C_node_schema, node$.node)$name
   keep <- keep[keep %in% present]
   new_xptr <- .Call(C_project_node, node$.node, keep, vector("list", length(keep)))
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = .data$.groups), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = .data$.groups)
 }
 
 #' Keep distinct/unique rows
@@ -202,14 +203,14 @@ distinct.vectra_node <- function(.data, ..., .keep_all = FALSE) {
   if (.keep_all && length(col_quos) > 0) {
     # .keep_all with subset of columns: fall back to collect + base R
     message("distinct(.keep_all = TRUE) with column subset: falling back to R")
-    df <- collect(.data)
+    df <- collect(.data, sf = FALSE)
     return(df[!duplicated(df[, key_names, drop = FALSE]), , drop = FALSE])
   }
 
   # Use group_agg with zero aggregations to get unique key combos
   agg_specs <- list()
   new_xptr <- .group_agg_node(.data$.node, key_names, agg_specs)
-  structure(list(.node = new_xptr, .path = .data$.path), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = NULL)
 }
 
 #' Extract a single column as a vector
@@ -292,7 +293,7 @@ pull.vectra_node <- function(.data, var = -1) {
 #' @export
 head.vectra_node <- function(x, n = 6L, ...) {
   new_xptr <- .Call(C_limit_node, x$.node, as.double(n))
-  node <- structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+  node <- .derive_node(x, new_xptr, groups = NULL)
   collect(node)
 }
 
@@ -340,8 +341,7 @@ slice_head.vectra_node <- function(.data, n = 1L) {
     stop(sprintf("n must be a positive integer, got %s", deparse(n)))
   if (is.null(.data$.groups) || length(.data$.groups) == 0) {
     new_xptr <- .Call(C_limit_node, .data$.node, as.double(n))
-    return(structure(list(.node = new_xptr, .path = .data$.path),
-                     class = "vectra_node"))
+    return(.derive_node(.data, new_xptr, groups = NULL))
   }
   # Grouped: first n rows per group in arrival order, via a per-group
   # row_number window filtered to rn <= n (streaming, bounded per group).
@@ -356,8 +356,7 @@ slice_head.vectra_node <- function(.data, n = 1L) {
   filt <- .Call(C_filter_node, win$.node, pred)
   proj <- .Call(C_project_node, filt, orig_names,
                 vector("list", length(orig_names)))
-  structure(list(.node = proj, .path = .data$.path,
-                 .groups = .data$.groups), class = "vectra_node")
+  .derive_node(.data, proj, groups = .data$.groups)
 }
 
 #' @rdname slice_head
@@ -373,7 +372,7 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
   # Must materialize to know total rows, then take last n. (Consistent with the
   # ungrouped path, which also collects.)
   groups <- .data$.groups
-  df <- collect(.data)
+  df <- collect(.data, sf = FALSE)
   nr <- nrow(df)
   if (is.null(groups) || length(groups) == 0) {
     if (n >= nr) return(df)
@@ -404,8 +403,7 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
     keys <- .data$.groups
     new_xptr <- .Call(C_group_topn_node, .data$.node, keys, order_col, desc,
                       as.numeric(vectra_mem()))
-    return(structure(list(.node = new_xptr, .path = .data$.path,
-                          .groups = .data$.groups), class = "vectra_node"))
+    return(.derive_node(.data, new_xptr, groups = .data$.groups))
   }
   schema <- .Call(C_node_schema, .data$.node)
   orig_names <- schema$name
@@ -419,8 +417,7 @@ slice_tail.vectra_node <- function(.data, n = 1L) {
   filt <- .Call(C_filter_node, win$.node, pred)
   proj <- .Call(C_project_node, filt, orig_names,
                 vector("list", length(orig_names)))
-  structure(list(.node = proj, .path = .data$.path,
-                 .groups = .data$.groups), class = "vectra_node")
+  .derive_node(.data, proj, groups = .data$.groups)
 }
 
 # The column slice_min()/slice_max() order by: a bare, injected or
@@ -451,12 +448,11 @@ slice_min.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   if (!with_ties) {
     new_xptr <- .Call(C_topn_node, .data$.node, order_col, FALSE,
                       as.double(n))
-    return(structure(list(.node = new_xptr, .path = .data$.path),
-                     class = "vectra_node"))
+    return(.derive_node(.data, new_xptr, groups = NULL))
   }
   # with_ties = TRUE: collect all data, sort, find the nth value, keep all
   # rows that tie with it. Must collect first because C nodes are single-use.
-  df <- collect(.data)
+  df <- collect(.data, sf = FALSE)
   if (nrow(df) == 0) return(df)
   vals <- df[[order_col]]
   ord <- order(vals, na.last = TRUE)
@@ -493,10 +489,9 @@ slice_max.vectra_node <- function(.data, order_by, n = 1L, with_ties = TRUE) {
   if (!with_ties) {
     new_xptr <- .Call(C_topn_node, .data$.node, order_col, TRUE,
                       as.double(n))
-    return(structure(list(.node = new_xptr, .path = .data$.path),
-                     class = "vectra_node"))
+    return(.derive_node(.data, new_xptr, groups = NULL))
   }
-  df <- collect(.data)
+  df <- collect(.data, sf = FALSE)
   if (nrow(df) == 0) return(df)
   vals <- df[[order_col]]
   ord <- order(vals, decreasing = TRUE, na.last = TRUE)
@@ -537,7 +532,7 @@ slice.vectra_node <- function(.data, ...) {
   if (!(all(indices > 0) || all(indices < 0)))
     stop("slice indices must be all positive or all negative")
   groups <- .data$.groups
-  df <- collect(.data)
+  df <- collect(.data, sf = FALSE)
   # Positional pick within a set of row indices (per group, or the whole frame).
   pick <- function(ix) {
     if (all(indices > 0)) ix[indices[indices <= length(ix)]] else ix[indices]

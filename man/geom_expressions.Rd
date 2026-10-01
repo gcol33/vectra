@@ -18,7 +18,7 @@ functions and are not called as such. They are available only inside
 \code{\link[=mutate]{mutate()}}, \code{\link[=transmute]{transmute()}}, \code{\link[=filter]{filter()}}, and a grouped \code{\link[=summarise]{summarise()}} over a
 \code{vectra_node}. The geometry argument is the hex-WKB column (named \code{geometry}
 by convention). A function that returns a geometry produces another hex-WKB
-column; materialize it with \code{\link[=collect_sf]{collect_sf()}} (point it at the column with
+column; materialize it with \code{\link[=collect]{collect()}} (point it at the column with
 \verb{geom =}), or write it with \code{\link[=write_tiff]{write_tiff()}}/\code{sf::st_write()}.
 }
 \section{Measures (return a number)}{
@@ -110,13 +110,13 @@ if (requireNamespace("sf", quietly = TRUE)) {
   tbl(f) |>
     mutate(geometry = st_centroid(geometry)) |>
     select(NAME, geometry) |>
-    collect_sf()
+    collect()
 
   unlink(f)
 }
 }
 \seealso{
-\code{\link[=mutate]{mutate()}}, \code{\link[=filter]{filter()}}, \code{\link[=collect_sf]{collect_sf()}} to materialize a geometry
+\code{\link[=mutate]{mutate()}}, \code{\link[=filter]{filter()}}, \code{\link[=collect]{collect()}} to materialize a geometry
 result as \code{sf}; \code{\link[=spatial_map]{spatial_map()}} for an arbitrary per-feature \pkg{sf}
 transform; \code{\link[=spatial_filter]{spatial_filter()}} and \code{\link[=spatial_join]{spatial_join()}} for relating a stream to
 a resident reference layer.

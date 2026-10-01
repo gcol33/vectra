@@ -55,7 +55,7 @@ input feature, so attributes ride through untouched.
 }
 \details{
 Geometry travels through the engine as hex-encoded WKB in a string column and
-the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
+the CRS is carried on the returned node; use \code{\link[=collect]{collect()}} to materialize.
 The \pkg{sf} package is an optional dependency (Suggests).
 }
 \examples{
@@ -68,11 +68,11 @@ write_vtr(data.frame(
 ), f)
 
 # Snap the jittered corners back onto a 0.1 grid.
-tbl(f) |> spatial_snap_grid(0.1) |> collect_sf()
+tbl(f) |> spatial_snap_grid(0.1) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_snap]{spatial_snap()}} to snap toward another layer instead of a grid,
-\code{\link[=spatial_overlay]{spatial_overlay()}} whose noding uses the same snap-rounding, \code{\link[=collect_sf]{collect_sf()}}.
+\code{\link[=spatial_overlay]{spatial_overlay()}} whose noding uses the same snap-rounding, \code{\link[=collect]{collect()}}.
 }

@@ -45,7 +45,7 @@ many rows.}
 }
 \value{
 A \code{vectra_node} backed by temporary \code{.vtr} spills (removed when the
-node is garbage-collected), carrying the output CRS for \code{\link[=collect_sf]{collect_sf()}}.
+node is garbage-collected), carrying the output CRS for \code{\link[=collect]{collect()}}.
 }
 \description{
 Applies a per-feature \pkg{sf} operation (buffer, centroid, area, CRS
@@ -60,7 +60,7 @@ in-memory table.
 Geometry travels through the engine as hex-encoded WKB in an ordinary string
 column (vectra has no native geometry type), and the coordinate reference
 system is carried on the returned node rather than in the \code{.vtr} file. Use
-\code{\link[=collect_sf]{collect_sf()}} to materialize the result as an \code{sf} object, or \code{\link[=collect]{collect()}}
+\code{\link[=collect]{collect()}} to materialize the result as an \code{sf} object, or \code{\link[=collect]{collect()}}
 to get the underlying data.frame with the WKB string column.
 
 Topology is delegated entirely to \pkg{sf}/GEOS; vectra only supplies the
@@ -79,11 +79,11 @@ write_vtr(data.frame(
 # Buffer every county centroid by 0.1 degree, streaming.
 buffered <- tbl(f) |>
   spatial_map(~ sf::st_buffer(.x, 0.1), crs = sf::st_crs(nc))
-collect_sf(buffered)
+collect(buffered)
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_join]{spatial_join()}} to join a streamed side against a resident \code{sf}
-object, \code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+object, \code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

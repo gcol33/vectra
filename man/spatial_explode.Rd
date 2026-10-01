@@ -68,11 +68,11 @@ write_vtr(data.frame(
 ), f)
 
 # One row per polygon, attributes copied, parts numbered.
-tbl(f) |> spatial_explode(part = "part_id") |> collect_sf()
+tbl(f) |> spatial_explode(part = "part_id") |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=spatial_dissolve]{spatial_dissolve()}} to
-merge features the other way, \code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+merge features the other way, \code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

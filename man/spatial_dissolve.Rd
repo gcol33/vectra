@@ -49,7 +49,7 @@ many rows.}
 A \code{vectra_node} of one row per group -- the \code{by} columns, any \code{.fun}
 summaries, and the dissolved geometry -- backed by temporary \code{.vtr} spills
 removed when the node is garbage-collected, carrying the input CRS for
-\code{\link[=collect_sf]{collect_sf()}}.
+\code{\link[=collect]{collect()}}.
 }
 \description{
 Unions the geometries within each \code{by} group into a single feature (the GIS
@@ -64,7 +64,7 @@ into one feature.
 }
 \details{
 Geometry travels through the engine as hex-encoded WKB in a string column and
-the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
+the CRS is carried on the returned node; use \code{\link[=collect]{collect()}} to materialize.
 On projected or unprojected planar data each group is unioned natively on the
 GEOS C API straight off the hex-WKB column; geographic coordinates with
 spherical geometry on (\code{sf::sf_use_s2()}), or any extra \code{\link[sf:st_union]{sf::st_union()}}
@@ -85,11 +85,11 @@ write_vtr(data.frame(
 merged <- tbl(f) |>
   spatial_dissolve(by = "band", crs = sf::st_crs(nc),
                    .fun = list(births = function(d) sum(d$BIR74)))
-collect_sf(merged)
+collect(merged)
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_overlay]{spatial_overlay()}} to split overlaps apart rather than merge them,
-\code{\link[=offload]{offload()}} for the partition tier this rides on, \code{\link[=collect_sf]{collect_sf()}}.
+\code{\link[=offload]{offload()}} for the partition tier this rides on, \code{\link[=collect]{collect()}}.
 }

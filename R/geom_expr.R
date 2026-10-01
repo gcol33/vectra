@@ -13,7 +13,7 @@
 #' [mutate()], [transmute()], [filter()], and a grouped [summarise()] over a
 #' `vectra_node`. The geometry argument is the hex-WKB column (named `geometry`
 #' by convention). A function that returns a geometry produces another hex-WKB
-#' column; materialize it with [collect_sf()] (point it at the column with
+#' column; materialize it with [collect()] (point it at the column with
 #' `geom =`), or write it with [write_tiff()]/`sf::st_write()`.
 #'
 #' @section Measures (return a number):
@@ -69,7 +69,7 @@
 #' for that row rather than an error.
 #'
 #' @name geom_expressions
-#' @seealso [mutate()], [filter()], [collect_sf()] to materialize a geometry
+#' @seealso [mutate()], [filter()], [collect()] to materialize a geometry
 #'   result as `sf`; [spatial_map()] for an arbitrary per-feature \pkg{sf}
 #'   transform; [spatial_filter()] and [spatial_join()] for relating a stream to
 #'   a resident reference layer.
@@ -98,7 +98,7 @@
 #'   tbl(f) |>
 #'     mutate(geometry = st_centroid(geometry)) |>
 #'     select(NAME, geometry) |>
-#'     collect_sf()
+#'     collect()
 #'
 #'   unlink(f)
 #' }

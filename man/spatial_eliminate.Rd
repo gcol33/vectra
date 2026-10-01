@@ -84,13 +84,13 @@ write_vtr(data.frame(
 ), f)
 
 # The thin sliver is absorbed into the square it borders.
-tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_dissolve]{spatial_dissolve()}} to merge geometries by attribute,
 \code{\link[=spatial_simplify]{spatial_simplify()}} for coverage-preserving simplification,
-\code{\link[=spatial_topology]{spatial_topology()}} for the shared-edge adjacency, \code{\link[=collect_sf]{collect_sf()}} to
+\code{\link[=spatial_topology]{spatial_topology()}} for the shared-edge adjacency, \code{\link[=collect]{collect()}} to
 materialize as \code{sf}.
 }

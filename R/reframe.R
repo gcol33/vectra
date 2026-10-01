@@ -21,7 +21,7 @@ reframe <- function(.data, ...) {
 
 #' @export
 reframe.vectra_node <- function(.data, ...) {
-  df <- collect(.data)
+  df <- collect(.data, sf = FALSE)
   groups <- .data$.groups
   dots <- .capture_dots(...)
   # Expand across() calls

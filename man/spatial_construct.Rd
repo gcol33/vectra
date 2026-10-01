@@ -87,7 +87,7 @@ The enclosing kinds and \code{pole} emit one feature per group; \code{voronoi} a
 \code{delaunay} emit one feature per cell, each carrying the group's \code{by} values.
 
 Geometry travels through the engine as hex-encoded WKB in a string column and
-the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
+the CRS is carried on the returned node; use \code{\link[=collect]{collect()}} to materialize.
 Topology is \pkg{sf}/GEOS throughout (an optional dependency, Suggests); some
 constructions need projected coordinates.
 }
@@ -104,11 +104,11 @@ write_vtr(data.frame(
 # One convex hull per band.
 tbl(f) |>
   spatial_construct("convex_hull", by = "band", crs = sf::st_crs(nc)) |>
-  collect_sf()
+  collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_dissolve]{spatial_dissolve()}} to merge a group into one feature,
-\code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=collect_sf]{collect_sf()}} to materialize.
+\code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=collect]{collect()}} to materialize.
 }

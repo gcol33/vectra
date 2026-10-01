@@ -166,6 +166,6 @@ unlink(c(f, g))
 \dontshow{\}) # examplesIf}
 }
 \seealso{
-\code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=collect_sf]{collect_sf()}} to
+\code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=collect]{collect()}} to
 materialize as \code{sf}, \code{\link[=offload]{offload()}} to partition both-sides-huge joins.
 }

@@ -72,7 +72,7 @@ bind_rows <- function(..., .id = NULL) {
 
   # Fallback: collect and combine in R
   dfs <- lapply(dots, function(x) {
-    if (inherits(x, "vectra_node")) collect(x) else x
+    if (inherits(x, "vectra_node")) collect(x, sf = FALSE) else x
   })
 
   all_names <- unique(unlist(lapply(dfs, names)))
@@ -103,7 +103,7 @@ bind_rows <- function(..., .id = NULL) {
 bind_cols <- function(...) {
   dots <- list(...)
   dfs <- lapply(dots, function(x) {
-    if (inherits(x, "vectra_node")) collect(x) else x
+    if (inherits(x, "vectra_node")) collect(x, sf = FALSE) else x
   })
 
   nrows <- vapply(dfs, nrow, integer(1))

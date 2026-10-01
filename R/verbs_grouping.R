@@ -39,9 +39,8 @@ group_by.vectra_node <- function(.data, ..., .add = FALSE) {
   keys <- res$keys
   if (isTRUE(.add) && !is.null(.data$.groups))
     keys <- unique(c(.data$.groups, keys))
-  structure(list(.node = res$node$.node, .path = .data$.path,
-                 .groups = if (length(keys)) keys else NULL),
-            class = "vectra_node")
+  .derive_node(.data, res$node$.node,
+               groups = if (length(keys)) keys else NULL)
 }
 
 # Resolve the grouping arguments of group_by() / count() to column names, the
@@ -220,14 +219,13 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
     }
 
     new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
-    node <- structure(list(.node = new_xptr, .path = node$.path,
-                           .groups = node$.groups), class = "vectra_node")
+    node <- .derive_node(node, new_xptr, groups = node$.groups)
   }
 
   # Check for R-fallback aggregations (median, n_distinct)
   has_fallback <- any(vapply(agg_specs, function(s) isTRUE(s$.r_fallback), logical(1)))
   if (has_fallback) {
-    df <- collect(node)
+    df <- collect(node, sf = FALSE)
     .eval_agg <- function(spec, chunk) {
       col <- if (!is.null(spec$col)) chunk[[spec$col]] else NULL
       switch(spec$kind,
@@ -278,8 +276,7 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
   # dropping the temps. The mutate runs ungrouped and left-to-right, so a later
   # output can reference an earlier one (dplyr's sequential summarise()).
   if (length(post_dots) > 0) {
-    agg_node <- structure(list(.node = new_xptr, .path = .data$.path,
-                               .groups = NULL), class = "vectra_node")
+    agg_node <- .derive_node(.data, new_xptr, groups = NULL)
     agg_node <- .apply_mutate_dots(agg_node, post_dots, parent.frame())
     final_schema <- .Call(C_node_schema, agg_node$.node)
     sel_names <- c(key_names, dot_names)
@@ -301,8 +298,7 @@ summarise.vectra_node <- function(.data, ..., .groups = NULL) {
     )
   }
 
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = result_groups), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = result_groups)
 }
 
 #' @rdname summarise
@@ -329,7 +325,7 @@ ungroup <- function(x, ...) {
 
 #' @export
 ungroup.vectra_node <- function(x, ...) {
-  structure(list(.node = x$.node, .path = x$.path), class = "vectra_node")
+  .derive_node(x, x$.node, groups = NULL)
 }
 
 #' Count observations by group
@@ -375,8 +371,7 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
   # Build the grouped summarise
   node <- res$node
   if (length(grp_names) > 0) {
-    node <- structure(list(.node = node$.node, .path = node$.path,
-                           .groups = grp_names), class = "vectra_node")
+    node <- .derive_node(node, node$.node, groups = grp_names)
   }
 
   wt <- .count_wt_agg(node, wt_expr, cnt_name, parent.frame())
@@ -386,9 +381,9 @@ count.vectra_node <- function(x, ..., wt = NULL, sort = FALSE, name = NULL) {
   new_xptr <- .group_agg_node(node$.node, grp_names, agg_specs)
   if (sort) {
     sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
-    return(structure(list(.node = sort_xptr, .path = node$.path), class = "vectra_node"))
+    return(.derive_node(node, sort_xptr, groups = NULL))
   }
-  structure(list(.node = new_xptr, .path = node$.path), class = "vectra_node")
+  .derive_node(node, new_xptr, groups = NULL)
 }
 
 #' @rdname count
@@ -414,9 +409,9 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
   new_xptr <- .group_agg_node(node$.node, key_names, agg_specs)
   if (sort) {
     sort_xptr <- .sort_node(new_xptr, cnt_name, TRUE)
-    return(structure(list(.node = sort_xptr, .path = node$.path), class = "vectra_node"))
+    return(.derive_node(node, sort_xptr, groups = NULL))
   }
-  structure(list(.node = new_xptr, .path = node$.path), class = "vectra_node")
+  .derive_node(node, new_xptr, groups = NULL)
 }
 
 # Build the aggregation spec (and, if needed, a hidden weight column) for
@@ -443,8 +438,7 @@ tally.vectra_node <- function(x, wt = NULL, sort = FALSE, name = NULL) {
   out_exprs <- c(vector("list", length(existing)),
                  list(serialize_expr(wt_expr, env, existing)))
   new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
-  node2 <- structure(list(.node = new_xptr, .path = node$.path,
-                          .groups = node$.groups), class = "vectra_node")
+  node2 <- .derive_node(node, new_xptr, groups = node$.groups)
   list(node = node2,
        spec = list(name = cnt_name, kind = "sum", col = tmp_name, na_rm = TRUE))
 }

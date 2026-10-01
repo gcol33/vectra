@@ -30,7 +30,7 @@ test_that("two-sided nearest matches the resident nearest join", {
   fl <- write_points(left); ft <- write_target_wkb(targ)
   on.exit(unlink(c(fl, ft)))
 
-  got <- collect(tbl(fl) |>
+  got <- collect_raw(tbl(fl) |>
     spatial_join(tbl(ft), coords = c("x", "y"),
                  join = sf::st_nearest_feature, partition = grid(5)))
   got <- got[order(got$id), ]
@@ -55,7 +55,7 @@ test_that("two-sided nearest is invariant to the partition budget", {
   on.exit(unlink(c(fl, ft)))
 
   run <- function(budget) {
-    r <- collect(tbl(fl) |>
+    r <- collect_raw(tbl(fl) |>
       spatial_join(tbl(ft), coords = c("x", "y"),
                    join = sf::st_nearest_feature, partition = grid(7),
                    flush_rows = budget))

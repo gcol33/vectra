@@ -42,10 +42,10 @@ The \code{dsn}, invisibly.
 An \code{\link[sf:st_write]{sf::st_write()}} method (also reached through \code{\link[sf:write_sf]{sf::write_sf()}}) for a
 \code{vectra_node}: writes the result a batch at a time, appending each, so the
 whole layer is never held in memory. This is the streaming counterpart to
-\code{collect_sf(x) |> sf::st_write(...)} -- that route materializes every feature
+\code{collect(x) |> sf::st_write(...)} -- that route materializes every feature
 as an \code{sf} object first, which for a multi-million-feature result dominates
 memory; this route's peak is one batch.
 }
 \seealso{
-\code{\link[=collect_sf]{collect_sf()}} to materialize the whole result as one \code{sf} object.
+\code{\link[=collect]{collect()}} to materialize the whole result as one \code{sf} object.
 }

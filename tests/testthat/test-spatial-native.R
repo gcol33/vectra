@@ -45,12 +45,12 @@ test_that("native filter equals sf filter for every recognised predicate", {
   for (nm in names(preds)) {
     p <- preds[[nm]]
     wrap <- function(a, b) p(a, b)        # not identical() to p -> sf path
-    native <- collect(spatial_filter(tbl(f), resident, predicate = p, crs = NA))
-    viasf  <- collect(spatial_filter(tbl(f), resident, predicate = wrap, crs = NA))
+    native <- collect_raw(spatial_filter(tbl(f), resident, predicate = p, crs = NA))
+    viasf  <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrap, crs = NA))
     expect_equal(sort(native$pid), sort(viasf$pid), info = nm)
-    nativeN <- collect(spatial_filter(tbl(f), resident, predicate = p,
+    nativeN <- collect_raw(spatial_filter(tbl(f), resident, predicate = p,
                                       negate = TRUE, crs = NA))
-    viasfN  <- collect(spatial_filter(tbl(f), resident, predicate = wrap,
+    viasfN  <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrap,
                                       negate = TRUE, crs = NA))
     expect_equal(sort(nativeN$pid), sort(viasfN$pid), info = paste0("!", nm))
   }
@@ -70,8 +70,8 @@ test_that("native join equals sf join, with multi-match attribute duplication", 
     p <- preds[[nm]]
     wrap <- function(a, b) p(a, b)          # not identical() to p -> sf path
     for (lf in c(TRUE, FALSE)) {
-      nat <- collect(spatial_join(tbl(f), resj, join = p, crs = NA, left = lf))
-      ref <- collect(spatial_join(tbl(f), resj, join = wrap, crs = NA, left = lf))
+      nat <- collect_raw(spatial_join(tbl(f), resj, join = p, crs = NA, left = lf))
+      ref <- collect_raw(spatial_join(tbl(f), resj, join = wrap, crs = NA, left = lf))
       expect_equal(key(nat), key(ref), info = paste0(nm, " left=", lf))
       expect_equal(names(nat)[order(names(nat))],
                    names(ref)[order(names(ref))], info = paste0(nm, " cols"))
@@ -83,7 +83,7 @@ test_that("native clip and erase equal sf, geometry-for-geometry", {
   f <- write_stream(); on.exit(unlink(f))
   mask <- sf::st_sfc(sq(1, 4, 0.5, 1.5))
 
-  clip_nat <- collect_sf(spatial_clip(tbl(f), mask, crs = NA))
+  clip_nat <- collect(spatial_clip(tbl(f), mask, crs = NA))
   ref <- sf::st_sf(pid = seq_along(stream_polys), geometry = stream_polys)
   clip_ref <- suppressWarnings(sf::st_intersection(ref, sf::st_union(mask)))
   clip_nat <- clip_nat[order(clip_nat$pid), ]
@@ -92,7 +92,7 @@ test_that("native clip and erase equal sf, geometry-for-geometry", {
   expect_equal(as.numeric(sf::st_area(clip_nat)),
                as.numeric(sf::st_area(clip_ref)), tolerance = 1e-9)
 
-  erase_nat <- collect_sf(spatial_clip(tbl(f), mask, erase = TRUE, crs = NA))
+  erase_nat <- collect(spatial_clip(tbl(f), mask, erase = TRUE, crs = NA))
   erase_ref <- suppressWarnings(sf::st_difference(ref, sf::st_union(mask)))
   erase_nat <- erase_nat[order(erase_nat$pid), ]
   erase_ref <- erase_ref[order(erase_ref$pid), ]
@@ -108,7 +108,7 @@ test_that("native dissolve equals sf union per group", {
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(df, f)
 
-  got <- collect_sf(spatial_dissolve(tbl(f), by = "band", crs = NA,
+  got <- collect(spatial_dissolve(tbl(f), by = "band", crs = NA,
                                      .fun = list(wsum = function(d) sum(d$w))))
   got <- got[order(got$band), ]
   ref_area <- vapply(sort(unique(band)), function(b)
@@ -145,21 +145,21 @@ test_that("native filter equals / disjoint / within_distance match sf", {
   for (nm in c("equals", "disjoint")) {
     p <- getExportedValue("sf", paste0("st_", nm))
     wrap <- function(a, b) p(a, b)            # not identical() to p -> sf path
-    nat <- collect(spatial_filter(tbl(f), resident, predicate = p, crs = NA))
-    ref <- collect(spatial_filter(tbl(f), resident, predicate = wrap, crs = NA))
+    nat <- collect_raw(spatial_filter(tbl(f), resident, predicate = p, crs = NA))
+    ref <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrap, crs = NA))
     expect_equal(sort(nat$pid), sort(ref$pid), info = nm)
-    natN <- collect(spatial_filter(tbl(f), resident, predicate = p,
+    natN <- collect_raw(spatial_filter(tbl(f), resident, predicate = p,
                                    negate = TRUE, crs = NA))
-    refN <- collect(spatial_filter(tbl(f), resident, predicate = wrap,
+    refN <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrap,
                                    negate = TRUE, crs = NA))
     expect_equal(sort(natN$pid), sort(refN$pid), info = paste0("!", nm))
   }
   pw <- sf::st_is_within_distance
   wrapw <- function(a, b, ...) pw(a, b, ...)
   for (d in c(0.1, 0.5, 1.5)) {
-    nat <- collect(spatial_filter(tbl(f), resident, predicate = pw,
+    nat <- collect_raw(spatial_filter(tbl(f), resident, predicate = pw,
                                   dist = d, crs = NA))
-    ref <- collect(spatial_filter(tbl(f), resident, predicate = wrapw,
+    ref <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrapw,
                                   dist = d, crs = NA))
     expect_equal(sort(nat$pid), sort(ref$pid), info = paste0("within ", d))
   }
@@ -173,20 +173,20 @@ test_that("native join equals / within_distance / nearest match sf", {
     sort(paste(d$pid, ifelse(is.na(d$rid), "NA", d$rid), sep = "|"))
   for (lf in c(TRUE, FALSE)) {
     pe <- sf::st_equals; wrape <- function(a, b) pe(a, b)
-    nat <- collect(spatial_join(tbl(f), resj, join = pe, crs = NA, left = lf))
-    ref <- collect(spatial_join(tbl(f), resj, join = wrape, crs = NA, left = lf))
+    nat <- collect_raw(spatial_join(tbl(f), resj, join = pe, crs = NA, left = lf))
+    ref <- collect_raw(spatial_join(tbl(f), resj, join = wrape, crs = NA, left = lf))
     expect_equal(key(nat), key(ref), info = paste0("equals left=", lf))
 
     pw <- sf::st_is_within_distance; wrapw <- function(a, b, ...) pw(a, b, ...)
-    nat <- collect(spatial_join(tbl(f), resj, join = pw, dist = 0.5,
+    nat <- collect_raw(spatial_join(tbl(f), resj, join = pw, dist = 0.5,
                                 crs = NA, left = lf))
-    ref <- collect(spatial_join(tbl(f), resj, join = wrapw, dist = 0.5,
+    ref <- collect_raw(spatial_join(tbl(f), resj, join = wrapw, dist = 0.5,
                                 crs = NA, left = lf))
     expect_equal(key(nat), key(ref), info = paste0("within left=", lf))
   }
   pn <- sf::st_nearest_feature; wrapn <- function(a, b) pn(a, b)
-  nat <- collect(spatial_join(tbl(f), resj, join = pn, crs = NA))
-  ref <- collect(spatial_join(tbl(f), resj, join = wrapn, crs = NA))
+  nat <- collect_raw(spatial_join(tbl(f), resj, join = pn, crs = NA))
+  ref <- collect_raw(spatial_join(tbl(f), resj, join = wrapn, crs = NA))
   expect_equal(key(nat), key(ref))
 })
 
@@ -208,17 +208,17 @@ test_that("native coords filter matches sf for points", {
   for (nm in c("intersects", "within", "covered_by")) {
     p <- getExportedValue("sf", paste0("st_", nm))
     wrap <- function(a, b) p(a, b)
-    nat <- collect(spatial_filter(tbl(f), resident, predicate = p,
+    nat <- collect_raw(spatial_filter(tbl(f), resident, predicate = p,
                                   coords = c("x", "y"), crs = NA))
-    ref <- collect(spatial_filter(tbl(f), resident, predicate = wrap,
+    ref <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrap,
                                   coords = c("x", "y"), crs = NA))
     expect_equal(sort(nat$pid), sort(ref$pid), info = nm)
   }
   pw <- sf::st_is_within_distance; wrapw <- function(a, b, ...) pw(a, b, ...)
   for (d in c(0.3, 0.6, 2.0)) {
-    nat <- collect(spatial_filter(tbl(f), resident, predicate = pw,
+    nat <- collect_raw(spatial_filter(tbl(f), resident, predicate = pw,
                                   dist = d, coords = c("x", "y"), crs = NA))
-    ref <- collect(spatial_filter(tbl(f), resident, predicate = wrapw,
+    ref <- collect_raw(spatial_filter(tbl(f), resident, predicate = wrapw,
                                   dist = d, coords = c("x", "y"), crs = NA))
     expect_equal(sort(nat$pid), sort(ref$pid), info = paste0("within ", d))
   }
@@ -232,9 +232,9 @@ test_that("native coords join matches sf, point geometry included", {
     sort(paste(d$pid, ifelse(is.na(d$rid), "NA", d$rid), sep = "|"))
   for (lf in c(TRUE, FALSE)) {
     pj <- sf::st_intersects; wrapj <- function(a, b) pj(a, b)
-    nat <- collect(spatial_join(tbl(f), resj, join = pj, coords = c("x", "y"),
+    nat <- collect_raw(spatial_join(tbl(f), resj, join = pj, coords = c("x", "y"),
                                 crs = NA, left = lf))
-    ref <- collect(spatial_join(tbl(f), resj, join = wrapj, coords = c("x", "y"),
+    ref <- collect_raw(spatial_join(tbl(f), resj, join = wrapj, coords = c("x", "y"),
                                 crs = NA, left = lf))
     expect_equal(key(nat), key(ref), info = paste0("intersects left=", lf))
     expect_equal(names(nat)[order(names(nat))],
@@ -242,15 +242,15 @@ test_that("native coords join matches sf, point geometry included", {
   }
   # within-distance and nearest
   pw <- sf::st_is_within_distance; wrapw <- function(a, b, ...) pw(a, b, ...)
-  nat <- collect(spatial_join(tbl(f), resj, join = pw, dist = 0.6,
+  nat <- collect_raw(spatial_join(tbl(f), resj, join = pw, dist = 0.6,
                               coords = c("x", "y"), crs = NA))
-  ref <- collect(spatial_join(tbl(f), resj, join = wrapw, dist = 0.6,
+  ref <- collect_raw(spatial_join(tbl(f), resj, join = wrapw, dist = 0.6,
                               coords = c("x", "y"), crs = NA))
   expect_equal(key(nat), key(ref), info = "within")
   pn <- sf::st_nearest_feature; wrapn <- function(a, b) pn(a, b)
-  nat <- collect(spatial_join(tbl(f), resj, join = pn, coords = c("x", "y"),
+  nat <- collect_raw(spatial_join(tbl(f), resj, join = pn, coords = c("x", "y"),
                               crs = NA))
-  ref <- collect(spatial_join(tbl(f), resj, join = wrapn, coords = c("x", "y"),
+  ref <- collect_raw(spatial_join(tbl(f), resj, join = wrapn, coords = c("x", "y"),
                               crs = NA))
   expect_equal(key(nat), key(ref), info = "nearest")
 

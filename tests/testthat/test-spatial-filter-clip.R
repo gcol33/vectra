@@ -90,7 +90,7 @@ test_that("spatial_clip clips streamed polygons to a resident mask", {
   write_vtr(df, f)
 
   mask <- sf::st_sfc(make_square(1, 3, 0, 1))
-  out <- tbl(f) |> spatial_clip(mask, crs = NA) |> collect_sf()
+  out <- tbl(f) |> spatial_clip(mask, crs = NA) |> collect()
   out <- out[order(out$pid), ]
   # A clip = (1,2)x(0,1); B clip = (2,3)x(0,1): each area 1.
   expect_equal(sort(out$pid), c("A", "B"))
@@ -108,7 +108,7 @@ test_that("spatial_clip erase keeps the part outside the mask", {
   write_vtr(df, f)
 
   mask <- sf::st_sfc(make_square(1, 3, 0, 1))
-  out <- tbl(f) |> spatial_clip(mask, erase = TRUE, crs = NA) |> collect_sf()
+  out <- tbl(f) |> spatial_clip(mask, erase = TRUE, crs = NA) |> collect()
   out <- out[order(out$pid), ]
   # A erase = (0,1)x(0,1); B erase = (3,4)x(0,1): each area 1.
   expect_equal(as.numeric(sf::st_area(out)), c(1, 1), tolerance = 1e-9)
@@ -123,7 +123,7 @@ test_that("spatial_clip matches sf across multi-batch streaming", {
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(df, f, batch_size = 7L)
   mask <- sf::st_sfc(make_square(10.5, 40.5, 0, 1))
-  got <- tbl(f) |> spatial_clip(mask, crs = NA, flush_rows = 11) |> collect_sf()
+  got <- tbl(f) |> spatial_clip(mask, crs = NA, flush_rows = 11) |> collect()
 
   resident <- sf::st_sf(pid = xs, geometry = geoms)
   ref <- suppressWarnings(sf::st_intersection(resident, sf::st_union(mask)))

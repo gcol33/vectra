@@ -29,7 +29,7 @@ grid_lines <- function() {
 test_that("polygonize forms the faces enclosed by a line network", {
   x <- sf::st_sf(geometry = grid_lines())
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_polygonize() |> collect_sf()
+  d <- tbl(f) |> spatial_polygonize() |> collect()
   expect_equal(nrow(d), 4L)
   expect_true(all(sf::st_geometry_type(d) == "POLYGON"))
   expect_equal(sort(as.numeric(sf::st_area(d))), rep(1, 4), tolerance = 1e-9)
@@ -42,7 +42,7 @@ test_that("polygonize builds one set of faces per by group", {
     grp = c(rep("a", 6), rep("b", 6)),
     geometry = sf::st_sfc(c(g1, g2)))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_polygonize(by = "grp") |> collect_sf()
+  d <- tbl(f) |> spatial_polygonize(by = "grp") |> collect()
   expect_equal(nrow(d), 8L)
   expect_equal(sum(d$grp == "a"), 4L)
   expect_equal(sum(d$grp == "b"), 4L)
@@ -51,7 +51,7 @@ test_that("polygonize builds one set of faces per by group", {
 test_that("polygonize rejects a missing by column and a non-node input", {
   x <- sf::st_sf(geometry = grid_lines())
   f <- vtr_from(x); on.exit(unlink(f))
-  expect_error(collect(spatial_polygonize(tbl(f), by = "nope")), "not found")
+  expect_error(collect_raw(spatial_polygonize(tbl(f), by = "nope")), "not found")
   expect_error(spatial_polygonize(data.frame(a = 1)), "vectra_node")
 })
 
@@ -64,7 +64,7 @@ test_that("line_merge sews end-to-end segments into one maximal line", {
     sf::st_linestring(rbind(c(2, 0), c(3, 0))))
   x <- sf::st_sf(geometry = seg)
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_line_merge() |> collect_sf()
+  d <- tbl(f) |> spatial_line_merge() |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(as.numeric(sf::st_length(d)), 3, tolerance = 1e-9)
 })
@@ -76,7 +76,7 @@ test_that("line_merge keeps disconnected chains separate", {
     sf::st_linestring(rbind(c(5, 5), c(6, 5))))
   x <- sf::st_sf(geometry = seg)
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_line_merge() |> collect_sf()
+  d <- tbl(f) |> spatial_line_merge() |> collect()
   expect_equal(nrow(d), 2L)
   expect_equal(sort(as.numeric(sf::st_length(d))), c(1, 2), tolerance = 1e-9)
 })
@@ -88,7 +88,7 @@ test_that("line_merge handles a group whose union is a single line", {
     sf::st_linestring(rbind(c(5, 5), c(6, 5))))
   x <- sf::st_sf(grp = c("a", "b"), geometry = seg)
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_line_merge(by = "grp") |> collect_sf()
+  d <- tbl(f) |> spatial_line_merge(by = "grp") |> collect()
   expect_equal(nrow(d), 2L)
   expect_setequal(d$grp, c("a", "b"))
   expect_equal(as.numeric(sf::st_length(d)), c(1, 1), tolerance = 1e-9)
@@ -139,7 +139,7 @@ test_that("coverage simplify keeps neighbours edge-matched and attributes", {
     c(1, 0), c(2, 0), c(2, 1), c(1, 1), c(1.1, 0.5), c(1, 0))))
   x <- sf::st_sf(id = c("a", "b"), geometry = sf::st_sfc(p1, p2))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_simplify(tolerance = 0.5) |> collect_sf()
+  d <- tbl(f) |> spatial_simplify(tolerance = 0.5) |> collect()
   expect_equal(nrow(d), 2L)
   expect_setequal(d$id, c("a", "b"))
   in_area  <- as.numeric(sf::st_area(sf::st_union(sf::st_sfc(p1, p2))))
@@ -155,7 +155,7 @@ test_that("coverage simplify drops near-collinear vertices", {
   ring <- rbind(c(0, 0), c(2, 0.05), c(4, 0), c(4, 4), c(0, 4), c(0, 0))
   x <- sf::st_sf(id = "a", geometry = sf::st_sfc(sf::st_polygon(list(ring))))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_simplify(tolerance = 0.2) |> collect_sf()
+  d <- tbl(f) |> spatial_simplify(tolerance = 0.2) |> collect()
   expect_equal(nrow(d), 1L)
   expect_lt(nrow(sf::st_coordinates(d)), nrow(ring))
 })
@@ -170,7 +170,7 @@ test_that("locate returns the measure, nearest line, and offset distance", {
   f <- tempfile(fileext = ".vtr"); write_vtr(pts, f); on.exit(unlink(f))
   d <- tbl(f) |>
     spatial_locate(line, coords = c("x", "y"), y_id = "road") |>
-    collect()
+    collect_raw()
   expect_equal(d$line, c("main", "side"))
   expect_equal(d$measure, c(3, 4), tolerance = 1e-6)
   expect_equal(d$distance, c(1, 1), tolerance = 1e-6)
@@ -182,7 +182,7 @@ test_that("locate snap moves each point onto its nearest line", {
   f <- tempfile(fileext = ".vtr"); write_vtr(pts, f); on.exit(unlink(f))
   d <- tbl(f) |>
     spatial_locate(line, coords = c("x", "y"), snap = TRUE) |>
-    collect_sf()
+    collect()
   expect_true(all(sf::st_geometry_type(d) == "POINT"))
   expect_equal(unname(sf::st_coordinates(d)[1, c("X", "Y")]), c(3, 0),
                tolerance = 1e-6)
@@ -204,7 +204,7 @@ test_that("centerline runs down the middle of a strip", {
     c(0, 0), c(10, 0), c(10, 2), c(0, 2), c(0, 0))))
   x <- sf::st_sf(geometry = sf::st_sfc(road))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+  d <- tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
   expect_gt(nrow(d), 0L)
   expect_true(all(sf::st_geometry_type(d) == "LINESTRING"))
   # the centerline lies inside the strip and tracks mid-height (y ~ 1)
@@ -220,7 +220,7 @@ test_that("centerline passes non-polygon geometry through unchanged", {
   ln <- sf::st_linestring(rbind(c(0, 0), c(5, 0)))
   x <- sf::st_sf(geometry = sf::st_sfc(ln))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_centerline() |> collect_sf()
+  d <- tbl(f) |> spatial_centerline() |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(as.numeric(sf::st_length(d)), 5, tolerance = 1e-9)
 })
@@ -241,7 +241,7 @@ test_that("topology returns shared edges once with both neighbours", {
   p3 <- sf::st_polygon(list(rbind(c(0, 1), c(1, 1), c(1, 2), c(0, 2), c(0, 1))))
   x <- sf::st_sf(id = c("a", "b", "c"), geometry = sf::st_sfc(p1, p2, p3))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_topology(id = "id") |> collect_sf()
+  d <- tbl(f) |> spatial_topology(id = "id") |> collect()
   expect_true(all(c("face1", "face2") %in% names(d)))
   expect_true(all(sf::st_geometry_type(d) == "LINESTRING"))
   nfaces <- (!is.na(d$face1)) + (!is.na(d$face2))
@@ -260,7 +260,7 @@ test_that("topology arcs rebuild the original coverage via polygonize", {
   p2 <- sf::st_polygon(list(rbind(c(1, 0), c(2, 0), c(2, 1), c(1, 1), c(1, 0))))
   x <- sf::st_sf(id = c("a", "b"), geometry = sf::st_sfc(p1, p2))
   f <- vtr_from(x); on.exit(unlink(f))
-  arcs <- tbl(f) |> spatial_topology(id = "id") |> collect_sf()
+  arcs <- tbl(f) |> spatial_topology(id = "id") |> collect()
   faces <- sf::st_collection_extract(
     sf::st_polygonize(sf::st_union(sf::st_geometry(arcs))), "POLYGON")
   expect_equal(length(faces), 2L)
@@ -271,7 +271,7 @@ test_that("topology rejects a missing id column and bad face_cols", {
   x <- sf::st_sf(geometry = sf::st_sfc(
     sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))))
   f <- vtr_from(x); on.exit(unlink(f))
-  expect_error(collect(spatial_topology(tbl(f), id = "nope")), "not found")
+  expect_error(collect_raw(spatial_topology(tbl(f), id = "nope")), "not found")
   expect_error(spatial_topology(tbl(f), face_cols = "only_one"), "two distinct")
 })
 
@@ -284,7 +284,7 @@ test_that("eliminate absorbs a sliver into the square it borders", {
     c(10, 0), c(10.3, 0), c(10.3, 10), c(10, 10), c(10, 0))))
   x <- sf::st_sf(id = c("keep", "sliver"), geometry = sf::st_sfc(big, sliver))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
   expect_equal(nrow(d), 1L)
   # the survivor keeps the large feature's attributes
   expect_equal(d$id, "keep")
@@ -302,7 +302,7 @@ test_that("eliminate collapses a chain of slivers to the largest member", {
     c(10.3, 0), c(10.6, 0), c(10.6, 10), c(10.3, 10), c(10.3, 0))))
   x <- sf::st_sf(id = c("big", "s1", "s2"), geometry = sf::st_sfc(b, s1, s2))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(d$id, "big")
 })
@@ -316,7 +316,7 @@ test_that("eliminate keeps a sliver with no neighbour and leaves big ones", {
     c(50, 50), c(50.2, 50), c(50.2, 51), c(50, 51), c(50, 50))))
   x <- sf::st_sf(id = c("b1", "b2", "iso"), geometry = sf::st_sfc(b1, b2, iso))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+  d <- tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
   # two untouched big squares plus the unmergeable isolated sliver
   expect_equal(nrow(d), 3L)
   expect_setequal(d$id, c("b1", "b2", "iso"))
@@ -334,7 +334,7 @@ test_that("eliminate by-group cleans each coverage independently", {
     grp = c("a", "a", "b", "b"),
     geometry = sf::st_sfc(c(mk(0), mk(100))))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_eliminate(max_area = 5, by = "grp") |> collect_sf()
+  d <- tbl(f) |> spatial_eliminate(max_area = 5, by = "grp") |> collect()
   expect_equal(nrow(d), 2L)
   expect_setequal(d$grp, c("a", "b"))
 })

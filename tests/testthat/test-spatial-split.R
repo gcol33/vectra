@@ -18,7 +18,7 @@ vblade <- function() sf::st_sfc(sf::st_linestring(rbind(c(2, -1), c(2, 5))))
 test_that("a polygon is split into the faces the blade carves out", {
   x <- sf::st_sf(id = 1L, k = "a", geometry = sf::st_sfc(sq()))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_split(vblade()) |> collect_sf()
+  d <- tbl(f) |> spatial_split(vblade()) |> collect()
   expect_equal(nrow(d), 2L)
   expect_equal(sort(as.numeric(sf::st_area(d))), c(8, 8), tolerance = 1e-9)
   expect_equal(d$id, c(1L, 1L))           # attributes copied onto each piece
@@ -30,7 +30,7 @@ test_that("a line is split at the blade crossing", {
   line <- sf::st_linestring(rbind(c(0, 2), c(4, 2)))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(line))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_split(vblade()) |> collect_sf()
+  d <- tbl(f) |> spatial_split(vblade()) |> collect()
   expect_equal(nrow(d), 2L)
   expect_true(all(sf::st_geometry_type(d) == "LINESTRING"))
   expect_equal(sort(as.numeric(sf::st_length(d))), c(2, 2), tolerance = 1e-9)
@@ -41,7 +41,7 @@ test_that("a feature the blade misses passes through as one piece", {
     rbind(c(10, 10), c(12, 10), c(12, 12), c(10, 12), c(10, 10))))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(far))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_split(vblade()) |> collect_sf()
+  d <- tbl(f) |> spatial_split(vblade()) |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(as.numeric(sf::st_area(d)), 4, tolerance = 1e-9)
 })
@@ -52,7 +52,7 @@ test_that("extract = 'points' returns the crossing points and drops misses", {
   x <- sf::st_sf(id = c(1L, 2L),
                  geometry = sf::st_sfc(line_hit, line_miss))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_split(vblade(), extract = "points") |> collect_sf()
+  d <- tbl(f) |> spatial_split(vblade(), extract = "points") |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(d$id, 1L)
   xy <- sf::st_coordinates(d)
@@ -65,7 +65,7 @@ test_that("multiple blades split a polygon into a grid of pieces", {
     sf::st_linestring(rbind(c(-1, 2), c(5, 2))))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(sq()))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_split(blades) |> collect_sf()
+  d <- tbl(f) |> spatial_split(blades) |> collect()
   expect_equal(nrow(d), 4L)
   expect_equal(sort(as.numeric(sf::st_area(d))), rep(4, 4), tolerance = 1e-9)
 })
@@ -73,7 +73,7 @@ test_that("multiple blades split a polygon into a grid of pieces", {
 test_that("a CRS passed to the verb is carried onto the pieces", {
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(sq()))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_split(vblade(), crs = 3857) |> collect_sf()
+  d <- tbl(f) |> spatial_split(vblade(), crs = 3857) |> collect()
   expect_equal(sf::st_crs(d), sf::st_crs(3857))
 })
 

@@ -18,7 +18,7 @@ test_that("contour vertices sample back to their level", {
   on.exit(unlink(f))
 
   levs <- c(15, 25, 35)
-  iso <- collect_sf(contours(f, levels = levs))
+  iso <- collect(contours(f, levels = levs))
   expect_gt(nrow(iso), 0L)
 
   r <- vec_open_raster(f)
@@ -40,8 +40,8 @@ test_that("contour total length is invariant to tile size", {
   on.exit(unlink(c(f1, f2)))
 
   levs <- c(15, 25, 35)
-  l1 <- sum(as.numeric(sf::st_length(collect_sf(contours(f1, levs)))))
-  l2 <- sum(as.numeric(sf::st_length(collect_sf(contours(f2, levs)))))
+  l1 <- sum(as.numeric(sf::st_length(collect(contours(f1, levs)))))
+  l2 <- sum(as.numeric(sf::st_length(collect(contours(f2, levs)))))
   expect_equal(l1, l2, tolerance = 1e-6)
 })
 
@@ -53,7 +53,7 @@ test_that("a planar field gives one line per level of the expected length", {
   f <- wr(z, ext = c(0, 0, 20, 20), tile = 5L)
   on.exit(unlink(f))
 
-  iso <- collect_sf(contours(f, levels = 20))
+  iso <- collect(contours(f, levels = 20))
   expect_equal(nrow(iso), 1L)
   len <- sum(as.numeric(sf::st_length(iso)))
   # pixel-centre grid spans centres 0.5..19.5, so the traced diagonal is a bit
@@ -67,8 +67,8 @@ test_that("merge = FALSE returns the raw per-cell segments", {
   f <- wr(z, ext = c(0, 0, 10, 10), tile = 10L)
   on.exit(unlink(f))
 
-  seg <- collect_sf(contours(f, levels = 10, merge = FALSE))
-  mer <- collect_sf(contours(f, levels = 10, merge = TRUE))
+  seg <- collect(contours(f, levels = 10, merge = FALSE))
+  mer <- collect(contours(f, levels = 10, merge = TRUE))
   expect_gt(nrow(seg), nrow(mer))
   # merging does not change total length
   expect_equal(sum(as.numeric(sf::st_length(seg))),

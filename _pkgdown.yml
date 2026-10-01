@@ -205,7 +205,6 @@ reference:
   - mosaic
   - rast_calc
   - proximity
-  - collect_sf
   - geom_expressions
 - title: Geometry construction and cleaning
   desc: Reshape, repair, simplify, and snap streamed vector geometry

@@ -77,12 +77,12 @@ write_vtr(data.frame(
 ), f)
 
 # Split the square into two halves along the blade.
-tbl(f) |> spatial_split(blade) |> collect_sf()
+tbl(f) |> spatial_split(blade) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_clip]{spatial_clip()}} to cut against a mask without dividing into pieces,
 \code{\link[=spatial_overlay]{spatial_overlay()}} to node two polygon layers into a partition,
-\code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+\code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

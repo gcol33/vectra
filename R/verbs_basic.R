@@ -65,8 +65,7 @@ arrange.vectra_node <- function(.data, ...) {
     node <- .window_materialize(node, tmp_exprs, parent.frame())
 
   new_xptr <- .sort_node(node$.node, col_names, desc_flags)
-  out <- structure(list(.node = new_xptr, .path = node$.path,
-                        .groups = node$.groups), class = "vectra_node")
+  out <- .derive_node(node, new_xptr, groups = node$.groups)
   if (length(tmp_exprs) > 0)
     out <- .window_drop(out, names(tmp_exprs))
   out
@@ -141,8 +140,7 @@ filter.vectra_node <- function(.data, ...) {
     exprs <- .expand_if_dots(exprs, schema, parent.frame())
     pred <- combine_predicates(exprs, parent.frame(), schema$name)
     new_xptr <- .Call(C_filter_node, .data$.node, pred)
-    return(structure(list(.node = new_xptr, .path = .data$.path,
-                          .groups = .data$.groups), class = "vectra_node"))
+    return(.derive_node(.data, new_xptr, groups = .data$.groups))
   }
 
   # dplyr 1.1 `.by`: the result is always ungrouped. Grouping would only change
@@ -153,13 +151,11 @@ filter.vectra_node <- function(.data, ...) {
   schema <- .Call(C_node_schema, .data$.node)
   .resolve_by_cols(meta$by, schema, parent.frame())
   if (length(exprs) == 0)
-    return(structure(list(.node = .data$.node, .path = .data$.path,
-                          .groups = NULL), class = "vectra_node"))
+    return(.derive_node(.data, .data$.node, groups = NULL))
   exprs <- .expand_if_dots(exprs, schema, parent.frame())
   pred <- combine_predicates(exprs, parent.frame(), schema$name)
   new_xptr <- .Call(C_filter_node, .data$.node, pred)
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = NULL), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = NULL)
 }
 
 #' Select columns from a vectra query
@@ -210,8 +206,7 @@ select.vectra_node <- function(.data, ...) {
     grps <- intersect(grps, out_names)
     if (length(grps) == 0) grps <- NULL
   }
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = grps), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = grps)
 }
 
 #' Add or transform columns
@@ -283,9 +278,15 @@ mutate <- function(.data, ...) {
       }
     }
     new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
-    node  <<- structure(list(.node = new_xptr, .path = node$.path,
-                             .groups = node$.groups), class = "vectra_node")
+    node  <<- .derive_node(node, new_xptr, groups = node$.groups)
     avail <<- out_names
+    for (k in seq_along(seg_names)) {
+      ser <- out_exprs[[match(seg_names[k], out_names)]]
+      if (identical(ser$kind, "geom") && ser$fn %in% .GEOM_RETURNS_GEOM)
+        node$.geom <<- seg_names[k]
+      else if (identical(node$.geom, seg_names[k]))
+        node$.geom <<- NULL
+    }
   }
 
   flush_window <- function() {
@@ -352,8 +353,7 @@ mutate.vectra_node <- function(.data, ...) {
     if (!is.null(.data$.groups))
       stop("Can't supply `.by` when `.data` is already grouped.")
     by_cols <- .resolve_by_cols(meta$by, schema, parent.frame())
-    data <- structure(list(.node = .data$.node, .path = .data$.path,
-                           .groups = by_cols), class = "vectra_node")
+    data <- .derive_node(.data, .data$.node, groups = by_cols)
   }
 
   out <- .apply_mutate_dots(data, dots, parent.frame())

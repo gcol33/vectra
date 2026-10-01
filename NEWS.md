@@ -1,3 +1,20 @@
+# vectra 0.13.1
+
+## Changes
+
+* `collect()` returns an `sf` object when the query still carries a geometry
+  column, or when a string column holds hex-encoded WKB (recognised from the
+  first values of the column, so a stored geometry column comes back as `sf`
+  from a plain `tbl()`), so `tbl(f) |> spatial_map(...) |> filter(...) |> collect()` needs no
+  second verb. The spatial verbs, and `mutate()` with a geometry-producing
+  `st_*` expression, mark the geometry column on the node together with its
+  CRS; `filter()`, `select()`, `rename()`, `mutate()`, the window, grouping and
+  join verbs carry the mark, and it is dropped when the column is. `collect(x,
+  sf = FALSE)` returns the hex-WKB string column, and `collect(x, geom =,
+  crs =)` decodes a geometry column the node does not carry.
+
+* `collect_sf()` is deprecated in favour of `collect()`.
+
 # vectra 0.13.0
 
 ## New features

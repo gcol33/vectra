@@ -55,7 +55,7 @@
 #'
 #' @seealso [spatial_split()] to cut existing polygons by a blade,
 #'   [spatial_construct()] for hulls and tessellations, [spatial_dissolve()] to
-#'   merge geometries by group, [collect_sf()] to materialize as `sf`.
+#'   merge geometries by group, [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' grid <- sf::st_sfc(
@@ -71,7 +71,7 @@
 #' ), f)
 #'
 #' # The four unit cells enclosed by the grid of lines.
-#' tbl(f) |> spatial_polygonize() |> collect_sf()
+#' tbl(f) |> spatial_polygonize() |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -134,7 +134,7 @@ spatial_polygonize <- function(x, by = NULL, geom = "geometry", crs = NA,
 #'
 #' @seealso [spatial_dissolve()] to union geometries by group,
 #'   [spatial_explode()] for the opposite direction (multipart to single part),
-#'   [collect_sf()] to materialize as `sf`.
+#'   [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' seg <- sf::st_sfc(
@@ -147,7 +147,7 @@ spatial_polygonize <- function(x, by = NULL, geom = "geometry", crs = NA,
 #' ), f)
 #'
 #' # The three end-to-end segments become one line.
-#' tbl(f) |> spatial_line_merge() |> collect_sf()
+#' tbl(f) |> spatial_line_merge() |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -230,7 +230,7 @@ spatial_line_merge <- function(x, by = NULL, geom = "geometry", crs = NA,
 #'
 #' @seealso [spatial_map()] with `~ sf::st_simplify(.x)` for independent
 #'   per-feature simplification, [spatial_smooth()] for Chaikin corner-rounding,
-#'   [collect_sf()] to materialize as `sf`.
+#'   [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' p1 <- sf::st_polygon(list(rbind(
@@ -244,7 +244,7 @@ spatial_line_merge <- function(x, by = NULL, geom = "geometry", crs = NA,
 #' ), f)
 #'
 #' # The shared edge is simplified once, so the two polygons stay edge-matched.
-#' tbl(f) |> spatial_simplify(tolerance = 0.6) |> collect_sf()
+#' tbl(f) |> spatial_simplify(tolerance = 0.6) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -327,7 +327,7 @@ spatial_simplify <- function(x, tolerance, by = NULL, geom = "geometry",
 #'
 #' @seealso [spatial_knn()] for nearest neighbours with distances,
 #'   [spatial_join()] for a nearest-feature attribute join, [spatial_map()] with
-#'   `~ sf::st_line_interpolate(line, .x$m)` for the inverse, [collect_sf()] to
+#'   `~ sf::st_line_interpolate(line, .x$m)` for the inverse, [collect()] to
 #'   materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
@@ -454,7 +454,7 @@ spatial_locate <- function(x, line, geom = "geometry", coords = NULL, crs = NA,
 #'   garbage-collected.
 #'
 #' @seealso [spatial_construct()] with `kind = "pole"` for the single deepest
-#'   interior point, [spatial_simplify()] to simplify a coverage, [collect_sf()]
+#'   interior point, [spatial_simplify()] to simplify a coverage, [collect()]
 #'   to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
@@ -466,7 +466,7 @@ spatial_locate <- function(x, line, geom = "geometry", coords = NULL, crs = NA,
 #' ), f)
 #'
 #' # The centerline runs down the middle of the strip.
-#' tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+#' tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -559,7 +559,7 @@ spatial_centerline <- function(x, density = NULL, prune = 0,
 #'   backed by temporary `.vtr` spills removed when the node is garbage-collected.
 #'
 #' @seealso [spatial_polygonize()] to rebuild faces from arcs,
-#'   [spatial_dissolve()] to merge geometries by group, [collect_sf()] to
+#'   [spatial_dissolve()] to merge geometries by group, [collect()] to
 #'   materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
@@ -684,7 +684,7 @@ spatial_topology <- function(x, id = NULL, by = NULL, geom = "geometry",
 #'
 #' @seealso [spatial_dissolve()] to merge geometries by attribute,
 #'   [spatial_simplify()] for coverage-preserving simplification,
-#'   [spatial_topology()] for the shared-edge adjacency, [collect_sf()] to
+#'   [spatial_topology()] for the shared-edge adjacency, [collect()] to
 #'   materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
@@ -699,7 +699,7 @@ spatial_topology <- function(x, id = NULL, by = NULL, geom = "geometry",
 #' ), f)
 #'
 #' # The thin sliver is absorbed into the square it borders.
-#' tbl(f) |> spatial_eliminate(max_area = 5) |> collect_sf()
+#' tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -745,7 +745,7 @@ spatial_eliminate <- function(x, max_area, by = NULL,
 
   acc <- .run_accumulator(flush_rows)
   for (lab in sort(names(res$runs))) {
-    df  <- collect(.concat_runs(res$runs[[lab]]))
+    df  <- collect(.concat_runs(res$runs[[lab]]), sf = FALSE)
     out <- group_fn(df)
     if (!is.null(out) && nrow(out)) acc$push(.coerce_for_vtr(out))
   }

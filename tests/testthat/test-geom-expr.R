@@ -103,7 +103,7 @@ test_that("st_distance recovers sf, to a constant and to self", {
 test_that("st_centroid recovers sf centroid coordinates", {
   x <- squares(); f <- vtr_from(x); on.exit(unlink(f))
   cent <- tbl(f) |> mutate(geometry = st_centroid(geometry)) |>
-    select(id, geometry) |> collect_sf()
+    select(id, geometry) |> collect()
   ref <- suppressWarnings(sf::st_centroid(planar(x)))
   expect_equal(sf::st_coordinates(cent), sf::st_coordinates(ref),
                tolerance = 1e-9, ignore_attr = TRUE)
@@ -112,19 +112,19 @@ test_that("st_centroid recovers sf centroid coordinates", {
 test_that("st_buffer area matches sf and st_convex_hull is a polygon", {
   x <- squares(); f <- vtr_from(x); on.exit(unlink(f))
   buf <- tbl(f) |> mutate(geometry = st_buffer(geometry, 0.25)) |>
-    select(id, geometry) |> collect_sf()
+    select(id, geometry) |> collect()
   expect_equal(as.numeric(sf::st_area(buf)),
                as.numeric(sf::st_area(sf::st_buffer(planar(x), 0.25))),
                tolerance = 1e-3)
   hull <- tbl(f) |> mutate(geometry = st_convex_hull(geometry)) |>
-    select(id, geometry) |> collect_sf()
+    select(id, geometry) |> collect()
   expect_true(all(sf::st_geometry_type(hull) == "POLYGON"))
 })
 
 test_that("st_envelope of a square is the square itself", {
   x <- squares(); f <- vtr_from(x); on.exit(unlink(f))
   env <- tbl(f) |> mutate(geometry = st_envelope(geometry)) |>
-    select(id, geometry) |> collect_sf()
+    select(id, geometry) |> collect()
   expect_equal(as.numeric(sf::st_area(env)), rep(1, 3), tolerance = 1e-9)
 })
 
@@ -137,7 +137,7 @@ test_that("st_make_valid repairs a self-intersecting bowtie", {
     mutate(before = st_is_valid(geometry),
            geometry = st_make_valid(geometry)) |>
     mutate(after = st_is_valid(geometry)) |>
-    collect_sf()
+    collect()
   expect_false(d$before[1]); expect_true(d$after[1])
 })
 

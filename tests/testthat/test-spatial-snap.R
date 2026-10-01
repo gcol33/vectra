@@ -16,7 +16,7 @@ test_that("snap_grid rounds jittered coordinates onto the grid", {
                                  c(0.98, 1.03), c(0.01, 0.97), c(0.04, 0.03))))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(p))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_snap_grid(0.1) |> collect_sf()
+  d <- tbl(f) |> spatial_snap_grid(0.1) |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(d$id, 1L)
   co <- sf::st_coordinates(d)[, c("X", "Y")]
@@ -29,7 +29,7 @@ test_that("snap_grid keeps one cleaned feature per input and its attributes", {
     sf::st_polygon(list(rbind(c(2, 2), c(3, 2), c(3, 3), c(2, 3), c(2, 2)))))
   x <- sf::st_sf(id = c(10L, 20L), k = c("a", "b"), geometry = ps)
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_snap_grid(0.5) |> collect_sf()
+  d <- tbl(f) |> spatial_snap_grid(0.5) |> collect()
   expect_equal(nrow(d), 2L)
   expect_equal(d$id, c(10L, 20L))
   expect_equal(d$k, c("a", "b"))
@@ -39,7 +39,7 @@ test_that("snap_grid carries a CRS passed to the verb", {
   p <- sf::st_polygon(list(rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(p))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_snap_grid(0.5, crs = 3857) |> collect_sf()
+  d <- tbl(f) |> spatial_snap_grid(0.5, crs = 3857) |> collect()
   expect_equal(sf::st_crs(d), sf::st_crs(3857))
 })
 
@@ -55,7 +55,7 @@ test_that("snap pulls near vertices onto a reference layer", {
   line <- sf::st_linestring(rbind(c(0, 0.2), c(5, 0.1), c(10, 0.2)))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(line))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+  d <- tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect()
   # the two endpoints sit within tolerance of the reference line, so they snap
   # onto y = 0
   ends <- sf::st_coordinates(d)
@@ -68,7 +68,7 @@ test_that("snap leaves vertices beyond the tolerance untouched", {
   line <- sf::st_linestring(rbind(c(0, 5), c(10, 5)))
   x <- sf::st_sf(id = 1L, geometry = sf::st_sfc(line))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+  d <- tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect()
   expect_equal(unique(sf::st_coordinates(d)[, "Y"]), 5, tolerance = 1e-9)
 })
 

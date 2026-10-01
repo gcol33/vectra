@@ -77,7 +77,7 @@ test_that("hex-WKB point geometry input works and carries CRS", {
                        geometry = sf::st_as_binary(pts, hex = TRUE)), f)
   on.exit(unlink(f))
   y <- sf::st_set_crs(nbrs(), 3857)
-  d <- tbl(f) |> spatial_knn(y, k = 1, crs = 3857) |> collect_sf()
+  d <- tbl(f) |> spatial_knn(y, k = 1, crs = 3857) |> collect()
   expect_equal(d$neighbor, c(1L, 4L))
   expect_equal(sf::st_crs(d), sf::st_crs(3857))
 })

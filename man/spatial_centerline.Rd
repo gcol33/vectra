@@ -79,12 +79,12 @@ write_vtr(data.frame(
 ), f)
 
 # The centerline runs down the middle of the strip.
-tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_construct]{spatial_construct()}} with \code{kind = "pole"} for the single deepest
-interior point, \code{\link[=spatial_simplify]{spatial_simplify()}} to simplify a coverage, \code{\link[=collect_sf]{collect_sf()}}
+interior point, \code{\link[=spatial_simplify]{spatial_simplify()}} to simplify a coverage, \code{\link[=collect]{collect()}}
 to materialize as \code{sf}.
 }

@@ -97,11 +97,11 @@ dest <- sf::st_sfc(sf::st_point(c(2, 1)))
 
 tbl(f) |>
   spatial_route(net, to = dest, coords = c("x", "y")) |>
-  collect_sf()
+  collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_network]{spatial_network()}} to build the graph, \code{\link[=spatial_service_area]{spatial_service_area()}} for
-reachability, \code{\link[=collect_sf]{collect_sf()}} to materialize routes as \code{sf}.
+reachability, \code{\link[=collect]{collect()}} to materialize routes as \code{sf}.
 }

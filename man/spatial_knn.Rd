@@ -101,6 +101,6 @@ unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
-\code{\link[=spatial_join]{spatial_join()}} for a nearest-feature attribute join, \code{\link[=collect_sf]{collect_sf()}}
+\code{\link[=spatial_join]{spatial_join()}} for a nearest-feature attribute join, \code{\link[=collect]{collect()}}
 to materialize as \code{sf}.
 }

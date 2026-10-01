@@ -82,7 +82,7 @@ test_that("route geometry reconstructs a path of the right length", {
 
   sfres <- tbl(f) |>
     spatial_route(net, to = dest, coords = c("x", "y")) |>
-    collect_sf()
+    collect()
   expect_equal(nrow(sfres), 1L)
   expect_true(as.character(sf::st_geometry_type(sfres)) == "LINESTRING")
   # the reconstructed line length equals the routing cost
@@ -139,7 +139,7 @@ test_that("service area reachable nodes match the budget", {
   sfres <- tbl(f) |>
     spatial_service_area(net, cost = 1, output = "nodes",
                          coords = c("x", "y")) |>
-    collect_sf()
+    collect()
   expect_equal(nrow(sfres), 1L)
   pts <- sf::st_coordinates(sfres)[, c("X", "Y")]
   # within cost 1 of (0,0): itself, (1,0), (0,1)
@@ -156,7 +156,7 @@ test_that("service area bands nest from small to large budget", {
   sfres <- tbl(f) |>
     spatial_service_area(net, cost = c(1, 2), output = "nodes",
                          coords = c("x", "y")) |>
-    collect_sf()
+    collect()
   expect_equal(nrow(sfres), 2L)             # two bands
   n1 <- nrow(unique(sf::st_coordinates(sfres[sfres$band == 1, ])[, c("X", "Y")]))
   n2 <- nrow(unique(sf::st_coordinates(sfres[sfres$band == 2, ])[, c("X", "Y")]))

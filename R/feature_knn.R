@@ -182,7 +182,7 @@ feature_knn <- function(x, y, vars = NULL, k = NULL, percentage = NULL,
     chunk[[dist_col]] <- .Call(C_feature_knn_query, idx, qm, keff, nt)
     acc$push(chunk)
   }
-  acc$finish(crs = .resolve_crs(x, NA), empty_geom = dist_col)
+  acc$finish(crs = .resolve_crs(x, NA), empty_geom = dist_col, geom = NULL)
 }
 
 # -- rast_feature_distance() raster wrapper -----------------------------------

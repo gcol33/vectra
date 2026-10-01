@@ -222,8 +222,7 @@ split_window_exprs <- function(dots) {
 create_window_node <- function(.data, win_specs) {
   key_names <- if (!is.null(.data$.groups)) .data$.groups else character(0)
   new_xptr <- .Call(C_window_node, .data$.node, key_names, win_specs)
-  structure(list(.node = new_xptr, .path = .data$.path,
-                 .groups = .data$.groups), class = "vectra_node")
+  .derive_node(.data, new_xptr, groups = .data$.groups)
 }
 
 # Argument position(s) of a window call that name a column (call element index,
@@ -284,8 +283,7 @@ create_window_node <- function(.data, win_specs) {
     out_exprs <- c(out_exprs, list(serialize_expr(exprs[[nm]], env, schema$name)))
   }
   new_xptr <- .Call(C_project_node, node$.node, out_names, out_exprs)
-  structure(list(.node = new_xptr, .path = node$.path,
-                 .groups = node$.groups), class = "vectra_node")
+  .derive_node(node, new_xptr, groups = node$.groups)
 }
 
 # Drop named columns from `node` via a pass-through projection of the survivors.
@@ -294,6 +292,5 @@ create_window_node <- function(.data, win_specs) {
   keep <- setdiff(schema$name, drop)
   new_xptr <- .Call(C_project_node, node$.node, keep,
                     vector("list", length(keep)))
-  structure(list(.node = new_xptr, .path = node$.path,
-                 .groups = node$.groups), class = "vectra_node")
+  .derive_node(node, new_xptr, groups = node$.groups)
 }

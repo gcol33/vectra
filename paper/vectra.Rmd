@@ -306,7 +306,7 @@ R as a whole, in pieces, or not at all.
 
 ```{r sinks-tab}
 sinks <- data.frame(
-  Interface = c("collect(), collect_sf(), pull()", "write_vtr(), write_csv(), write_sqlite(), write_tiff()",
+  Interface = c("collect(), collect(), pull()", "write_vtr(), write_csv(), write_sqlite(), write_tiff()",
                 "collect_chunked(x, f, .init)", "chunk_feeder(source)",
                 "offload(x)", "offload(x, by = key)", "group_map(), group_modify()"),
   `Result in R` = c("whole result", "none", "one batch + accumulator", "one batch",
@@ -376,7 +376,7 @@ mc <- data.frame(
                  "arrange(); grouped summarise() incl. median() and n_distinct(); window functions; hash joins; interval and fuzzy joins; index builds",
                  "offload(by =); group_map(); spatial_dissolve(); spatial_join(partition = grid())",
                  "spatial_join(), spatial_filter(), spatial_clip() against an sf layer; materialize() blocks",
-                 "collect(), collect_sf(), pull(); fallbacks: slice_tail(), reframe(), ties in slice_min()"),
+                 "collect(), collect(), pull(); fallbacks: slice_tail(), reframe(), ties in slice_min()"),
   `Peak memory set by` = c("one batch (row-group size x columns)",
                            "k rows",
                            "vectra_mem() for the buffered state, plus one batch",

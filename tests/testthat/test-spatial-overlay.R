@@ -8,7 +8,7 @@ mk <- function(x0, x1, y0 = 0, y1 = 1) sf::st_polygon(list(rbind(
 
 test_that("two overlapping polygons split into 3 pieces, overlap duplicated", {
   polys <- sf::st_sf(year = c(1990L, 2010L), geometry = sf::st_sfc(mk(0, 2), mk(1, 3)))
-  df <- spatial_overlay(polys) |> collect()
+  df <- spatial_overlay(polys) |> collect_raw()
 
   expect_equal(length(unique(df$piece_id)), 3L)   # 3 disjoint pieces
   expect_equal(nrow(df), 4L)                       # overlap carries both years
@@ -23,7 +23,7 @@ test_that("earliest-year-wins via grouped slice_min keeps the whole piece", {
   first <- spatial_overlay(polys) |>
     group_by(piece_id) |>
     slice_min(year, n = 1, with_ties = FALSE) |>
-    collect_sf()
+    collect()
 
   expect_s3_class(first, "sf")
   expect_equal(nrow(first), 3L)
@@ -39,7 +39,7 @@ test_that("partition area reconstructs the union (precision-robust, no slivers)"
   pieces <- spatial_overlay(polys) |>
     group_by(piece_id) |>
     slice_min(id, n = 1, with_ties = FALSE) |>
-    collect_sf()
+    collect()
 
   a_union <- as.numeric(sf::st_area(sf::st_union(sf::st_geometry(polys))))
   a_part  <- sum(as.numeric(sf::st_area(pieces)))
@@ -54,7 +54,7 @@ test_that("disjoint overlap clusters are tiled independently", {
   pieces <- spatial_overlay(polys) |>
     group_by(piece_id) |>
     slice_min(year, n = 1, with_ties = FALSE) |>
-    collect_sf()
+    collect()
 
   expect_equal(nrow(pieces), 7L)                  # 3 + 3 + 1 disjoint pieces
   expect_equal(sum(as.numeric(sf::st_area(pieces))), 7, tolerance = 1e-4)
@@ -63,7 +63,7 @@ test_that("disjoint overlap clusters are tiled independently", {
 test_that("vars selects carried attributes; bad input errors", {
   polys <- sf::st_sf(year = c(1L, 2L), keep = c("a", "b"),
                      geometry = sf::st_sfc(mk(0, 2), mk(1, 3)))
-  df <- spatial_overlay(polys, vars = "year") |> collect()
+  df <- spatial_overlay(polys, vars = "year") |> collect_raw()
   expect_true("year" %in% names(df))
   expect_false("keep" %in% names(df))
 
@@ -76,7 +76,7 @@ test_that("CRS is carried onto the overlay node", {
   polys <- sf::st_sf(year = c(1L, 2L),
                      geometry = sf::st_sfc(mk(0, 2), mk(1, 3), crs = 3857))
   ov <- spatial_overlay(polys)
-  expect_equal(sf::st_crs(collect_sf(ov)), sf::st_crs(3857))
+  expect_equal(sf::st_crs(collect(ov)), sf::st_crs(3857))
 })
 
 test_that("coverage invariant: piece areas sum to each input's area", {
@@ -84,7 +84,7 @@ test_that("coverage invariant: piece areas sum to each input's area", {
   geoms <- sf::st_sfc(mk(0, 6, 0, 6), mk(1, 5, 1, 5), mk(2, 4, 2, 4),
                       mk(3, 7, 3, 7), mk(-1, 3, -1, 3))
   polys <- sf::st_sf(id = seq_along(geoms), geometry = geoms)
-  df <- spatial_overlay(polys, vars = "id") |> collect()
+  df <- spatial_overlay(polys, vars = "id") |> collect_raw()
 
   g     <- sf::st_as_sfc(structure(df$geometry, class = "WKB"), EWKB = FALSE)
   parea <- as.numeric(sf::st_area(g))
@@ -101,7 +101,7 @@ test_that("exact and point attribution both satisfy the coverage invariant", {
   polys <- sf::st_sf(id = seq_along(geoms), geometry = geoms)
   truth <- as.numeric(sf::st_area(sf::st_geometry(polys)))
   for (ex in c(FALSE, TRUE)) {
-    df    <- spatial_overlay(polys, vars = "id", exact = ex) |> collect()
+    df    <- spatial_overlay(polys, vars = "id", exact = ex) |> collect_raw()
     g     <- sf::st_as_sfc(structure(df$geometry, class = "WKB"), EWKB = FALSE)
     cov   <- tapply(as.numeric(sf::st_area(g)), df$id, sum)
     cov   <- as.numeric(cov[order(as.integer(names(cov)))])
@@ -112,8 +112,8 @@ test_that("exact and point attribution both satisfy the coverage invariant", {
 
 test_that("both attribution modes agree on non-degenerate geometry", {
   polys <- sf::st_sf(year = c(1990L, 2010L), geometry = sf::st_sfc(mk(0, 2), mk(1, 3)))
-  a <- spatial_overlay(polys, exact = FALSE) |> collect()
-  b <- spatial_overlay(polys, exact = TRUE)  |> collect()
+  a <- spatial_overlay(polys, exact = FALSE) |> collect_raw()
+  b <- spatial_overlay(polys, exact = TRUE)  |> collect_raw()
   expect_equal(length(unique(a$piece_id)), 3L)
   expect_equal(length(unique(b$piece_id)), 3L)
   expect_equal(nrow(a), nrow(b))
@@ -130,7 +130,7 @@ test_that("invalid input polygons are repaired before overlay", {
   # self-intersecting bowtie repaired to two triangles, overlapped by a square
   bowtie <- sf::st_polygon(list(rbind(c(0, 0), c(2, 2), c(2, 0), c(0, 2), c(0, 0))))
   polys  <- sf::st_sf(id = 1:2, geometry = sf::st_sfc(bowtie, mk(1, 3, 0, 2)))
-  df <- spatial_overlay(polys, vars = "id") |> collect()
+  df <- spatial_overlay(polys, vars = "id") |> collect_raw()
   expect_gt(nrow(df), 0L)
   g <- sf::st_as_sfc(structure(df$geometry, class = "WKB"), EWKB = FALSE)
   expect_true(all(sf::st_is_valid(g)))
@@ -147,7 +147,7 @@ test_that("reading from a GeoPackage in batches matches the in-memory overlay", 
   sf::st_write(x, gp, "lyr", quiet = TRUE)
 
   pull <- function(o) {
-    d <- as.data.frame(collect(o))
+    d <- as.data.frame(collect_raw(o))
     d[order(d$piece_id, d$year), c("piece_id", "year", "geometry")]
   }
   ref  <- pull(spatial_overlay(x, vars = "year"))                                  # in-memory
@@ -170,7 +170,7 @@ test_that("file overlay needs layer or query, and query without grid asks for gr
   expect_error(spatial_overlay(gp, query = "SELECT * FROM lyr"), "grid")
 })
 
-test_that("st_write streams a resolved overlay and matches collect_sf", {
+test_that("st_write streams a resolved overlay and matches collect", {
   skip_if_not_installed("sf")
   sq <- function(x, y, s) sf::st_polygon(list(rbind(
     c(x, y), c(x+s, y), c(x+s, y+s), c(x, y+s), c(x, y))))
@@ -183,7 +183,7 @@ test_that("st_write streams a resolved overlay and matches collect_sf", {
   out <- tempfile(fileext = ".gpkg"); on.exit(unlink(out))
   sf::st_write(resolve(), out, crs = sf::st_crs(x), delete_dsn = TRUE, quiet = TRUE)
   B <- sf::st_read(out, quiet = TRUE)
-  A <- collect_sf(resolve(), crs = sf::st_crs(x))
+  A <- collect(resolve(), crs = sf::st_crs(x))
 
   key <- function(s) { o <- order(s$piece_id, s$year, round(as.numeric(sf::st_area(s)), 6)); s[o, ] }
   A <- key(A); B <- key(B)

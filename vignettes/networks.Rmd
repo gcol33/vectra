@@ -81,12 +81,12 @@ tbl(f) |>
 
 The cost is the five unit steps from the bottom-left corner to the top-right.
 With `geometry = TRUE` (the default) each row also carries the route line, ready
-to materialise with `collect_sf()`:
+to materialise with `collect()`:
 
 ```{r route-geom}
 tbl(f) |>
   spatial_route(net, to = dest, coords = c("x", "y")) |>
-  collect_sf()
+  collect()
 ```
 
 Several destinations, named through `to_id`, give one row per origin and
@@ -121,7 +121,7 @@ service-area polygon.
 tbl(f) |>
   spatial_service_area(net, cost = c(1, 2), output = "nodes",
                        coords = c("x", "y")) |>
-  collect_sf()
+  collect()
 ```
 
 The first band reaches the start node and its two immediate neighbours; the
@@ -132,7 +132,7 @@ wraps each band in its hull, the usual drive-time catchment:
 tbl(f) |>
   spatial_service_area(net, cost = 2, output = "polygon",
                        coords = c("x", "y")) |>
-  collect_sf() |>
+  collect() |>
   st_area()
 ```
 

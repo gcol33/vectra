@@ -71,12 +71,12 @@ write_vtr(data.frame(
 ), f)
 
 # The three end-to-end segments become one line.
-tbl(f) |> spatial_line_merge() |> collect_sf()
+tbl(f) |> spatial_line_merge() |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_dissolve]{spatial_dissolve()}} to union geometries by group,
 \code{\link[=spatial_explode]{spatial_explode()}} for the opposite direction (multipart to single part),
-\code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+\code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

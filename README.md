@@ -132,7 +132,7 @@ GEOS library straight off the geometry column:
 tbl("parcels.vtr") |>
   filter(st_area(geometry) > 1e6) |>
   mutate(centroid = st_centroid(geometry)) |>
-  collect_sf()
+  collect()
 ```
 
 Raster operations stream strip by strip over the tiled `.vec` format, so a grid larger

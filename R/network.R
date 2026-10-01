@@ -158,9 +158,8 @@ spatial_network <- function(lines, weight = NULL, directed = FALSE,
                             tolerance = 0, geom = "geometry", crs = NA) {
   .check_sf()
   if (inherits(lines, "vectra_node")) {
-    node_crs <- lines$.crs
-    lines <- collect_sf(lines, geom = geom, crs = crs)
-    if (identical(crs, NA) || is.null(crs)) crs <- node_crs
+    if (identical(crs, NA) || is.null(crs)) crs <- lines$.crs
+    lines <- .df_to_sf(collect(lines, sf = FALSE), geom, crs)
   }
   if (inherits(lines, "sfc")) lines <- sf::st_sf(geometry = lines)
   if (!inherits(lines, "sf"))
@@ -328,7 +327,7 @@ print.vectra_network <- function(x, ...) {
 #'   garbage-collected, and carrying the network CRS.
 #'
 #' @seealso [spatial_network()] to build the graph, [spatial_service_area()] for
-#'   reachability, [collect_sf()] to materialize routes as `sf`.
+#'   reachability, [collect()] to materialize routes as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' mk <- function(x1, y1, x2, y2)
@@ -344,7 +343,7 @@ print.vectra_network <- function(x, ...) {
 #'
 #' tbl(f) |>
 #'   spatial_route(net, to = dest, coords = c("x", "y")) |>
-#'   collect_sf()
+#'   collect()
 #' unlink(f)
 #'
 #' @export
@@ -437,7 +436,7 @@ spatial_route <- function(x, network, to, to_id = NULL, geometry = TRUE,
 #'   CRS.
 #'
 #' @seealso [spatial_network()] to build the graph, [spatial_route()] for
-#'   shortest paths, [collect_sf()] to materialize as `sf`.
+#'   shortest paths, [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' mk <- function(x1, y1, x2, y2)
@@ -453,7 +452,7 @@ spatial_route <- function(x, network, to, to_id = NULL, geometry = TRUE,
 #' tbl(f) |>
 #'   spatial_service_area(net, cost = c(1, 2), output = "lines",
 #'                        coords = c("x", "y")) |>
-#'   collect_sf()
+#'   collect()
 #' unlink(f)
 #'
 #' @export

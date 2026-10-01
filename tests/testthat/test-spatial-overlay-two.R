@@ -16,7 +16,7 @@ yl <- sf::st_sf(yv = "Z", geometry = sf::st_sfc(mk(1, 3)))
 areas <- function(s) sort(as.numeric(sf::st_area(s)))
 
 test_that("intersection keeps only the overlap, with both layers' attributes", {
-  d <- spatial_overlay(xl, yl, how = "intersection") |> collect_sf()
+  d <- spatial_overlay(xl, yl, how = "intersection") |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(sum(as.numeric(sf::st_area(d))), 1, tolerance = 1e-4)
   expect_equal(d$xv, "A")
@@ -24,7 +24,7 @@ test_that("intersection keeps only the overlap, with both layers' attributes", {
 })
 
 test_that("union keeps every piece, absent side filled with NA", {
-  d <- spatial_overlay(xl, yl, how = "union") |> collect_sf()
+  d <- spatial_overlay(xl, yl, how = "union") |> collect()
   expect_equal(nrow(d), 3L)
   expect_equal(areas(d), c(1, 1, 1), tolerance = 1e-4)
   expect_equal(sum(is.na(d$xv)), 1L)                    # the y-only piece
@@ -33,7 +33,7 @@ test_that("union keeps every piece, absent side filled with NA", {
 })
 
 test_that("identity keeps all of x split by y, drops y-only pieces", {
-  d <- spatial_overlay(xl, yl, how = "identity") |> collect_sf()
+  d <- spatial_overlay(xl, yl, how = "identity") |> collect()
   expect_equal(nrow(d), 2L)
   expect_equal(sum(as.numeric(sf::st_area(d))), 2, tolerance = 1e-4)
   expect_true(all(d$xv == "A"))                         # every piece has an x record
@@ -41,7 +41,7 @@ test_that("identity keeps all of x split by y, drops y-only pieces", {
 })
 
 test_that("symdiff keeps the parts in exactly one layer", {
-  d <- spatial_overlay(xl, yl, how = "symdiff") |> collect_sf()
+  d <- spatial_overlay(xl, yl, how = "symdiff") |> collect()
   expect_equal(nrow(d), 2L)
   expect_equal(sum(as.numeric(sf::st_area(d))), 2, tolerance = 1e-4)
   expect_true(all(xor(is.na(d$xv), is.na(d$yv))))       # exactly one side per piece
@@ -50,7 +50,7 @@ test_that("symdiff keeps the parts in exactly one layer", {
 test_that("intersection matches sf::st_intersection on area", {
   old <- sf::sf_use_s2(FALSE); on.exit(sf::sf_use_s2(old))
   ref  <- suppressWarnings(sf::st_intersection(xl, yl))
-  ours <- spatial_overlay(xl, yl, how = "intersection") |> collect_sf()
+  ours <- spatial_overlay(xl, yl, how = "intersection") |> collect()
   expect_equal(sum(as.numeric(sf::st_area(ours))),
                sum(as.numeric(sf::st_area(ref))), tolerance = 1e-4)
 })
@@ -58,7 +58,7 @@ test_that("intersection matches sf::st_intersection on area", {
 test_that("shared column names are disambiguated with .x / .y", {
   x2 <- sf::st_sf(id = 1L, geometry = sf::st_sfc(mk(0, 2)))
   y2 <- sf::st_sf(id = 9L, geometry = sf::st_sfc(mk(1, 3)))
-  d  <- spatial_overlay(x2, y2, how = "intersection") |> collect()
+  d  <- spatial_overlay(x2, y2, how = "intersection") |> collect_raw()
   expect_true(all(c("id.x", "id.y") %in% names(d)))
   expect_equal(d$id.x, 1L)
   expect_equal(d$id.y, 9L)
@@ -67,7 +67,7 @@ test_that("shared column names are disambiguated with .x / .y", {
 test_that("vars and vars_y select the carried columns per layer", {
   x3 <- sf::st_sf(a = 1L, b = 2L, geometry = sf::st_sfc(mk(0, 2)))
   y3 <- sf::st_sf(c = 3L, d = 4L, geometry = sf::st_sfc(mk(1, 3)))
-  d  <- spatial_overlay(x3, y3, vars = "a", vars_y = "c", how = "intersection") |> collect()
+  d  <- spatial_overlay(x3, y3, vars = "a", vars_y = "c", how = "intersection") |> collect_raw()
   expect_true(all(c("a", "c") %in% names(d)))
   expect_false(any(c("b", "d") %in% names(d)))
 })
@@ -82,13 +82,13 @@ test_that("the shared CRS is carried onto the overlay node", {
   xc <- sf::st_sf(g = 1L, geometry = sf::st_sfc(mk(0, 2), crs = 3857))
   yc <- sf::st_sf(h = 2L, geometry = sf::st_sfc(mk(1, 3), crs = 3857))
   ov <- spatial_overlay(xc, yc, how = "intersection")
-  expect_equal(sf::st_crs(collect_sf(ov)), sf::st_crs(3857))
+  expect_equal(sf::st_crs(collect(ov)), sf::st_crs(3857))
 })
 
 test_that("a non-overlapping intersection is a typed empty node", {
   xa <- sf::st_sf(xv = "A", geometry = sf::st_sfc(mk(0, 1)))
   yb <- sf::st_sf(yv = "Z", geometry = sf::st_sfc(mk(5, 6)))
-  d  <- spatial_overlay(xa, yb, how = "intersection") |> collect()
+  d  <- spatial_overlay(xa, yb, how = "intersection") |> collect_raw()
   expect_equal(nrow(d), 0L)
   expect_true(all(c("xv", "yv", "piece_id", "geometry") %in% names(d)))
 })
@@ -102,7 +102,7 @@ test_that("union against a copy reproduces the self-union partition", {
   geoms <- sf::st_sfc(mk(0, 2), mk(1, 3))
   x <- sf::st_sf(year = c(1L, 2L), geometry = geoms)
   piece_areas <- function(o) {
-    d <- collect(o)
+    d <- collect_raw(o)
     d <- d[!duplicated(d$piece_id), ]
     g <- sf::st_as_sfc(structure(d$geometry, class = "WKB"), EWKB = FALSE)
     sort(round(as.numeric(sf::st_area(g)), 6))
@@ -118,7 +118,7 @@ test_that("reading y from a GeoPackage matches the in-memory overlay", {
   gp <- tempfile(fileext = ".gpkg"); on.exit(unlink(gp))
   sf::st_write(yc, gp, "lyr", quiet = TRUE)
   pull <- function(o) {
-    d <- as.data.frame(collect(o))
+    d <- as.data.frame(collect_raw(o))
     d[order(d$piece_id), c("piece_id", "xv", "yv", "geometry")]
   }
   ref  <- pull(spatial_overlay(xc, yc, how = "union"))

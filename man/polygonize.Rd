@@ -38,7 +38,7 @@ many rows.}
 }
 \value{
 A \code{vectra_node} with the value column and a hex-WKB \code{geometry} column,
-materialise it with \code{\link[=collect_sf]{collect_sf()}}.
+materialise it with \code{\link[=collect]{collect()}}.
 }
 \description{
 Converts a \code{.vec} raster into polygon features, the inverse of \code{\link[=rasterize]{rasterize()}}.
@@ -62,11 +62,11 @@ f <- tempfile(fileext = ".vec")
 vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 4, 4))
 
 polys <- polygonize(f)
-collect_sf(polys)
+collect(polys)
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=rasterize]{rasterize()}} for the inverse, \code{\link[=contours]{contours()}} for iso-lines,
-\code{\link[=collect_sf]{collect_sf()}} to materialise as \code{sf}.
+\code{\link[=collect]{collect()}} to materialise as \code{sf}.
 }

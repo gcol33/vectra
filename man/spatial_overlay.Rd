@@ -128,7 +128,7 @@ round trips.}
 \value{
 A \code{vectra_node} over the exploded overlay, backed by temporary \code{.vtr}
 spills removed when the node is garbage-collected, carrying the CRS of \code{x}
-for \code{\link[=collect_sf]{collect_sf()}}. For a self-union it is one row per piece per covering
+for \code{\link[=collect]{collect()}}. For a self-union it is one row per piece per covering
 polygon; for a two-layer overlay one row per piece per covering
 \code{x}-record / \code{y}-record pair, with the columns of both layers.
 }
@@ -147,7 +147,7 @@ The topology is done once with \pkg{sf}/GEOS and tiled over connected overlap
 clusters (disjoint clusters never share a piece, so the tiling is exact and
 bounded in memory), then the exploded pieces are streamed to a \code{.vtr} and
 handed back as a lazy node. Geometry rides through the engine as hex-encoded
-WKB in a string column; the CRS is carried on the node for \code{\link[=collect_sf]{collect_sf()}}.
+WKB in a string column; the CRS is carried on the node for \code{\link[=collect]{collect()}}.
 
 The overlay runs on a fixed-precision model: coordinates are snapped to a
 grid derived from their own magnitude so the pieces come out disjoint and
@@ -175,18 +175,18 @@ polys <- sf::st_sf(year = c(1990L, 2010L),
 first <- spatial_overlay(polys) |>
   group_by(piece_id) |>
   slice_min(year, n = 1, with_ties = FALSE) |>
-  collect_sf()
+  collect()
 first
 
 # Two-layer overlay: intersect the squares with a zone layer, keeping both
 # sets of attributes on each overlapping piece.
 zones <- sf::st_sf(zone = c("A", "B"),
                    geometry = sf::st_sfc(sq(0, 1.5), sq(1.5, 3)))
-inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+inter <- spatial_overlay(polys, zones, how = "intersection") |> collect()
 inter
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=slice_min]{slice_min()}} / \code{\link[=slice_max]{slice_max()}} to resolve each piece to one winner,
-\code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+\code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

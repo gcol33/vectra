@@ -62,7 +62,7 @@ left stream flows past; the snap itself is \pkg{sf}'s \code{\link[sf:st_snap]{sf
 }
 \details{
 Geometry travels through the engine as hex-encoded WKB in a string column and
-the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
+the CRS is carried on the returned node; use \code{\link[=collect]{collect()}} to materialize.
 When \code{y} carries no CRS it inherits the stream's. The \pkg{sf} package is an
 optional dependency (Suggests).
 }
@@ -76,11 +76,11 @@ write_vtr(data.frame(
 ), f)
 
 # Pull the near-zero vertices down onto the reference line.
-tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_snap_grid]{spatial_snap_grid()}} to snap to a grid instead of a layer,
-\code{\link[=spatial_clip]{spatial_clip()}} for the resident-mask streaming pattern, \code{\link[=collect_sf]{collect_sf()}}.
+\code{\link[=spatial_clip]{spatial_clip()}} for the resident-mask streaming pattern, \code{\link[=collect]{collect()}}.
 }

@@ -75,12 +75,12 @@ write_vtr(data.frame(
 ), f)
 
 # The four unit cells enclosed by the grid of lines.
-tbl(f) |> spatial_polygonize() |> collect_sf()
+tbl(f) |> spatial_polygonize() |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_split]{spatial_split()}} to cut existing polygons by a blade,
 \code{\link[=spatial_construct]{spatial_construct()}} for hulls and tessellations, \code{\link[=spatial_dissolve]{spatial_dissolve()}} to
-merge geometries by group, \code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+merge geometries by group, \code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

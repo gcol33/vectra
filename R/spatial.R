@@ -288,6 +288,7 @@
   node <- structure(list(.node = xptr, .path = NULL), class = "vectra_node")
   node$.reg <- x$.reg
   node$.crs <- crs
+  if (keep_geom) node$.geom <- out_geom
   node
 }
 
@@ -578,7 +579,7 @@
     invisible()
   }
 
-  finish <- function(crs, empty_geom = "geometry") {
+  finish <- function(crs, empty_geom = "geometry", geom = empty_geom) {
     flush()
     if (!length(st$runs)) {
       tmpl <- st$template
@@ -593,6 +594,9 @@
                   onexit = TRUE)
     node$.reg <- reg
     node$.crs <- crs
+    if (!is.null(geom) &&
+        geom %in% .Call(C_node_schema, node$.node)$name)
+      node$.geom <- geom
     node
   }
 
@@ -674,7 +678,7 @@
 #' Geometry travels through the engine as hex-encoded WKB in an ordinary string
 #' column (vectra has no native geometry type), and the coordinate reference
 #' system is carried on the returned node rather than in the `.vtr` file. Use
-#' [collect_sf()] to materialize the result as an `sf` object, or [collect()]
+#' [collect()] to materialize the result as an `sf` object, or [collect()]
 #' to get the underlying data.frame with the WKB string column.
 #'
 #' Topology is delegated entirely to \pkg{sf}/GEOS; vectra only supplies the
@@ -704,10 +708,10 @@
 #'   many rows.
 #'
 #' @return A `vectra_node` backed by temporary `.vtr` spills (removed when the
-#'   node is garbage-collected), carrying the output CRS for [collect_sf()].
+#'   node is garbage-collected), carrying the output CRS for [collect()].
 #'
 #' @seealso [spatial_join()] to join a streamed side against a resident `sf`
-#'   object, [collect_sf()] to materialize as `sf`.
+#'   object, [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
@@ -721,7 +725,7 @@
 #' # Buffer every county centroid by 0.1 degree, streaming.
 #' buffered <- tbl(f) |>
 #'   spatial_map(~ sf::st_buffer(.x, 0.1), crs = sf::st_crs(nc))
-#' collect_sf(buffered)
+#' collect(buffered)
 #' unlink(f)
 #'
 #' @export
@@ -760,7 +764,7 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
 #'   CRS.
 #'
 #' @seealso [spatial_map()] for per-feature transforms, [spatial_dissolve()] to
-#'   merge features the other way, [collect_sf()] to materialize as `sf`.
+#'   merge features the other way, [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' mp <- sf::st_multipolygon(list(
@@ -773,7 +777,7 @@ spatial_map <- function(x, fn, geom = "geometry", coords = NULL, crs = NA,
 #' ), f)
 #'
 #' # One row per polygon, attributes copied, parts numbered.
-#' tbl(f) |> spatial_explode(part = "part_id") |> collect_sf()
+#' tbl(f) |> spatial_explode(part = "part_id") |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -864,7 +868,7 @@ spatial_explode <- function(x, geom = "geometry", crs = NA, out_geom = NULL,
 #'   native path it is a lazy node that consumes `x` when run; on the \pkg{sf}
 #'   and `partition` paths it is backed by temporary `.vtr` spills.
 #'
-#' @seealso [spatial_map()] for per-feature transforms, [collect_sf()] to
+#' @seealso [spatial_map()] for per-feature transforms, [collect()] to
 #'   materialize as `sf`, [offload()] to partition both-sides-huge joins.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
@@ -1160,11 +1164,11 @@ print.vectra_grid <- function(x, ...) {
 
   acc <- .run_accumulator(fr)
   for (lab in names(lruns)) {
-    lsf <- .sf_decode_chunk(.drop_cell(collect(.concat_runs(lruns[[lab]]))),
+    lsf <- .sf_decode_chunk(.drop_cell(collect(.concat_runs(lruns[[lab]]), sf = FALSE)),
                             geom, coords, crs)
     rpaths <- if (halo) .halo_runs(rruns, lab) else rruns[[lab]]
     rsf <- if (!is.null(rpaths) && length(rpaths))
-      .sf_decode_chunk(.drop_cell(collect(.concat_runs(rpaths))),
+      .sf_decode_chunk(.drop_cell(collect(.concat_runs(rpaths), sf = FALSE)),
                        y_geom, y_coords, crs)
     else ytmpl$sf
     if (is.null(rsf)) {
@@ -1326,7 +1330,7 @@ spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
 #' flows past one batch at a time.
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
-#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' the CRS is carried on the returned node; use [collect()] to materialize.
 #' On projected or unprojected planar data the cut runs natively on the GEOS C
 #' API straight off the hex-WKB column (the mask parsed once); geographic
 #' coordinates with spherical geometry on (`sf::sf_use_s2()`) and
@@ -1343,7 +1347,7 @@ spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
 #'   temporary `.vtr` spills and carrying the input CRS.
 #'
 #' @seealso [spatial_filter()] to keep whole features by location without
-#'   cutting them, [spatial_map()] for per-feature transforms, [collect_sf()].
+#'   cutting them, [spatial_map()] for per-feature transforms, [collect()].
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
@@ -1357,7 +1361,7 @@ spatial_filter <- function(x, y, predicate = NULL, negate = FALSE,
 #'
 #' # Clip every county polygon to the two-county mask, streaming.
 #' clipped <- tbl(f) |> spatial_clip(mask, crs = sf::st_crs(nc))
-#' collect_sf(clipped)
+#' collect(clipped)
 #' unlink(f)
 #'
 #' @export
@@ -1440,7 +1444,7 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
 #' input feature, so attributes ride through untouched.
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
-#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' the CRS is carried on the returned node; use [collect()] to materialize.
 #' The \pkg{sf} package is an optional dependency (Suggests).
 #'
 #' @inheritParams spatial_map
@@ -1452,7 +1456,7 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
 #'   carrying the input CRS.
 #'
 #' @seealso [spatial_snap()] to snap toward another layer instead of a grid,
-#'   [spatial_overlay()] whose noding uses the same snap-rounding, [collect_sf()].
+#'   [spatial_overlay()] whose noding uses the same snap-rounding, [collect()].
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' p <- sf::st_polygon(list(rbind(c(0.04, 0.03), c(1.02, 0.01),
@@ -1463,7 +1467,7 @@ spatial_clip <- function(x, mask, erase = FALSE, geom = "geometry",
 #' ), f)
 #'
 #' # Snap the jittered corners back onto a 0.1 grid.
-#' tbl(f) |> spatial_snap_grid(0.1) |> collect_sf()
+#' tbl(f) |> spatial_snap_grid(0.1) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -1494,7 +1498,7 @@ spatial_snap_grid <- function(x, size, geom = "geometry", crs = NA,
 #' left stream flows past; the snap itself is \pkg{sf}'s [sf::st_snap()].
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
-#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' the CRS is carried on the returned node; use [collect()] to materialize.
 #' When `y` carries no CRS it inherits the stream's. The \pkg{sf} package is an
 #' optional dependency (Suggests).
 #'
@@ -1508,7 +1512,7 @@ spatial_snap_grid <- function(x, size, geom = "geometry", crs = NA,
 #'   carrying the input CRS.
 #'
 #' @seealso [spatial_snap_grid()] to snap to a grid instead of a layer,
-#'   [spatial_clip()] for the resident-mask streaming pattern, [collect_sf()].
+#'   [spatial_clip()] for the resident-mask streaming pattern, [collect()].
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' ref <- sf::st_sfc(sf::st_linestring(rbind(c(0, 0), c(10, 0))))
@@ -1519,7 +1523,7 @@ spatial_snap_grid <- function(x, size, geom = "geometry", crs = NA,
 #' ), f)
 #'
 #' # Pull the near-zero vertices down onto the reference line.
-#' tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+#' tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -1619,7 +1623,7 @@ spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
 #' The smoothing is computed directly on the coordinates (no GEOS call), so it is
 #' dependency-light; \pkg{sf} is used only to decode and rebuild each batch.
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
-#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' the CRS is carried on the returned node; use [collect()] to materialize.
 #'
 #' @inheritParams spatial_map
 #' @param iterations Number of corner-cutting passes (a positive integer). Each
@@ -1633,7 +1637,7 @@ spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
 #'
 #' @seealso [spatial_map()] for per-feature transforms such as densifying with
 #'   `~ sf::st_segmentize(.x, dfMaxLength)` or sampling points along a line with
-#'   `~ sf::st_line_sample(.x, n)`, [collect_sf()] to materialize as `sf`.
+#'   `~ sf::st_line_sample(.x, n)`, [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' zig <- sf::st_linestring(rbind(c(0, 0), c(1, 1), c(2, 0), c(3, 1), c(4, 0)))
@@ -1643,7 +1647,7 @@ spatial_snap <- function(x, y, tolerance, geom = "geometry", coords = NULL,
 #' ), f)
 #'
 #' # Smooth the zig-zag with three corner-cutting passes.
-#' tbl(f) |> spatial_smooth(iterations = 3) |> collect_sf()
+#' tbl(f) |> spatial_smooth(iterations = 3) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -1728,7 +1732,7 @@ spatial_smooth <- function(x, iterations = 2L, keep_ends = TRUE,
 #'   backed by temporary `.vtr` spills (removed when the node is garbage-
 #'   collected) and carrying the input CRS.
 #'
-#' @seealso [spatial_join()] for a nearest-feature attribute join, [collect_sf()]
+#' @seealso [spatial_join()] for a nearest-feature attribute join, [collect()]
 #'   to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
@@ -1873,7 +1877,7 @@ spatial_knn <- function(x, y, k = 1L, geom = "geometry", coords = NULL,
 #'
 #' @seealso [spatial_clip()] to cut against a mask without dividing into pieces,
 #'   [spatial_overlay()] to node two polygon layers into a partition,
-#'   [collect_sf()] to materialize as `sf`.
+#'   [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' sq <- sf::st_polygon(list(rbind(c(0, 0), c(4, 0), c(4, 4), c(0, 4), c(0, 0))))
@@ -1884,7 +1888,7 @@ spatial_knn <- function(x, y, k = 1L, geom = "geometry", coords = NULL,
 #' ), f)
 #'
 #' # Split the square into two halves along the blade.
-#' tbl(f) |> spatial_split(blade) |> collect_sf()
+#' tbl(f) |> spatial_split(blade) |> collect()
 #' unlink(f)
 #'
 #' @export
@@ -1933,7 +1937,7 @@ spatial_split <- function(x, blade, extract = c("pieces", "points"),
 #' into one feature.
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
-#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' the CRS is carried on the returned node; use [collect()] to materialize.
 #' On projected or unprojected planar data each group is unioned natively on the
 #' GEOS C API straight off the hex-WKB column; geographic coordinates with
 #' spherical geometry on (`sf::sf_use_s2()`), or any extra [sf::st_union()]
@@ -1955,10 +1959,10 @@ spatial_split <- function(x, blade, extract = c("pieces", "points"),
 #' @return A `vectra_node` of one row per group -- the `by` columns, any `.fun`
 #'   summaries, and the dissolved geometry -- backed by temporary `.vtr` spills
 #'   removed when the node is garbage-collected, carrying the input CRS for
-#'   [collect_sf()].
+#'   [collect()].
 #'
 #' @seealso [spatial_overlay()] to split overlaps apart rather than merge them,
-#'   [offload()] for the partition tier this rides on, [collect_sf()].
+#'   [offload()] for the partition tier this rides on, [collect()].
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
@@ -1973,7 +1977,7 @@ spatial_split <- function(x, blade, extract = c("pieces", "points"),
 #' merged <- tbl(f) |>
 #'   spatial_dissolve(by = "band", crs = sf::st_crs(nc),
 #'                    .fun = list(births = function(d) sum(d$BIR74)))
-#' collect_sf(merged)
+#' collect(merged)
 #' unlink(f)
 #'
 #' @export
@@ -2093,7 +2097,7 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
 #' `delaunay` emit one feature per cell, each carrying the group's `by` values.
 #'
 #' Geometry travels through the engine as hex-encoded WKB in a string column and
-#' the CRS is carried on the returned node; use [collect_sf()] to materialize.
+#' the CRS is carried on the returned node; use [collect()] to materialize.
 #' Topology is \pkg{sf}/GEOS throughout (an optional dependency, Suggests); some
 #' constructions need projected coordinates.
 #'
@@ -2117,7 +2121,7 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
 #'   when the node is garbage-collected.
 #'
 #' @seealso [spatial_dissolve()] to merge a group into one feature,
-#'   [spatial_map()] for per-feature transforms, [collect_sf()] to materialize.
+#'   [spatial_map()] for per-feature transforms, [collect()] to materialize.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
@@ -2131,7 +2135,7 @@ spatial_dissolve <- function(x, by = NULL, ..., geom = "geometry", crs = NA,
 #' # One convex hull per band.
 #' tbl(f) |>
 #'   spatial_construct("convex_hull", by = "band", crs = sf::st_crs(nc)) |>
-#'   collect_sf()
+#'   collect()
 #' unlink(f)
 #'
 #' @export
@@ -3051,51 +3055,40 @@ warp <- function(x, template, method = c("near", "bilinear", "cubic"),
   out[[1L]]
 }
 
-#' Materialize a spatial query as an sf object
+# Rebuild an sf object from a collected frame whose `geom` column holds hex-WKB.
+.df_to_sf <- function(df, geom, crs) {
+  g <- sf::st_as_sfc(structure(df[[geom]], class = "WKB"), EWKB = FALSE)
+  g <- sf::st_set_crs(g, .as_crs(crs))
+  sf::st_sf(df[setdiff(names(df), geom)], geometry = g)
+}
+
+#' Materialize a spatial query as an sf object (deprecated)
 #'
-#' Collects a `vectra_node` (typically the result of [spatial_map()] or
-#' [spatial_join()]) into memory and rebuilds an `sf` object from its hex-WKB
-#' geometry column. The CRS defaults to the one carried on the node.
+#' `collect()` is deprecated: [collect()] returns an `sf` object for any
+#' query that carries a geometry column. This wrapper remains for existing code
+#' and, unlike [collect()], also accepts a data.frame that was already
+#' collected.
 #'
-#' This is the spatial counterpart to [collect()]: use it when the final result
-#' fits in memory as `sf`. For a result still larger than RAM, keep it as a node
-#' and write it out with [write_vtr()] (the geometry stays as a WKB string
-#' column) or reduce it with [collect_chunked()].
-#'
-#' @param x A `vectra_node` with a hex-WKB / WKT geometry column, or a
-#'   data.frame already collected from one.
+#' @param x A `vectra_node` with a hex-WKB geometry column, or a data.frame
+#'   already collected from one.
 #' @param geom Name of the geometry column. Default `"geometry"`.
 #' @param crs Override the coordinate reference system. Defaults to the CRS the
 #'   node carries, or unknown.
 #'
 #' @return An `sf` object.
 #'
-#' @seealso [spatial_map()], [spatial_join()], [collect()].
+#' @seealso [collect()].
 #'
-#' @examplesIf requireNamespace("sf", quietly = TRUE)
-#' nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)
-#' f <- tempfile(fileext = ".vtr")
-#' write_vtr(data.frame(
-#'   NAME = nc$NAME,
-#'   geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)
-#' ), f)
-#' result <- tbl(f) |> spatial_map(~ sf::st_centroid(.x), crs = sf::st_crs(nc))
-#' collect_sf(result)
-#' unlink(f)
-#'
+#' @keywords internal
 #' @export
 collect_sf <- function(x, geom = "geometry", crs = NULL) {
+  .Deprecated("collect")
   .check_sf()
   node_crs <- if (inherits(x, "vectra_node")) x$.crs else NULL
-  df <- if (inherits(x, "vectra_node")) collect(x) else as.data.frame(x)
-  if (is.null(crs)) crs <- node_crs
-  crs <- .as_crs(crs)
+  df <- if (inherits(x, "vectra_node")) collect(x, sf = FALSE) else as.data.frame(x)
   if (!geom %in% names(df))
     stop(sprintf("geometry column '%s' not found; pass geom=", geom))
-  g <- sf::st_as_sfc(structure(df[[geom]], class = "WKB"), EWKB = FALSE)
-  g <- sf::st_set_crs(g, crs)
-  rest <- df[setdiff(names(df), geom)]
-  sf::st_sf(rest, geometry = g)
+  .df_to_sf(df, geom, if (is.null(crs)) node_crs else crs)
 }
 
 #' Stream a vectra node's geometry to a vector file
@@ -3103,7 +3096,7 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #' An [sf::st_write()] method (also reached through [sf::write_sf()]) for a
 #' `vectra_node`: writes the result a batch at a time, appending each, so the
 #' whole layer is never held in memory. This is the streaming counterpart to
-#' `collect_sf(x) |> sf::st_write(...)` -- that route materializes every feature
+#' `collect(x) |> sf::st_write(...)` -- that route materializes every feature
 #' as an `sf` object first, which for a multi-million-feature result dominates
 #' memory; this route's peak is one batch.
 #'
@@ -3120,7 +3113,7 @@ collect_sf <- function(x, geom = "geometry", crs = NULL) {
 #' @param quiet Passed to [sf::st_write()].
 #'
 #' @return The `dsn`, invisibly.
-#' @seealso [collect_sf()] to materialize the whole result as one `sf` object.
+#' @seealso [collect()] to materialize the whole result as one `sf` object.
 #' @exportS3Method sf::st_write
 st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
                                  crs = NULL, delete_dsn = FALSE, quiet = TRUE) {
@@ -3160,7 +3153,7 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #' clusters (disjoint clusters never share a piece, so the tiling is exact and
 #' bounded in memory), then the exploded pieces are streamed to a `.vtr` and
 #' handed back as a lazy node. Geometry rides through the engine as hex-encoded
-#' WKB in a string column; the CRS is carried on the node for [collect_sf()].
+#' WKB in a string column; the CRS is carried on the node for [collect()].
 #'
 #' The overlay runs on a fixed-precision model: coordinates are snapped to a
 #' grid derived from their own magnitude so the pieces come out disjoint and
@@ -3257,12 +3250,12 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #'
 #' @return A `vectra_node` over the exploded overlay, backed by temporary `.vtr`
 #'   spills removed when the node is garbage-collected, carrying the CRS of `x`
-#'   for [collect_sf()]. For a self-union it is one row per piece per covering
+#'   for [collect()]. For a self-union it is one row per piece per covering
 #'   polygon; for a two-layer overlay one row per piece per covering
 #'   `x`-record / `y`-record pair, with the columns of both layers.
 #'
 #' @seealso [slice_min()] / [slice_max()] to resolve each piece to one winner,
-#'   [collect_sf()] to materialize as `sf`.
+#'   [collect()] to materialize as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' # Two overlapping squares designated in different years.
@@ -3275,14 +3268,14 @@ st_write.vectra_node <- function(obj, dsn, layer = NULL, ..., geom = "geometry",
 #' first <- spatial_overlay(polys) |>
 #'   group_by(piece_id) |>
 #'   slice_min(year, n = 1, with_ties = FALSE) |>
-#'   collect_sf()
+#'   collect()
 #' first
 #'
 #' # Two-layer overlay: intersect the squares with a zone layer, keeping both
 #' # sets of attributes on each overlapping piece.
 #' zones <- sf::st_sf(zone = c("A", "B"),
 #'                    geometry = sf::st_sfc(sq(0, 1.5), sq(1.5, 3)))
-#' inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+#' inter <- spatial_overlay(polys, zones, how = "intersection") |> collect()
 #' inter
 #'
 #' @export

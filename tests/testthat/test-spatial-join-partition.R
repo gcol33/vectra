@@ -32,7 +32,7 @@ write_polys_wkb <- function(polys) {
 
 # Collect a join node down to a comparable (id, poly) table, row-ordered.
 key_table <- function(node) {
-  d <- collect(node)
+  d <- collect_raw(node)
   d <- d[order(d$id, d$poly, na.last = TRUE), c("id", "poly"), drop = FALSE]
   rownames(d) <- NULL
   d
@@ -105,7 +105,7 @@ test_that("the overlap region produces one row per covering polygon", {
   expect_equal(kt$poly[kt$id == 2], 2)               # only square 2
 })
 
-test_that("partitioned join carries the result through collect_sf", {
+test_that("partitioned join carries the result through collect", {
   skip_if_not_installed("sf")
   set.seed(23)
   pts   <- cbind(runif(80, 0, 20), runif(80, 0, 20))
@@ -116,7 +116,7 @@ test_that("partitioned join carries the result through collect_sf", {
   out <- tbl(fp) |>
     spatial_join(tbl(fg), coords = c("x", "y"), crs = 4326,
                  partition = grid(6))
-  sf_out <- collect_sf(out)
+  sf_out <- collect(out)
   expect_s3_class(sf_out, "sf")
   expect_equal(as.integer(sf::st_crs(sf_out)$epsg), 4326L)
 })

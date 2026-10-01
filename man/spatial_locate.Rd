@@ -104,6 +104,6 @@ unlink(f)
 \seealso{
 \code{\link[=spatial_knn]{spatial_knn()}} for nearest neighbours with distances,
 \code{\link[=spatial_join]{spatial_join()}} for a nearest-feature attribute join, \code{\link[=spatial_map]{spatial_map()}} with
-\code{~ sf::st_line_interpolate(line, .x$m)} for the inverse, \code{\link[=collect_sf]{collect_sf()}} to
+\code{~ sf::st_line_interpolate(line, .x$m)} for the inverse, \code{\link[=collect]{collect()}} to
 materialize as \code{sf}.
 }

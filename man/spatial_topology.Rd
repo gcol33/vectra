@@ -85,6 +85,6 @@ unlink(f)
 }
 \seealso{
 \code{\link[=spatial_polygonize]{spatial_polygonize()}} to rebuild faces from arcs,
-\code{\link[=spatial_dissolve]{spatial_dissolve()}} to merge geometries by group, \code{\link[=collect_sf]{collect_sf()}} to
+\code{\link[=spatial_dissolve]{spatial_dissolve()}} to merge geometries by group, \code{\link[=collect]{collect()}} to
 materialize as \code{sf}.
 }

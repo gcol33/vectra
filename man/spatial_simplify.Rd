@@ -79,12 +79,12 @@ write_vtr(data.frame(
 ), f)
 
 # The shared edge is simplified once, so the two polygons stay edge-matched.
-tbl(f) |> spatial_simplify(tolerance = 0.6) |> collect_sf()
+tbl(f) |> spatial_simplify(tolerance = 0.6) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_map]{spatial_map()}} with \code{~ sf::st_simplify(.x)} for independent
 per-feature simplification, \code{\link[=spatial_smooth]{spatial_smooth()}} for Chaikin corner-rounding,
-\code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+\code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

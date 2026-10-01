@@ -21,7 +21,7 @@ pt_cloud <- function(ox = 0, oy = 0) {
 test_that("convex hull of the whole layer is one polygon of the right area", {
   x <- sf::st_sf(geometry = pt_cloud())
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_construct("convex_hull") |> collect_sf()
+  d <- tbl(f) |> spatial_construct("convex_hull") |> collect()
   expect_equal(nrow(d), 1L)
   expect_true(all(sf::st_geometry_type(d) == "POLYGON"))
   expect_equal(as.numeric(sf::st_area(d)), 1, tolerance = 1e-9)
@@ -32,7 +32,7 @@ test_that("by= builds one construction per group", {
     g = c(rep("a", 5), rep("b", 5)),
     geometry = c(pt_cloud(0, 0), pt_cloud(10, 10)))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_construct("convex_hull", by = "g") |> collect_sf()
+  d <- tbl(f) |> spatial_construct("convex_hull", by = "g") |> collect()
   expect_equal(nrow(d), 2L)
   expect_setequal(d$g, c("a", "b"))
   expect_equal(sort(as.numeric(sf::st_area(d))), c(1, 1), tolerance = 1e-9)
@@ -41,7 +41,7 @@ test_that("by= builds one construction per group", {
 test_that("envelope is the axis-aligned bounding rectangle", {
   x <- sf::st_sf(geometry = pt_cloud())
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_construct("envelope") |> collect_sf()
+  d <- tbl(f) |> spatial_construct("envelope") |> collect()
   expect_equal(nrow(d), 1L)
   expect_equal(as.numeric(sf::st_area(d)), 1, tolerance = 1e-9)
 })
@@ -52,8 +52,8 @@ test_that("oriented box is no larger than the envelope", {
   x <- sf::st_sf(geometry = sf::st_sfc(
     lapply(seq_len(nrow(xy)), function(i) sf::st_point(xy[i, ]))))
   f <- vtr_from(x); on.exit(unlink(f))
-  ob <- tbl(f) |> spatial_construct("oriented_box") |> collect_sf()
-  env <- tbl(f) |> spatial_construct("envelope") |> collect_sf()
+  ob <- tbl(f) |> spatial_construct("oriented_box") |> collect()
+  env <- tbl(f) |> spatial_construct("envelope") |> collect()
   expect_true(all(sf::st_geometry_type(ob) == "POLYGON"))
   expect_lte(as.numeric(sf::st_area(ob)), as.numeric(sf::st_area(env)) + 1e-9)
 })
@@ -61,7 +61,7 @@ test_that("oriented box is no larger than the envelope", {
 test_that("the enclosing circle covers every input point", {
   x <- sf::st_sf(geometry = pt_cloud())
   f <- vtr_from(x); on.exit(unlink(f))
-  circ <- tbl(f) |> spatial_construct("enclosing_circle") |> collect_sf()
+  circ <- tbl(f) |> spatial_construct("enclosing_circle") |> collect()
   # the bounding circle passes through the extreme points; a tiny buffer absorbs
   # the segmentation error so the boundary points count as covered
   circ_b <- sf::st_buffer(sf::st_geometry(circ), 1e-6)
@@ -73,7 +73,7 @@ test_that("the inscribed circle lies inside the shape", {
   poly <- sf::st_polygon(list(rbind(c(0, 0), c(4, 0), c(4, 2), c(0, 2), c(0, 0))))
   x <- sf::st_sf(geometry = sf::st_sfc(poly))
   f <- vtr_from(x); on.exit(unlink(f))
-  ic <- tbl(f) |> spatial_construct("inscribed_circle") |> collect_sf()
+  ic <- tbl(f) |> spatial_construct("inscribed_circle") |> collect()
   expect_equal(nrow(ic), 1L)
   expect_true(all(sf::st_geometry_type(ic) == "POLYGON"))
   covered <- lengths(sf::st_covered_by(sf::st_geometry(ic), sf::st_sfc(poly)))
@@ -84,7 +84,7 @@ test_that("the pole of inaccessibility is a point inside the shape", {
   poly <- sf::st_polygon(list(rbind(c(0, 0), c(4, 0), c(4, 2), c(0, 2), c(0, 0))))
   x <- sf::st_sf(geometry = sf::st_sfc(poly))
   f <- vtr_from(x); on.exit(unlink(f))
-  p <- tbl(f) |> spatial_construct("pole") |> collect_sf()
+  p <- tbl(f) |> spatial_construct("pole") |> collect()
   expect_equal(nrow(p), 1L)
   expect_true(all(sf::st_geometry_type(p) == "POINT"))
   expect_equal(lengths(sf::st_within(sf::st_geometry(p), sf::st_sfc(poly))), 1L)
@@ -95,8 +95,8 @@ test_that("the pole of inaccessibility is a point inside the shape", {
 test_that("voronoi and delaunay emit one polygon per cell", {
   x <- sf::st_sf(geometry = pt_cloud())
   f <- vtr_from(x); on.exit(unlink(f))
-  v <- tbl(f) |> spatial_construct("voronoi") |> collect_sf()
-  d <- tbl(f) |> spatial_construct("delaunay") |> collect_sf()
+  v <- tbl(f) |> spatial_construct("voronoi") |> collect()
+  d <- tbl(f) |> spatial_construct("delaunay") |> collect()
   expect_gt(nrow(v), 1L)
   expect_true(all(sf::st_geometry_type(v) == "POLYGON"))
   expect_gt(nrow(d), 1L)
@@ -108,7 +108,7 @@ test_that("a tessellation repeats the group's by values onto every cell", {
     g = c(rep("a", 5), rep("b", 5)),
     geometry = c(pt_cloud(0, 0), pt_cloud(10, 10)))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_construct("delaunay", by = "g") |> collect_sf()
+  d <- tbl(f) |> spatial_construct("delaunay", by = "g") |> collect()
   expect_setequal(d$g, c("a", "b"))
   expect_true(all(d$g %in% c("a", "b")))
   expect_gt(sum(d$g == "a"), 0L)
@@ -121,7 +121,7 @@ test_that("concave hull returns a polygon", {
   x <- sf::st_sf(geometry = sf::st_sfc(
     lapply(seq_len(nrow(xy)), function(i) sf::st_point(xy[i, ]))))
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_construct("concave_hull", ratio = 0.5) |> collect_sf()
+  d <- tbl(f) |> spatial_construct("concave_hull", ratio = 0.5) |> collect()
   expect_equal(nrow(d), 1L)
   expect_true(all(sf::st_geometry_type(d) %in% c("POLYGON", "MULTIPOLYGON")))
 })
@@ -129,14 +129,14 @@ test_that("concave hull returns a polygon", {
 test_that("a CRS passed to the verb is carried onto the construction", {
   x <- sf::st_sf(geometry = pt_cloud())
   f <- vtr_from(x); on.exit(unlink(f))
-  d <- tbl(f) |> spatial_construct("convex_hull", crs = 3857) |> collect_sf()
+  d <- tbl(f) |> spatial_construct("convex_hull", crs = 3857) |> collect()
   expect_equal(sf::st_crs(d), sf::st_crs(3857))
 })
 
 test_that("a missing by column is rejected", {
   x <- sf::st_sf(geometry = pt_cloud())
   f <- vtr_from(x); on.exit(unlink(f))
-  expect_error(collect(spatial_construct(tbl(f), "convex_hull", by = "nope")),
+  expect_error(collect_raw(spatial_construct(tbl(f), "convex_hull", by = "nope")),
                "not found")
 })
 

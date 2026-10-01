@@ -91,11 +91,11 @@ write_vtr(data.frame(id = 1L, x = 0, y = 0), f)
 tbl(f) |>
   spatial_service_area(net, cost = c(1, 2), output = "lines",
                        coords = c("x", "y")) |>
-  collect_sf()
+  collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_network]{spatial_network()}} to build the graph, \code{\link[=spatial_route]{spatial_route()}} for
-shortest paths, \code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+shortest paths, \code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

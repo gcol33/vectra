@@ -578,10 +578,10 @@ proximity <- function(x, target = NULL, band = 1L, path = NULL, dtype = "f32",
 #'   many rows.
 #'
 #' @return A `vectra_node` with the value column and a hex-WKB `geometry` column,
-#'   materialise it with [collect_sf()].
+#'   materialise it with [collect()].
 #'
 #' @seealso [rasterize()] for the inverse, [contours()] for iso-lines,
-#'   [collect_sf()] to materialise as `sf`.
+#'   [collect()] to materialise as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' m <- matrix(c(1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3), 4, 4,
@@ -590,7 +590,7 @@ proximity <- function(x, target = NULL, band = 1L, path = NULL, dtype = "f32",
 #' vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 4, 4))
 #'
 #' polys <- polygonize(f)
-#' collect_sf(polys)
+#' collect(polys)
 #' unlink(f)
 #'
 #' @export
@@ -726,10 +726,10 @@ polygonize <- function(x, band = 1L, dissolve = TRUE, na_rm = TRUE,
 #'   many rows.
 #'
 #' @return A `vectra_node` with a `level` column and a hex-WKB `geometry` column,
-#'   materialise it with [collect_sf()].
+#'   materialise it with [collect()].
 #'
 #' @seealso [polygonize()] for area features, [terrain()] for the DEM
-#'   derivatives contours often accompany, [collect_sf()] to materialise as `sf`.
+#'   derivatives contours often accompany, [collect()] to materialise as `sf`.
 #'
 #' @examplesIf requireNamespace("sf", quietly = TRUE)
 #' z <- outer(1:20, 1:20, function(r, c) r + c)
@@ -737,7 +737,7 @@ polygonize <- function(x, band = 1L, dissolve = TRUE, na_rm = TRUE,
 #' vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 20, 20))
 #'
 #' iso <- contours(f, levels = c(15, 25, 35))
-#' collect_sf(iso)
+#' collect(iso)
 #' unlink(f)
 #'
 #' @export
@@ -769,7 +769,7 @@ contours <- function(x, levels, band = 1L, merge = TRUE, crs = NA,
   node <- acc$finish(crs = rcrs, empty_geom = "geometry")
   if (!merge) return(node)
 
-  df <- collect(node)
+  df <- collect(node, sf = FALSE)
   if (!nrow(df)) return(node)
   sb <- .sf_decode_chunk(df, "geometry", NULL, rcrs)
   geo <- sf::st_geometry(sb)

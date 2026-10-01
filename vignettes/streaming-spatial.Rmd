@@ -108,7 +108,7 @@ write_vtr(data.frame(
 
 `tbl(f_poly)` now opens a lazy node over that file. Nothing is read until a
 verb pulls it. Two functions bring a streamed result back to R: `collect()`
-returns the underlying data.frame, geometry still a WKB string; `collect_sf()`
+returns the underlying data.frame, geometry still a WKB string; `collect()`
 decodes that string and reattaches the node's CRS, giving an ordinary `sf`
 object ready to plot or hand to any sf function.
 
@@ -136,10 +136,10 @@ buffered
 ```
 
 `buffered` is a lazy node, not a materialized layer: the buffer has not run yet.
-`collect_sf()` pulls it through and decodes the geometry.
+`collect()` pulls it through and decodes the geometry.
 
 ```{r map-buffer-plot}
-b_sf <- collect_sf(buffered)
+b_sf <- collect(buffered)
 plot(st_geometry(nc), border = "grey80", col = NA,
      main = "County centroids buffered by 15 km")
 plot(st_geometry(b_sf), border = "#3366cc", col = "#3366cc22", add = TRUE)
@@ -181,7 +181,7 @@ f_zig <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(
   id = 1L, geometry = st_as_binary(st_sfc(zig), hex = TRUE)), f_zig)
 
-tbl(f_zig) |> spatial_smooth(iterations = 3) |> collect_sf()
+tbl(f_zig) |> spatial_smooth(iterations = 3) |> collect()
 unlink(f_zig)
 ```
 
@@ -260,7 +260,7 @@ boundary. `erase = TRUE` keeps the part outside instead.
 mask_region <- st_union(st_geometry(region))
 
 clipped <- tbl(f_poly) |> spatial_clip(mask_region, crs = crs_nc)
-c_sf <- collect_sf(clipped)
+c_sf <- collect(clipped)
 nrow(c_sf)
 ```
 
@@ -298,7 +298,7 @@ f_sq <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(
   id = 1L, geometry = st_as_binary(st_sfc(square), hex = TRUE)), f_sq)
 
-tbl(f_sq) |> spatial_split(blade) |> collect_sf()
+tbl(f_sq) |> spatial_split(blade) |> collect()
 unlink(f_sq)
 ```
 
@@ -498,7 +498,7 @@ write_vtr(data.frame(
 merged <- tbl(fb) |>
   spatial_dissolve(by = "band", crs = crs_nc,
                    .fun = list(births = function(d) sum(d$BIR74)))
-m_sf <- collect_sf(merged)
+m_sf <- collect(merged)
 m_sf
 ```
 
@@ -536,7 +536,7 @@ sq <- function(a, b) st_polygon(list(rbind(
 polys <- st_sf(year = c(1990L, 2010L, 2000L),
                geometry = st_sfc(sq(0, 2), sq(1, 3), sq(1.5, 3.5)))
 
-pieces <- collect_sf(spatial_overlay(polys))
+pieces <- collect(spatial_overlay(polys))
 nrow(pieces)
 length(unique(pieces$piece_id))
 ```
@@ -551,7 +551,7 @@ grouped slice. Earliest designation year wins:
 first <- spatial_overlay(polys) |>
   group_by(piece_id) |>
   slice_min(year, n = 1, with_ties = FALSE) |>
-  collect_sf()
+  collect()
 nrow(first)
 
 plot(first["year"], main = "Overlay pieces, earliest year wins")
@@ -594,7 +594,7 @@ exactly one layer).
 zones <- st_sf(zone = c("A", "B"),
                geometry = st_sfc(sq(0, 1.5), sq(1.5, 3)))
 
-inter <- spatial_overlay(polys, zones, how = "intersection") |> collect_sf()
+inter <- spatial_overlay(polys, zones, how = "intersection") |> collect()
 inter
 ```
 
@@ -607,7 +607,7 @@ is read in batches with `layer_y` / `query_y`, the same way `x` is.
 
 Three exits bring a streamed result out. `collect()` returns the data.frame with
 geometry still a WKB string, useful when the next step is a
-non-spatial verb or another `.vtr` write. `collect_sf()` decodes the WKB and
+non-spatial verb or another `.vtr` write. `collect()` decodes the WKB and
 reattaches the node's CRS, giving an `sf` object. `write_vtr()` on a node streams
 the result straight to a new `.vtr` file without ever holding it whole, so a
 multi-step spatial pipeline can land its output on disk under the same fixed
@@ -625,7 +625,7 @@ The CRS lives on the node, not in the file. A pipeline that opens projected data
 maps, filters, and joins keeps the projection because each verb carries it
 forward; you state `crs =` once at the first step that needs it, or let it
 inherit from the upstream node. The `.vtr` file itself stores only the WKB bytes,
-so reopening a written file and calling `collect_sf()` needs the CRS supplied
+so reopening a written file and calling `collect()` needs the CRS supplied
 again if you want it labelled.
 
 ## The cost model
@@ -645,7 +645,7 @@ group or shard at a time, so its peak is set by the largest group rather than th
 whole layer. The all-to-all tier is inherently resident because the operation is
 global, and the overlay bounds it by tiling overlap clusters. Operations that are
 global by nature and not tiled, such as Voronoi diagrams, Delaunay triangulation,
-convex hulls, and neighbour graphs, are not streamed at all: `collect_sf()` the
+convex hulls, and neighbour graphs, are not streamed at all: `collect()` the
 layer and run sf or terra on it.
 
 A second axis is whether a step runs natively or through sf. The recognised

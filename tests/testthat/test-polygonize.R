@@ -21,7 +21,7 @@ test_that("polygonize yields one dissolved polygon per value", {
   f <- wr(m, tile = 2L)
   on.exit(unlink(f))
 
-  pg <- collect_sf(polygonize(f))
+  pg <- collect(polygonize(f))
   expect_equal(nrow(pg), 3L)
   expect_setequal(pg$value, c(1, 2, 3))
   ab <- area_by_value(pg)
@@ -36,7 +36,7 @@ test_that("polygonize per-value area matches terra::as.polygons", {
   f <- wr(m, tile = 6L)
   on.exit(unlink(f))
 
-  pg <- collect_sf(polygonize(f))
+  pg <- collect(polygonize(f))
   va <- area_by_value(pg)
 
   tr <- terra::rast(m, extent = terra::ext(0, 24, 0, 24))
@@ -54,8 +54,8 @@ test_that("polygonize per-value area is invariant to tile size", {
   f1 <- wr(m, tile = 3L); f2 <- wr(m, tile = 18L)
   on.exit(unlink(c(f1, f2)))
 
-  a1 <- area_by_value(collect_sf(polygonize(f1)))
-  a2 <- area_by_value(collect_sf(polygonize(f2)))
+  a1 <- area_by_value(collect(polygonize(f1)))
+  a2 <- area_by_value(collect(polygonize(f2)))
   expect_equal(a1[order(as.numeric(names(a1)))],
                a2[order(as.numeric(names(a2)))], tolerance = 1e-9)
 })
@@ -66,7 +66,7 @@ test_that("dissolve = FALSE emits one square per cell", {
   f <- wr(m, tile = 1L)
   on.exit(unlink(f))
 
-  pc <- collect_sf(polygonize(f, dissolve = FALSE))
+  pc <- collect(polygonize(f, dissolve = FALSE))
   expect_equal(nrow(pc), 4L)
   expect_equal(sum(as.numeric(sf::st_area(pc))), 4)
 })
@@ -77,7 +77,7 @@ test_that("na_rm drops nodata cells", {
   f <- wr(m, tile = 2L)
   on.exit(unlink(f))
 
-  pg <- collect_sf(polygonize(f))
+  pg <- collect(polygonize(f))
   expect_setequal(pg$value, c(1, 2))
   expect_equal(sum(as.numeric(sf::st_area(pg))), 2)
 })

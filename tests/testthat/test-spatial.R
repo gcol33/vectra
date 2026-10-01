@@ -1,4 +1,4 @@
-# Streamed spatial operations (spatial_map / spatial_join / collect_sf).
+# Streamed spatial operations (spatial_map / spatial_join / collect).
 # Planar CRS = NA throughout so st_intersects / areas are exact Cartesian and
 # the recovered values can be checked against hand-computed truth.
 
@@ -89,7 +89,7 @@ test_that("spatial_map buffers a point to a disk of the right area", {
   write_vtr(df, f)
 
   out <- tbl(f) |> spatial_map(~ sf::st_buffer(.x, 1), crs = NA)
-  sf_out <- collect_sf(out)
+  sf_out <- collect(out)
 
   expect_s3_class(sf_out, "sf")
   expect_equal(nrow(sf_out), 1L)
@@ -107,7 +107,7 @@ test_that("spatial_map round-trips geometry unchanged under the identity map", {
   write_vtr(df, f)
 
   out <- tbl(f) |> spatial_map(~ .x, crs = NA)
-  sf_out <- collect_sf(out)
+  sf_out <- collect(out)
   sf_out <- sf_out[order(sf_out$id), ]
 
   coords <- sf::st_coordinates(sf_out)
@@ -115,14 +115,14 @@ test_that("spatial_map round-trips geometry unchanged under the identity map", {
   expect_equal(coords[, "Y"], c(2, 4, 6))
 })
 
-test_that("collect_sf rebuilds the carried CRS", {
+test_that("collect rebuilds the carried CRS", {
   geoms <- sf::st_sfc(sf::st_point(c(0, 0)), crs = 4326)
   df <- data.frame(id = 1L, geometry = sf::st_as_binary(geoms, hex = TRUE))
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(df, f)
 
   out <- tbl(f) |> spatial_map(~ .x, crs = 4326)
-  sf_out <- collect_sf(out)
+  sf_out <- collect(out)
   expect_equal(sf::st_crs(sf_out), sf::st_crs(4326))
 })
 
@@ -167,4 +167,43 @@ test_that("spatial verbs validate their inputs", {
   write_vtr(data.frame(x = 1, y = 1), f)
   expect_error(spatial_join(tbl(f), data.frame(a = 1)),
                "must be an sf object")
+})
+
+test_that("collect returns sf for a spatial node and carries it through verbs", {
+  skip_if_not_installed("sf")
+  nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)[1:5, ]
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(id = 1:5,
+    geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)), f)
+  mk <- function()
+    suppressWarnings(tbl(f) |> spatial_map(~ sf::st_centroid(.x), crs = sf::st_crs(nc)))
+  out <- mk() |> filter(id > 1) |> mutate(id2 = id * 2) |> collect()
+  expect_s3_class(out, "sf")
+  expect_equal(nrow(out), 4L)
+  expect_equal(sf::st_crs(out), sf::st_crs(nc))
+  expect_s3_class(mk() |> select(id, geometry) |> rename(g2 = geometry) |> collect(),
+                  "sf")
+  expect_false(inherits(mk() |> select(id) |> collect(), "sf"))
+  raw <- collect(mk(), sf = FALSE)
+  expect_false(inherits(raw, "sf"))
+  expect_type(raw$geometry, "character")
+  expect_s3_class(tbl(f) |> mutate(geometry = st_centroid(geometry)) |> collect(),
+                  "sf")
+  stored <- collect(tbl(f))
+  expect_s3_class(stored, "sf")
+  expect_equal(nrow(stored), 5L)
+  expect_false(inherits(collect(tbl(f), sf = FALSE), "sf"))
+  expect_false(inherits(collect(tbl(f) |> select(id)), "sf"))
+})
+
+test_that("collect_sf is deprecated and agrees with collect", {
+  skip_if_not_installed("sf")
+  nc <- sf::st_read(system.file("shape/nc.shp", package = "sf"), quiet = TRUE)[1:3, ]
+  f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
+  write_vtr(data.frame(id = 1:3,
+    geometry = sf::st_as_binary(sf::st_geometry(nc), hex = TRUE)), f)
+  mk <- function()
+    suppressWarnings(tbl(f) |> spatial_map(~ sf::st_centroid(.x), crs = sf::st_crs(nc)))
+  expect_warning(old <- collect_sf(mk()), "deprecated")
+  expect_equal(old, collect(mk()))
 })

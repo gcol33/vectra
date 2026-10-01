@@ -31,7 +31,7 @@ many rows.}
 }
 \value{
 A \code{vectra_node} with a \code{level} column and a hex-WKB \code{geometry} column,
-materialise it with \code{\link[=collect_sf]{collect_sf()}}.
+materialise it with \code{\link[=collect]{collect()}}.
 }
 \description{
 Traces contour lines at one or more levels from a \code{.vec} raster with marching
@@ -55,11 +55,11 @@ f <- tempfile(fileext = ".vec")
 vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 20, 20))
 
 iso <- contours(f, levels = c(15, 25, 35))
-collect_sf(iso)
+collect(iso)
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=polygonize]{polygonize()}} for area features, \code{\link[=terrain]{terrain()}} for the DEM
-derivatives contours often accompany, \code{\link[=collect_sf]{collect_sf()}} to materialise as \code{sf}.
+derivatives contours often accompany, \code{\link[=collect]{collect()}} to materialise as \code{sf}.
 }

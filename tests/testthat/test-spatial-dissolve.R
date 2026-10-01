@@ -29,7 +29,7 @@ test_that("dissolve unions geometry within each group, matching sf", {
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(fx$df, f)
 
-  out <- tbl(f) |> spatial_dissolve(by = "band", crs = NA) |> collect_sf()
+  out <- tbl(f) |> spatial_dissolve(by = "band", crs = NA) |> collect()
   out <- out[order(out$band), ]
   expect_equal(out$band, c("A", "B"))
   # one feature per group, geometry = union of that group's squares
@@ -50,7 +50,7 @@ test_that(".fun summarises attributes per group", {
     spatial_dissolve(by = "band", crs = NA,
                      .fun = list(total = function(d) sum(d$val),
                                  n = function(d) nrow(d))) |>
-    collect_sf()
+    collect()
   out <- out[order(out$band), ]
   expect_equal(sort(names(out)),
                sort(c("band", "total", "n", "geometry")))
@@ -63,7 +63,7 @@ test_that("by = NULL dissolves the whole layer into one feature", {
   f <- tempfile(fileext = ".vtr"); on.exit(unlink(f))
   write_vtr(fx$df, f)
 
-  out <- tbl(f) |> spatial_dissolve(crs = NA) |> collect_sf()
+  out <- tbl(f) |> spatial_dissolve(crs = NA) |> collect()
   expect_equal(nrow(out), 1L)
   # bands A and B are disjoint from each other: total area 3 + 2 = 5
   expect_equal(as.numeric(sf::st_area(out)), 5, tolerance = 1e-9)
@@ -82,7 +82,7 @@ test_that("multi-column by groups on the value combination", {
   write_vtr(df, f)
 
   out <- tbl(f) |>
-    spatial_dissolve(by = c("region", "cls"), crs = NA) |> collect_sf()
+    spatial_dissolve(by = c("region", "cls"), crs = NA) |> collect()
   key <- paste(out$region, out$cls)
   ord <- order(key)
   out <- out[ord, ]; key <- key[ord]
@@ -105,7 +105,7 @@ test_that("streamed dissolve equals the single-batch resident dissolve", {
   write_vtr(df, f, batch_size = 9L)                 # several read batches
   # small flush_rows forces several routing + spill flushes
   got <- tbl(f) |> spatial_dissolve(by = "band", crs = NA, flush_rows = 13) |>
-    collect_sf()
+    collect()
   got <- got[order(got$band), ]
 
   resident <- sf::st_sf(band = band, geometry = geoms)

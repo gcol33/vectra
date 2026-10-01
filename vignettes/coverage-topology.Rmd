@@ -56,7 +56,7 @@ grid <- st_sfc(
 f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(grid, hex = TRUE)), f)
 
-tbl(f) |> spatial_polygonize() |> collect_sf()
+tbl(f) |> spatial_polygonize() |> collect()
 ```
 
 `spatial_line_merge()` is the line counterpart of a dissolve: it sews segments
@@ -72,7 +72,7 @@ seg <- st_sfc(
 g <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(seg, hex = TRUE)), g)
 
-tbl(g) |> spatial_line_merge() |> collect_sf()
+tbl(g) |> spatial_line_merge() |> collect()
 ```
 
 ## Cleaning a coverage
@@ -92,7 +92,7 @@ p <- st_polygon(list(rbind(c(0.04, 0.03), c(1.02, 0.01),
 h <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = 1L, geometry = st_as_binary(st_sfc(p), hex = TRUE)), h)
 
-tbl(h) |> spatial_snap_grid(0.1) |> collect_sf()
+tbl(h) |> spatial_snap_grid(0.1) |> collect()
 ```
 
 `spatial_snap()` instead pulls a streamed layer onto a resident reference layer:
@@ -106,7 +106,7 @@ line <- st_linestring(rbind(c(0, 0.2), c(5, 0.1), c(10, 0.2)))
 sn <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = 1L, geometry = st_as_binary(st_sfc(line), hex = TRUE)), sn)
 
-tbl(sn) |> spatial_snap(ref, tolerance = 0.5) |> collect_sf()
+tbl(sn) |> spatial_snap(ref, tolerance = 0.5) |> collect()
 ```
 
 `spatial_eliminate()` cleans a polygon coverage by absorbing every feature
@@ -127,7 +127,7 @@ write_vtr(data.frame(
   id = c("keep", "sliver"),
   geometry = st_as_binary(st_sfc(big, sliver), hex = TRUE)), e)
 
-tbl(e) |> spatial_eliminate(max_area = 5) |> collect_sf()
+tbl(e) |> spatial_eliminate(max_area = 5) |> collect()
 ```
 
 The thin sliver is gone, absorbed into the square it bordered, and the survivor
@@ -151,7 +151,7 @@ write_vtr(data.frame(
   id = c("a", "b"),
   geometry = st_as_binary(st_sfc(p1, p2), hex = TRUE)), s)
 
-tbl(s) |> spatial_simplify(tolerance = 0.6) |> collect_sf()
+tbl(s) |> spatial_simplify(tolerance = 0.6) |> collect()
 ```
 
 ## Decomposing geometry
@@ -171,7 +171,7 @@ m <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(
   id = 1L, geometry = st_as_binary(st_sfc(mp), hex = TRUE)), m)
 
-tbl(m) |> spatial_explode(part = "part_id") |> collect_sf()
+tbl(m) |> spatial_explode(part = "part_id") |> collect()
 ```
 
 `spatial_topology()` decomposes a polygon coverage into the arcs of its planar
@@ -209,7 +209,7 @@ strip <- st_polygon(list(rbind(
 cl <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(st_sfc(strip), hex = TRUE)), cl)
 
-tbl(cl) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect_sf()
+tbl(cl) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
 ```
 
 ## Set-wise constructions
@@ -234,7 +234,7 @@ write_vtr(data.frame(
 
 tbl(n) |>
   spatial_construct("convex_hull", by = "band", crs = st_crs(nc)) |>
-  collect_sf()
+  collect()
 ```
 
 A tessellation kind returns one polygon per cell, each carrying the group's `by`
@@ -247,7 +247,7 @@ cloud <- st_sfc(lapply(seq_len(nrow(xy)), function(i) st_point(xy[i, ])))
 v <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(geometry = st_as_binary(cloud, hex = TRUE)), v)
 
-tbl(v) |> spatial_construct("voronoi") |> collect_sf()
+tbl(v) |> spatial_construct("voronoi") |> collect()
 ```
 
 ## Linear referencing

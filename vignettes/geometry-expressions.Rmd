@@ -169,14 +169,14 @@ tbl(f) |>
 ## Transforms
 
 A transform returns a geometry, so it builds a new WKB column. Materialise it
-with `collect_sf()`, which reads the WKB column back into an `sf` object (point
+with `collect()`, which reads the WKB column back into an `sf` object (point
 it at the column with `geom =`, and pass the `crs` the layer was stored in).
 
 ```{r transforms}
 hulls <- tbl(f) |>
   mutate(geometry = st_convex_hull(geometry)) |>
   select(NAME, geometry) |>
-  collect_sf(crs = st_crs(nc))
+  collect(geom = "geometry", crs = st_crs(nc))
 
 hulls
 ```
@@ -191,7 +191,7 @@ geometry), and two parameterised forms: `st_buffer(g, dist)` and
 tbl(f) |>
   mutate(geometry = st_buffer(geometry, 0.1)) |>
   select(NAME, geometry) |>
-  collect_sf(crs = st_crs(nc)) |>
+  collect(geom = "geometry", crs = st_crs(nc)) |>
   st_area() |>
   head()
 ```

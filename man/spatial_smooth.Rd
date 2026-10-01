@@ -59,7 +59,7 @@ slightly, as Chaikin smoothing does. Point geometry passes through unchanged.
 The smoothing is computed directly on the coordinates (no GEOS call), so it is
 dependency-light; \pkg{sf} is used only to decode and rebuild each batch.
 Geometry travels through the engine as hex-encoded WKB in a string column and
-the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
+the CRS is carried on the returned node; use \code{\link[=collect]{collect()}} to materialize.
 }
 \examples{
 \dontshow{if (requireNamespace("sf", quietly = TRUE)) withAutoprint(\{ # examplesIf}
@@ -70,12 +70,12 @@ write_vtr(data.frame(
 ), f)
 
 # Smooth the zig-zag with three corner-cutting passes.
-tbl(f) |> spatial_smooth(iterations = 3) |> collect_sf()
+tbl(f) |> spatial_smooth(iterations = 3) |> collect()
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_map]{spatial_map()}} for per-feature transforms such as densifying with
 \code{~ sf::st_segmentize(.x, dfMaxLength)} or sampling points along a line with
-\code{~ sf::st_line_sample(.x, n)}, \code{\link[=collect_sf]{collect_sf()}} to materialize as \code{sf}.
+\code{~ sf::st_line_sample(.x, n)}, \code{\link[=collect]{collect()}} to materialize as \code{sf}.
 }

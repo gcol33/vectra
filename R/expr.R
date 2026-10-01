@@ -441,6 +441,8 @@
   st_centroid = "c", st_point_on_surface = "o", st_boundary = "b",
   st_envelope = "e", st_convex_hull = "h", st_make_valid = "M")
 .GEOM_PARAM <- c(st_buffer = "B", st_simplify = "S")
+# Op codes whose result is itself a geometry (hex-WKB) column.
+.GEOM_RETURNS_GEOM <- c("c", "o", "b", "e", "h", "M", "B", "S")
 .GEOM_BINARY <- c(
   st_distance = "D", st_intersects = "i", st_within = "w", st_contains = "C",
   st_overlaps = "O", st_touches = "T", st_crosses = "R", st_equals = "Q",

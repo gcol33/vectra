@@ -96,7 +96,7 @@ join_impl <- function(x, y, by, suffix, type, na_matches = "na") {
   new_xptr <- .join_node(x$.node, y$.node,
                          type, keys$left, keys$right, suffix[1], suffix[2],
                          na_matches = .na_matches_flag(na_matches))
-  structure(list(.node = new_xptr, .path = NULL), class = "vectra_node")
+  .derive_node(x, new_xptr, path = NULL)
 }
 
 # Internal: shared implementation for filtering joins (semi, anti)
@@ -105,7 +105,7 @@ filter_join_impl <- function(x, y, by, type, na_matches = "na") {
   new_xptr <- .join_node(x$.node, y$.node,
                          type, keys$left, keys$right, ".x", ".y",
                          na_matches = .na_matches_flag(na_matches))
-  structure(list(.node = new_xptr, .path = x$.path), class = "vectra_node")
+  .derive_node(x, new_xptr)
 }
 
 #' @export
@@ -302,8 +302,8 @@ cross_join.vectra_node <- function(x, y, suffix = c(".x", ".y"), ...) {
     stop(sprintf("y must be a vectra_node or data.frame, got %s", class(y)[1]))
   if (!is.character(suffix) || length(suffix) != 2)
     stop(sprintf("suffix must be character(2), got %s of length %d", class(suffix)[1], length(suffix)))
-  df_x <- if (inherits(x, "vectra_node")) collect(x) else x
-  df_y <- if (inherits(y, "vectra_node")) collect(y) else y
+  df_x <- if (inherits(x, "vectra_node")) collect(x, sf = FALSE) else x
+  df_y <- if (inherits(y, "vectra_node")) collect(y, sf = FALSE) else y
 
   nx <- nrow(df_x)
   ny <- nrow(df_y)

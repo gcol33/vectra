@@ -63,7 +63,7 @@ flows past one batch at a time.
 }
 \details{
 Geometry travels through the engine as hex-encoded WKB in a string column and
-the CRS is carried on the returned node; use \code{\link[=collect_sf]{collect_sf()}} to materialize.
+the CRS is carried on the returned node; use \code{\link[=collect]{collect()}} to materialize.
 On projected or unprojected planar data the cut runs natively on the GEOS C
 API straight off the hex-WKB column (the mask parsed once); geographic
 coordinates with spherical geometry on (\code{sf::sf_use_s2()}) and
@@ -83,11 +83,11 @@ write_vtr(data.frame(
 
 # Clip every county polygon to the two-county mask, streaming.
 clipped <- tbl(f) |> spatial_clip(mask, crs = sf::st_crs(nc))
-collect_sf(clipped)
+collect(clipped)
 unlink(f)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=spatial_filter]{spatial_filter()}} to keep whole features by location without
-cutting them, \code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=collect_sf]{collect_sf()}}.
+cutting them, \code{\link[=spatial_map]{spatial_map()}} for per-feature transforms, \code{\link[=collect]{collect()}}.
 }
