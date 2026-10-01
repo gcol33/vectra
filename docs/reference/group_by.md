@@ -39,9 +39,5 @@ A `vectra_node` with grouping information stored.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> group_by(cyl) |> summarise(avg = mean(mpg)) |> collect()
-#>   cyl      avg
-#> 1   4 26.66364
-#> 2   6 19.74286
-#> 3   8 15.10000
 unlink(f)
 ```

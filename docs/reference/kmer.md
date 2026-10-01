@@ -76,12 +76,5 @@ write_vtr(data.frame(id = c("a", "b"),
                      seq = c("ACGTACGT", "AAAAT"),
                      stringsAsFactors = FALSE), f)
 tbl(f) |> kmer(seq, k = 3, by = id) |> arrange(id, kmer) |> collect()
-#>   id kmer count
-#> 1  a  ACG     2
-#> 2  a  CGT     2
-#> 3  a  GTA     1
-#> 4  a  TAC     1
-#> 5  b  AAA     2
-#> 6  b  AAT     1
 unlink(f)
 ```

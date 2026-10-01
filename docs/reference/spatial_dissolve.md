@@ -122,13 +122,5 @@ merged <- tbl(f) |>
   spatial_dissolve(by = "band", crs = sf::st_crs(nc),
                    .fun = list(births = function(d) sum(d$BIR74)))
 collect(merged)
-#> Simple feature collection with 2 features and 2 fields
-#> Geometry type: MULTIPOLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: -84.32385 ymin: 33.88199 xmax: -75.45698 ymax: 36.58965
-#> Geodetic CRS:  NAD27
-#>    band births                       geometry
-#> 1 FALSE 102349 MULTIPOLYGON (((-75.78317 3...
-#> 2  TRUE 227613 MULTIPOLYGON (((-81.0493 35...
 unlink(f)
 ```

@@ -41,7 +41,5 @@ for the join it partitions.
 
 ``` r
 grid(1000)
-#> <vectra grid: cellsize 1000 x 1000, origin (0, 0)>
 grid(c(0.5, 0.25), origin = c(-180, -90))
-#> <vectra grid: cellsize 0.5 x 0.25, origin (-180, -90)>
 ```

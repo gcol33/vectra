@@ -113,15 +113,5 @@ write_vtr(data.frame(
 
 # The shared edge appears once, tagged with both neighbours.
 tbl(f) |> spatial_topology(id = "id") |> collect()
-#> Simple feature collection with 4 features and 2 fields
-#> Geometry type: LINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
-#> CRS:           NA
-#>   face1 face2                       geometry
-#> 1     a  <NA>          LINESTRING (0 0, 1 0)
-#> 2     a     b          LINESTRING (1 0, 1 1)
-#> 3     a  <NA>     LINESTRING (1 1, 0 1, 0 0)
-#> 4     b  <NA> LINESTRING (1 0, 2 0, 2 1, ...
 unlink(f)
 ```

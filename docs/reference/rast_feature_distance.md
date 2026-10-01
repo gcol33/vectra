@@ -138,6 +138,5 @@ vec_write_raster(array(c(x1, x2), c(20, 20, 2)), fx, dtype = "f64",
 
 d <- rast_feature_distance(fx, fr, percentage = 10)
 round(mean(d), 2)
-#> [1] 16.92
 unlink(c(fr, fx))
 ```

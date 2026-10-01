@@ -124,12 +124,5 @@ write_vtr(data.frame(
 
 # The thin sliver is absorbed into the square it borders.
 tbl(f) |> spatial_eliminate(max_area = 5) |> collect()
-#> Simple feature collection with 1 feature and 1 field
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 10.3 ymax: 10
-#> CRS:           NA
-#>     id                       geometry
-#> 1 keep POLYGON ((0 0, 0 10, 10 10,...
 unlink(f)
 ```

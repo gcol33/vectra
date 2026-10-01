@@ -106,20 +106,5 @@ vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 6, 6))
 
 # 3x3 mean smoother; edge cells see off-raster neighbours.
 focal(f, w = matrix(1, 3, 3), fun = "mean")
-#>      [,1] [,2] [,3] [,4] [,5] [,6]
-#> [1,]  4.5    5    6    7    8  8.5
-#> [2,]  7.5    8    9   10   11 11.5
-#> [3,] 13.5   14   15   16   17 17.5
-#> [4,] 19.5   20   21   22   23 23.5
-#> [5,] 25.5   26   27   28   29 29.5
-#> [6,] 28.5   29   30   31   32 32.5
-#> attr(,"gt")
-#> [1]  0  1  0  6  0 -1
-#> attr(,"extent")
-#> [1] 0 0 6 6
-#> attr(,"crs")
-#> [1] NA
-#> attr(,"fun")
-#> [1] "mean"
 unlink(f)
 ```

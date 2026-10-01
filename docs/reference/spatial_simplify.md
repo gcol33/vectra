@@ -112,13 +112,5 @@ write_vtr(data.frame(
 
 # The shared edge is simplified once, so the two polygons stay edge-matched.
 tbl(f) |> spatial_simplify(tolerance = 0.6) |> collect()
-#> Simple feature collection with 2 features and 1 field
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
-#> CRS:           NA
-#>   id                       geometry
-#> 1  a POLYGON ((1 0, 0 0, 0 1, 1 ...
-#> 2  b POLYGON ((1 0, 1 0.5, 1 1, ...
 unlink(f)
 ```

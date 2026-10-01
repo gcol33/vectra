@@ -114,10 +114,6 @@ tbl(f) |>
     d   = seq_dist(seq, "ATGGCCATTGTA")
   ) |>
   collect()
-#>   id          seq len        gc           rc   aa d
-#> 1 r1 ATGGCCATTGTA  12 0.4166667 TACAATGGCCAT MAIV 0
-#> 2 r2 GGGCCCTTTAAA  12 0.5000000 TTTAAAGGGCCC GPFK 6
-#> 3 r3       ATGTAA   6 0.1666667       TTACAT   M* 7
 
 unlink(f)
 ```

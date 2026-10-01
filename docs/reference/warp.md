@@ -106,6 +106,5 @@ vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 8, 8))
 # Resample onto a finer grid over the same extent.
 fine <- warp(f, list(extent = c(0, 0, 8, 8), res = 0.5), method = "bilinear")
 dim(fine)
-#> [1] 16 16
 unlink(f)
 ```

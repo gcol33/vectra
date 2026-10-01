@@ -110,13 +110,5 @@ write_vtr(data.frame(
 
 # Split the square into two halves along the blade.
 tbl(f) |> spatial_split(blade) |> collect()
-#> Simple feature collection with 2 features and 1 field
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 4 ymax: 4
-#> CRS:           NA
-#>   id                       geometry
-#> 1  1 POLYGON ((2 0, 0 0, 0 4, 2 ...
-#> 2  1 POLYGON ((2 4, 4 4, 4 0, 2 ...
 unlink(f)
 ```

@@ -103,10 +103,5 @@ vec_write_raster(vals, fv, dtype = "f64", extent = c(0, 0, 4, 4))
 vec_write_raster(zone, fz, dtype = "f64", extent = c(0, 0, 4, 4))
 
 zonal(fv, fz, fun = c("mean", "sum", "count"))
-#>   zone mean sum count
-#> 1    1  3.5  14     4
-#> 2    2  5.5  22     4
-#> 3    3 11.5  46     4
-#> 4    4 13.5  54     4
 unlink(c(fv, fz))
 ```

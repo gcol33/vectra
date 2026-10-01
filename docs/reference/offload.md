@@ -113,15 +113,11 @@ write_vtr(mtcars, f)
 # Replay cache: same rows, now on disk.
 s <- offload(tbl(f) |> filter(cyl > 4) |> select(mpg, wt, hp))
 nrow(collect(s))
-#> [1] 21
 
 # Partition by a key: a list of per-shard nodes.
 p <- offload(tbl(f), by = "cyl")
 names(p)
-#> [1] "[4, 4.5)" "[6, 6.5)" "[7.5, 8]"
 length(p)
-#> [1] 3
 nrow(collect(p[[1]]))
-#> [1] 11
 unlink(f)
 ```

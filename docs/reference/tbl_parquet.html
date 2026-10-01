@@ -152,24 +152,10 @@ error naming it, so drop it with <code>select(-name)</code> first.</p>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"extdata"</span>, <span class="st">"example.parquet"</span>, package <span class="op">=</span> <span class="st">"vectra"</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu">tbl_parquet</span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   id          species dbh_cm   surveyed</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1  1    Quercus robur   10.0 2020-01-01</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2  2  Fagus sylvatica   17.3 2020-01-12</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3  3      Picea abies   24.6 2020-01-23</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4  4 Pinus sylvestris   31.9 2020-02-03</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5  5       Abies alba   39.2 2020-02-14</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6  6    Quercus robur   46.5 2020-02-25</span>
-<span class="r-in"><span><span class="fu">tbl_parquet</span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="filter.html">filter</a></span><span class="op">(</span><span class="va">id</span> <span class="op">&gt;</span> <span class="fl">95</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="select.html">select</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">species</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>    id          species</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1  96    Quercus robur</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2  97  Fagus sylvatica</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3  98      Picea abies</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4  99 Pinus sylvestris</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5 100       Abies alba</span>
-<span class="r-in"><span></span></span>
-</code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"extdata"</span>, <span class="st">"example.parquet"</span>, package <span class="op">=</span> <span class="st">"vectra"</span><span class="op">)</span></span>
+<span><span class="fu">tbl_parquet</span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="fu">tbl_parquet</span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="filter.html">filter</a></span><span class="op">(</span><span class="va">id</span> <span class="op">&gt;</span> <span class="fl">95</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="select.html">select</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">species</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
+<span></span></code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

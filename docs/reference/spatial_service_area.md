@@ -129,13 +129,5 @@ tbl(f) |>
   spatial_service_area(net, cost = c(1, 2), output = "lines",
                        coords = c("x", "y")) |>
   collect()
-#> Simple feature collection with 2 features and 4 fields
-#> Geometry type: MULTILINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 1
-#> CRS:           NA
-#>   id x y band                       geometry
-#> 1  1 0 0    1 MULTILINESTRING ((0 0, 1 0)...
-#> 2  1 0 0    2 MULTILINESTRING ((0 0, 1 0)...
 unlink(f)
 ```

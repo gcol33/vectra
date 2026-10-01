@@ -118,15 +118,5 @@ write_vtr(data.frame(
 # Clip every county polygon to the two-county mask, streaming.
 clipped <- tbl(f) |> spatial_clip(mask, crs = sf::st_crs(nc))
 collect(clipped)
-#> Simple feature collection with 4 features and 1 field
-#> Geometry type: GEOMETRY
-#> Dimension:     XY
-#> Bounding box:  xmin: -81.74107 ymin: 36.23436 xmax: -80.90344 ymax: 36.58965
-#> Geodetic CRS:  NAD27
-#>        NAME                       geometry
-#> 1      Ashe POLYGON ((-81.23989 36.3653...
-#> 2 Alleghany POLYGON ((-81.17667 36.4154...
-#> 3    Wilkes GEOMETRYCOLLECTION (MULTILI...
-#> 4   Watauga GEOMETRYCOLLECTION (MULTILI...
 unlink(f)
 ```

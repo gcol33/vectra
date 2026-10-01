@@ -83,18 +83,5 @@ raises an error naming it, so drop it with `select(-name)` first.
 ``` r
 f <- system.file("extdata", "example.parquet", package = "vectra")
 tbl_parquet(f) |> collect() |> head()
-#>   id          species dbh_cm   surveyed
-#> 1  1    Quercus robur   10.0 2020-01-01
-#> 2  2  Fagus sylvatica   17.3 2020-01-12
-#> 3  3      Picea abies   24.6 2020-01-23
-#> 4  4 Pinus sylvestris   31.9 2020-02-03
-#> 5  5       Abies alba   39.2 2020-02-14
-#> 6  6    Quercus robur   46.5 2020-02-25
 tbl_parquet(f) |> filter(id > 95) |> select(id, species) |> collect()
-#>    id          species
-#> 1  96    Quercus robur
-#> 2  97  Fagus sylvatica
-#> 3  98      Picea abies
-#> 4  99 Pinus sylvestris
-#> 5 100       Abies alba
 ```

@@ -99,12 +99,5 @@ write_vtr(data.frame(
 
 # Snap the jittered corners back onto a 0.1 grid.
 tbl(f) |> spatial_snap_grid(0.1) |> collect()
-#> Simple feature collection with 1 feature and 1 field
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 1 ymax: 1
-#> CRS:           NA
-#>   id                       geometry
-#> 1  1 POLYGON ((0 1, 1 1, 1 0, 0 ...
 unlink(f)
 ```

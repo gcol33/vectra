@@ -46,7 +46,6 @@ xml <- paste0(
   "</GDALMetadata>")
 write_tiff(df, f, metadata = xml)
 tiff_band_names(f)
-#> [1] "temperature" "humidity"   
 unlink(f)
 # }
 ```

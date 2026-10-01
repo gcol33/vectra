@@ -59,9 +59,5 @@ This is a materializing operation.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> group_by(cyl) |> summarise(avg_mpg = mean(mpg)) |> collect()
-#>   cyl  avg_mpg
-#> 1   4 26.66364
-#> 2   6 19.74286
-#> 3   8 15.10000
 unlink(f)
 ```

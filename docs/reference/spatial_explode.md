@@ -99,13 +99,5 @@ write_vtr(data.frame(
 
 # One row per polygon, attributes copied, parts numbered.
 tbl(f) |> spatial_explode(part = "part_id") |> collect()
-#> Simple feature collection with 2 features and 2 fields
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 3
-#> CRS:           NA
-#>   id part_id                       geometry
-#> 1  1       1 POLYGON ((0 0, 1 0, 1 1, 0 ...
-#> 2  1       2 POLYGON ((2 2, 3 2, 3 3, 2 ...
 unlink(f)
 ```

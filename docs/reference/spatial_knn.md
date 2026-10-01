@@ -130,7 +130,6 @@ towns <- sf::st_sf(town = nc$NAME[1:5], geometry = towns)
 
 set.seed(1)
 pts <- sf::st_coordinates(sf::st_sample(nc, 100))
-#> Warning: coordinate ranges not computed along great circles; install package lwgeom to get rid of this warning
 f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = seq_len(nrow(pts)), x = pts[, 1], y = pts[, 2]), f)
 
@@ -139,17 +138,5 @@ tbl(f) |>
   spatial_knn(towns, k = 2, coords = c("x", "y"), crs = sf::st_crs(nc),
               y_id = "town") |>
   collect() |> head()
-#> Simple feature collection with 6 features and 6 fields
-#> Geometry type: POINT
-#> Dimension:     XY
-#> Bounding box:  xmin: -82.53556 ymin: 34.73323 xmax: -78.46464 ymax: 36.38969
-#> Geodetic CRS:  NAD27
-#>   id         x        y rank    neighbor distance                   geometry
-#> 1  1 -79.24443 36.38969    1       Surry 129018.7 POINT (-79.24443 36.38969)
-#> 2  1 -79.24443 36.38969    2 Northampton 164166.0 POINT (-79.24443 36.38969)
-#> 3  2 -82.53556 35.47008    1        Ashe 141931.7 POINT (-82.53556 35.47008)
-#> 4  2 -82.53556 35.47008    2   Alleghany 170279.5 POINT (-82.53556 35.47008)
-#> 5  3 -78.46464 34.73323    1 Northampton 210630.0 POINT (-78.46464 34.73323)
-#> 6  3 -78.46464 34.73323    2       Surry 274249.6 POINT (-78.46464 34.73323)
 unlink(f)
 ```

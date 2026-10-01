@@ -35,12 +35,6 @@ f <- tempfile(fileext = ".tif")
 df <- data.frame(x = 1:4, y = rep(1:2, each = 2), band1 = as.double(1:4))
 write_tiff(df, f)
 tiff_crs(f)  # epsg = NA, citation = NA — vectra writer omits GeoKeys
-#> $epsg
-#> [1] NA
-#> 
-#> $citation
-#> [1] NA
-#> 
 unlink(f)
 # }
 ```

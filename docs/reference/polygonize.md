@@ -96,14 +96,5 @@ vec_write_raster(m, f, dtype = "f64", extent = c(0, 0, 4, 4))
 
 polys <- polygonize(f)
 collect(polys)
-#> Simple feature collection with 3 features and 1 field
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 4 ymax: 4
-#> CRS:           NA
-#>   value                       geometry
-#> 1     1 POLYGON ((2 2, 0 2, 0 3, 0 ...
-#> 2     2 POLYGON ((4 2, 2 2, 2 3, 2 ...
-#> 3     3 POLYGON ((4 0, 0 0, 0 1, 0 ...
 unlink(f)
 ```

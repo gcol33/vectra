@@ -673,18 +673,15 @@ evaluate predicates.</p>
 captures its arguments with rlang, so the usual injection tools
 work:</p>
 <ul>
-<li>
-<code>!!</code> and <code>!!!</code> inject a value, a symbol or a
-list of them (<code>group_by(!!sym(k))</code>,
-<code>summarise(!!!aggs)</code>)</li>
-<li>
-<code>{{ }}</code> forwards an argument from a wrapper function</li>
-<li>
-<code>!!name := expr</code> builds a column name</li>
-<li>
-<code>.data[[k]]</code> and <code>.data$k</code> refer to a column
-by name, <code>.env$x</code> to a variable in the calling
-environment</li>
+<li><p><code>!!</code> and <code>!!!</code> inject a value, a symbol or
+a list of them (<code>group_by(!!sym(k))</code>,
+<code>summarise(!!!aggs)</code>)</p></li>
+<li><p><code>{{ }}</code> forwards an argument from a wrapper
+function</p></li>
+<li><p><code>!!name := expr</code> builds a column name</p></li>
+<li><p><code>.data[[k]]</code> and <code>.data$k</code> refer to a
+column by name, <code>.env$x</code> to a variable in the calling
+environment</p></li>
 </ul>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">k</span> <span class="op">&lt;-</span> <span class="st">"species"</span></span>

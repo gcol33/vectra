@@ -102,12 +102,5 @@ write_vtr(data.frame(
 
 # The three end-to-end segments become one line.
 tbl(f) |> spatial_line_merge() |> collect()
-#> Simple feature collection with 1 feature and 0 fields
-#> Geometry type: LINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 0
-#> CRS:           NA
-#>                         geometry
-#> 1 LINESTRING (0 0, 1 0, 2 0, ...
 unlink(f)
 ```

@@ -105,8 +105,4 @@ streets <- sf::st_sfc(
   mk(0, 1, 1, 1), mk(1, 0, 1, 1), mk(1, 1, 2, 1), mk(2, 0, 2, 1))
 net <- spatial_network(streets)
 net
-#> <vectra_network>
-#>   nodes:      6
-#>   edges:      14 (undirected)
-#>   components: 1
 ```

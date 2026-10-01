@@ -143,13 +143,5 @@ write_vtr(pts, f)
 tbl(f) |>
   spatial_locate(line, coords = c("x", "y"), y_id = "road") |>
   collect()
-#> Simple feature collection with 2 features and 6 fields
-#> Geometry type: POINT
-#> Dimension:     XY
-#> Bounding box:  xmin: 1 ymin: 1 xmax: 3 ymax: 9
-#> CRS:           NA
-#>   id x y line measure distance    geometry
-#> 1  1 3 1 main       3        1 POINT (3 1)
-#> 2  2 1 9 side       4        1 POINT (1 9)
 unlink(f)
 ```

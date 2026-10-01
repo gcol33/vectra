@@ -104,12 +104,5 @@ write_vtr(data.frame(
 
 # Smooth the zig-zag with three corner-cutting passes.
 tbl(f) |> spatial_smooth(iterations = 3) |> collect()
-#> Simple feature collection with 1 feature and 1 field
-#> Geometry type: LINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 4 ymax: 0.75
-#> CRS:           NA
-#>   id                       geometry
-#> 1  1 LINESTRING (0 0, 0.015625 0...
 unlink(f)
 ```

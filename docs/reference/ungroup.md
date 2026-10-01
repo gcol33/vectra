@@ -28,18 +28,5 @@ An ungrouped `vectra_node`.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> group_by(cyl) |> ungroup()
-#> vectra query node
-#> Columns (11):
-#>   mpg <double>
-#>   cyl <double>
-#>   disp <double>
-#>   hp <double>
-#>   drat <double>
-#>   wt <double>
-#>   qsec <double>
-#>   vs <double>
-#>   am <double>
-#>   gear <double>
-#>   carb <double>
 unlink(f)
 ```

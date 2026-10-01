@@ -99,24 +99,11 @@ collecting the full result.</p>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">f</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu">glimpse</span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> vectra lazy table [32 x 11]</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ mpg             &lt;double&gt; 21.0, 21.0, 22.8, 21.4, 18.7</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ cyl             &lt;double&gt; 6, 6, 4, 6, 8</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ disp            &lt;double&gt; 160, 160, 108, 258, 360</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ hp              &lt;double&gt; 110, 110, 93, 110, 175</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ drat            &lt;double&gt; 3.90, 3.90, 3.85, 3.08, 3.15</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ wt              &lt;double&gt; 2.620, 2.875, 2.320, 3.215, 3.440</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ qsec            &lt;double&gt; 16.46, 17.02, 18.61, 19.44, 17.02</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ vs              &lt;double&gt; 0, 0, 1, 1, 0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ am              &lt;double&gt; 1, 1, 1, 0, 0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ gear            &lt;double&gt; 4, 4, 4, 3, 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> $ carb            &lt;double&gt; 4, 4, 1, 1, 2</span>
-<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></span>
-<span class="r-in"><span></span></span>
-</code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">f</span><span class="op">)</span></span>
+<span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu">glimpse</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span>
+<span></span></code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

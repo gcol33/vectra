@@ -483,7 +483,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.16 s
+#> With index, %in% filter: 0.15 s
 ```
 
 Without an index, the same query reads all row groups and filters in

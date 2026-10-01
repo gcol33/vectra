@@ -248,15 +248,6 @@ first <- spatial_overlay(polys) |>
   slice_min(year, n = 1, with_ties = FALSE) |>
   collect()
 first
-#> Simple feature collection with 3 features and 2 fields
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 1
-#> CRS:           NA
-#>   year piece_id                       geometry
-#> 1 1990        1 POLYGON ((0 1, 1 1, 1 0, 0 ...
-#> 2 1990        2 POLYGON ((1 1, 2 1, 2 0, 1 ...
-#> 3 2010        3 POLYGON ((2 0, 2 1, 3 1, 3 ...
 
 # Two-layer overlay: intersect the squares with a zone layer, keeping both
 # sets of attributes on each overlapping piece.
@@ -264,16 +255,4 @@ zones <- sf::st_sf(zone = c("A", "B"),
                    geometry = sf::st_sfc(sq(0, 1.5), sq(1.5, 3)))
 inter <- spatial_overlay(polys, zones, how = "intersection") |> collect()
 inter
-#> Simple feature collection with 6 features and 3 fields
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 3 ymax: 1
-#> CRS:           NA
-#>   year zone piece_id                       geometry
-#> 1 1990    A        1 POLYGON ((0 1, 1 1, 1 0, 0 ...
-#> 2 1990    A        2 POLYGON ((1 1, 1.5 1, 1.5 0...
-#> 3 2010    A        2 POLYGON ((1 1, 1.5 1, 1.5 0...
-#> 4 1990    B        3 POLYGON ((1.5 1, 2 1, 2 0, ...
-#> 5 2010    B        3 POLYGON ((1.5 1, 2 1, 2 0, ...
-#> 6 2010    B        4 POLYGON ((2 0, 2 1, 3 1, 3 ...
 ```

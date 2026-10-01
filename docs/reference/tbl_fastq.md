@@ -56,8 +56,5 @@ writeLines(c("@r1 read one", "ACGT", "+", "IIII",
              "@r2 read two", "GGCC", "+", "!!!!"), f)
 node <- tbl_fastq(f, quiet = TRUE)
 node |> mutate(len = seq_length(seq)) |> collect()
-#>   id     desc  seq qual len
-#> 1 r1 read one ACGT IIII   4
-#> 2 r2 read two GGCC !!!!   4
 unlink(f)
 ```

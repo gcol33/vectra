@@ -110,16 +110,5 @@ write_vtr(data.frame(
 
 # The centerline runs down the middle of the strip.
 tbl(f) |> spatial_centerline(density = 0.25, prune = 0.5) |> collect()
-#> Simple feature collection with 5 features and 0 fields
-#> Geometry type: LINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0.125 ymin: 0.125 xmax: 9.875 ymax: 1.875
-#> CRS:           NA
-#>                         geometry
-#> 1 LINESTRING (1 1, 0.875 0.87...
-#> 2 LINESTRING (0.125 1.875, 0....
-#> 3 LINESTRING (1 1, 1.125 1, 1...
-#> 4 LINESTRING (9.875 1.875, 9....
-#> 5 LINESTRING (9 1, 9.125 0.87...
 unlink(f)
 ```

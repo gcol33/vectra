@@ -236,8 +236,11 @@ injection tools work:
 
 - `!!` and `!!!` inject a value, a symbol or a list of them
   (`group_by(!!sym(k))`, `summarise(!!!aggs)`)
+
 - `{{ }}` forwards an argument from a wrapper function
+
 - `!!name := expr` builds a column name
+
 - `.data[[k]]` and `.data$k` refer to a column by name, `.env$x` to a
   variable in the calling environment
 

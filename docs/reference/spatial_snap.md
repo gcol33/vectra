@@ -112,12 +112,5 @@ write_vtr(data.frame(
 
 # Pull the near-zero vertices down onto the reference line.
 tbl(f) |> spatial_snap(ref, tolerance = 0.5) |> collect()
-#> Simple feature collection with 1 feature and 1 field
-#> Geometry type: LINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 10 ymax: 0.1
-#> CRS:           NA
-#>   id                      geometry
-#> 1  1 LINESTRING (0 0, 5 0.1, 10 0)
 unlink(f)
 ```

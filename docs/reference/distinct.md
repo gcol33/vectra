@@ -40,9 +40,5 @@ This is a materializing operation.
 f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 tbl(f) |> distinct(cyl) |> collect()
-#>   cyl
-#> 1   4
-#> 2   6
-#> 3   8
 unlink(f)
 ```

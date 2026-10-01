@@ -168,37 +168,19 @@ object, <code><a href="collect.html">collect()</a></code> to materialize as <cod
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span></span>
-<span class="r-in"><span>  NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span></span>
-<span class="r-in"><span>  geometry <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_as_binary.html" class="external-link">st_as_binary</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span>,</span></span>
-<span class="r-in"><span>                              hex <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span></span>
-<span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># Buffer every county centroid by 0.1 degree, streaming.</span></span></span>
-<span class="r-in"><span><span class="va">buffered</span> <span class="op">&lt;-</span> <span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
-<span class="r-in"><span>  <span class="fu">spatial_map</span><span class="op">(</span><span class="op">~</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_buffer</a></span><span class="op">(</span><span class="va">.x</span>, <span class="fl">0.1</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">buffered</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Simple feature collection with 100 features and 1 field</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Geometry type: POLYGON</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Dimension:     XY</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Bounding box:  xmin: -84.05986 ymin: 34.07671 xmax: -75.8095 ymax: 36.49111</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Geodetic CRS:  NAD27</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> First 10 features:</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>           NAME                       geometry</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1         Ashe POLYGON ((-81.49823 36.4313...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2    Alleghany POLYGON ((-81.12513 36.4911...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3        Surry POLYGON ((-80.68573 36.4125...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4    Currituck POLYGON ((-76.02719 36.4071...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5  Northampton POLYGON ((-77.41046 36.4223...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6     Hertford POLYGON ((-76.99472 36.3614...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 7       Camden POLYGON ((-76.23402 36.4012...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 8        Gates POLYGON ((-76.70446 36.4442...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 9       Warren POLYGON ((-78.11042 36.3969...</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 10      Stokes POLYGON ((-80.23429 36.4004...</span>
-<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></span>
-</code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
+<span>  NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span>
+<span>  geometry <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_as_binary.html" class="external-link">st_as_binary</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span>,</span>
+<span>                              hex <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Buffer every county centroid by 0.1 degree, streaming.</span></span>
+<span><span class="va">buffered</span> <span class="op">&lt;-</span> <span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu">spatial_map</span><span class="op">(</span><span class="op">~</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_buffer</a></span><span class="op">(</span><span class="va">.x</span>, <span class="fl">0.1</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">buffered</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span></span></code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

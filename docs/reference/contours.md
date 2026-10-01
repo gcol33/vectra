@@ -87,14 +87,5 @@ vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 20, 20))
 
 iso <- contours(f, levels = c(15, 25, 35))
 collect(iso)
-#> Simple feature collection with 3 features and 1 field
-#> Geometry type: LINESTRING
-#> Dimension:     XY
-#> Bounding box:  xmin: 0.5 ymin: 0.5 xmax: 19.5 ymax: 19.5
-#> CRS:           NA
-#>   level                       geometry
-#> 1    15 LINESTRING (0.5 6.5, 1.5 7....
-#> 2    25 LINESTRING (4.5 0.5, 5.5 1....
-#> 3    35 LINESTRING (14.5 0.5, 15.5 ...
 unlink(f)
 ```

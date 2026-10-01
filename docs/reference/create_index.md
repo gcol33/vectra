@@ -88,7 +88,5 @@ f <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = letters, val = 1:26, stringsAsFactors = FALSE), f)
 create_index(f, "id")
 tbl(f) |> filter(id == "m") |> collect()
-#>   id val
-#> 1  m  13
 unlink(c(f, paste0(f, ".id.vtri")))
 ```

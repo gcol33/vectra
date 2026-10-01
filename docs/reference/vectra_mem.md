@@ -53,7 +53,5 @@ not affected.
 
 ``` r
 vectra_mem()
-#> [1] 34234238976
 vectra_mem("4GB")
-#> [1] 4294967296
 ```

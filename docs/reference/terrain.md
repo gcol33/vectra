@@ -102,6 +102,5 @@ vec_write_raster(z, f, dtype = "f64", extent = c(0, 0, 8, 8))
 slp <- terrain(f, v = "slope")
 deriv <- terrain(f, v = c("slope", "aspect", "hillshade"))
 names(deriv)
-#> [1] "slope"     "aspect"    "hillshade"
 unlink(f)
 ```

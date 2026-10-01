@@ -107,15 +107,5 @@ write_vtr(data.frame(
 
 # The four unit cells enclosed by the grid of lines.
 tbl(f) |> spatial_polygonize() |> collect()
-#> Simple feature collection with 4 features and 0 fields
-#> Geometry type: POLYGON
-#> Dimension:     XY
-#> Bounding box:  xmin: 0 ymin: 0 xmax: 2 ymax: 2
-#> CRS:           NA
-#>                         geometry
-#> 1 POLYGON ((1 0, 0 0, 0 1, 1 ...
-#> 2 POLYGON ((2 0, 1 0, 1 1, 2 ...
-#> 3 POLYGON ((1 1, 0 1, 0 2, 1 ...
-#> 4 POLYGON ((2 1, 1 1, 1 2, 2 ...
 unlink(f)
 ```

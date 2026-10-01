@@ -98,9 +98,5 @@ f2 <- tempfile(fileext = ".vtr")
 write_vtr(data.frame(id = c(1, 2, 3), x = c(10, 20, 30)), f1)
 write_vtr(data.frame(id = c(1, 2, 4), y = c(100, 200, 400)), f2)
 left_join(tbl(f1), tbl(f2), by = "id") |> collect()
-#>   id  x   y
-#> 1  1 10 100
-#> 2  2 20 200
-#> 3  3 30  NA
 unlink(c(f1, f2))
 ```

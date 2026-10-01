@@ -45,13 +45,6 @@ df <- data.frame(x = as.double(rep(1:4, 3)),
 write_tiff(df, f)
 node <- tbl_tiff(f)
 node |> filter(band1 > 6) |> collect()
-#>   x y band1
-#> 1 1 3     9
-#> 2 2 3    10
-#> 3 3 3    11
-#> 4 4 3    12
-#> 5 3 2     7
-#> 6 4 2     8
 unlink(f)
 # }
 ```

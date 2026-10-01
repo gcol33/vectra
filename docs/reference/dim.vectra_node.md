@@ -2,9 +2,9 @@
 
 Reports the shape of a `vectra_node` from plan metadata, without running
 the query. Defining [`dim()`](https://rdrr.io/r/base/dim.html) is what
-makes base R's [`nrow()`](https://rdrr.io/r/base/nrow.html) and
-[`ncol()`](https://rdrr.io/r/base/nrow.html) work on a node, since both
-read `dim(x)`.
+makes base R's [`base::nrow()`](https://rdrr.io/r/base/nrow.html) and
+[`base::ncol()`](https://rdrr.io/r/base/nrow.html) work on a node, since
+both read `dim(x)`.
 
 ## Usage
 
@@ -37,7 +37,7 @@ has tombstoned), and the row-preserving verbs carry it through –
 [`rename()`](https://gillescolling.com/vectra/reference/rename.md),
 [`arrange()`](https://gillescolling.com/vectra/reference/arrange.md),
 [`relocate()`](https://gillescolling.com/vectra/reference/relocate.md),
-window functions, [`head()`](https://rdrr.io/r/utils/head.html),
+window functions, [`utils::head()`](https://rdrr.io/r/utils/head.html),
 [`slice_head()`](https://gillescolling.com/vectra/reference/slice_head.md),
 [`slice_min()`](https://gillescolling.com/vectra/reference/slice_head.md)/[`slice_max()`](https://gillescolling.com/vectra/reference/slice_head.md),
 and
@@ -66,20 +66,13 @@ f <- tempfile(fileext = ".vtr")
 write_vtr(mtcars, f)
 
 dim(tbl(f))
-#> [1] 32 11
 nrow(tbl(f))                       # 32, straight from the row-group index
-#> [1] 32
 ncol(tbl(f) |> select(mpg, cyl))   # 2
-#> [1] 2
 nrow(tbl(f) |> head(5))            # 5
-#> [1] 5
 nrow(tbl(f) |> filter(cyl == 4))   # NA: needs the query to run
-#> [1] NA
 
 # exact count for a filtered query
 tbl(f) |> filter(cyl == 4) |> count() |> collect()
-#>    n
-#> 1 11
 
 unlink(f)
 ```

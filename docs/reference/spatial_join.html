@@ -243,148 +243,40 @@ materialize as <code>sf</code>, <code><a href="offload.html">offload()</a></code
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></span>
-<span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># A stream of points, stored with x/y coordinate columns.</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="va">pts</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_coordinates.html" class="external-link">st_coordinates</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_sample.html" class="external-link">st_sample</a></span><span class="op">(</span><span class="va">nc</span>, <span class="fl">200</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-wrn co"><span class="r-pr">#&gt;</span> <span class="warning">Warning: </span>coordinate ranges not computed along great circles; install package lwgeom to get rid of this warning</span>
-<span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="va">pts</span><span class="op">)</span><span class="op">)</span>, x <span class="op">=</span> <span class="va">pts</span><span class="op">[</span>, <span class="fl">1</span><span class="op">]</span>, y <span class="op">=</span> <span class="va">pts</span><span class="op">[</span>, <span class="fl">2</span><span class="op">]</span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span></span>
-<span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># Tag each point with the county it falls in, streaming.</span></span></span>
-<span class="r-in"><span><span class="va">tagged</span> <span class="op">&lt;-</span> <span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
-<span class="r-in"><span>  <span class="fu">spatial_join</span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, join <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="va"><a href="https://r-spatial.github.io/sf/reference/geos_binary_pred.html" class="external-link">st_intersects</a></span>,</span></span>
-<span class="r-in"><span>               coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">tagged</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Simple feature collection with 6 features and 4 fields</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Geometry type: POINT</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Dimension:     XY</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Bounding box:  xmin: -81.96962 ymin: 34.27533 xmax: -76.35794 ymax: 36.53061</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Geodetic CRS:  NAD27</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   id         x        y       NAME                   geometry</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1  1 -81.96962 35.64837   McDowell POINT (-81.96962 35.64837)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2  2 -81.02428 36.53061  Alleghany POINT (-81.02428 36.53061)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3  3 -79.24443 34.50267    Robeson POINT (-79.24443 34.50267)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4  4 -76.35794 36.12743 Perquimans POINT (-76.35794 36.12743)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5  5 -78.46464 36.48867      Vance POINT (-78.46464 36.48867)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6  6 -78.74558 34.27533   Columbus POINT (-78.74558 34.27533)</span>
-<span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># Tag, then count per county: the join streams into count() and the point</span></span></span>
-<span class="r-in"><span><span class="co"># geometry is never built.</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
-<span class="r-in"><span>  <span class="fu">spatial_join</span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>,</span></span>
-<span class="r-in"><span>               keep_geom <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
-<span class="r-in"><span>  <span class="fu"><a href="count.html">count</a></span><span class="op">(</span><span class="va">NAME</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
-<span class="r-in"><span>  <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>            NAME n</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1     Alexander 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2     Alleghany 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3         Anson 5</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4          Ashe 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5         Avery 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6      Beaufort 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 7        Bertie 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 8        Bladen 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 9     Brunswick 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 10     Buncombe 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 11        Burke 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 12     Caldwell 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 13       Camden 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 14     Carteret 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 15      Caswell 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 16      Catawba 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 17    Cleveland 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 18     Columbus 8</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 19       Craven 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 20   Cumberland 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 21    Currituck 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 22         Dare 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 23     Davidson 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 24       Duplin 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 25    Edgecombe 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 26      Forsyth 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 27       Gaston 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 28       Graham 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 29    Granville 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 30     Guilford 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 31      Halifax 7</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 32      Harnett 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 33      Haywood 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 34    Henderson 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 35     Hertford 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 36         Hoke 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 37         Hyde 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 38      Iredell 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 39      Jackson 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 40     Johnston 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 41        Jones 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 42       Lenoir 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 43      Lincoln 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 44        Macon 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 45      Madison 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 46     McDowell 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 47  Mecklenburg 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 48     Mitchell 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 49   Montgomery 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 50        Moore 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 51         Nash 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 52  New Hanover 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 53  Northampton 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 54       Onslow 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 55       Orange 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 56      Pamlico 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 57       Pender 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 58   Perquimans 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 59       Person 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 60         Pitt 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 61     Randolph 8</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 62     Richmond 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 63      Robeson 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 64   Rockingham 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 65        Rowan 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 66   Rutherford 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 67      Sampson 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 68     Scotland 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 69       Stanly 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 70       Stokes 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 71        Surry 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 72        Swain 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 73 Transylvania 3</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 74        Union 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 75        Vance 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 76         Wake 4</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 77      Watauga 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 78        Wayne 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 79       Wilkes 2</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 80       Yadkin 1</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 81       Yancey 1</span>
-<span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># Both sides streamed: bin to a grid and join per shard. Here y is a</span></span></span>
-<span class="r-in"><span><span class="co"># vectra_node rather than a resident sf object.</span></span></span>
-<span class="r-in"><span><span class="va">g</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span></span>
-<span class="r-in"><span>  NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span></span>
-<span class="r-in"><span>  geometry <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_as_binary.html" class="external-link">st_as_binary</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, hex <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="op">)</span>, <span class="va">g</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="va">tagged2</span> <span class="op">&lt;-</span> <span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span></span>
-<span class="r-in"><span>  <span class="fu">spatial_join</span><span class="op">(</span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">g</span><span class="op">)</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>,</span></span>
-<span class="r-in"><span>               partition <span class="op">=</span> <span class="fu"><a href="grid.html">grid</a></span><span class="op">(</span><span class="fl">0.5</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">tagged2</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Simple feature collection with 6 features and 4 fields</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Geometry type: POINT</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Dimension:     XY</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Bounding box:  xmin: -76.4638 ymin: 35.22927 xmax: -75.62045 ymax: 36.4641</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> Geodetic CRS:  NAD27</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>    id         x        y       NAME                   geometry</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 165 -75.62045 35.22927       Dare POINT (-75.62045 35.22927)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2 119 -75.91835 35.62766       Hyde POINT (-75.91835 35.62766)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3  76 -76.08994 35.62090       Hyde  POINT (-76.08994 35.6209)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4   4 -76.35794 36.12743 Perquimans POINT (-76.35794 36.12743)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5  12 -76.03594 36.46410  Currituck  POINT (-76.03594 36.4641)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6 101 -76.46380 36.33474 Perquimans  POINT (-76.4638 36.33474)</span>
-<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">f</span>, <span class="va">g</span><span class="op">)</span><span class="op">)</span></span></span>
-</code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># A stream of points, stored with x/y coordinate columns.</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span></span>
+<span><span class="va">pts</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_coordinates.html" class="external-link">st_coordinates</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_sample.html" class="external-link">st_sample</a></span><span class="op">(</span><span class="va">nc</span>, <span class="fl">200</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="va">pts</span><span class="op">)</span><span class="op">)</span>, x <span class="op">=</span> <span class="va">pts</span><span class="op">[</span>, <span class="fl">1</span><span class="op">]</span>, y <span class="op">=</span> <span class="va">pts</span><span class="op">[</span>, <span class="fl">2</span><span class="op">]</span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Tag each point with the county it falls in, streaming.</span></span>
+<span><span class="va">tagged</span> <span class="op">&lt;-</span> <span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu">spatial_join</span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, join <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="va"><a href="https://r-spatial.github.io/sf/reference/geos_binary_pred.html" class="external-link">st_intersects</a></span>,</span>
+<span>               coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">tagged</span><span class="op">)</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Tag, then count per county: the join streams into count() and the point</span></span>
+<span><span class="co"># geometry is never built.</span></span>
+<span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu">spatial_join</span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>,</span>
+<span>               keep_geom <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="count.html">count</a></span><span class="op">(</span><span class="va">NAME</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Both sides streamed: bin to a grid and join per shard. Here y is a</span></span>
+<span><span class="co"># vectra_node rather than a resident sf object.</span></span>
+<span><span class="va">g</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
+<span>  NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span>
+<span>  geometry <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_as_binary.html" class="external-link">st_as_binary</a></span><span class="op">(</span><span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, hex <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span><span class="op">)</span>, <span class="va">g</span><span class="op">)</span></span>
+<span><span class="va">tagged2</span> <span class="op">&lt;-</span> <span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu">spatial_join</span><span class="op">(</span><span class="fu"><a href="tbl.html">tbl</a></span><span class="op">(</span><span class="va">g</span><span class="op">)</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>,</span>
+<span>               partition <span class="op">=</span> <span class="fu"><a href="grid.html">grid</a></span><span class="op">(</span><span class="fl">0.5</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="fu"><a href="collect.html">collect</a></span><span class="op">(</span><span class="va">tagged2</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">f</span>, <span class="va">g</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

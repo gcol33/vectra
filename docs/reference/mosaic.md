@@ -85,6 +85,5 @@ vec_write_raster(b, fb, dtype = "f64", extent = c(2, 2, 6, 6))
 
 m <- mosaic(list(fa, fb), fun = "mean")
 dim(m)
-#> [1] 6 6
 unlink(c(fa, fb))
 ```
