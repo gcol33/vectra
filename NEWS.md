@@ -1,3 +1,17 @@
+# vectra (development version)
+
+## Bug fixes
+
+* `vec_to_tiff()` and the GeoTIFF writer declare the bands past the first as
+  `ExtraSamples`, so GDAL reads multi-band output without a
+  `TIFFReadDirectory` warning.
+* A raster whose geotransform is not north-up and axis-aligned (a positive
+  y resolution, as in the identity default of `vec_write_raster()`, or a
+  rotation) is georeferenced through `ModelTransformation` instead of a
+  negative `ModelPixelScale` that GDAL silently re-read as north-up.
+  `tbl_tiff()` reads `ModelTransformation` and applies the rotation terms to
+  the `x`/`y` columns.
+
 # vectra 0.13.1
 
 ## Changes

@@ -768,3 +768,34 @@ test_that("vec_read_pixel_series via x/y coordinates uses the geotransform", {
   series <- vec_read_pixel_series(r, x = 2.5, y = 1.5, band = 1L)
   expect_equal(series, arr[3, 3, 1, ])
 })
+
+test_that("vec_to_tiff multi-band output declares ExtraSamples", {
+  skip_if_not_installed("terra")
+  arr <- array(as.numeric(seq_len(6 * 5 * 3)), dim = c(6, 5, 3))
+  vec_path <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(arr, vec_path, dtype = "f64", extent = c(0, 0, 5, 6))
+  vec_to_tiff(vec_path, tiff_path, compression = "none")
+
+  expect_no_warning(v <- terra::values(terra::rast(tiff_path)))
+  expect_equal(ncol(v), 3L)
+})
+
+test_that("a south-up geotransform is written as ModelTransformation", {
+  skip_if_not_installed("terra")
+  m <- matrix(as.numeric(1:20), 4, 5)
+  vec_path <- tempfile(fileext = ".vec")
+  tiff_path <- tempfile(fileext = ".tif")
+  on.exit(unlink(c(vec_path, tiff_path)))
+
+  vec_write_raster(m, vec_path, dtype = "f64", gt = c(10, 2, 0, 100, 0, 3))
+  vec_to_tiff(vec_path, tiff_path, compression = "none")
+
+  expect_no_warning(terra::rast(tiff_path))
+  d <- collect(tbl_tiff(tiff_path))
+  expect_equal(sort(unique(d$x)), 10 + 2 * (0:4 + 0.5))
+  expect_equal(sort(unique(d$y)), 100 + 3 * (0:3 + 0.5))
+  expect_equal(d$band1[d$x == 11 & d$y == 101.5], m[1, 1])
+})

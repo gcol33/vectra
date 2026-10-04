@@ -33,10 +33,12 @@
 #define TAG_TILE_LENGTH          323
 #define TAG_TILE_OFFSETS         324
 #define TAG_TILE_BYTE_COUNTS     325
+#define TAG_EXTRA_SAMPLES        338
 #define TAG_SAMPLE_FORMAT        339
 #define TAG_PREDICTOR            317
 #define TAG_MODEL_TIEPOINT       33922
 #define TAG_MODEL_PIXEL_SCALE    33550
+#define TAG_MODEL_TRANSFORMATION 34264
 #define TAG_GEO_KEY_DIRECTORY    34735
 #define TAG_GEO_DOUBLE_PARAMS    34736
 #define TAG_GEO_ASCII_PARAMS     34737
@@ -593,6 +595,19 @@ static int parse_ifd(TiffReader *r) {
             free(v);
             break;
         }
+        case TAG_MODEL_TRANSFORMATION: {
+            /* 4x4 row-major raster-to-model matrix; rows 0 and 1 carry the
+               affine geotransform. */
+            double *v = read_tag_doubles(io, dtype, count,
+                                          valp, entry_val_bytes);
+            if (v && count >= 16) {
+                r->gt[0] = v[3]; r->gt[1] = v[0]; r->gt[2] = v[1];
+                r->gt[3] = v[7]; r->gt[4] = v[4]; r->gt[5] = v[5];
+                r->has_geotransform = 1;
+            }
+            free(v);
+            break;
+        }
         case TAG_GEO_KEY_DIRECTORY: {
             free(geokey_dir);
             geokey_dir = read_tag_ints(io, dtype, count, valp, entry_val_bytes);
@@ -1119,11 +1134,14 @@ int tiff_reader_read_rows(TiffReader *r, int64_t row_start, int64_t n_rows,
     int pixel_bytes = bytes_per_sample * nb;
 
     for (int64_t row = 0; row < n_rows; row++) {
-        double y = r->gt[3] + (row_start + row + 0.5) * r->gt[5];
+        double rr = (double)(row_start + row) + 0.5;
+        double x0 = r->gt[0] + rr * r->gt[2];
+        double y0 = r->gt[3] + rr * r->gt[5];
         for (int64_t col = 0; col < W; col++) {
             int64_t idx = row * W + col;
-            out_x[idx] = r->gt[0] + (col + 0.5) * r->gt[1];
-            out_y[idx] = y;
+            double cc = (double)col + 0.5;
+            out_x[idx] = x0 + cc * r->gt[1];
+            out_y[idx] = y0 + cc * r->gt[4];
         }
     }
 
@@ -2275,18 +2293,36 @@ int tiff_writer_finish(TiffWriter *w) {
         fwrite(buf, 1, 2, w->fp);
     }
 
-    /* ModelPixelScale: 3 doubles */
-    uint64_t off_scale = (uint64_t)tiff_ftell64(w->fp);
-    {
-        double scale[3] = { w->gt[1], -w->gt[5], 0.0 };
-        fwrite(scale, sizeof(double), 3, w->fp);
+    /* ExtraSamples array: PhotometricInterpretation MinIsBlack accounts for
+       one sample, every further band is an unspecified (0) extra sample. */
+    int n_extra = nb - 1;
+    uint64_t off_extra = (uint64_t)tiff_ftell64(w->fp);
+    for (int b = 0; b < n_extra; b++) {
+        uint8_t buf[2];
+        write_le16(buf, 0);
+        fwrite(buf, 1, 2, w->fp);
     }
 
-    /* ModelTiepoint: 6 doubles */
-    uint64_t off_tiepoint = (uint64_t)tiff_ftell64(w->fp);
-    {
+    /* Georeferencing. ModelPixelScale + ModelTiepoint can only express a
+       north-up, axis-aligned grid (ScaleY is the positive pixel height);
+       any other geotransform goes through ModelTransformation. */
+    int axis_aligned = (w->gt[2] == 0.0 && w->gt[4] == 0.0 && w->gt[5] < 0.0);
+    uint64_t off_scale = 0, off_tiepoint = 0, off_transform = 0;
+    if (axis_aligned) {
+        off_scale = (uint64_t)tiff_ftell64(w->fp);
+        double scale[3] = { w->gt[1], -w->gt[5], 0.0 };
+        fwrite(scale, sizeof(double), 3, w->fp);
+
+        off_tiepoint = (uint64_t)tiff_ftell64(w->fp);
         double tp[6] = { 0, 0, 0, w->gt[0], w->gt[3], 0 };
         fwrite(tp, sizeof(double), 6, w->fp);
+    } else {
+        off_transform = (uint64_t)tiff_ftell64(w->fp);
+        double m[16] = { w->gt[1], w->gt[2], 0, w->gt[0],
+                         w->gt[4], w->gt[5], 0, w->gt[3],
+                         0,        0,        0, 0,
+                         0,        0,        0, 1 };
+        fwrite(m, sizeof(double), 16, w->fp);
     }
 
     /* GeoKey directory + GeoAsciiParams (see classic-TIFF comment in prior
@@ -2381,13 +2417,16 @@ int tiff_writer_finish(TiffWriter *w) {
     }
 
     /* Count IFD entries.
-       Common (9): Width, Length, BPS, Compression, Photometric, SPP,
-                   PlanarConfig, SampleFormat, ModelPixelScale.
+       Common (8): Width, Length, BPS, Compression, Photometric, SPP,
+                   PlanarConfig, SampleFormat.
        Strip mode adds 3: StripOffsets, RowsPerStrip, StripByteCounts.
-       Tiled mode adds 4: TileWidth, TileLength, TileOffsets, TileByteCounts. */
-    int n_tags = 9;
+       Tiled mode adds 4: TileWidth, TileLength, TileOffsets, TileByteCounts.
+       Georeferencing adds ModelPixelScale + ModelTiepoint, or
+       ModelTransformation. */
+    int n_tags = 8;
     n_tags += w->is_tiled ? 4 : 3;
-    n_tags++; /* ModelTiepoint */
+    n_tags += axis_aligned ? 2 : 1;
+    if (n_extra > 0) n_tags++; /* ExtraSamples */
     if (w->predictor != 1) n_tags++; /* Predictor (317) — only when != default */
     if (have_crs) {
         n_tags++; /* GeoKeyDirectory */
@@ -2498,14 +2537,25 @@ int tiff_writer_finish(TiffWriter *w) {
         }
     }
 
+    /* 338: ExtraSamples (SHORT) */
+    if (n_extra > 0)
+        tiff_emit_short_array_entry(w, TAG_EXTRA_SAMPLES, 0, n_extra,
+                                    off_extra);
+
     /* 339: SampleFormat (SHORT) */
     tiff_emit_short_array_entry(w, TAG_SAMPLE_FORMAT, sf_val, nb, off_sf);
 
-    /* 33550: ModelPixelScale (3 DOUBLEs = 24 B → never inline) */
-    tiff_emit_entry(w, TAG_MODEL_PIXEL_SCALE, TIFF_DOUBLE, 3, off_scale);
+    if (axis_aligned) {
+        /* 33550: ModelPixelScale (3 DOUBLEs = 24 B → never inline) */
+        tiff_emit_entry(w, TAG_MODEL_PIXEL_SCALE, TIFF_DOUBLE, 3, off_scale);
 
-    /* 33922: ModelTiepoint (6 DOUBLEs = 48 B → never inline) */
-    tiff_emit_entry(w, TAG_MODEL_TIEPOINT, TIFF_DOUBLE, 6, off_tiepoint);
+        /* 33922: ModelTiepoint (6 DOUBLEs = 48 B → never inline) */
+        tiff_emit_entry(w, TAG_MODEL_TIEPOINT, TIFF_DOUBLE, 6, off_tiepoint);
+    } else {
+        /* 34264: ModelTransformation (16 DOUBLEs → never inline) */
+        tiff_emit_entry(w, TAG_MODEL_TRANSFORMATION, TIFF_DOUBLE, 16,
+                        off_transform);
+    }
 
     /* 34735: GeoKeyDirectory */
     if (have_crs) {
