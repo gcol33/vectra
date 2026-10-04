@@ -1,4 +1,4 @@
-# vectra (development version)
+# vectra 0.13.2
 
 ## Bug fixes
 
