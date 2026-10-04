@@ -22,6 +22,9 @@ joins, and is dropped once the column is.
 
 ``` r
 collect(x, ...)
+
+# S3 method for class 'vectra_node'
+collect(x, sf = TRUE, geom = NULL, crs = NULL, ...)
 ```
 
 ## Arguments
