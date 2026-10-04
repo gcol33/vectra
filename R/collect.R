@@ -41,6 +41,7 @@ collect <- function(x, ...) {
   UseMethod("collect")
 }
 
+#' @rdname collect
 #' @export
 collect.vectra_node <- function(x, sf = TRUE, geom = NULL, crs = NULL, ...) {
   df <- .Call(C_collect, x$.node)

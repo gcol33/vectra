@@ -2,9 +2,12 @@
 % Please edit documentation in R/collect.R
 \name{collect}
 \alias{collect}
+\alias{collect.vectra_node}
 \title{Execute a lazy query and return the result}
 \usage{
 collect(x, ...)
+
+\method{collect}{vectra_node}(x, sf = TRUE, geom = NULL, crs = NULL, ...)
 }
 \arguments{
 \item{x}{A \code{vectra_node} object.}
