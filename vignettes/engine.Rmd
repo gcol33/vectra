@@ -23,6 +23,15 @@ guarantees stop. It is the reference for what vectra promises.
 See `?tbl`, `?filter`, `?left_join`, and `?explain` for function-level
 documentation.
 
+## Installation
+
+```{r, eval = FALSE}
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## What vectra is
 
 vectra is an R-native columnar query engine for datasets that don't fit in

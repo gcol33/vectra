@@ -20,6 +20,17 @@ extension that needs no system libraries: its C engine and codecs are compiled f
 the package sources, and its only compiled R dependency is libgeos (GEOS for the
 spatial functions), next to tidyselect and rlang.
 
+## Installation
+
+```r
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
+## Quick start
+
 ```r
 library(vectra)
 
@@ -248,15 +259,6 @@ vectra covers the dplyr surface most analysis pipelines use: `filter()`, `select
 
 The [Function Reference](https://gillescolling.com/vectra/reference/) lists every verb and
 expression with examples.
-
-## Installation
-
-```r
-install.packages("vectra")            # CRAN
-
-install.packages("pak")               # development version
-pak::pak("gcol33/vectra")
-```
 
 ## Documentation
 

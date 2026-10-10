@@ -16,6 +16,15 @@ knitr::opts_chunk$set(
 )
 ```
 
+## Installation
+
+```{r, eval = FALSE}
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## Introduction
 
 When a dataset has millions of rows spread across hundreds of row groups, a naive

@@ -30,6 +30,15 @@ every block below is code you can execute and check. It needs the optional
 take layers and coordinate reference systems as arguments, and which runs the
 operations vectra has no native path for.
 
+## Installation
+
+```{r, eval = FALSE}
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ```{r libs, message = FALSE}
 library(vectra)
 library(sf)

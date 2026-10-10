@@ -16,6 +16,15 @@ knitr::opts_chunk$set(
 )
 ```
 
+## Installation
+
+```{r, eval = FALSE}
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## The flat-table problem
 
 Ecological analyses almost always involve multiple tables. Observations live in

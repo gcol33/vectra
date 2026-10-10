@@ -33,6 +33,15 @@ at a time, with no per-batch round-trip through sf. `filter(st_area(geometry) >
 new WKB geometry column that any later verb can read. The per-row decode is
 parallelised with OpenMP, so a measure over a large layer uses every core.
 
+## Installation
+
+```{r, eval = FALSE}
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ```{r libs, message = FALSE}
 library(vectra)
 library(sf)
