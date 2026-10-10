@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/networks.Rmd" class="external-link"><code>vignettes/networks.Rmd</code></a></small>
       <div class="d-none name"><code>networks.Rmd</code></div>
@@ -109,10 +109,18 @@ stays in memory.</p>
 Dijkstra over a compressed adjacency, with no <code>igraph</code>
 dependency. The solver parallelises over a batch of origins with
 OpenMP.</p>
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span>
-<span><span class="co">#&gt; Warning: package 'sf' was built under R version 4.6.1</span></span></code></pre></div>
+<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span></code></pre></div>
+</div>
 <div class="section level2">
 <h2 id="building-a-network">Building a network<a class="anchor" aria-label="anchor" href="#building-a-network"></a>
 </h2>
@@ -122,7 +130,7 @@ OpenMP.</p>
 units), and each edge is weighted by its geometry length unless a
 <code>weight</code> column names another cost.</p>
 <p>The examples use a small grid of unit streets.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">mk</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">x1</span>, <span class="va">y1</span>, <span class="va">x2</span>, <span class="va">y2</span><span class="op">)</span></span>
 <span>  <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st.html" class="external-link">st_linestring</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">x1</span>, <span class="va">y1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">x2</span>, <span class="va">y2</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
@@ -150,7 +158,7 @@ the network and returns the shortest path from each origin to one or
 more destinations. With <code>geometry = FALSE</code> it returns only
 the cost, so a set of destinations per origin is an origin-destination
 cost matrix in long form.</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="fl">1L</span>, x <span class="op">=</span> <span class="fl">0</span>, y <span class="op">=</span> <span class="fl">0</span><span class="op">)</span>, <span class="va">f</span><span class="op">)</span></span>
 <span></span>
@@ -165,7 +173,7 @@ cost matrix in long form.</p>
 top-right. With <code>geometry = TRUE</code> (the default) each row also
 carries the route line, ready to materialise with
 <code><a href="../reference/collect.html">collect()</a></code>:</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_route.html">spatial_route</a></span><span class="op">(</span><span class="va">net</span>, to <span class="op">=</span> <span class="va">dest</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -178,7 +186,7 @@ carries the route line, ready to materialise with
 <span><span class="co">#&gt; 1  1 0 0           1    5 LINESTRING (0 0, 1 0, 1 1, ...</span></span></code></pre></div>
 <p>Several destinations, named through <code>to_id</code>, give one row
 per origin and destination, the cost matrix in long form:</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">g</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">2</span>, x <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">3</span><span class="op">)</span>, y <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">0</span><span class="op">)</span><span class="op">)</span>, <span class="va">g</span><span class="op">)</span></span>
 <span></span>
@@ -208,7 +216,7 @@ nested travel-cost bands, one row per origin and band. The
 <code>output</code> argument selects the shape: the reachable nodes as a
 multipoint, the reachable edges as lines, or their convex hull as a
 service-area polygon.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_service_area.html">spatial_service_area</a></span><span class="op">(</span><span class="va">net</span>, cost <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1</span>, <span class="fl">2</span><span class="op">)</span>, output <span class="op">=</span> <span class="st">"nodes"</span>,</span>
 <span>                       coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -225,7 +233,7 @@ service-area polygon.</p>
 neighbours; the second band reaches everything within two steps. Asking
 for <code>output = "polygon"</code> wraps each band in its hull, the
 usual drive-time catchment:</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_service_area.html">spatial_service_area</a></span><span class="op">(</span><span class="va">net</span>, cost <span class="op">=</span> <span class="fl">2</span>, output <span class="op">=</span> <span class="st">"polygon"</span>,</span>
 <span>                       coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -243,7 +251,7 @@ time, a toll), and <code>directed = TRUE</code> makes edges one-way. The
 (<code>"B"</code> two-way, <code>"FT"</code> along the digitised
 direction, <code>"TF"</code> against it, <code>"N"</code> closed), and
 <code>weight_to</code> gives the reverse cost on a two-way edge.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">streets_df</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sf.html" class="external-link">st_sf</a></span><span class="op">(</span></span>
 <span>  cost <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="va">streets</span><span class="op">)</span>, <span class="fl">1</span>, <span class="fl">3</span><span class="op">)</span>,</span>
 <span>  geometry <span class="op">=</span> <span class="va">streets</span><span class="op">)</span></span>

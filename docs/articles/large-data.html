@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/large-data.Rmd" class="external-link"><code>vignettes/large-data.Rmd</code></a></small>
       <div class="d-none name"><code>large-data.Rmd</code></div>
@@ -97,6 +97,15 @@ Colling</h4>
 
     
     
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+</div>
 <div class="section level2">
 <h2 id="introduction">Introduction<a class="anchor" aria-label="anchor" href="#introduction"></a>
 </h2>
@@ -157,7 +166,7 @@ for working with datasets that exceed available RAM. We will build our
 examples around a synthetic multi-year ecological survey dataset:
 species observations recorded across monitoring sites over several
 years.</p>
-<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Attaching package: 'vectra'</span></span>
@@ -194,7 +203,7 @@ years.</p>
 <p>We will write this as both CSV and <code>.vtr</code> to demonstrate
 different starting points. In a real workflow the CSV might be a raw
 export from a database or field data logger.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">obs</span>, <span class="va">csv_path</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
@@ -210,7 +219,7 @@ a write function. No intermediate data.frame is ever created.</p>
 <p>Suppose we want to extract only high-quality observations, compute a
 derived column, and store the result as a new <code>.vtr</code> file.
 The entire pipeline streams:</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clean_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -237,7 +246,7 @@ regardless of how many millions of rows pass through. A pipeline that
 processes 200 GB of CSV data uses the same peak memory as one that
 processes 200 KB.</p>
 <p>We can verify the result by reading back a small slice:</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">clean_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">obs_id</span>, <span class="va">site</span>, <span class="va">species</span>, <span class="va">abundance</span>, <span class="va">log_abundance</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_head</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fl">5</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -250,7 +259,7 @@ processes 200 KB.</p>
 <span><span class="co">#&gt; 5     11 SITE_007        Picea abies        14      2.708050</span></span></code></pre></div>
 <p>The same pattern works for any source-sink combination. CSV to
 SQLite:</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">db_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".sqlite"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -258,7 +267,7 @@ SQLite:</p>
 <span>  <span class="fu"><a href="../reference/write_sqlite.html">write_sqlite</a></span><span class="op">(</span><span class="va">db_path</span>, <span class="st">"recent_obs"</span><span class="op">)</span></span></code></pre></div>
 <p>Or <code>.vtr</code> to CSV, useful for handing data to colleagues
 who expect plain text:</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">export_csv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">vtr_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -274,7 +283,7 @@ size, not the dataset size.</p>
 (aggregation results, filtered subsets, summary statistics),
 <code><a href="../reference/collect.html">collect()</a></code> is still the right choice. Aggregations in
 particular tend to produce far fewer rows than the input:</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">vtr_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">species</span>, <span class="va">year</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span></span>
@@ -334,7 +343,7 @@ often pay off. If each row group spans a narrow range of
 skip most groups without reading them. With one giant row group, the
 filter must scan every row.</p>
 <p>We control batch size when writing:</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">small_groups</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">large_groups</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -349,7 +358,7 @@ filter must scan every row.</p>
 tight year ranges. The small-batch file has about 10 row groups; the
 large-batch file has one. When we filter on <code>year</code>, the
 small-batch file can prune most groups using zone maps:</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">small_groups</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">year</span> <span class="op">==</span> <span class="fl">2023</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/explain.html">explain</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -371,7 +380,7 @@ but it controls how many rows the scanner reads per pull rather than how
 the file is structured on disk. Their default of 65,536 rows works well
 for most cases. Reducing it lowers peak memory; increasing it reduces
 per-batch overhead for simple pass-through pipelines.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_path</span>, batch_size <span class="op">=</span> <span class="fl">10000</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">quality</span> <span class="op">==</span> <span class="st">"good"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_head</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fl">3</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -396,7 +405,7 @@ touching existing data. The file header is updated to reflect the
 additional group.</p>
 <p>Here is a typical pattern: we start with one year of data and append
 subsequent years as they arrive.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">archive</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">first_year</span> <span class="op">&lt;-</span> <span class="va">obs</span><span class="op">[</span><span class="va">obs</span><span class="op">$</span><span class="va">year</span> <span class="op">==</span> <span class="fl">2015</span>, <span class="op">]</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">first_year</span>, <span class="va">archive</span><span class="op">)</span></span>
@@ -404,7 +413,7 @@ subsequent years as they arrive.</p>
 <span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">archive</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 5012</span></span></code></pre></div>
 <p>Now we simulate receiving 2016 data:</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">year_2016</span> <span class="op">&lt;-</span> <span class="va">obs</span><span class="op">[</span><span class="va">obs</span><span class="op">$</span><span class="va">year</span> <span class="op">==</span> <span class="fl">2016</span>, <span class="op">]</span></span>
 <span><span class="fu"><a href="../reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">year_2016</span>, <span class="va">archive</span><span class="op">)</span></span>
 <span></span>
@@ -413,7 +422,7 @@ subsequent years as they arrive.</p>
 <p><code><a href="../reference/append_vtr.html">append_vtr()</a></code> also accepts a <code>vectra_node</code>, so
 we can stream data directly from a CSV into an existing archive without
 loading it into R:</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv_2017</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">obs</span><span class="op">[</span><span class="va">obs</span><span class="op">$</span><span class="va">year</span> <span class="op">==</span> <span class="fl">2017</span>, <span class="op">]</span>, <span class="va">csv_2017</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
@@ -426,7 +435,7 @@ Over time, the file accumulates many groups of varying sizes. This is
 fine for append-heavy workloads. If the number of groups becomes
 unwieldy (hundreds of small appends, each adding a few rows), we can
 compact the file by rewriting it:</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">compacted</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">archive</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">compacted</span>, batch_size <span class="op">=</span> <span class="fl">50000</span><span class="op">)</span></span></code></pre></div>
 <p>This reads every row group from the archive, streams through the
@@ -437,7 +446,7 @@ column names, same types, same order. If the schema drifts over time (a
 new column added in 2018, say), we need to align it before appending.
 One approach is to add the missing column with a default value in a
 <code><a href="../reference/mutate.html">mutate()</a></code> step:</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">new_data_node</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_2017</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>observer <span class="op">=</span> <span class="cn">NA_character_</span><span class="op">)</span></span></code></pre></div>
 <p>This produces a node whose schema matches a hypothetical archive that
@@ -460,7 +469,7 @@ call, the scan node reads the tombstone file and skips those rows.</p>
 <p>Row IDs are 0-based physical positions across the entire file. The
 first row of the first row group is 0, the first row of the second group
 continues from where the first left off.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">del_demo</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">obs</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">100</span>, <span class="op">]</span>, <span class="va">del_demo</span><span class="op">)</span></span>
 <span></span>
@@ -471,13 +480,13 @@ continues from where the first left off.</p>
 <span><span class="co">#&gt; [1] 97</span></span></code></pre></div>
 <p>Tombstone files are cumulative. Calling <code><a href="../reference/delete_vtr.html">delete_vtr()</a></code>
 again merges the new indices with existing ones:</p>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/delete_vtr.html">delete_vtr</a></span><span class="op">(</span><span class="va">del_demo</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">10</span>, <span class="fl">11</span>, <span class="fl">12</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">del_demo</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 94</span></span></code></pre></div>
 <p>To undo all deletions, remove the <code>.del</code> file:</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">del_demo</span>, <span class="st">".del"</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">del_demo</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 100</span></span></code></pre></div>
@@ -486,7 +495,7 @@ rows, the overhead is negligible. But if deletions accumulate to a
 substantial fraction of the file, scan performance degrades because the
 engine still reads and discards the tombstoned rows. At that point,
 compaction makes sense:</p>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/delete_vtr.html">delete_vtr</a></span><span class="op">(</span><span class="va">del_demo</span>, <span class="fl">0</span><span class="op">:</span><span class="fl">49</span><span class="op">)</span></span>
 <span><span class="va">compacted_del</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">del_demo</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">compacted_del</span><span class="op">)</span></span>
@@ -509,7 +518,7 @@ elements: <code>$deleted</code> contains the key values that were
 present in the old file but absent in the new one. <code>$added</code>
 is a lazy <code>vectra_node</code> of rows present in the new file but
 not in the old.</p>
-<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">snap_v1</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">snap_v2</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -518,7 +527,7 @@ not in the old.</p>
 <span></span>
 <span><span class="co"># Version 2: observations 51-150 (rows 1-50 removed, 101-150 added)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">obs</span><span class="op">[</span><span class="fl">51</span><span class="op">:</span><span class="fl">150</span>, <span class="op">]</span>, <span class="va">snap_v2</span><span class="op">)</span></span></code></pre></div>
-<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">changes</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/diff_vtr.html">diff_vtr</a></span><span class="op">(</span><span class="va">snap_v1</span>, <span class="va">snap_v2</span>, <span class="st">"obs_id"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Keys that disappeared</span></span>
@@ -530,7 +539,7 @@ not in the old.</p>
 Meanwhile, the <code>$added</code> element contains a lazy node pointing
 to observations with <code>obs_id</code> 101 through 150, which we can
 collect or pipe into further processing:</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="va">changes</span><span class="op">$</span><span class="va">added</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt;   obs_id     site          species year abundance cover_pct  quality</span></span>
 <span><span class="co">#&gt; 1    101 SITE_042      Picea abies 2022        18      81.7     good</span></span>
@@ -542,7 +551,7 @@ collect or pipe into further processing:</p>
 <p>Because <code>$added</code> is a lazy node, we can pipe it directly
 into further processing. For instance, we might want to append only the
 truly new rows to an archive:</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">archive_diff</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">obs</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">100</span>, <span class="op">]</span>, <span class="va">archive_diff</span><span class="op">)</span></span>
 <span></span>
@@ -575,7 +584,7 @@ input has been consumed, a k-way merge combines the runs using a
 min-heap, producing the final sorted output one batch at a time.</p>
 <p>From the user’s perspective, none of this is visible. We just call
 <code><a href="../reference/arrange.html">arrange()</a></code>:</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sorted_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">vtr_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -633,7 +642,7 @@ partition at a time. That fallback costs extra reads and writes, so a
 right side that fits in memory is still the fast path.</p>
 <p>The natural pattern for large-data joins is: huge fact table on the
 left, small dimension table on the right.</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Small reference table: site metadata</span></span>
 <span><span class="va">site_meta</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  site      <span class="op">=</span> <span class="va">sites</span>,</span>
@@ -644,7 +653,7 @@ left, small dimension table on the right.</p>
 <span><span class="op">)</span></span>
 <span><span class="va">site_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">site_meta</span>, <span class="va">site_path</span><span class="op">)</span></span></code></pre></div>
-<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">enriched</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">vtr_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -668,7 +677,7 @@ to the site metadata, not the observation count.</p>
 <p>What happens when both sides are large? The right side still must fit
 in memory, so we need to reduce it. The most direct approach is to
 filter the right side before the join:</p>
-<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">joined_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">vtr_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -701,7 +710,7 @@ statistics from the right table,
 a handful of groups before the join. A right-side table with 50 million
 observations across 10,000 sites collapses to 10,000 rows after a
 site-level aggregation. That fits comfortably in a hash table.</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Right side: per-site-year summary from a second dataset</span></span>
 <span><span class="va">summary_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -739,7 +748,7 @@ streaming pipeline. When all inputs share the same schema (column names
 and types), vectra creates a C-level <code>ConcatNode</code> that reads
 from each child sequentially. No data is copied; each source’s batches
 flow through in order.</p>
-<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">monthly_paths</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/character.html" class="external-link">character</a></span><span class="op">(</span><span class="fl">6</span><span class="op">)</span></span>
 <span><span class="kw">for</span> <span class="op">(</span><span class="va">m</span> <span class="kw">in</span> <span class="fl">1</span><span class="op">:</span><span class="fl">6</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">monthly_paths</span><span class="op">[</span><span class="va">m</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
@@ -749,7 +758,7 @@ flow through in order.</p>
 <span><span class="op">}</span></span></code></pre></div>
 <p>We can combine all monthly files and aggregate without loading them
 all:</p>
-<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">nodes</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">monthly_paths</span>, <span class="va">tbl</span><span class="op">)</span></span>
 <span><span class="va">combined</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/do.call.html" class="external-link">do.call</a></span><span class="op">(</span><span class="va">bind_rows</span>, <span class="va">nodes</span><span class="op">)</span></span>
 <span></span>
@@ -773,7 +782,7 @@ a new node that, when pulled, first exhausts all batches from the first
 child, then the second, and so on. Downstream operations (the grouping,
 aggregation, sort) see a single continuous stream.</p>
 <p>We can also consolidate the partitioned files into one:</p>
-<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">consolidated</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">nodes2</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">monthly_paths</span>, <span class="va">tbl</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/do.call.html" class="external-link">do.call</a></span><span class="op">(</span><span class="va">bind_rows</span>, <span class="va">nodes2</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">consolidated</span><span class="op">)</span></span>
@@ -784,7 +793,7 @@ aggregation, sort) see a single continuous stream.</p>
 combines <code><a href="../reference/bind_rows.html">bind_rows()</a></code> with <code><a href="../reference/append_vtr.html">append_vtr()</a></code>. We
 process the latest batch of files and append the result to a running
 archive:</p>
-<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">running_archive</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">initial_nodes</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">monthly_paths</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">3</span><span class="op">]</span>, <span class="va">tbl</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/do.call.html" class="external-link">do.call</a></span><span class="op">(</span><span class="va">bind_rows</span>, <span class="va">initial_nodes</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">running_archive</span><span class="op">)</span></span>
@@ -818,7 +827,7 @@ null counts for zone-map pruning. Repeated queries on a
 and decompress only the columns it needs. CSV requires a full parse
 every time.</p>
 <p>A minimal conversion:</p>
-<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb34"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">vtr_archive</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_path</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">vtr_archive</span><span class="op">)</span></span></code></pre></div>
 <p>That single line streams the entire CSV through the vectra writer.
@@ -826,7 +835,7 @@ The output file is typed, compressed, and has zone-map statistics. For
 repeated queries, the difference is substantial.</p>
 <p>In practice, we rarely want a raw copy. The ingest step is a natural
 place to clean, filter, and reshape:</p>
-<div class="sourceCode" id="cb34"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb35"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clean_archive</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl_csv.html">tbl_csv</a></span><span class="op">(</span><span class="va">csv_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -844,14 +853,14 @@ zone-map pruning, and chose a 10,000-row batch size. The CSV was read
 once, streaming, and the clean result was written directly to disk.</p>
 <p>The inverse direction is also useful. We might need to export a
 subset to a colleague who uses SQLite:</p>
-<div class="sourceCode" id="cb35"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb36"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sqlite_export</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".sqlite"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">clean_archive</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">year</span> <span class="op">&gt;=</span> <span class="fl">2020</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/write_sqlite.html">write_sqlite</a></span><span class="op">(</span><span class="va">sqlite_export</span>, <span class="st">"observations"</span><span class="op">)</span></span></code></pre></div>
 <p>Or produce a CSV of summary statistics for a report:</p>
-<div class="sourceCode" id="cb36"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb37"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">summary_csv</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">clean_archive</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -872,7 +881,7 @@ subset to a colleague who uses SQLite:</p>
 <span><span class="co">#&gt; 6 SITE_001 2020        12            1266</span></span></code></pre></div>
 <p>Multi-source ETL pipelines combine several inputs. Suppose we have
 regional CSV files that we want to merge and convert:</p>
-<div class="sourceCode" id="cb37"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb38"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv_north</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="va">csv_south</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">obs</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">25000</span>, <span class="op">]</span>, <span class="va">csv_north</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
@@ -955,7 +964,7 @@ go through the external sort and then hold one group at a time, so their
 peak is the largest group.</p>
 <p>To estimate memory for a pipeline, we identify the materializing
 operations and estimate their footprints:</p>
-<div class="sourceCode" id="cb38"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb39"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Example pipeline:</span></span>
 <span><span class="co"># tbl(huge.vtr) |&gt;</span></span>
 <span><span class="co">#   filter(year == 2023) |&gt;        -&gt; streaming, ~5 MB per batch</span></span>
@@ -987,7 +996,7 @@ C-level hash table size. For sort operations, the question is simpler:
 if the total input fits in the budget, the sort completes in memory;
 otherwise, it spills.</p>
 <p>A practical example that puts these principles together:</p>
-<div class="sourceCode" id="cb39"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb40"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">final_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">vtr_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1023,7 +1032,7 @@ of rows.</p>
 <div class="section level2">
 <h2 id="cleanup">Cleanup<a class="anchor" aria-label="anchor" href="#cleanup"></a>
 </h2>
-<div class="sourceCode" id="cb40"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb41"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">all_files</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span></span>
 <span>  <span class="va">csv_path</span>, <span class="va">vtr_path</span>, <span class="va">clean_path</span>, <span class="va">db_path</span>, <span class="va">export_csv</span>,</span>
 <span>  <span class="va">del_demo</span>, <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">del_demo</span>, <span class="st">".del"</span><span class="op">)</span>,</span>

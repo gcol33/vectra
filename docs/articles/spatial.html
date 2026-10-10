@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/spatial.Rmd" class="external-link"><code>vignettes/spatial.Rmd</code></a></small>
       <div class="d-none name"><code>spatial.Rmd</code></div>
@@ -97,6 +97,14 @@ Colling</h4>
 
     
     
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
 <script>
 /* Shared canvas engine for the vectra vignette figures.
    Inlined by the `va-engine` chunk of every vignette that draws one. */
@@ -253,7 +261,9 @@ window.VA = (function () {
 
   return VA;
 })();
-</script><div class="section level2">
+</script>
+</div>
+<div class="section level2">
 <h2 id="the-streaming-envelope">The streaming envelope<a class="anchor" aria-label="anchor" href="#the-streaming-envelope"></a>
 </h2>
 <p>Every desktop GIS runs its toolbox one in-memory layer at a time.
@@ -275,7 +285,7 @@ vectra has no GDAL link, so vector file formats and reprojection stay
 with sf and <a href="https://rspatial.github.io/terra/" class="external-link">terra</a>. What
 vectra contributes is the streaming envelope around the operations a
 desktop GIS keeps resident.</p>
-<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
@@ -323,7 +333,7 @@ VA.run(draw,PERIOD,null,'m2p','m2p-cv');
 and <code><a href="../reference/vec_extract_points.html">vec_extract_points()</a></code> samples it at coordinates. A whole
 national climate grid stays on disk while the occurrence points it is
 queried at stay in memory.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clim</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/vec_open_raster.html">vec_open_raster</a></span><span class="op">(</span><span class="st">"worldclim_bio.vec"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">occ</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/utils/read.table.html" class="external-link">read.csv</a></span><span class="op">(</span><span class="st">"occurrences.csv"</span><span class="op">)</span>          <span class="co"># species, x, y</span></span>
@@ -371,7 +381,7 @@ function draw(tc){VA.bg(x,W,H);
 VA.run(draw,PERIOD,null,'sbl','sbl-cv');
 
 })();
-</script><div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+</script><div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">region</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="st">"study_area.gpkg"</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">inside</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"occurrences.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -381,14 +391,14 @@ features removed. <code>negate = TRUE</code> keeps the outside features
 instead. To cut geometry along the region rather than keep whole
 features, <code><a href="../reference/spatial_clip.html">spatial_clip()</a></code> intersects each batch with the
 mask, and <code>erase = TRUE</code> keeps the part outside it.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clipped</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"rivers.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/spatial_clip.html">spatial_clip</a></span><span class="op">(</span><span class="va">region</span>, crs <span class="op">=</span> <span class="fl">4326</span><span class="op">)</span></span></code></pre></div>
 <p>To tag each feature with the polygon it falls in rather than filter,
 <code><a href="../reference/spatial_join.html">spatial_join()</a></code> appends the polygon attributes. When both
 layers are larger than RAM, <code>partition = grid(cellsize)</code> bins
 them to a grid and joins one shard at a time, with the right layer
 itself a streamed node.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">tagged</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"gbif_points.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_join.html">spatial_join</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"countries.vtr"</span><span class="op">)</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>,</span>
 <span>               crs <span class="op">=</span> <span class="fl">4326</span>, partition <span class="op">=</span> <span class="fu"><a href="../reference/grid.html">grid</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
@@ -429,7 +439,7 @@ function draw(tc){VA.bg(x,W,H);
 VA.run(draw,PERIOD,null,'rz','rz-cv');
 
 })();
-</script><div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+</script><div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Point density on a continental grid, streamed from a billion-row file.</span></span>
 <span><span class="va">density</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"gbif_points.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/rasterize.html">rasterize</a></span><span class="op">(</span>extent <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="op">-</span><span class="fl">180</span>, <span class="op">-</span><span class="fl">90</span>, <span class="fl">180</span>, <span class="fl">90</span><span class="op">)</span>, res <span class="op">=</span> <span class="fl">0.1</span>,</span>
@@ -442,7 +452,7 @@ in-memory matrix.</p>
 <p>Going the other way, <code><a href="../reference/zonal.html">zonal()</a></code> summarises a raster within
 zones, streaming the grid one tile-row strip at a time and folding
 per-zone moments in memory.</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">admin</span> <span class="op">&lt;-</span> <span class="fu">sf</span><span class="fu">::</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="st">"regions.gpkg"</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/zonal.html">zonal</a></span><span class="op">(</span><span class="va">clim</span>, <span class="va">admin</span>, fun <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"mean"</span>, <span class="st">"sd"</span><span class="op">)</span>, zone_field <span class="op">=</span> <span class="st">"region_id"</span><span class="op">)</span></span></code></pre></div>
 </div>
@@ -457,7 +467,7 @@ and TRI with Horn’s method, matching <code><a href="https://rspatial.github.io
 <code>path</code> is given the result streams straight back to a new
 <code>.vec</code>, so neither the input nor the output band is ever
 fully in memory.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/terrain.html">terrain</a></span><span class="op">(</span><span class="st">"dem.vec"</span>, v <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"slope"</span>, <span class="st">"aspect"</span>, <span class="st">"hillshade"</span><span class="op">)</span>,</span>
 <span>        path <span class="op">=</span> <span class="st">"dem_derivatives.vec"</span><span class="op">)</span></span></code></pre></div>
 <p>To resample or reproject, <code><a href="../reference/warp.html">warp()</a></code> walks the output one
@@ -465,7 +475,7 @@ tile-row strip at a time, projects each strip’s pixel centres into the
 source CRS (via PROJ when the two CRSs differ), and samples the bounded
 source window with nearest, bilinear, or cubic interpolation, matching
 <code><a href="https://rspatial.github.io/terra/reference/project.html" class="external-link">terra::project()</a></code>.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/warp.html">warp</a></span><span class="op">(</span><span class="st">"dem.vec"</span>, <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>crs <span class="op">=</span> <span class="fl">3035</span>, res <span class="op">=</span> <span class="fl">25</span><span class="op">)</span>,</span>
 <span>     method <span class="op">=</span> <span class="st">"bilinear"</span>, path <span class="op">=</span> <span class="st">"dem_laea.vec"</span><span class="op">)</span></span></code></pre></div>
 </div>
@@ -477,12 +487,12 @@ source window with nearest, bilinear, or cubic interpolation, matching
 tile-row strip at a time and dissolves equal-valued cells into one
 polygon per value, so a classified land-cover raster becomes a polygon
 layer out of core.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">habitat</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/polygonize.html">polygonize</a></span><span class="op">(</span><span class="st">"landcover.vec"</span><span class="op">)</span>       <span class="co"># one polygon per class</span></span></code></pre></div>
 <p><code><a href="../reference/contours.html">contours()</a></code> traces iso-lines from a continuous surface
 with marching squares over the same haloed strip pass, then joins each
 level’s segments into continuous lines.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">isolines</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/contours.html">contours</a></span><span class="op">(</span><span class="st">"dem.vec"</span>, levels <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">3000</span>, by <span class="op">=</span> <span class="fl">200</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
@@ -491,20 +501,20 @@ level’s segments into continuous lines.</p>
 <p><code><a href="../reference/mask.html">mask()</a></code> clips a raster to a polygon layer one strip at a
 time, keeping the pixels whose centre falls inside it, the raster
 counterpart of <code><a href="../reference/spatial_clip.html">spatial_clip()</a></code>.</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">study</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mask.html">mask</a></span><span class="op">(</span><span class="st">"dem.vec"</span>, <span class="va">region</span>, path <span class="op">=</span> <span class="st">"dem_study.vec"</span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="../reference/rast_calc.html">rast_calc()</a></code> evaluates a cellwise expression across
 aligned rasters, reading each input strip by strip. A vegetation index,
 a reclassification, or arithmetic across layers is one expression over
 the named rasters.</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ndvi</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/rast_calc.html">rast_calc</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>nir <span class="op">=</span> <span class="st">"nir.vec"</span>, red <span class="op">=</span> <span class="st">"red.vec"</span><span class="op">)</span>,</span>
 <span>                  <span class="op">(</span><span class="va">nir</span> <span class="op">-</span> <span class="va">red</span><span class="op">)</span> <span class="op">/</span> <span class="op">(</span><span class="va">nir</span> <span class="op">+</span> <span class="va">red</span><span class="op">)</span>, path <span class="op">=</span> <span class="st">"ndvi.vec"</span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="../reference/mosaic.html">mosaic()</a></code> merges rasters that share a resolution and cell
 grid onto their union, resolving overlap with <code>mean</code>,
 <code>first</code>, <code>last</code>, <code>min</code>,
 <code>max</code>, or <code>sum</code>, one output strip at a time.</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">tile_merge</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mosaic.html">mosaic</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="st">"n50.vec"</span>, <span class="st">"n51.vec"</span>, <span class="st">"n52.vec"</span><span class="op">)</span>, fun <span class="op">=</span> <span class="st">"mean"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
@@ -517,7 +527,7 @@ separable: a pass along the rows, a pass along the columns, each linear
 in the line length, with an out-of-core transpose between them so the
 whole grid is never resident. Squared distances scale by the x and y
 resolution, so the answer is exact on non-square cells.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">dist_to_road</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/proximity.html">proximity</a></span><span class="op">(</span><span class="st">"roads.vec"</span>, path <span class="op">=</span> <span class="st">"road_distance.vec"</span><span class="op">)</span></span>
 <span><span class="va">sea_distance</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/proximity.html">proximity</a></span><span class="op">(</span><span class="st">"landcover.vec"</span>, target <span class="op">=</span> <span class="fl">0</span><span class="op">)</span>   <span class="co"># 0 = water</span></span></code></pre></div>
 <p>Cost-distance, which accumulates a per-cell friction along the path,

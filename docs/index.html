@@ -88,7 +88,19 @@
 <p><a href="https://CRAN.R-project.org/package=vectra" class="external-link"><img src="https://www.r-pkg.org/badges/version/vectra" alt="CRAN status"></a> <a href="https://cran.r-project.org/package=vectra" class="external-link"><img src="https://cranlogs.r-pkg.org/badges/grand-total/vectra" alt="CRAN downloads"></a> <a href="https://cran.r-project.org/package=vectra" class="external-link"><img src="https://cranlogs.r-pkg.org/badges/vectra" alt="Monthly downloads"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg" alt="R-CMD-check"></a> <a href="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml" class="external-link"><img src="https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg" alt="ASAN/UBSAN"></a> <a href="https://app.codecov.io/gh/gcol33/vectra" class="external-link"><img src="https://codecov.io/gh/gcol33/vectra/graph/badge.svg" alt="Codecov test coverage"></a> <a href="https://opensource.org/licenses/MIT" class="external-link"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a></p>
 <p><strong>dplyr-style queries on larger-than-RAM data, backed by a pull-based columnar engine written in C11.</strong></p>
 <p>Point vectra at a file too big to load and query it with the verbs you already use. Data flows through the engine one row group at a time, so peak memory stays bounded no matter how large the file gets. Arrow needs compiled binaries that match your platform, DuckDB links a bundled library, Spark wants a JVM. vectra is a standard R extension that needs no system libraries: its C engine and codecs are compiled from the package sources, and its only compiled R dependency is libgeos (GEOS for the spatial functions), next to tidyselect and rlang.</p>
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level2">
+<h2 id="quick-start">Quick start<a class="anchor" aria-label="anchor" href="#quick-start"></a>
+</h2>
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Lazy scan over a multi-GB CSV; nothing runs until collect()</span></span>
@@ -97,11 +109,12 @@
 <span>  <span class="fu"><a href="reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">station</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/summarise.html">summarise</a></span><span class="op">(</span>avg_temp <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean</a></span><span class="op">(</span><span class="va">temperature</span><span class="op">)</span>, n <span class="op">=</span> <span class="fu">n</span><span class="op">(</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
+</div>
 <div class="section level2">
 <h2 id="one-engine-several-file-formats">One engine, several file formats<a class="anchor" aria-label="anchor" href="#one-engine-several-file-formats"></a>
 </h2>
 <p><code>.vtr</code> (vectra’s own columnar format), Parquet, CSV, SQLite, and GeoTIFF all open into the same lazy query nodes, so the same pipeline runs against any of them:</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># A folder of Parquet files (a GBIF snapshot, a Spark export) as one table</span></span>
 <span><span class="fu"><a href="reference/tbl_parquet.html">tbl_parquet</a></span><span class="op">(</span><span class="st">"occurrence.parquet/"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">countrycode</span> <span class="op">==</span> <span class="st">"AT"</span>, <span class="va">year</span> <span class="op">&gt;=</span> <span class="fl">2000</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -120,7 +133,7 @@
 <span>  <span class="fu"><a href="reference/left_join.html">left_join</a></span><span class="op">(</span><span class="fu"><a href="reference/tbl_sqlite.html">tbl_sqlite</a></span><span class="op">(</span><span class="st">"survey.db"</span>, <span class="st">"sites"</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>Convert to <code>.vtr</code> once for repeated queries, then read it back fast:</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">big_df</span>, <span class="st">"data.vtr"</span>, batch_size <span class="op">=</span> <span class="fl">100000</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -146,7 +159,7 @@
 <strong>External sort</strong>: a memory budget with automatic spill to disk</li>
 </ul>
 <p><code><a href="reference/explain.html">explain()</a></code> shows the optimized plan, including which columns and row groups were pruned:</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"data.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">x</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">x</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -161,7 +174,7 @@
 <h2 id="fuzzy-matching-in-the-engine">Fuzzy matching in the engine<a class="anchor" aria-label="anchor" href="#fuzzy-matching-in-the-engine"></a>
 </h2>
 <p>String distance runs inside the C engine, with no round-trip to R per row:</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"taxa.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="fu">levenshtein</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span> <span class="op">&lt;=</span> <span class="fl">2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/mutate.html">mutate</a></span><span class="op">(</span>similarity <span class="op">=</span> <span class="fu">jaro_winkler</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -173,7 +186,7 @@
 <h2 id="spatial-data-out-of-core">Spatial data, out of core<a class="anchor" aria-label="anchor" href="#spatial-data-out-of-core"></a>
 </h2>
 <p>Same idea, applied to geometry: read and write layers larger than memory, running the GIS operations you would otherwise do in sf. Geometry rides through as WKB in an ordinary column, so the spatial verbs stream one batch at a time like the rest. Tag a billion-point stream with the polygon each point falls in, holding the polygons plus one batch in memory:</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"gps_pings.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -181,13 +194,13 @@
 <span>  <span class="fu"><a href="reference/count.html">count</a></span><span class="op">(</span><span class="va">zone_id</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p><code>st_*</code> geometry functions evaluate inside <code><a href="reference/filter.html">filter()</a></code> and <code><a href="reference/mutate.html">mutate()</a></code>, computed in C on the GEOS library straight off the geometry column:</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"parcels.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_measures.html" class="external-link">st_area</a></span><span class="op">(</span><span class="va">geometry</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">1e6</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/mutate.html">mutate</a></span><span class="op">(</span>centroid <span class="op">=</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="va">geometry</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>Raster operations stream strip by strip over the tiled <code>.vec</code> format, so a grid larger than memory passes through <code><a href="reference/zonal.html">zonal()</a></code>, <code><a href="reference/focal.html">focal()</a></code>, <code><a href="reference/terrain.html">terrain()</a></code>, <code><a href="reference/warp.html">warp()</a></code>, and map algebra one tile-row at a time:</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">r</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/vec_open_raster.html">vec_open_raster</a></span><span class="op">(</span><span class="st">"dem.vec"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="reference/terrain.html">terrain</a></span><span class="op">(</span><span class="va">r</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"slope"</span>, <span class="st">"aspect"</span>, <span class="st">"hillshade"</span><span class="op">)</span><span class="op">)</span>     <span class="co"># Horn's method over haloed strips</span></span>
 <span><span class="fu"><a href="reference/zonal.html">zonal</a></span><span class="op">(</span><span class="va">r</span>, <span class="va">watersheds_sf</span>, fun <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"mean"</span>, <span class="st">"sd"</span><span class="op">)</span><span class="op">)</span>    <span class="co"># per-zone, one strip resident</span></span></code></pre></div>
@@ -197,7 +210,7 @@
 <h2 id="star-schemas-instead-of-flat-table-column-creep">Star schemas instead of flat-table column creep<a class="anchor" aria-label="anchor" href="#star-schemas-instead-of-flat-table-column-creep"></a>
 </h2>
 <p>Register dimension tables once, then pull columns from any of them; joins are built for you, and unmatched keys are reported:</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">s</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/vtr_schema.html">vtr_schema</a></span><span class="op">(</span></span>
 <span>  fact    <span class="op">=</span> <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"observations.vtr"</span><span class="op">)</span>,</span>
 <span>  species <span class="op">=</span> <span class="fu"><a href="reference/link.html">link</a></span><span class="op">(</span><span class="st">"sp_id"</span>, <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"species.vtr"</span><span class="op">)</span><span class="op">)</span>,</span>
@@ -212,7 +225,7 @@
 <h2 id="incremental-updates">Incremental updates<a class="anchor" aria-label="anchor" href="#incremental-updates"></a>
 </h2>
 <p>Append new rows as a new row group without rewriting the file, or take a key-based diff between two snapshots:</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">new_rows_df</span>, <span class="st">"data.vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">d</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/diff_vtr.html">diff_vtr</a></span><span class="op">(</span><span class="st">"snapshot_old.vtr"</span>, <span class="st">"snapshot_new.vtr"</span>, key_col <span class="op">=</span> <span class="st">"id"</span><span class="op">)</span></span>
@@ -223,7 +236,7 @@
 <h2 id="streaming-results-into-a-model-fit">Streaming results into a model fit<a class="anchor" aria-label="anchor" href="#streaming-results-into-a-model-fit"></a>
 </h2>
 <p><code><a href="reference/collect.html">collect()</a></code> brings the whole result into memory. <code><a href="reference/collect_chunked.html">collect_chunked()</a></code> folds a function over a query one batch at a time, holding a single batch plus the accumulator, so a result larger than memory reduces to a small summary in one pass: a running count, per-group sufficient statistics, or the cross-products behind a linear fit.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Accumulate X'X and X'y for an exact OLS fit, one streaming batch at a time</span></span>
 <span><span class="va">acc</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"survey.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">wt</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -237,12 +250,12 @@
 <span>  <span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/solve.html" class="external-link">solve</a></span><span class="op">(</span><span class="va">acc</span><span class="op">$</span><span class="va">XtX</span>, <span class="va">acc</span><span class="op">$</span><span class="va">Xty</span><span class="op">)</span></span></code></pre></div>
 <p>For models that re-read the data on every iteration, <code><a href="reference/chunk_feeder.html">chunk_feeder()</a></code> exposes a query as a resettable generator that <code><a href="https://rdrr.io/pkg/biglm/man/bigglm.html" class="external-link">biglm::bigglm()</a></code> drives directly, fitting a GLM on data too large to hold in memory:</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">src</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="op">)</span> <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"occurrences.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">presence</span>, <span class="va">bio1</span>, <span class="va">bio12</span><span class="op">)</span></span>
 <span><span class="fu">biglm</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/biglm/man/bigglm.html" class="external-link">bigglm</a></span><span class="op">(</span><span class="va">presence</span> <span class="op">~</span> <span class="va">bio1</span> <span class="op">+</span> <span class="va">bio12</span>, data <span class="op">=</span> <span class="fu"><a href="reference/chunk_feeder.html">chunk_feeder</a></span><span class="op">(</span><span class="va">src</span><span class="op">)</span>,</span>
 <span>              family <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/stats/family.html" class="external-link">binomial</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="reference/offload.html">offload()</a></code> spills a prepared query to disk once and streams it back, so each reweighted pass reads the prepared columns from a file rather than rebuilding the pipeline. With a <code>by</code> key it splits the query into per-key shards on disk, each small enough to pull into memory on its own. <code><a href="reference/group_map.html">group_map()</a></code> then runs your function on each shard, passing the shard as an ordinary data.frame along with its group key, and returns the results keyed by shard. That function is arbitrary R: a model fit, a clustering call, a custom summary, or any computation that needs the whole group in memory at once. <code><a href="reference/group_map.html">group_modify()</a></code> recombines per-shard data.frames into one table.</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Prepare once, then let bigglm re-read the spill on every pass</span></span>
 <span><span class="va">s</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/offload.html">offload</a></span><span class="op">(</span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"occurrences.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">presence</span>, <span class="va">bio1</span>, <span class="va">bio12</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="fu">biglm</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/biglm/man/bigglm.html" class="external-link">bigglm</a></span><span class="op">(</span><span class="va">presence</span> <span class="op">~</span> <span class="va">bio1</span> <span class="op">+</span> <span class="va">bio12</span>, data <span class="op">=</span> <span class="fu"><a href="reference/chunk_feeder.html">chunk_feeder</a></span><span class="op">(</span><span class="va">s</span><span class="op">)</span>,</span>
@@ -258,15 +271,6 @@
 </h2>
 <p>vectra covers the dplyr surface most analysis pipelines use: <code><a href="reference/filter.html">filter()</a></code>, <code><a href="reference/select.html">select()</a></code>, <code><a href="reference/mutate.html">mutate()</a></code>, <code><a href="reference/group_by.html">group_by()</a></code> / <code><a href="reference/summarise.html">summarise()</a></code> with the common aggregations, all the joins (<code><a href="reference/left_join.html">left_join()</a></code> through <code><a href="reference/cross_join.html">cross_join()</a></code>, plus <code><a href="reference/fuzzy_join.html">fuzzy_join()</a></code>), <code><a href="reference/arrange.html">arrange()</a></code> and the <code>slice_*()</code> family, and window functions (<code>row_number()</code>, <code><a href="https://rdrr.io/r/base/rank.html" class="external-link">rank()</a></code>, <code><a href="https://rdrr.io/r/stats/lag.html" class="external-link">lag()</a></code>, <code>lead()</code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code>, <code>ntile()</code>, and more). Date/time and string functions evaluate in the engine. <code><a href="reference/select.html">select()</a></code>, <code><a href="reference/rename.html">rename()</a></code>, <code><a href="reference/relocate.html">relocate()</a></code>, and <code><a href="reference/across.html">across()</a></code> accept the full tidyselect helper set (<code>starts_with()</code>, <code>where()</code>, <code>all_of()</code>, and the rest).</p>
 <p>The <a href="https://gillescolling.com/vectra/reference/">Function Reference</a> lists every verb and expression with examples.</p>
-</div>
-<div class="section level2">
-<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
-</h2>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
-<span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
-<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="documentation">Documentation<a class="anchor" aria-label="anchor" href="#documentation"></a>

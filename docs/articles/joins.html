@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/joins.Rmd" class="external-link"><code>vignettes/joins.Rmd</code></a></small>
       <div class="d-none name"><code>joins.Rmd</code></div>
@@ -97,6 +97,15 @@ Colling</h4>
 
     
     
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+</div>
 <div class="section level2">
 <h2 id="introduction">Introduction<a class="anchor" aria-label="anchor" href="#introduction"></a>
 </h2>
@@ -124,7 +133,7 @@ syntax for key specification, and compose freely with other verbs in a
 pipeline.</p>
 <p>We will work with ecological data throughout: species observations,
 site metadata, and a taxonomic reference table. Let us set those up.</p>
-<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Attaching package: 'vectra'</span></span>
@@ -182,7 +191,7 @@ argument that defines which columns to match on. There are four ways to
 specify keys.</p>
 <p><strong>Same-name column.</strong> The simplest case: both tables
 share a column name, and we pass it as a string.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">left_join</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt;   site_id             species       date count latitude longitude   habitat</span></span>
@@ -200,7 +209,7 @@ sit beside it.</p>
 <p><strong>Different-name columns.</strong> When the key has a different
 name in each table, we use a named character vector. The name is the
 left-side column; the value is the right-side column.</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">inner_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>,</span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">ref_path</span><span class="op">)</span>,</span>
@@ -221,7 +230,7 @@ left-side name (<code>species</code>).</p>
 <code>NULL</code> (the default), vectra identifies all columns that
 appear in both tables and joins on all of them. A message tells us which
 columns were selected.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">left_join</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Joining by: site_id</span></span>
@@ -240,7 +249,7 @@ in upstream tables.</p>
 <p><strong>Multi-column keys.</strong> We pass multiple column names as
 a character vector. This defines a composite key where rows must match
 on every column simultaneously.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">survey1_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">survey2_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -278,7 +287,7 @@ match exists in the right table, the right-side columns are filled in.
 Where no match exists, they become <code>NA</code>.</p>
 <p>This is the workhorse join for data enrichment. We have a large
 observation table and want to attach site coordinates to each row.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">enriched</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/left_join.html">left_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span></span>
 <span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -338,7 +347,7 @@ often what we assume but rarely verify.</p>
 <p><strong>Suffix for duplicate column names.</strong> When both tables
 share a non-key column name, vectra appends suffixes to disambiguate.
 The default is <code>c(".x", ".y")</code>.</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">extra_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  site_id <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1</span>, <span class="fl">2</span>, <span class="fl">3</span><span class="op">)</span>,</span>
@@ -368,7 +377,7 @@ that can be hard to interpret in downstream code.</p>
 </h2>
 <p><code><a href="../reference/left_join.html">inner_join()</a></code> returns only the rows that match on both
 sides. It is the intersection of the two key sets.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">inner_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span></span>
 <span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -401,7 +410,7 @@ of <code><a href="../reference/left_join.html">left_join()</a></code>: it keeps 
 fills <code>NA</code> on the left side where there is no match.
 Internally vectra implements it by swapping the two inputs and
 reordering the output columns to match the expected layout.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">right_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span></span>
 <span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -422,7 +431,7 @@ the original call: left-side columns first, then right-side columns.</p>
 <p><strong>Full join.</strong> <code><a href="../reference/left_join.html">full_join()</a></code> keeps every row
 from both sides. Rows with a match get combined; unmatched rows from
 either side are padded with <code>NA</code>.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">full_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span></span>
 <span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -457,13 +466,13 @@ of my left rows have at least one match in the right table?” The output
 schema is identical to the left table.</p>
 <p>Consider a scenario where we have a list of target species and want
 to keep only observations of those species.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">targets_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  species <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Betula pendula"</span><span class="op">)</span>,</span>
 <span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span>, <span class="va">targets_path</span><span class="op">)</span></span></code></pre></div>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">semi_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">targets_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"species"</span></span>
 <span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -505,7 +514,7 @@ missing. A <code><a href="../reference/left_join.html">left_join()</a></code> fo
 combining them.</p>
 <p>Which observed species are missing from our taxonomic reference
 list?</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">anti_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>,</span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">ref_path</span><span class="op">)</span>,</span>
@@ -518,7 +527,7 @@ reference table. In a real workflow, this flags an incomplete reference
 list or a data entry error.</p>
 <p>The reverse question is equally useful. Which reference species have
 never been observed?</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">anti_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">ref_path</span><span class="op">)</span>,</span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>,</span>
@@ -545,7 +554,7 @@ tables. Every row on the left is paired with every row on the right.
 There is no <code>by</code> parameter.</p>
 <p>A common use is generating a complete grid of combinations. Suppose
 we want every site-year pair for three years of monitoring.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">years_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>year <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">2022</span>, <span class="fl">2023</span>, <span class="fl">2024</span><span class="op">)</span><span class="op">)</span>, <span class="va">years_path</span><span class="op">)</span></span>
 <span></span>
@@ -581,7 +590,7 @@ never what we want.</p>
 instead of “Pinus sylvestris”. Exact joins miss these.
 <code><a href="../reference/fuzzy_join.html">fuzzy_join()</a></code> matches rows by approximate string
 distance.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">messy_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">clean_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -601,7 +610,7 @@ distance.</p>
 <span>             <span class="st">"Betulaceae"</span>, <span class="st">"Sapindaceae"</span><span class="op">)</span>,</span>
 <span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span>, <span class="va">clean_path</span><span class="op">)</span></span></code></pre></div>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/fuzzy_join.html">fuzzy_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">messy_path</span><span class="op">)</span>,</span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">clean_path</span><span class="op">)</span>,</span>
@@ -646,7 +655,7 @@ left row against every right row (within the distance threshold). For
 large tables this is expensive. The <code>block_by</code> parameter
 restricts comparisons to rows that share an exact match on a blocking
 column.</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">messy2_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">clean2_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -665,7 +674,7 @@ column.</p>
 <span>                   <span class="st">"Alnus glutinosa"</span><span class="op">)</span>,</span>
 <span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span>, <span class="va">clean2_path</span><span class="op">)</span></span></code></pre></div>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/fuzzy_join.html">fuzzy_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">messy2_path</span><span class="op">)</span>,</span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">clean2_path</span><span class="op">)</span>,</span>
@@ -709,7 +718,7 @@ count.</p>
 <p>When a single column does not uniquely identify the relationship, we
 join on a composite key. This is common with spatial and temporal data
 where the natural key is a site-year or site-date combination.</p>
-<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">counts_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">effort_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -724,7 +733,7 @@ where the natural key is a site-year or site-date combination.</p>
 <span>  year <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">2023</span>, <span class="fl">2024</span>, <span class="fl">2024</span>, <span class="fl">2023</span>, <span class="fl">2024</span><span class="op">)</span>,</span>
 <span>  hours <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4.5</span>, <span class="fl">5.0</span>, <span class="fl">3.0</span>, <span class="fl">6.0</span>, <span class="fl">4.0</span><span class="op">)</span></span>
 <span><span class="op">)</span>, <span class="va">effort_path</span><span class="op">)</span></span></code></pre></div>
-<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/left_join.html">left_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">counts_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">effort_path</span><span class="op">)</span>,</span>
 <span>  by <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"site_id"</span>, <span class="st">"year"</span><span class="op">)</span></span>
@@ -746,7 +755,7 @@ single hash probe per row regardless of whether the key has one column
 or five.</p>
 <p>When column names differ between tables, the named form works for
 composites too:</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">effort2_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  loc <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1</span>, <span class="fl">1</span>, <span class="fl">2</span>, <span class="fl">3</span>, <span class="fl">3</span><span class="op">)</span>,</span>
@@ -773,7 +782,7 @@ composites too:</p>
 <code>int64</code> and the right key is <code>double</code>, or vice
 versa, both sides are coerced to <code>double</code> before hashing.
 This happens transparently.</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">int_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">dbl_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -795,7 +804,7 @@ with <code><a href="../reference/mutate.html">mutate()</a></code> before the joi
 <p><strong>NA keys never match.</strong> This follows SQL NULL
 semantics. A row with <code>NA</code> in the key column will not match
 any other row, including another <code>NA</code>.</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">na_left</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">na_right</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span></span>
@@ -906,7 +915,7 @@ pipeline. Here is a decision framework.</p>
 and want to attach attributes from a lookup table. Not every row will
 match, and we want to keep all primary rows. This is the most common
 pattern in analytical work.</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Attach habitat type to every observation</span></span>
 <span><span class="fu"><a href="../reference/left_join.html">left_join</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">sites_path</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"site_id"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">site_id</span>, <span class="va">species</span>, <span class="va">habitat</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -942,7 +951,7 @@ typos, inconsistent formatting, or minor spelling variations that
 prevent exact matching. Always try preprocessing first (trimming
 whitespace, case normalization) because exact joins are faster by orders
 of magnitude.</p>
-<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Preprocessing before an exact join</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">obs_path</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>species_clean <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>

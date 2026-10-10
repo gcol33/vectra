@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/string-ops.Rmd" class="external-link"><code>vignettes/string-ops.Rmd</code></a></small>
       <div class="d-none name"><code>string-ops.Rmd</code></div>
@@ -97,6 +97,15 @@ Colling</h4>
 
     
     
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+</div>
 <div class="section level2">
 <h2 id="introduction">Introduction<a class="anchor" aria-label="anchor" href="#introduction"></a>
 </h2>
@@ -139,7 +148,7 @@ one row group at a time without materializing the full result until
 <p>We will start with a small dataset of tree observations where names
 need cleaning. The data has trailing spaces, inconsistent case, and a
 few columns we will want to slice apart.</p>
-<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Attaching package: 'vectra'</span></span>
@@ -170,7 +179,7 @@ every value in a column. The C engine operates on the raw bytes, so the
 overhead per string is a single pass to find the first and last
 non-space characters. We apply it inside <code><a href="../reference/mutate.html">mutate()</a></code> just as
 we would in base R.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>species_clean <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">species</span>, <span class="va">species_clean</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -192,7 +201,7 @@ pipeline before any downstream node sees it.</p>
 characters in place. These are pure byte-level operations (A-Z mapped to
 a-z and vice versa), so they are effectively free compared to the I/O
 cost of reading the column from disk.</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>species_lower <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>         species_upper <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -216,7 +225,7 @@ intermediate allocation visible from R.</p>
 double (vectra’s integer type). This is useful for filtering out
 suspiciously short or long entries that might indicate data-entry
 errors.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>name_len <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/nchar.html" class="external-link">nchar</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">species</span>, <span class="va">name_len</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -246,7 +255,7 @@ diacritics or observer names in non-Latin scripts.</p>
 <code>substring(x, first, last)</code> both extract a portion of each
 string by position. Positions are 1-based, following R convention. These
 are useful for pulling fixed-width codes out of identifier columns.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>plot_letter <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr</a></span><span class="op">(</span><span class="va">site</span>, <span class="fl">6</span>, <span class="fl">6</span><span class="op">)</span>,</span>
 <span>         plot_number <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr</a></span><span class="op">(</span><span class="va">site</span>, <span class="fl">7</span>, <span class="fl">8</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -270,7 +279,7 @@ logical column. They take a literal string argument (not a column
 reference) and match it against the beginning or end of each value.
 Because the comparison is a simple memcmp on the byte prefix or suffix,
 it runs faster than a regex equivalent.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">startsWith</a></span><span class="op">(</span><span class="va">site</span>, <span class="st">"plot_A"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">species</span>, <span class="va">site</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -278,7 +287,7 @@ it runs faster than a regex equivalent.</p>
 <span><span class="co">#&gt;            species     site</span></span>
 <span><span class="co">#&gt; 1  Quercus robur   plot_A01</span></span>
 <span><span class="co">#&gt; 2 ACER platanoides plot_A01</span></span></code></pre></div>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>is_mueller <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">endsWith</a></span><span class="op">(</span><span class="va">observer</span>, <span class="st">"Mueller"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">observer</span>, <span class="va">is_mueller</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -309,7 +318,7 @@ single buffer, and fills it in one sweep.</p>
 </h3>
 <p><code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0()</a></code> joins its arguments with no separator, which is
 the common case for building identifiers or composite keys.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>record_id <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">site</span>, <span class="st">"_"</span>, <span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">record_id</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -329,7 +338,7 @@ column-and-literal arguments natively.</p>
 </h3>
 <p><code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste()</a></code> uses a space as the default separator, matching
 base R behaviour. The <code>sep</code> parameter overrides this.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>label <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste</a></span><span class="op">(</span><span class="va">observer</span>, <span class="va">site</span>, sep <span class="op">=</span> <span class="st">" @ "</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">label</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -347,7 +356,7 @@ base R behaviour. The <code>sep</code> parameter overrides this.</p>
 <p>When building composite labels from more than two columns, passing
 all of them in a single <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste()</a></code> call is cleaner than
 nesting multiple <code><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0()</a></code> calls.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>full_label <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste</a></span><span class="op">(</span><span class="va">observer</span>, <span class="va">site</span>,</span>
 <span>                            <span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">species</span><span class="op">)</span>, sep <span class="op">=</span> <span class="st">" | "</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -387,7 +396,7 @@ explicitly. This is covered in the next section.</p>
 that is <code>TRUE</code> wherever the pattern appears as a literal
 substring. We use it here to find all records where the observer’s
 surname contains “Smith”.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl</a></span><span class="op">(</span><span class="st">"Smith"</span>, <span class="va">observer</span>, fixed <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -407,7 +416,7 @@ first. Both accept <code>fixed = TRUE</code> for literal matching and
 return a new string column.</p>
 <p>A common cleaning task is standardizing separators. Suppose our site
 codes sometimes use underscores and sometimes hyphens.</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">messy_sites</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  site <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"plot_A01"</span>, <span class="st">"plot-B12"</span>, <span class="st">"plot_A01"</span>, <span class="st">"plot-C03"</span>, <span class="st">"plot_B12"</span><span class="op">)</span>,</span>
 <span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span>
@@ -434,7 +443,7 @@ explicit argument produces the same result.</p>
 <p><code><a href="https://rdrr.io/r/base/grep.html" class="external-link">sub()</a></code> replaces only the first occurrence. This is useful
 when a pattern might appear multiple times and we want to change just
 the leading instance.</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">notes</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  note <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"tree dead, bark loose, dead branches"</span>,</span>
 <span>           <span class="st">"alive, healthy canopy"</span>,</span>
@@ -483,7 +492,7 @@ predictable.</p>
 formatting issues. The regex <code>^[A-Z][a-z]+ [a-z]+$</code> matches
 properly formatted binomial names (capital genus, lowercase epithet,
 single space).</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">species_list</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  name <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"fagus sylvatica"</span>, <span class="st">"ACER PLATANOIDES"</span>,</span>
 <span>           <span class="st">"Betula pendula"</span>, <span class="st">"Pinus  sylvestris"</span>, <span class="st">"Tilia cordata"</span><span class="op">)</span>,</span>
@@ -517,7 +526,7 @@ Backreferences <code>\\1</code>, <code>\\2</code>, etc. refer to
 captured groups in the pattern.</p>
 <p>Suppose we want to reformat species names from “Genus epithet” to “G.
 epithet” for compact display labels.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f4</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>short_name <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">gsub</a></span><span class="op">(</span><span class="st">"^([A-Za-z])[a-z]+ ([a-z]+)$"</span>,</span>
 <span>                           <span class="st">"\\1. \\2"</span>,</span>
@@ -542,7 +551,7 @@ consistent with base R’s <code>gsub</code> behaviour.</p>
 <p><code><a href="https://rdrr.io/r/base/grep.html" class="external-link">sub()</a></code> with regex works the same way but replaces only
 the first match. This is handy for stripping a leading prefix that
 varies in length.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">records</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  code <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"ID:001-Quercus"</span>, <span class="st">"ID:042-Fagus"</span>,</span>
 <span>           <span class="st">"ID:007-Betula"</span>, <span class="st">"ID:113-Pinus"</span><span class="op">)</span>,</span>
@@ -574,7 +583,7 @@ returns the contents of that group rather than the full match.</p>
 <p>This is particularly useful for pulling structured components out of
 semi-formatted strings. Here we extract numeric plot identifiers from
 site codes.</p>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sites</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  site_code <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Forest_Plot_042"</span>, <span class="st">"Meadow_Transect_007"</span>,</span>
 <span>                <span class="st">"Forest_Plot_113"</span>, <span class="st">"Wetland_Quad_019"</span><span class="op">)</span>,</span>
@@ -599,7 +608,7 @@ in this case is the same.</p>
 <p>A more interesting example extracts the habitat type from the site
 code. The pattern uses a group to capture everything before the first
 underscore.</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f6</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>habitat <span class="op">=</span> <span class="fu">str_extract</span><span class="op">(</span><span class="va">site_code</span>, <span class="st">"^([A-Za-z]+)_"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">site_code</span>, <span class="va">habitat</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -643,7 +652,7 @@ transform <code>x</code> into <code>y</code>. The result is a
 non-negative integer. <code>levenshtein_norm(x, y)</code> divides by the
 length of the longer string, producing a value between 0 (identical) and
 1 (completely different).</p>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">typos</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  field_name <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Qurecus robur"</span>, <span class="st">"Fagus silvatica"</span>,</span>
 <span>                 <span class="st">"Acer platanodes"</span>, <span class="st">"Betula pendula"</span>,</span>
@@ -678,7 +687,7 @@ pendula” matches exactly, giving a distance of 0.</p>
 transpositions of two adjacent characters as a single edit operation.
 This better reflects the kinds of errors humans make when typing.
 <code>dl_dist_norm(x, y)</code> is the normalized variant.</p>
-<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f7</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>dl <span class="op">=</span> <span class="fu">dl_dist</span><span class="op">(</span><span class="va">field_name</span>, <span class="va">ref_name</span><span class="op">)</span>,</span>
 <span>         dl_norm <span class="op">=</span> <span class="fu">dl_dist_norm</span><span class="op">(</span><span class="va">field_name</span>, <span class="va">ref_name</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -703,7 +712,7 @@ functions, higher values indicate better matches. Jaro-Winkler gives
 extra weight to matching prefixes, making it particularly effective for
 personal names and short strings where the first few characters are
 usually correct.</p>
-<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f7</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>jw <span class="op">=</span> <span class="fu">jaro_winkler</span><span class="op">(</span><span class="va">field_name</span>, <span class="va">ref_name</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -747,7 +756,7 @@ where a single-character change barely moves the score.</p></li>
 threshold from a reference value. Here we filter for species entries
 that are within a normalized DL distance of 0.15 from “Quercus
 robur”.</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">field_data</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  species <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Qurecus robur"</span>, <span class="st">"Quercus robor"</span>, <span class="st">"Fagus sylvatica"</span>,</span>
 <span>              <span class="st">"Quercus robur"</span>, <span class="st">"Quercis rubur"</span>, <span class="st">"Betula pendula"</span><span class="op">)</span>,</span>
@@ -775,7 +784,7 @@ normalized distance).</p>
 </h3>
 <p>When matching against multiple candidates, sorting by distance gives
 us the best matches first.</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f8</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>sim <span class="op">=</span> <span class="fu">jaro_winkler</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/arrange.html">arrange</a></span><span class="op">(</span><span class="fu"><a href="../reference/desc.html">desc</a></span><span class="op">(</span><span class="va">sim</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -809,7 +818,7 @@ is a named character vector of length 1 specifying which columns to
 compare. The result includes all columns from both sides plus a
 <code>fuzzy_dist</code> column with the normalized distance of each
 match.</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ref</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  canonical <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Fagus sylvatica"</span>,</span>
 <span>                <span class="st">"Acer platanoides"</span>, <span class="st">"Betula pendula"</span>,</span>
@@ -858,7 +867,7 @@ using <code>"jw"</code>, <code>max_dist</code> is interpreted as the
 maximum <em>dissimilarity</em> (i.e.,
 <code>1 - jaro_winkler_score</code>), so <code>max_dist = 0.2</code>
 keeps matches with a Jaro-Winkler score of 0.8 or higher.</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/fuzzy_join.html">fuzzy_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_messy</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_ref</span><span class="op">)</span>,</span>
 <span>  by <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"field_species"</span> <span class="op">=</span> <span class="st">"canonical"</span><span class="op">)</span>,</span>
@@ -885,7 +894,7 @@ blocking: only pairs that share the same blocking key are compared.</p>
 split the genus from both sides and block on it, so “Qurecus robur” is
 only compared against reference rows where the genus starts with “Q” (or
 more precisely, where the blocking column matches exactly).</p>
-<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ref_blocked</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  genus     <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus"</span>, <span class="st">"Fagus"</span>, <span class="st">"Acer"</span>,</span>
 <span>                <span class="st">"Betula"</span>, <span class="st">"Pinus"</span>, <span class="st">"Tilia"</span><span class="op">)</span>,</span>
@@ -943,7 +952,7 @@ the distance computations use. The default is 4, which is a reasonable
 starting point. On a workstation with many cores, increasing it to 8 or
 16 can help for large joins. On a laptop where other processes need CPU
 time, reducing it to 2 is reasonable.</p>
-<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/fuzzy_join.html">fuzzy_join</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_messy</span><span class="op">)</span>, <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_ref</span><span class="op">)</span>,</span>
 <span>  by <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"field_species"</span> <span class="op">=</span> <span class="st">"canonical"</span><span class="op">)</span>,</span>
@@ -972,7 +981,7 @@ needed without re-reading the source data.</p>
 <p><code>block_lookup(block, column, keys)</code> performs a hash-based
 exact match on a string column. The hash index is built lazily on the
 first call and cached for subsequent calls.</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">blk</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_ref</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">canonical</span>, <span class="va">family</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/materialize.html">materialize</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -992,7 +1001,7 @@ multiple rows in the block return all matches.</p>
 <p>Field data often has inconsistent capitalization. The
 <code>ci = TRUE</code> parameter performs case-insensitive matching
 without requiring a separate lowercased column in the reference.</p>
-<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/block_lookup.html">block_lookup</a></span><span class="op">(</span><span class="va">blk</span>, <span class="st">"canonical"</span>,</span>
 <span>             <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"quercus robur"</span>, <span class="st">"BETULA PENDULA"</span><span class="op">)</span>,</span>
 <span>             ci <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
@@ -1010,7 +1019,7 @@ alongside the case-sensitive one.</p>
 query keys and every row in the block (or, with blocking, only rows
 sharing a blocking key). The interface mirrors <code><a href="../reference/fuzzy_join.html">fuzzy_join()</a></code>
 but operates on a materialized block.</p>
-<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">blk2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_ref2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">genus</span>, <span class="va">canonical</span>, <span class="va">family</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/materialize.html">materialize</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -1182,7 +1191,7 @@ normalizing them to ASCII before computing distances (e.g., replacing
 <p>A typical cleaning pipeline chains several string operations before
 matching. Here is a pattern we use repeatedly for species name
 standardization.</p>
-<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">raw_names</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  species <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"  Quercus ROBUR "</span>, <span class="st">"fagus sylvatica."</span>,</span>
 <span>              <span class="st">"Acer platanoides (L.)"</span>, <span class="st">"BETULA   pendula"</span><span class="op">)</span>,</span>
@@ -1216,7 +1225,7 @@ Start with an exact join on cleaned names (catching the easy cases at
 near-zero cost), then run a fuzzy join on the unmatched remainder. This
 avoids spending CPU cycles on distance computations for records that
 match perfectly after basic cleaning.</p>
-<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ref_clean</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  canonical <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"quercus robur"</span>, <span class="st">"fagus sylvatica"</span>,</span>
 <span>                <span class="st">"acer platanoides"</span>, <span class="st">"betula pendula"</span><span class="op">)</span>,</span>

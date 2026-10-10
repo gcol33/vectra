@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/quickstart.Rmd" class="external-link"><code>vignettes/quickstart.Rmd</code></a></small>
       <div class="d-none name"><code>quickstart.Rmd</code></div>
@@ -97,6 +97,14 @@ Colling</h4>
 
     
     
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
 <script>
 /* Shared canvas engine for the vectra vignette figures.
    Inlined by the `va-engine` chunk of every vignette that draws one. */
@@ -253,7 +261,9 @@ window.VA = (function () {
 
   return VA;
 })();
-</script><div class="section level2">
+</script>
+</div>
+<div class="section level2">
 <h2 id="introduction">Introduction<a class="anchor" aria-label="anchor" href="#introduction"></a>
 </h2>
 <p>vectra is a columnar query engine for R. It stores data in a binary
@@ -392,7 +402,7 @@ node can prune row groups a predicate excludes before decoding them.</p>
 returns a <code>vectra_node</code> object. No data is read at this
 point. The <code><a href="../reference/tbl.html">tbl()</a></code> call reads only the file header to learn
 the schema and row group layout.</p>
-<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Attaching package: 'vectra'</span></span>
@@ -424,7 +434,7 @@ the schema and row group layout.</p>
 <p>The print method shows the schema and file path but does not scan any
 data. Call <code><a href="../reference/collect.html">collect()</a></code> to pull all batches through the plan
 and materialize the result as a data.frame.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt;    mpg cyl disp  hp drat    wt  qsec vs am gear carb</span></span>
 <span><span class="co">#&gt; 1 21.0   6  160 110 3.90 2.620 16.46  0  1    4    4</span></span>
@@ -440,7 +450,7 @@ each row group. Smaller row groups give finer-grained zone-map pruning
 filter predicate) but add per-group overhead. The default, one row group
 per data.frame, works well for most in-memory writes. For streaming
 writes from a pipeline, the upstream batch size is preserved.</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f_batched</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">f_batched</span>, batch_size <span class="op">=</span> <span class="fl">10</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_batched</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -467,7 +477,7 @@ expression. You can also chain multiple <code><a href="../reference/filter.html"
 which stacks FilterNodes in the plan. The engine evaluates them
 sequentially, one batch at a time, so the second filter only sees rows
 that passed the first.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">cyl</span> <span class="op">==</span> <span class="fl">6</span>, <span class="va">mpg</span> <span class="op">&gt;</span> <span class="fl">19</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span>, <span class="va">wt</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -491,7 +501,7 @@ excluded from the selection vector, the same as rows that evaluate to
 FALSE. To explicitly test for NA, use <code><a href="https://rdrr.io/r/base/NA.html" class="external-link">is.na()</a></code> in the
 predicate.</p>
 <p>OR conditions and parenthesized expressions work as expected.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">cyl</span> <span class="op">==</span> <span class="fl">4</span> <span class="op">|</span> <span class="va">cyl</span> <span class="op">==</span> <span class="fl">8</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -509,7 +519,7 @@ when the right-hand side has more than a handful of values. On a column
 with 10 million rows and a set of 500 target values, the hash-based
 <code>%in%</code> is roughly 10x faster than repeated OR
 comparisons.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">cyl</span> <span class="op"><a href="https://rdrr.io/r/base/match.html" class="external-link">%in%</a></span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4</span>, <span class="fl">6</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -533,7 +543,7 @@ renames on the fly). Under the hood, <code><a href="../reference/select.html">se
 ProjectNode that prunes columns from the batch before they reach the
 next verb, so columns you drop are never decompressed from disk in
 subsequent row groups.</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="fu">starts_with</span><span class="op">(</span><span class="st">"d"</span><span class="op">)</span>, <span class="va">mpg</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -546,7 +556,7 @@ subsequent row groups.</p>
 <span><span class="co">#&gt; 5  360 3.15 18.7</span></span>
 <span><span class="co">#&gt; 6  225 2.76 18.1</span></span></code></pre></div>
 <p>Negation drops columns.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="op">-</span><span class="va">am</span>, <span class="op">-</span><span class="va">vs</span>, <span class="op">-</span><span class="va">gear</span>, <span class="op">-</span><span class="va">carb</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -561,7 +571,7 @@ subsequent row groups.</p>
 <p><code><a href="../reference/explain.html">explain()</a></code> prints the query plan tree. We can see how
 <code><a href="../reference/filter.html">filter()</a></code> and <code><a href="../reference/select.html">select()</a></code> map to plan nodes, and
 where predicate pushdown applies.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">cyl</span> <span class="op">&gt;</span> <span class="fl">4</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -603,7 +613,7 @@ arithmetic (<code>+</code>, <code>-</code>, <code>*</code>,
 <code>|</code>, <code>!</code>), and unary negation. There is no R-level
 evaluation per row, which is why <code><a href="../reference/mutate.html">mutate()</a></code> on 100 million
 rows runs at C speed regardless of expression complexity.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>kpl <span class="op">=</span> <span class="va">mpg</span> <span class="op">*</span> <span class="fl">0.425144</span>, hp_per_wt <span class="op">=</span> <span class="va">hp</span> <span class="op">/</span> <span class="va">wt</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">kpl</span>, <span class="va">hp</span>, <span class="va">wt</span>, <span class="va">hp_per_wt</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -630,7 +640,7 @@ powers with <code>^</code>. For element-wise min/max,
 <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin()</a></code> and <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax()</a></code> take two or more arguments
 (columns or literals) and return the smallest or largest of each row.
 These compose with arithmetic to build clamping expressions.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    log_hp <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/Log.html" class="external-link">log</a></span><span class="op">(</span><span class="va">hp</span><span class="op">)</span>,</span>
@@ -649,7 +659,7 @@ These compose with arithmetic to build clamping expressions.</p>
 <span><span class="co">#&gt; 6 105 4.653960      100 18.1    18.1</span></span></code></pre></div>
 <p><code><a href="../reference/transmute.html">transmute()</a></code> works like <code><a href="../reference/mutate.html">mutate()</a></code> but drops
 all columns except the new ones.</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/transmute.html">transmute</a></span><span class="op">(</span></span>
 <span>    efficiency <span class="op">=</span> <span class="va">mpg</span> <span class="op">/</span> <span class="va">wt</span>,</span>
@@ -673,7 +683,7 @@ toward zero, <code><a href="https://rdrr.io/r/base/numeric.html" class="external
 returns NA, and <code><a href="https://rdrr.io/r/base/character.html" class="external-link">as.character()</a></code> on a numeric formats it as a
 decimal string. These casts happen per-element in C and respect the
 validity bitmap, so NA values stay NA after casting.</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>cyl_str <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/character.html" class="external-link">as.character</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">cyl</span>, <span class="va">cyl_str</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -695,7 +705,7 @@ returns the first non-NA value from an arbitrary number of columns or
 literals. <code>between()</code> is shorthand for
 <code>x &gt;= left &amp; x &lt;= right</code>, compiled to a single AND
 expression internally.</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    size <span class="op">=</span> <span class="fu">case_when</span><span class="op">(</span></span>
@@ -722,7 +732,7 @@ matching condition wins.</p>
 <p><code>coalesce()</code> takes any number of arguments and returns the
 first non-NA value for each row. It works with both column references
 and literal values.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">df_na</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  a <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="cn">NA</span>, <span class="fl">2</span>, <span class="cn">NA</span>, <span class="fl">4</span><span class="op">)</span>,</span>
 <span>  b <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">10</span>, <span class="cn">NA</span>, <span class="cn">NA</span>, <span class="fl">40</span><span class="op">)</span>,</span>
@@ -758,7 +768,7 @@ under OpenMP), supporting full backreference syntax (<code>\\1</code>,
 The patterns here are representative of what you would do on larger
 string columns; the C engine processes them identically regardless of
 batch size.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">people</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  name <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"  Alice  "</span>, <span class="st">"Bob"</span>, <span class="st">"Charlie Brown"</span>, <span class="st">"Diana"</span><span class="op">)</span>,</span>
 <span>  city <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Amsterdam"</span>, <span class="st">"Berlin"</span>, <span class="st">"Chicago"</span>, <span class="st">"Dublin"</span><span class="op">)</span>,</span>
@@ -773,7 +783,7 @@ batch size.</p>
 <code><a href="https://rdrr.io/r/base/substr.html" class="external-link">substr()</a></code> extracts a substring by 1-indexed start and stop
 positions, matching base R semantics. <code><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws()</a></code> strips
 leading and trailing whitespace (spaces, tabs, newlines).</p>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    name_trimmed <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">name</span><span class="op">)</span>,</span>
@@ -790,7 +800,7 @@ leading and trailing whitespace (spaces, tabs, newlines).</p>
 <p><code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper()</a></code> and <code><a href="https://rdrr.io/r/base/chartr.html" class="external-link">tolower()</a></code> convert case.
 <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">startsWith()</a></code> and <code><a href="https://rdrr.io/r/base/startsWith.html" class="external-link">endsWith()</a></code> test prefixes and
 suffixes, returning a boolean column.</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    city_upper <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/chartr.html" class="external-link">toupper</a></span><span class="op">(</span><span class="va">city</span><span class="op">)</span>,</span>
@@ -811,7 +821,7 @@ a simple <code>strstr()</code> internally. Pass
 once per batch and applies it element-wise. On columns with more than
 1000 rows, regex <code>grepl</code> is OpenMP-parallelized with
 per-thread regex compilation for thread safety.</p>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>has_at <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl</a></span><span class="op">(</span><span class="st">"@example"</span>, <span class="va">email</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">email</span>, <span class="va">has_at</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -829,7 +839,7 @@ pattern; <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">
 regex mode, the replacement string can reference capture groups with
 <code>\\1</code>, <code>\\2</code>, and so on, following the POSIX
 extended regex specification.</p>
-<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>domain <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">gsub</a></span><span class="op">(</span><span class="st">".*@"</span>, <span class="st">""</span>, <span class="va">email</span>, fixed <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">email</span>, <span class="va">domain</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -845,7 +855,7 @@ is NA. If the pattern contains a capture group (parentheses),
 <code>str_extract()</code> returns the captured portion rather than the
 full match, which makes it possible to extract structured substrings
 like domains from URLs or species epithets from binomial names.</p>
-<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>user <span class="op">=</span> <span class="fu">str_extract</span><span class="op">(</span><span class="va">email</span>, <span class="st">"^[^@]+"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">email</span>, <span class="va">user</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -864,7 +874,7 @@ mixing column references and string literals freely.
 use the two-pass allocation strategy: the first pass sums up the output
 lengths across all arguments, allocates once, then the second pass
 writes the concatenated strings into the pre-sized buffer.</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    greeting <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="st">"Hello, "</span>, <span class="fu"><a href="https://rdrr.io/r/base/trimws.html" class="external-link">trimws</a></span><span class="op">(</span><span class="va">name</span><span class="op">)</span>, <span class="st">"!"</span><span class="op">)</span>,</span>
@@ -910,7 +920,7 @@ and so on. This matches base R semantics. With
 <code><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum()</a></code> on all-NA returns 0, <code><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean()</a></code> on all-NA
 returns NaN, and <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">min()</a></code>/<code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">max()</a></code> on all-NA return
 Inf/-Inf with a warning.</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span></span>
@@ -937,7 +947,7 @@ boolean-coercible) columns, returning TRUE/FALSE per group. These are
 useful for flagging groups that contain at least one positive
 observation or checking whether all rows in a group satisfy a
 condition.</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span></span>
@@ -954,7 +964,7 @@ condition.</p>
 <p><code><a href="https://rdrr.io/r/stats/median.html" class="external-link">median()</a></code> uses a per-group dynamic array and quicksort
 internally. <code>n_distinct()</code> uses a per-group open-addressing
 hash set with FNV-1a hashing at 70% load factor.</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span></span>
@@ -969,7 +979,7 @@ hash set with FNV-1a hashing at 70% load factor.</p>
 <p>For quick counts, <code><a href="../reference/count.html">count()</a></code> and <code><a href="../reference/count.html">tally()</a></code> are
 convenient shorthands. <code><a href="../reference/count.html">count()</a></code> takes grouping columns
 inline; <code><a href="../reference/count.html">tally()</a></code> uses existing groups.</p>
-<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/count.html">count</a></span><span class="op">(</span><span class="va">cyl</span>, sort <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -977,7 +987,7 @@ inline; <code><a href="../reference/count.html">tally()</a></code> uses existing
 <span><span class="co">#&gt; 1   8 14</span></span>
 <span><span class="co">#&gt; 2   4 11</span></span>
 <span><span class="co">#&gt; 3   6  7</span></span></code></pre></div>
-<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">gear</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/count.html">tally</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1000,7 +1010,7 @@ you get predictable names like <code>mpg_avg</code>,
 <code><a href="../reference/across.html">across()</a></code> is expanded at the R level into individual
 aggregation expressions before the plan reaches C, so there is no
 runtime overhead compared to writing each expression by hand.</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span><span class="fu"><a href="../reference/across.html">across</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">hp</span>, <span class="va">wt</span><span class="op">)</span>, <span class="va">mean</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1010,7 +1020,7 @@ runtime overhead compared to writing each expression by hand.</p>
 <span><span class="co">#&gt; 2   6 19.74286 122.28571 3.117143</span></span>
 <span><span class="co">#&gt; 3   8 15.10000 209.21429 3.999214</span></span></code></pre></div>
 <p>With multiple functions and a naming pattern:</p>
-<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span><span class="fu"><a href="../reference/across.html">across</a></span><span class="op">(</span></span>
@@ -1027,7 +1037,7 @@ runtime overhead compared to writing each expression by hand.</p>
 occasionally needed when you want to apply a second
 <code><a href="../reference/summarise.html">summarise()</a></code> with different groups, or when you want window
 functions to operate on the full dataset rather than per-group.</p>
-<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span>, <span class="va">gear</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/summarise.html">summarise</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fu">n</span><span class="op">(</span><span class="op">)</span>, .groups <span class="op">=</span> <span class="st">"keep"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1055,7 +1065,7 @@ preserves them.</p>
 <p><code><a href="../reference/arrange.html">arrange()</a></code> sorts rows. Wrap column names in
 <code><a href="../reference/desc.html">desc()</a></code> for descending order. Sort is stable: rows with
 equal sort keys preserve their original order.</p>
-<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/arrange.html">arrange</a></span><span class="op">(</span><span class="va">cyl</span>, <span class="fu"><a href="../reference/desc.html">desc</a></span><span class="op">(</span><span class="va">mpg</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1080,7 +1090,7 @@ first or last <code>n</code> rows. <code><a href="../reference/slice_head.html">
 streaming (it creates a LimitNode that stops pulling after
 <code>n</code> rows). <code><a href="../reference/slice_head.html">slice_tail()</a></code> must materialize all
 rows to know the total count.</p>
-<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_head</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fl">5</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -1094,7 +1104,7 @@ rows to know the total count.</p>
 optimized top-N algorithm (a bounded heap) that avoids a full sort. This
 matters when you want the 10 smallest values from a 100-million-row
 dataset: the heap holds at most 10 entries at any point.</p>
-<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb34"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_min</a></span><span class="op">(</span>order_by <span class="op">=</span> <span class="va">mpg</span>, n <span class="op">=</span> <span class="fl">3</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1107,7 +1117,7 @@ dataset: the heap holds at most 10 entries at any point.</p>
 include ties. The result may contain more than <code>n</code> rows if
 multiple rows share the boundary value. Use
 <code>with_ties = FALSE</code> for exactly <code>n</code> rows.</p>
-<div class="sourceCode" id="cb34"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb35"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_min</a></span><span class="op">(</span>order_by <span class="op">=</span> <span class="va">cyl</span>, n <span class="op">=</span> <span class="fl">3</span>, with_ties <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1116,7 +1126,7 @@ multiple rows share the boundary value. Use
 <span><span class="co">#&gt; 1 22.8   4</span></span>
 <span><span class="co">#&gt; 2 24.4   4</span></span>
 <span><span class="co">#&gt; 3 22.8   4</span></span></code></pre></div>
-<div class="sourceCode" id="cb35"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb36"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_max</a></span><span class="op">(</span>order_by <span class="op">=</span> <span class="va">hp</span>, n <span class="op">=</span> <span class="fl">4</span>, with_ties <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1150,7 +1160,7 @@ the right, without adding any right-side columns.
 <code><a href="../reference/cross_join.html">cross_join()</a></code> produces the Cartesian product (every left row
 paired with every right row). NA keys never match in any join type,
 following SQL NULL semantics.</p>
-<div class="sourceCode" id="cb36"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb37"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cyl_info</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  cyl <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4</span>, <span class="fl">6</span>, <span class="fl">8</span><span class="op">)</span>,</span>
 <span>  engine_type <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"inline"</span>, <span class="st">"v-type"</span>, <span class="st">"v-type"</span><span class="op">)</span>,</span>
@@ -1160,7 +1170,7 @@ following SQL NULL semantics.</p>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">cyl_info</span>, <span class="va">f_cyl</span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="../reference/left_join.html">left_join()</a></code> keeps all rows from the left table.
 Unmatched right-side columns are filled with NA.</p>
-<div class="sourceCode" id="cb37"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb38"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/left_join.html">left_join</a></span><span class="op">(</span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_cyl</span><span class="op">)</span>, by <span class="op">=</span> <span class="st">"cyl"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1177,7 +1187,7 @@ Unmatched right-side columns are filled with NA.</p>
 sides. <code><a href="../reference/left_join.html">semi_join()</a></code> keeps left-side rows that have a match
 on the right but does not add any right-side columns.
 <code><a href="../reference/left_join.html">anti_join()</a></code> keeps left-side rows that have no match.</p>
-<div class="sourceCode" id="cb38"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb39"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/left_join.html">anti_join</a></span><span class="op">(</span></span>
@@ -1197,7 +1207,7 @@ on the right but does not add any right-side columns.
 entries are in the “v-type” subset.</p>
 <p>For joins on differently named columns, use a named vector in
 <code>by</code>. Multi-column keys work by passing multiple names.</p>
-<div class="sourceCode" id="cb39"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb40"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ratings</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  cylinders <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4</span>, <span class="fl">6</span>, <span class="fl">8</span><span class="op">)</span>,</span>
 <span>  rating <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"A"</span>, <span class="st">"B"</span>, <span class="st">"C"</span><span class="op">)</span>,</span>
@@ -1235,7 +1245,7 @@ message.</p>
 <p>vectra also supports <code><a href="../reference/fuzzy_join.html">fuzzy_join()</a></code> for approximate string
 matching between tables. It computes string distances between key
 columns and keeps pairs within a normalized distance threshold.</p>
-<div class="sourceCode" id="cb40"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb41"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ref_species</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  canonical <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Quercus petraea"</span>,</span>
 <span>                 <span class="st">"Fagus sylvatica"</span><span class="op">)</span>,</span>
@@ -1293,7 +1303,7 @@ as a double between 0 and 1). Offset functions: <code><a href="https://rdrr.io/r
 <code>lead()</code>. Cumulative functions: <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code>,
 <code>cummean()</code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummin()</a></code>,
 <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummax()</a></code>.</p>
-<div class="sourceCode" id="cb41"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb42"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_head</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fl">8</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1320,7 +1330,7 @@ gives each row the <code>mpg</code> value from the previous row;
 falls outside the partition boundary (the first row for
 <code>lag</code>, the last row for <code>lead</code>). Without
 <code>default</code>, these positions are NA.</p>
-<div class="sourceCode" id="cb42"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb43"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_head</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fl">6</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1339,7 +1349,7 @@ falls outside the partition boundary (the first row for
 <span><span class="co">#&gt; 6 18.1 105     18.7       NA      110</span></span></code></pre></div>
 <p>Cumulative functions: <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cumsum()</a></code>, <code>cummean()</code>,
 <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummin()</a></code>, <code><a href="https://rdrr.io/r/base/cumsum.html" class="external-link">cummax()</a></code>.</p>
-<div class="sourceCode" id="cb43"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb44"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_head</a></span><span class="op">(</span>n <span class="op">=</span> <span class="fl">6</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1358,7 +1368,7 @@ falls outside the partition boundary (the first row for
 <span><span class="co">#&gt; 6 18.1 105        703       20.50        18.1</span></span></code></pre></div>
 <p>Window functions respect grouping. When a node is grouped, partitions
 are computed independently.</p>
-<div class="sourceCode" id="cb44"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb45"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1420,7 +1430,7 @@ and <code><a href="../reference/filter.html">filter()</a></code>: <code>year()</
 columns. These are evaluated in C by computing the Gregorian calendar
 decomposition from the epoch offset, so there is no R-level overhead per
 row.</p>
-<div class="sourceCode" id="cb45"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb46"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">events</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  event_date <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/as.Date.html" class="external-link">as.Date</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"2020-03-15"</span>, <span class="st">"2020-07-01"</span>,</span>
 <span>                          <span class="st">"2021-01-15"</span>, <span class="st">"2021-06-30"</span><span class="op">)</span><span class="op">)</span>,</span>
@@ -1434,7 +1444,7 @@ row.</p>
 <span><span class="va">fd</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">events</span>, <span class="va">fd</span><span class="op">)</span></span></code></pre></div>
 <p>Extract date components and aggregate by year.</p>
-<div class="sourceCode" id="cb46"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb47"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fd</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    yr <span class="op">=</span> <span class="fu">year</span><span class="op">(</span><span class="va">event_date</span><span class="op">)</span>,</span>
@@ -1448,7 +1458,7 @@ row.</p>
 <span><span class="co">#&gt; 1 2020    30</span></span>
 <span><span class="co">#&gt; 2 2021    70</span></span></code></pre></div>
 <p>Extract time components from POSIXct.</p>
-<div class="sourceCode" id="cb47"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb48"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fd</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    hr <span class="op">=</span> <span class="fu">hour</span><span class="op">(</span><span class="va">event_time</span><span class="op">)</span>,</span>
@@ -1464,7 +1474,7 @@ row.</p>
 <p>Filter by date using <code><a href="https://rdrr.io/r/base/as.Date.html" class="external-link">as.Date()</a></code> to convert a string
 literal to a date value at parse time. The C engine receives the numeric
 date value and compares directly.</p>
-<div class="sourceCode" id="cb48"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb49"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fd</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">event_date</span> <span class="op">&gt;=</span> <span class="fu"><a href="https://rdrr.io/r/base/as.Date.html" class="external-link">as.Date</a></span><span class="op">(</span><span class="st">"2021-01-01"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -1479,7 +1489,7 @@ aggregation:
 works as expected because <code><a href="../reference/mutate.html">mutate()</a></code> expressions are allowed
 inline inside <code><a href="../reference/group_by.html">group_by()</a></code> through the standard dplyr
 convention of named expressions.</p>
-<div class="sourceCode" id="cb49"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb50"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fd</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>plus_30 <span class="op">=</span> <span class="va">event_date</span> <span class="op">+</span> <span class="fl">30</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">event_date</span>, <span class="va">plus_30</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -1507,7 +1517,7 @@ better captures common typos like “hte” for “the”.
 where 1 means identical. It weights early-character matches more
 heavily, making it well-suited for short strings like personal
 names.</p>
-<div class="sourceCode" id="cb50"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb51"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">species</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  name <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Quercus rubra"</span>,</span>
 <span>           <span class="st">"Fagus sylvatica"</span>, <span class="st">"Acer platanoides"</span>,</span>
@@ -1518,7 +1528,7 @@ names.</p>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">species</span>, <span class="va">fs2</span><span class="op">)</span></span></code></pre></div>
 <p>Compute all three metrics against a reference string and filter by
 edit distance.</p>
-<div class="sourceCode" id="cb51"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb52"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    lev <span class="op">=</span> <span class="fu">levenshtein</span><span class="op">(</span><span class="va">name</span>, <span class="st">"Quercus robur"</span><span class="op">)</span>,</span>
@@ -1535,7 +1545,7 @@ edit distance.</p>
 <code>dl_dist_norm()</code> divide the raw distance by the length of the
 longer string, returning a value between 0 and 1. This makes thresholds
 transferable across strings of different lengths.</p>
-<div class="sourceCode" id="cb52"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb53"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    lev_norm <span class="op">=</span> <span class="fu">levenshtein_norm</span><span class="op">(</span><span class="va">name</span>, <span class="st">"Quercus robur"</span><span class="op">)</span>,</span>
@@ -1550,7 +1560,7 @@ transferable across strings of different lengths.</p>
 <span><span class="co">#&gt; 5  Quercus petraea 0.4666667 0.4666667</span></span></code></pre></div>
 <p>Damerau-Levenshtein catches transposition errors that pure
 Levenshtein scores as two edits.</p>
-<div class="sourceCode" id="cb53"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb54"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fs2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span></span>
 <span>    lev <span class="op">=</span> <span class="fu">levenshtein</span><span class="op">(</span><span class="va">name</span>, <span class="st">"Qurecus robur"</span><span class="op">)</span>,</span>
@@ -1586,7 +1596,7 @@ lookup, equivalent to a self left-join on <code>(fk, pk)</code>, but
 without the overhead of materializing a hash table. The lookup is O(n)
 per batch (linear scan), so it works well for hierarchies with up to a
 few million rows.</p>
-<div class="sourceCode" id="cb54"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb55"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">taxa</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  id        <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1L</span>, <span class="fl">2L</span>, <span class="fl">3L</span>, <span class="fl">4L</span><span class="op">)</span>,</span>
 <span>  name      <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Fagaceae"</span>, <span class="st">"Quercus"</span>, <span class="st">"Q. robur"</span>, <span class="st">"Q. petraea"</span><span class="op">)</span>,</span>
@@ -1615,7 +1625,7 @@ single-level lookup, <code>propagate()</code> traverses the full
 ancestor chain until it finds a row where the seed expression is non-NA.
 This denormalizes a hierarchy in a single pass, which would otherwise
 require a recursive CTE in SQL or repeated self-joins in dplyr.</p>
-<div class="sourceCode" id="cb55"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb56"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">ft</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/mutate.html">mutate</a></span><span class="op">(</span>family <span class="op">=</span> <span class="fu">propagate</span><span class="op">(</span></span>
 <span>    <span class="va">parent_id</span>, <span class="va">id</span>,</span>
@@ -1651,7 +1661,7 @@ files (<code>.csv.gz</code>) are detected automatically by file
 extension and decompressed on the fly. The <code>batch_size</code>
 parameter controls how many rows are read per batch (default
 65,536).</p>
-<div class="sourceCode" id="cb56"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb57"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv_in</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.csv</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">csv_in</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
@@ -1670,7 +1680,7 @@ parameter controls how many rows are read per batch (default
 <p><code><a href="../reference/tbl_sqlite.html">tbl_sqlite()</a></code> scans a SQLite table. Column types are
 derived from the CREATE TABLE schema. All filtering and aggregation
 happens in vectra’s C engine, not in SQLite.</p>
-<div class="sourceCode" id="cb57"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb58"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">db</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".sqlite"</span><span class="op">)</span></span>
 <span><span class="va">f_src</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">mtcars</span>, <span class="va">f_src</span><span class="op">)</span></span>
@@ -1711,7 +1721,7 @@ stays within a few hundred MB of memory. Write functions
 <code><a href="../reference/write_sqlite.html">write_sqlite()</a></code>, <code><a href="../reference/write_tiff.html">write_tiff()</a></code>) all accept
 <code>vectra_node</code> inputs and consume batches from the upstream
 pipeline, writing each batch to the output format as it arrives.</p>
-<div class="sourceCode" id="cb58"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb59"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">csv_file</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
 <span><span class="va">vtr_file</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">csv_out</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".csv"</span><span class="op">)</span></span>
@@ -1754,7 +1764,7 @@ the index a scan will probe.</p>
 <p>Create an index with <code><a href="../reference/create_index.html">create_index()</a></code>. Check for an
 existing index with <code><a href="../reference/has_index.html">has_index()</a></code>. Indexes persist on disk
 and survive R sessions.</p>
-<div class="sourceCode" id="cb59"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb60"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f_idx</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="va">letters</span>, val <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">26</span>, stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span>,</span>
@@ -1769,7 +1779,7 @@ and survive R sessions.</p>
 <span><span class="co">#&gt; [1] TRUE</span></span></code></pre></div>
 <p>With 6 row groups of 5 rows each, a filter on <code>id</code> now
 skips row groups that cannot contain the target value.</p>
-<div class="sourceCode" id="cb60"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb61"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_idx</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">id</span> <span class="op">==</span> <span class="st">"m"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span></span>
@@ -1777,7 +1787,7 @@ skips row groups that cannot contain the target value.</p>
 <span><span class="co">#&gt; 1  m  13</span></span></code></pre></div>
 <p>Composite indexes cover AND-combined equality predicates on multiple
 columns. Pass a character vector to <code><a href="../reference/create_index.html">create_index()</a></code>.</p>
-<div class="sourceCode" id="cb61"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb62"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f_comp</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
@@ -1827,7 +1837,7 @@ row group count. This is not fully atomic: if the process is interrupted
 between writing the row groups and patching the header, the file may be
 corrupted. For write-once workloads where atomicity matters, use
 <code><a href="../reference/write_vtr.html">write_vtr()</a></code> (which writes to a temp file and renames).</p>
-<div class="sourceCode" id="cb62"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb63"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">fa</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="va">mtcars</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">16</span>, <span class="op">]</span>, <span class="va">fa</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">mtcars</span><span class="op">[</span><span class="fl">17</span><span class="op">:</span><span class="fl">32</span>, <span class="op">]</span>, <span class="va">fa</span><span class="op">)</span></span>
@@ -1839,7 +1849,7 @@ tombstone sidecar file (<code>&lt;path&gt;.del</code>). The
 <code><a href="../reference/tbl.html">tbl()</a></code> call automatically excludes tombstoned rows.
 Tombstones are cumulative across multiple <code><a href="../reference/delete_vtr.html">delete_vtr()</a></code>
 calls.</p>
-<div class="sourceCode" id="cb63"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb64"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/delete_vtr.html">delete_vtr</a></span><span class="op">(</span><span class="va">fa</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">1</span>, <span class="fl">2</span><span class="op">)</span><span class="op">)</span>  <span class="co"># 0-based row indices</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fa</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 29</span></span>
@@ -1858,7 +1868,7 @@ builds a hash set from the old file’s key column, pass 2 streams all
 columns from the new file and writes added rows to a temporary
 <code>.vtr</code> file. The temporary file is cleaned up automatically
 when the returned node is garbage-collected.</p>
-<div class="sourceCode" id="cb64"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb65"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">fd1</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">fd2</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="va">old</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">5</span>, val <span class="op">=</span> <span class="va">letters</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">5</span><span class="op">]</span>,</span>
@@ -1894,7 +1904,7 @@ against the same dataset (e.g., matching a stream of queries against a
 reference table), <code><a href="../reference/materialize.html">materialize()</a></code> pulls all batches and
 stores the result as a persistent columnar block in memory. The block
 lives until it is garbage-collected or the R session ends.</p>
-<div class="sourceCode" id="cb65"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb66"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">blk_data</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  taxonID <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"T1"</span>, <span class="st">"T2"</span>, <span class="st">"T3"</span>, <span class="st">"T4"</span>, <span class="st">"T5"</span><span class="op">)</span>,</span>
 <span>  name <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Pinus sylvestris"</span>,</span>
@@ -1916,7 +1926,7 @@ lookup pays a one-time O(n) indexing cost and all subsequent lookups are
 O(k) where k is the number of query keys. The <code>ci</code> argument
 enables case-insensitive matching by lowercasing keys before
 hashing.</p>
-<div class="sourceCode" id="cb66"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb67"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/block_lookup.html">block_lookup</a></span><span class="op">(</span><span class="va">blk</span>, <span class="st">"name"</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Quercus robur"</span>, <span class="st">"Betula pendula"</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt;   query_idx taxonID           name</span></span>
 <span><span class="co">#&gt; 1         1      T1  Quercus robur</span></span>
@@ -1933,7 +1943,7 @@ of magnitude. For example, blocking on genus before fuzzy-matching
 species names restricts comparisons to rows within the same genus. The
 distance computation is OpenMP-parallelized via the
 <code>n_threads</code> argument.</p>
-<div class="sourceCode" id="cb67"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb68"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/block_fuzzy_lookup.html">block_fuzzy_lookup</a></span><span class="op">(</span></span>
 <span>  <span class="va">blk</span>, <span class="st">"name"</span>,</span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Qurecus robur"</span>, <span class="st">"Pinus silvestris"</span><span class="op">)</span>,</span>
@@ -1957,7 +1967,7 @@ engine will do when you call <code><a href="../reference/collect.html">collect()
 node types (ScanNode, FilterNode, ProjectNode, SortNode, GroupAggNode,
 WindowNode, JoinNode, etc.), their parent-child relationships, and the
 output column schema at each level.</p>
-<div class="sourceCode" id="cb68"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb69"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/filter.html">filter</a></span><span class="op">(</span><span class="va">cyl</span> <span class="op">&gt;</span> <span class="fl">4</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -2000,7 +2010,7 @@ disk, filter rows, project columns, sort, limit.</p>
 <p><code><a href="../reference/glimpse.html">glimpse()</a></code> provides a quick preview of column types and a
 sample of values without collecting the full result. It reads enough
 data to show one line per column.</p>
-<div class="sourceCode" id="cb69"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb70"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/glimpse.html">glimpse</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt; vectra lazy table [32 x 11]</span></span>
 <span><span class="co">#&gt; $ mpg             &lt;double&gt; 21.0, 21.0, 22.8, 21.4, 18.7</span></span>
@@ -2035,7 +2045,7 @@ families this tour samples.</p></li>
 <div class="section level2">
 <h2 id="cleanup">Cleanup<a class="anchor" aria-label="anchor" href="#cleanup"></a>
 </h2>
-<div class="sourceCode" id="cb70"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb71"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">f</span>, <span class="va">f_batched</span>, <span class="va">f_na</span>, <span class="va">fs</span>, <span class="va">fs2</span>, <span class="va">f_cyl</span>, <span class="va">f_rat</span>, <span class="va">f_ref</span>, <span class="va">f_query</span>, <span class="va">fd</span>,</span>
 <span>         <span class="va">ft</span>, <span class="va">csv_in</span>, <span class="va">csv_out</span>, <span class="va">csv_file</span>, <span class="va">vtr_file</span>, <span class="va">db</span>, <span class="va">f_src</span>, <span class="va">f_idx</span>,</span>
 <span>         <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">f_idx</span>, <span class="st">".id.vtri"</span><span class="op">)</span>, <span class="va">f_comp</span>,</span>

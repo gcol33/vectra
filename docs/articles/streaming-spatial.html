@@ -89,7 +89,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-04</h4>
+            <h4 data-toc-skip class="date">2026-10-10</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/streaming-spatial.Rmd" class="external-link"><code>vignettes/streaming-spatial.Rmd</code></a></small>
       <div class="d-none name"><code>streaming-spatial.Rmd</code></div>
@@ -104,10 +104,18 @@ It needs the optional <a href="https://r-spatial.github.io/sf/" class="external-
 package, which the spatial verbs use to take layers and coordinate
 reference systems as arguments, and which runs the operations vectra has
 no native path for.</p>
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
+<span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span>
-<span><span class="co">#&gt; Warning: package 'sf' was built under R version 4.6.1</span></span></code></pre></div>
+<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span></code></pre></div>
+</div>
 <div class="section level2">
 <h2 id="the-problem">The problem<a class="anchor" aria-label="anchor" href="#the-problem"></a>
 </h2>
@@ -157,7 +165,7 @@ Projecting matters here: in a planar CRS distances, areas, and buffers
 are Euclidean, and the recognised operations run natively on the GEOS C
 API straight off the WKB column instead of decoding each batch back to
 <code>sf</code>.</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span>, quiet <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_transform.html" class="external-link">st_transform</a></span><span class="op">(</span><span class="va">nc</span>, <span class="fl">32119</span><span class="op">)</span>        <span class="co"># NAD83 / North Carolina, metres</span></span>
 <span><span class="va">crs_nc</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_crs.html" class="external-link">st_crs</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span></span>
@@ -168,7 +176,7 @@ a hex-WKB column. This is the shape every streamed layer takes:
 attribute columns plus one string column of WKB. In a real out-of-core
 workflow this file would be written once from a large source and reused;
 here it is 100 counties standing in for the billion-row case.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">f_poly</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  NAME  <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span>
@@ -195,7 +203,7 @@ data.frame. The active geometry of the return becomes the streamed
 geometry.</p>
 <p>Buffer every county centroid by 15 km. The first step builds a
 centroid layer on disk, the second streams a buffer over it.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cent</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span>
@@ -212,7 +220,7 @@ centroid layer on disk, the second streams a buffer over it.</p>
 <p><code>buffered</code> is a lazy node, not a materialized layer: the
 buffer has not run yet. <code><a href="../reference/collect.html">collect()</a></code> pulls it through and
 decodes the geometry.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">b_sf</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="va">buffered</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"grey80"</span>, col <span class="op">=</span> <span class="cn">NA</span>,</span>
 <span>     main <span class="op">=</span> <span class="st">"County centroids buffered by 15 km"</span><span class="op">)</span></span>
@@ -225,7 +233,7 @@ plain data.frame rather than a geometry, which turns the spatial step
 into a streamed feature-summary with the geometry dropped. That is the
 way to compute per-feature area over a layer too large to hold
 whole.</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">areas</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_poly</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_map.html">spatial_map</a></span><span class="op">(</span><span class="op">~</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>NAME <span class="op">=</span> <span class="va">.x</span><span class="op">$</span><span class="va">NAME</span>,</span>
 <span>                           area_km2 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_measures.html" class="external-link">st_area</a></span><span class="op">(</span><span class="va">.x</span><span class="op">)</span><span class="op">)</span> <span class="op">/</span> <span class="fl">1e6</span><span class="op">)</span>,</span>
@@ -255,7 +263,7 @@ replaces a vertex with two points along its adjacent edges, so sharp
 angles become a smooth curve; more <code>iterations</code> give a
 smoother result with more vertices. It is computed directly on the
 coordinates with no GEOS call, and open lines keep their endpoints.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">zig</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st.html" class="external-link">st_linestring</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1</span>, <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">2</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">3</span>, <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4</span>, <span class="fl">0</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">f_zig</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
@@ -287,14 +295,14 @@ columns. Point input as coordinate columns is the headline case and the
 fully sf-free path: each point is built in C and matched against the
 resident layer’s spatial index with no per-batch round-trip through
 sf.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span></span>
 <span><span class="va">pts</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_coordinates.html" class="external-link">st_coordinates</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_sample.html" class="external-link">st_sample</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_combine.html" class="external-link">st_union</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, <span class="fl">500</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">fp</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="va">pts</span><span class="op">)</span><span class="op">)</span>, x <span class="op">=</span> <span class="va">pts</span><span class="op">[</span>, <span class="fl">1</span><span class="op">]</span>, y <span class="op">=</span> <span class="va">pts</span><span class="op">[</span>, <span class="fl">2</span><span class="op">]</span><span class="op">)</span>, <span class="va">fp</span><span class="op">)</span></span></code></pre></div>
 <p>Keep the points falling inside a five-county region in the
 northwest.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">region</span> <span class="op">&lt;-</span> <span class="va">nc</span><span class="op">[</span><span class="va">nc</span><span class="op">$</span><span class="va">NAME</span> <span class="op"><a href="https://rdrr.io/r/base/match.html" class="external-link">%in%</a></span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Ashe"</span>, <span class="st">"Alleghany"</span>, <span class="st">"Surry"</span>, <span class="st">"Wilkes"</span>, <span class="st">"Watauga"</span><span class="op">)</span>,</span>
 <span>             <span class="st">"NAME"</span><span class="op">]</span></span>
 <span></span>
@@ -305,7 +313,7 @@ northwest.</p>
 <span><span class="co">#&gt; [1] 25</span></span></code></pre></div>
 <p>Twenty-five of the 500 points land in the region. Plot the kept
 points against the dropped ones.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"grey85"</span>, col <span class="op">=</span> <span class="cn">NA</span>, main <span class="op">=</span> <span class="st">"Select by location"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">region</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"#cc3344"</span>, col <span class="op">=</span> <span class="st">"#cc334411"</span>, add <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/points.html" class="external-link">points</a></span><span class="op">(</span><span class="va">pts</span>, pch <span class="op">=</span> <span class="fl">16</span>, cex <span class="op">=</span> <span class="fl">0.5</span>, col <span class="op">=</span> <span class="st">"grey70"</span><span class="op">)</span></span>
@@ -318,7 +326,7 @@ relation: <code>st_within</code>, <code>st_covered_by</code>,
 binary predicates are all accepted. <code>st_is_within_distance</code>
 takes its radius through <code>dist</code>, in CRS units, and keeps
 every feature within that distance of the layer.</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">near</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_filter.html">spatial_filter</a></span><span class="op">(</span><span class="va">region</span>, predicate <span class="op">=</span> <span class="va">st_is_within_distance</span>,</span>
 <span>                 coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="va">crs_nc</span>, dist <span class="op">=</span> <span class="fl">30000</span><span class="op">)</span></span>
@@ -339,7 +347,7 @@ preserves sf’s exact semantics at the cost of decoding each batch.</p>
 intersects each batch with the mask and keeps the part inside it, the
 streamed equivalent of <code><a href="https://r-spatial.github.io/sf/reference/geos_binary_ops.html" class="external-link">st_intersection()</a></code> against a fixed
 boundary. <code>erase = TRUE</code> keeps the part outside instead.</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">mask_region</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_combine.html" class="external-link">st_union</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">region</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">clipped</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f_poly</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/spatial_clip.html">spatial_clip</a></span><span class="op">(</span><span class="va">mask_region</span>, crs <span class="op">=</span> <span class="va">crs_nc</span><span class="op">)</span></span>
@@ -349,7 +357,7 @@ boundary. <code>erase = TRUE</code> keeps the part outside instead.</p>
 <p>Twelve counties have area inside the region’s bounding shape, and
 each comes back trimmed to the part that overlaps it. Plot the clipped
 slivers over the full state.</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"grey85"</span>, col <span class="op">=</span> <span class="cn">NA</span>,</span>
 <span>     main <span class="op">=</span> <span class="st">"Counties clipped to the region"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">c_sf</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"#2a9d5c"</span>, col <span class="op">=</span> <span class="st">"#2a9d5c33"</span>, add <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
@@ -374,7 +382,7 @@ arcs between crossings, and each piece is emitted as its own row with
 the source attributes copied. A feature the blade does not cross passes
 through whole. With <code>extract = "points"</code> the verb returns the
 crossing points instead.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">square</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st.html" class="external-link">st_polygon</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">4</span>, <span class="fl">4</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">4</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0</span>, <span class="fl">0</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">blade</span>  <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sfc.html" class="external-link">st_sfc</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st.html" class="external-link">st_linestring</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">2</span>, <span class="op">-</span><span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">2</span>, <span class="fl">5</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
@@ -406,7 +414,7 @@ in RAM. On the native path the join is a lazy node like any other verb:
 the joined rows stream straight into whatever comes next, a
 <code><a href="../reference/count.html">count()</a></code> or a <code><a href="../reference/write_vtr.html">write_vtr()</a></code>, without being
 spilled first.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">tagged</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_join.html">spatial_join</a></span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="va">crs_nc</span><span class="op">)</span></span>
 <span><span class="va">tdf</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span><span class="va">tagged</span><span class="op">)</span></span>
@@ -428,7 +436,7 @@ default predicate is <code>st_intersects</code> and the default is a
 left join, so an unmatched left row is kept once with NA in the right
 columns; <code>left = FALSE</code> drops the unmatched rows for an inner
 join. Colour the points by the county they were tagged with.</p>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">tagged_sf</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_as_sf.html" class="external-link">st_as_sf</a></span><span class="op">(</span><span class="va">tdf</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="va">crs_nc</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"grey85"</span>, col <span class="op">=</span> <span class="cn">NA</span>,</span>
 <span>     main <span class="op">=</span> <span class="st">"Points tagged with their county"</span><span class="op">)</span></span>
@@ -438,7 +446,7 @@ join. Colour the points by the county they were tagged with.</p>
 the left geometry column. With <code>coords =</code> the point
 geometries are then never built at all, which is the cheap way to tag
 points and aggregate:</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_join.html">spatial_join</a></span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="va">crs_nc</span>,</span>
 <span>               keep_geom <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -458,7 +466,7 @@ points and aggregate:</p>
 changes the relation; <code>st_nearest_feature</code> finds the closest
 right feature to each left one, which is how you snap points to the
 nearest road or station.</p>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ncent</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sf.html" class="external-link">st_sf</a></span><span class="op">(</span>NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>, geometry <span class="op">=</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">nearest</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_join.html">spatial_join</a></span><span class="op">(</span><span class="va">ncent</span>, join <span class="op">=</span> <span class="va">st_nearest_feature</span>,</span>
@@ -478,7 +486,7 @@ side is ever fully resident. A coordinate maps to the cell</p>
 reference point; each right feature is replicated to every cell its
 bounding box overlaps. A left row is therefore emitted exactly once, and
 the result equals the resident join for point left geometry.</p>
-<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">g_poly</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
 <span>  NAME <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span>,</span>
@@ -508,7 +516,7 @@ largest expected nearest distance.</p>
 join returns exactly what <code><a href="https://r-spatial.github.io/sf/reference/st_join.html" class="external-link">st_join()</a></code> returns on the whole
 layer held in memory, feature for feature. Run both on the 500-point set
 and compare.</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">streamed</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/collect.html">collect</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span> <span class="fu"><a href="../reference/spatial_join.html">spatial_join</a></span><span class="op">(</span><span class="va">nc</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="va">crs_nc</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
@@ -531,7 +539,7 @@ Scatter 200,000 points across the state’s bounding box and filter them
 to the five-county region. Only one batch is resident at a time, so the
 same code that ran on 500 points runs on 200,000 with a flat memory
 profile.</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">42</span><span class="op">)</span></span>
 <span><span class="va">bb</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_bbox.html" class="external-link">st_bbox</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span></span>
 <span><span class="va">n_big</span> <span class="op">&lt;-</span> <span class="fl">2e5</span></span>
@@ -562,7 +570,7 @@ feature, <code><a href="../reference/spatial_knn.html">spatial_knn()</a></code> 
 features per streamed point, one row per pair, each with the rank (1 is
 nearest) and the distance. The candidate layer <code>y</code> is held
 resident while the points stream.</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">towns</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/warning.html" class="external-link">suppressWarnings</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">5</span><span class="op">]</span></span>
 <span><span class="va">towns</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sf.html" class="external-link">st_sf</a></span><span class="op">(</span>town <span class="op">=</span> <span class="va">nc</span><span class="op">$</span><span class="va">NAME</span><span class="op">[</span><span class="fl">1</span><span class="op">:</span><span class="fl">5</span><span class="op">]</span>, geometry <span class="op">=</span> <span class="va">towns</span><span class="op">)</span></span>
 <span></span>
@@ -601,7 +609,7 @@ the routing budget during the pass, then one group’s geometries while
 that group unions. Partition on a key whose groups fit in memory.</p>
 <p>Split the counties into two bands by their 1974 SIDS count and merge
 each band into a single feature, summing births along the way.</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">nc</span><span class="op">$</span><span class="va">band</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/ifelse.html" class="external-link">ifelse</a></span><span class="op">(</span><span class="va">nc</span><span class="op">$</span><span class="va">SID74</span> <span class="op">&gt;</span> <span class="fl">5</span>, <span class="st">"high"</span>, <span class="st">"low"</span><span class="op">)</span></span>
 <span><span class="va">fb</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/write_vtr.html">write_vtr</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span></span>
@@ -627,7 +635,7 @@ each band into a single feature, summing births along the way.</p>
 named list of summaries; each function takes the group’s data.frame and
 returns one value, and the list name becomes the output column. Plot the
 two bands.</p>
-<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="va">m_sf</span><span class="op">[</span><span class="st">"band"</span><span class="op">]</span>, main <span class="op">=</span> <span class="st">"Counties dissolved into two SIDS bands"</span><span class="op">)</span></span></code></pre></div>
 <p><img src="streaming-spatial_files/figure-html/dissolve-plot-1.png" class="r-plt" alt="" width="100%"></p>
 <p>With no <code>by</code>, the whole layer dissolves into one feature,
@@ -651,7 +659,7 @@ protected areas, designated in which years, cover this exact patch of
 sea”.</p>
 <p>Three overlapping squares designated in different years make the
 smallest meaningful example.</p>
-<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sq</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">a</span>, <span class="va">b</span><span class="op">)</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st.html" class="external-link">st_polygon</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">b</span>, <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">b</span>, <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="fl">0</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">polys</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sf.html" class="external-link">st_sf</a></span><span class="op">(</span>year <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1990L</span>, <span class="fl">2010L</span>, <span class="fl">2000L</span><span class="op">)</span>,</span>
@@ -668,7 +676,7 @@ square. The <code>piece_id</code> column keys the pieces: rows sharing
 an id are the same patch of ground seen from different source polygons.
 Resolve the duplication with a grouped slice. Earliest designation year
 wins:</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">first</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/spatial_overlay.html">spatial_overlay</a></span><span class="op">(</span><span class="va">polys</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/group_by.html">group_by</a></span><span class="op">(</span><span class="va">piece_id</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/slice_head.html">slice_min</a></span><span class="op">(</span><span class="va">year</span>, n <span class="op">=</span> <span class="fl">1</span>, with_ties <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -715,7 +723,7 @@ planar partition and carries the attributes of the covering
 <code>NA</code>), <code>"identity"</code> (all of <code>x</code> split
 by <code>y</code>), or <code>"symdiff"</code> (pieces in exactly one
 layer).</p>
-<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">zones</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sf.html" class="external-link">st_sf</a></span><span class="op">(</span>zone <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"A"</span>, <span class="st">"B"</span><span class="op">)</span>,</span>
 <span>               geometry <span class="op">=</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/sfc.html" class="external-link">st_sfc</a></span><span class="op">(</span><span class="fu">sq</span><span class="op">(</span><span class="fl">0</span>, <span class="fl">1.5</span><span class="op">)</span>, <span class="fu">sq</span><span class="op">(</span><span class="fl">1.5</span>, <span class="fl">3</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
@@ -755,7 +763,7 @@ giving an <code>sf</code> object. <code><a href="../reference/write_vtr.html">wr
 streams the result straight to a new <code>.vtr</code> file without ever
 holding it whole, so a multi-step spatial pipeline can land its output
 on disk under the same fixed memory budget it ran in.</p>
-<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">out</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".vtr"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">fp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="../reference/spatial_filter.html">spatial_filter</a></span><span class="op">(</span><span class="va">region</span>, coords <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x"</span>, <span class="st">"y"</span><span class="op">)</span>, crs <span class="op">=</span> <span class="va">crs_nc</span><span class="op">)</span> <span class="op">|&gt;</span></span>
