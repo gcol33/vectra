@@ -8,7 +8,7 @@
 
 <p align="center">
 
-<img src="man/figures/vectra-hero.png" alt="A grid of 192 row groups, eight rows of 24, from one .vtr file. A filter on year and station reads 24 row groups, shown filled, and skips the other 168, shown as outlines." width="100%">
+<img src="man/figures/vectra-hero.png" alt="A grid of 64 row groups, eight rows of 8, from one .vtr file. A filter on year and station reads 9 row groups, shown filled, and skips the other 55, shown as outlines." width="100%">
 </p>
 
 vectra runs [dplyr](https://dplyr.tidyverse.org)-style queries on files that are too large to load into memory: multi-gigabyte CSV and Parquet files, SQLite databases, GeoTIFF rasters and its own `.vtr` columnar format.

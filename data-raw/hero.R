@@ -1,11 +1,17 @@
 # Build the README banner man/figures/vectra-hero.png.
 #
-# A .vtr file of eight years of observations, written in year order with 24 row
+# A .vtr file of eight years of observations, written in year order with 8 row
 # groups per year and sorted by station within each year. Each block is one row
 # group of that file. The per-row-group min/max statistics stored in the file
 # decide which row groups the query
-#   filter(year >= 2021, station <= 30)
+#   filter(year >= 2021, station >= 65)
 # reads; the other row groups are skipped without being decoded.
+#
+# Proportions follow the golden ratio phi: a block is phi times as wide as it is
+# tall, the gap between blocks (and the margin) is 1/phi^2 of the block height,
+# the corner radius is 1/phi^3 of it, the grid is phi times as wide as the label
+# panel beside it, and the read region covers 3 of 8 years and 3 of 8 columns.
+# The labels stand in the panel next to the blocks they name.
 #
 # Run from the package root:  Rscript data-raw/hero.R
 # Needs ggplot2 and ragg only here; they are not package dependencies.
@@ -15,9 +21,11 @@ suppressMessages({
   library(vectra)
 })
 
+phi <- (1 + sqrt(5)) / 2
+
 years <- 2016:2023
-per_year <- 24L
-rows_per_group <- 50000L
+per_year <- 8L
+rows_per_group <- 150000L
 set.seed(1)
 
 d <- do.call(rbind, lapply(years, function(y) {
@@ -37,28 +45,34 @@ stopifnot(length(stats) == length(years) * per_year)
 
 # A row group is read when its [min, max] range can hold a matching row.
 y_min <- 2021
-s_max <- 30
-read <- yr[2, ] >= y_min & st[1, ] <= s_max
+s_min <- 65
+read <- yr[2, ] >= y_min & st[2, ] >= s_min
 
 # The engine returns the rows a plain data.frame filter returns.
-res <- tbl(f) |> filter(year >= y_min, station <= s_max) |> collect()
-stopifnot(nrow(res) == sum(d$year >= y_min & d$station <= s_max))
+res <- tbl(f) |> filter(year >= y_min, station >= s_min) |> collect()
+stopifnot(nrow(res) == sum(d$year >= y_min & d$station >= s_min))
 unlink(f)
 
 n_rg <- length(read)
-n_read <- sum(read)
-message(n_read, " of ", n_rg, " row groups read")
+message(sum(read), " of ", n_rg, " row groups read")
 
-# Layout in pixels of the 1628 x 720 banner (120 dpi): one row per year.
+# Geometry in units u of the block height: block phi x 1, gap 1/phi^2 (also the
+# margin). The grid is phi times as wide as the label panel to its right.
+n_row <- length(years)
+bh_u <- 1
+bw_u <- phi
+gap_u <- 1 / phi^2
+grid_u <- per_year * (bw_u + gap_u) + gap_u
+panel_u <- grid_u / phi
 W <- 1628
-H <- 720
-pad <- 8
-pitch_x <- (W - 2 * pad) / per_year
-pitch_y <- (H - 2 * pad) / length(years)
-bw <- 0.84 * pitch_x
-bh <- 0.76 * pitch_y
+u <- W / (grid_u + panel_u)
+H <- round(u * (n_row * (bh_u + gap_u) + gap_u))
+bw <- bw_u * u
+bh <- bh_u * u
+gap <- gap_u * u
+grid_right <- grid_u * u
 
-rrect <- function(x0, y0, x1, y1, r = 9, n = 6) {
+rrect <- function(x0, y0, x1, y1, r, n = 8) {
   corner <- function(cx, cy, a0) {
     a <- seq(a0, a0 + pi / 2, length.out = n)
     cbind(cx + r * cos(a), cy + r * sin(a))
@@ -70,42 +84,37 @@ rrect <- function(x0, y0, x1, y1, r = 9, n = 6) {
 idx <- seq_len(n_rg) - 1L
 col <- idx %% per_year
 row <- idx %/% per_year
+x_left <- function(c) gap + c * (bw + gap)
+y_mid <- function(r) H - gap - r * (bh + gap) - bh / 2
+
 blocks <- do.call(rbind, lapply(seq_len(n_rg), function(i) {
-  cx <- pad + (col[i] + 0.5) * pitch_x
-  cy <- H - pad - (row[i] + 0.5) * pitch_y
-  p <- rrect(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2)
+  p <- rrect(x_left(col[i]), y_mid(row[i]) - bh / 2,
+             x_left(col[i]) + bw, y_mid(row[i]) + bh / 2, r = bh / phi^3)
   data.frame(x = p[, 1], y = p[, 2], id = i, read = read[i])
 }))
 
 blue <- "#2E6F9E"
 grey <- "#5C6166"
 
-# Labels sit over the skipped blocks, each under a soft white glow that traces
-# the letters (translucent copies on circles of growing radius).
+# The labels stand in the panel to the right of the grid, level with the blocks
+# they name: "skipped" beside the middle of the all-skipped top rows, "read"
+# beside the middle of the read rows.
+r_skip <- median(unique(row[!read & row < min(row[read])]))
+r_read <- median(unique(row[read]))
 key <- data.frame(
-  x = c(0.62 * W, 0.47 * W),
-  y = c(H - pad - 2.5 * pitch_y, H - pad - 6.5 * pitch_y),
-  label = c(paste0(n_rg - n_read, " skipped"), paste0(n_read, " read")),
+  x = grid_right + bh,
+  y = c(y_mid(r_skip), y_mid(r_read)),
+  label = c("skipped", "read"),
   group = c("skipped", "read")
 )
-
-halo_layers <- function(key, radii = seq(2, 12, by = 2), n = 16, alpha = 0.07) {
-  a <- seq(0, 2 * pi, length.out = n + 1L)[-1L]
-  unlist(lapply(radii, function(r) lapply(a, function(t)
-    geom_text(data = transform(key, x = x + r * cos(t), y = y + r * sin(t)),
-              aes(x, y, label = label), colour = "white", alpha = alpha, size = 11,
-              fontface = "bold", hjust = 0.5))),
-    recursive = FALSE)
-}
 
 p <- ggplot() +
   geom_polygon(data = blocks[!blocks$read, ], aes(x, y, group = id),
                fill = alpha(blue, 0.10), colour = alpha(blue, 0.35), linewidth = 0.5) +
   geom_polygon(data = blocks[blocks$read, ], aes(x, y, group = id),
                fill = alpha(blue, 0.78), colour = NA) +
-  halo_layers(key) +
-  geom_text(data = key, aes(x, y, label = label, colour = group), size = 11,
-            fontface = "bold", hjust = 0.5) +
+  geom_text(data = key, aes(x, y, label = label, colour = group), size = 22,
+            fontface = "bold", hjust = 0) +
   scale_colour_manual(values = c(skipped = grey, read = blue), guide = "none") +
   coord_equal(xlim = c(0, W), ylim = c(0, H), expand = FALSE) +
   theme_void() +
