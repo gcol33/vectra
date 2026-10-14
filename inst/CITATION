@@ -1,0 +1,11 @@
+bibentry(
+  "Manual",
+  key = "colling2026vectra",
+  title = "vectra: Columnar Query Engine for Larger-than-RAM Data",
+  author = person("Gilles", "Colling", comment = c(ORCID = "0000-0003-3070-6066")),
+  year = "2026",
+  note = paste("R package version", meta$Version),
+  url = "https://gillescolling.com/vectra/",
+  doi = "10.32614/CRAN.package.vectra",
+  header = "If you use vectra, please cite it:"
+)

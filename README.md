@@ -1,114 +1,125 @@
-# vectra
+# vectra <img src="man/figures/logo.svg" align="right" height="139" alt="vectra logo" />
 
 *querying data that won't fit in memory*
 
-[![CRAN status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra)
-[![CRAN downloads](https://cranlogs.r-pkg.org/badges/grand-total/vectra)](https://cran.r-project.org/package=vectra)
-[![Monthly downloads](https://cranlogs.r-pkg.org/badges/vectra)](https://cran.r-project.org/package=vectra)
-[![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml)
-[![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml)
-[![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<!-- badges: start -->
 
-**dplyr-style queries on larger-than-RAM data, backed by a pull-based columnar engine written in C11.**
+[![CRAN status](https://www.r-pkg.org/badges/version/vectra)](https://CRAN.R-project.org/package=vectra) [![CRAN downloads](https://cranlogs.r-pkg.org/badges/grand-total/vectra)](https://cran.r-project.org/package=vectra) [![Monthly downloads](https://cranlogs.r-pkg.org/badges/vectra)](https://cran.r-project.org/package=vectra) [![R-CMD-check](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/R-CMD-check.yml) [![ASAN/UBSAN](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gcol33/vectra/actions/workflows/sanitizers.yml) [![Codecov test coverage](https://codecov.io/gh/gcol33/vectra/graph/badge.svg)](https://app.codecov.io/gh/gcol33/vectra) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) <!-- badges: end -->
 
-Point vectra at a file too big to load and query it with the verbs you already use.
-Data flows through the engine one row group at a time, so peak memory stays bounded
-no matter how large the file gets. Arrow needs compiled binaries that match your
-platform, DuckDB links a bundled library, Spark wants a JVM. vectra is a standard R
-extension that needs no system libraries: its C engine and codecs are compiled from
-the package sources, and its only compiled R dependency is libgeos (GEOS for the
-spatial functions), next to tidyselect and rlang.
+<p align="center">
+
+<img src="man/figures/vectra-hero.png" alt="A grid of 192 row groups, eight rows of 24, from one .vtr file. A filter on year and station reads 24 row groups, shown filled, and skips the other 168, shown as outlines." width="100%">
+</p>
+
+vectra runs [dplyr](https://dplyr.tidyverse.org)-style queries on files that are too large to load into memory: multi-gigabyte CSV and Parquet files, SQLite databases, GeoTIFF rasters and its own `.vtr` columnar format.
+
+The verbs build a lazy query plan, and `collect()` executes it in a C11 engine that pulls one row group (a block of rows that is stored and decoded together) through the plan at a time. Peak memory therefore stays bounded however large the file is. Row groups whose stored minimum and maximum rule out a filter are skipped without being read. You decide what comes back into R: a result small enough to fit, or a stream that feeds a model fit or a file.
+
+vectra supports:
+
+- **Larger-than-memory queries.** `filter()`, `mutate()`, `group_by()` with `summarise()`, joins and window functions stream through the engine, and sorts, joins and aggregations spill to disk when they reach a memory budget ([Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html)).
+- **Several file formats.** `.vtr`, Parquet, CSV, SQLite and GeoTIFF open into the same lazy query nodes, so one pipeline runs against any of them ([Format Backends](https://gillescolling.com/vectra/articles/formats.html)).
+- **Skipping what a query does not need.** The scan reads only the columns a query references, and row group statistics and optional hash indexes skip row groups that cannot match a filter ([Indexing and Query Optimization](https://gillescolling.com/vectra/articles/indexing.html)).
+- **Fuzzy matching and geometry in expressions.** The string distances `levenshtein()`, `dl_dist()` and `jaro_winkler()` and the `st_*` geometry functions evaluate inside `filter()` and `mutate()`, in C, with no round trip to R per row ([String Operations and Fuzzy Matching](https://gillescolling.com/vectra/articles/string-ops.html), [Geometry functions in expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html)).
+- **Spatial and raster data.** Spatial joins, overlay, dissolve, routing on line networks, and raster operations such as `zonal()`, `focal()` and `terrain()` process one batch or tile at a time ([Out-of-core GIS with vectra](https://gillescolling.com/vectra/articles/spatial.html)).
+- **Model fits on out-of-core data.** `collect_chunked()` folds a function over a query one batch at a time, and `chunk_feeder()` and `offload()` feed `biglm::bigglm()` ([Offloading: streaming, monoids, and out-of-core fits](https://gillescolling.com/vectra/articles/offload.html)).
+- **No system libraries.** The C engine and its codecs are compiled from the package sources. The only compiled R dependency is [libgeos](https://paleolimbot.github.io/libgeos/), which supplies GEOS (Geometry Engine, Open Source) for the spatial functions.
+
+The test suite checks the optimizer's rewrites, such as column pruning and predicate pushdown, against base R results, and sanitizer builds (AddressSanitizer and UndefinedBehaviorSanitizer) run in continuous integration.
 
 ## Installation
 
-```r
+``` r
 install.packages("vectra")            # CRAN
 
 install.packages("pak")               # development version
 pak::pak("gcol33/vectra")
 ```
 
-## Quick start
+The development version compiles C code, which needs Rtools on Windows, the Xcode command line tools on macOS, or `r-base-dev` on Linux.
 
-```r
+## Usage
+
+A vectra query has three parts. A source function such as `tbl()` opens a file, verbs describe the query, and `collect()` runs it. The verbs only extend the plan, so nothing is read until `collect()`.
+
+``` r
 library(vectra)
+#> 
+#> Attaching package: 'vectra'
+#> The following object is masked from 'package:stats':
+#> 
+#>     filter
+#> The following object is masked from 'package:graphics':
+#> 
+#>     grid
 
-# Lazy scan over a multi-GB CSV; nothing runs until collect()
-tbl_csv("measurements.csv") |>
-  filter(temperature > 30, year >= 2020) |>
-  group_by(station) |>
-  summarise(avg_temp = mean(temperature), n = n()) |>
+f <- tempfile(fileext = ".vtr")
+write_vtr(mtcars, f)
+
+tbl(f) |>
+  filter(cyl == 4) |>
+  group_by(gear) |>
+  summarise(avg_mpg = mean(mpg), n = n()) |>
   collect()
+#>   gear avg_mpg n
+#> 1    3  21.500 1
+#> 2    4  26.925 8
+#> 3    5  28.200 2
 ```
 
-## One engine, several file formats
+`write_vtr()` converts a data frame to the `.vtr` format. Converting a large CSV once makes repeated queries cheaper, because `.vtr` stores the row group statistics that the scan uses to skip data.
 
-`.vtr` (vectra's own columnar format), Parquet, CSV, SQLite, and GeoTIFF all open into
-the same lazy query nodes, so the same pipeline runs against any of them:
+The verbs follow dplyr: `filter()`, `select()`, `mutate()`, `group_by()` and `summarise()`, all the joins from `left_join()` to `cross_join()` plus `fuzzy_join()`, `arrange()`, the `slice_*()` family and window functions such as `row_number()`, `rank()`, `lag()` and `cumsum()`. `select()`, `rename()`, `relocate()` and `across()` accept the [tidyselect](https://tidyselect.r-lib.org) helpers. The [function reference](https://gillescolling.com/vectra/reference/) lists every verb and expression.
 
-```r
-# A folder of Parquet files (a GBIF snapshot, a Spark export) as one table
+## One pipeline for several file formats
+
+Each source function opens its format into the same lazy query nodes.
+
+``` r
+# A folder of Parquet files as one table
 tbl_parquet("occurrence.parquet/") |>
   filter(countrycode == "AT", year >= 2000) |>
   count(species) |>
   collect()
 
-# GeoTIFF climate raster as tidy data
+# A GeoTIFF raster as tidy data
 tbl_tiff("worldclim_bio1.tif") |>
   filter(band1 > 0) |>
   mutate(temp_c = band1 / 10) |>
   collect()
 
-# SQLite without DBI
+# A SQLite database, without DBI
 tbl_sqlite("survey.db", "responses") |>
   filter(year == 2025) |>
   left_join(tbl_sqlite("survey.db", "sites"), by = "site_id") |>
   collect()
 ```
 
-Convert to `.vtr` once for repeated queries, then read it back fast:
+## Reading the query plan
 
-```r
-write_vtr(big_df, "data.vtr", batch_size = 100000)
+`explain()` prints the optimized plan, including the columns and row groups that the scan skips.
 
-tbl("data.vtr") |>
-  filter(x > 0, region == "EU") |>
-  group_by(region) |>
-  summarise(total = sum(value), n = n()) |>
-  collect()
-```
-
-## How the engine stays bounded
-
-The optimizer rewrites the plan before any data moves, and execution streams the
-result rather than materializing it:
-
-- **Streaming execution**: one row group flows through at a time, never the whole file
-- **Column pruning**: columns you never reference are skipped at the scan
-- **Predicate pushdown**: per-rowgroup min/max statistics skip row groups that cannot match a filter
-- **Hash joins**: build the right side, stream the left; join a fact table against a lookup without holding both in memory
-- **External sort**: a memory budget with automatic spill to disk
-
-`explain()` shows the optimized plan, including which columns and row groups were pruned:
-
-```r
-tbl("data.vtr") |>
-  filter(x > 0) |>
-  select(id, x) |>
+``` r
+tbl(f) |>
+  filter(mpg > 25) |>
+  select(mpg, cyl) |>
   explain()
 #> vectra execution plan
-#>
-#> ProjectNode [streaming]
-#>   FilterNode [streaming]
-#>     ScanNode [streaming, 2/5 cols (pruned), predicate pushdown, tdc stats]
+#> 
+#> ProjectNode [streaming] 
+#>   FilterNode [streaming] 
+#>     ScanNode [streaming, 2/11 cols (pruned), predicate pushdown, tdc stats] 
+#> 
+#> Output columns (2):
+#>   mpg <double>
+#>   cyl <double>
 ```
 
-## Fuzzy matching in the engine
+## Fuzzy matching
 
-String distance runs inside the C engine, with no round-trip to R per row:
+String distance functions run inside the engine, so a fuzzy filter costs no round trip to R per row.
 
-```r
+``` r
 tbl("taxa.vtr") |>
   filter(levenshtein(species, "Quercus robur") <= 2) |>
   mutate(similarity = jaro_winkler(species, "Quercus robur")) |>
@@ -116,18 +127,11 @@ tbl("taxa.vtr") |>
   collect()
 ```
 
-`levenshtein()`, `dl_dist()` (Damerau-Levenshtein), and `jaro_winkler()` are available in
-`filter()` and `mutate()`, alongside `nchar()`, `substr()`, `grepl()`, `gsub()` and the rest
-of the string toolkit.
+## Spatial data
 
-## Spatial data, out of core
+Geometry travels through the engine as WKB (well-known binary) in an ordinary column, so the spatial verbs stream one batch at a time like the rest. This call tags a stream of points with the polygon each one falls in, holding the polygons and one batch in memory.
 
-Same idea, applied to geometry: read and write layers larger than memory, running the GIS
-operations you would otherwise do in sf. Geometry rides through as WKB in an ordinary
-column, so the spatial verbs stream one batch at a time like the rest. Tag a billion-point
-stream with the polygon each point falls in, holding the polygons plus one batch in memory:
-
-```r
+``` r
 library(sf)
 
 tbl("gps_pings.vtr") |>
@@ -136,38 +140,13 @@ tbl("gps_pings.vtr") |>
   collect()
 ```
 
-`st_*` geometry functions evaluate inside `filter()` and `mutate()`, computed in C on the
-GEOS library straight off the geometry column:
+The spatial toolbox also covers `st_*` functions inside `filter()` and `mutate()`, vector-raster bridges (`rasterize()`, `polygonize()`, `contours()`), planar overlay and coverage cleaning (`spatial_overlay()`, `spatial_dissolve()`, `spatial_eliminate()`) and routing on a line network (`spatial_network()`, `spatial_route()`, `spatial_service_area()`). Geometry operations run on GEOS through libgeos. [sf](https://r-spatial.github.io/sf/) is needed for vector file input and output and for reprojection. [Out-of-core GIS with vectra](https://gillescolling.com/vectra/articles/spatial.html) is the place to start.
 
-```r
-tbl("parcels.vtr") |>
-  filter(st_area(geometry) > 1e6) |>
-  mutate(centroid = st_centroid(geometry)) |>
-  collect()
-```
+## Star schemas
 
-Raster operations stream strip by strip over the tiled `.vec` format, so a grid larger
-than memory passes through `zonal()`, `focal()`, `terrain()`, `warp()`, and map algebra
-one tile-row at a time:
+A star schema registers dimension tables once. `lookup()` then pulls columns from any of them, builds the joins and reports unmatched keys.
 
-```r
-r <- vec_open_raster("dem.vec")
-terrain(r, c("slope", "aspect", "hillshade"))     # Horn's method over haloed strips
-zonal(r, watersheds_sf, fun = c("mean", "sd"))    # per-zone, one strip resident
-```
-
-The toolbox reaches further: vector-raster bridges (`rasterize()`, `polygonize()`,
-`contours()`), planar overlay and coverage cleaning (`spatial_overlay()`,
-`spatial_dissolve()`, `spatial_eliminate()`), and routing on a line network
-(`spatial_network()`, `spatial_route()`, `spatial_service_area()`). Geometry stays with
-GEOS through libgeos; `sf` is needed only for vector format I/O and reprojection.
-
-## Star schemas instead of flat-table column creep
-
-Register dimension tables once, then pull columns from any of them; joins are built for
-you, and unmatched keys are reported:
-
-```r
+``` r
 s <- vtr_schema(
   fact    = tbl("observations.vtr"),
   species = link("sp_id", tbl("species.vtr")),
@@ -181,10 +160,9 @@ lookup(s, count, species$name, site$habitat) |> collect()
 
 ## Incremental updates
 
-Append new rows as a new row group without rewriting the file, or take a key-based diff
-between two snapshots:
+`append_vtr()` adds new rows to a `.vtr` file as new row groups without rewriting the existing ones, and `diff_vtr()` compares two snapshots by key.
 
-```r
+``` r
 append_vtr(new_rows_df, "data.vtr")
 
 d <- diff_vtr("snapshot_old.vtr", "snapshot_new.vtr", key_col = "id")
@@ -194,14 +172,9 @@ d$deleted          # key values present in old but not new
 
 ## Streaming results into a model fit
 
-`collect()` brings the whole result into memory. `collect_chunked()` folds a
-function over a query one batch at a time, holding a single batch plus the
-accumulator, so a result larger than memory reduces to a small summary in one
-pass: a running count, per-group sufficient statistics, or the cross-products
-behind a linear fit.
+`collect_chunked()` folds a function over a query one batch at a time. It holds a single batch and the accumulator, so a result larger than memory reduces to a small summary in one pass. This example accumulates the cross-products behind an exact linear fit.
 
-```r
-# Accumulate X'X and X'y for an exact OLS fit, one streaming batch at a time
+``` r
 acc <- tbl("survey.vtr") |>
   select(mpg, wt, hp) |>
   collect_chunked(
@@ -215,86 +188,51 @@ acc <- tbl("survey.vtr") |>
 solve(acc$XtX, acc$Xty)
 ```
 
-For models that re-read the data on every iteration, `chunk_feeder()` exposes a
-query as a resettable generator that `biglm::bigglm()` drives directly, fitting
-a GLM on data too large to hold in memory:
-
-```r
-src <- function() tbl("occurrences.vtr") |> select(presence, bio1, bio12)
-biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(src),
-              family = binomial())
-```
-
-`offload()` spills a prepared query to disk once and streams it back, so each
-reweighted pass reads the prepared columns from a file rather than rebuilding
-the pipeline. With a `by` key it splits the query into per-key shards on disk,
-each small enough to pull into memory on its own. `group_map()` then runs your
-function on each shard, passing the shard as an ordinary data.frame along with
-its group key, and returns the results keyed by shard. That function is
-arbitrary R: a model fit, a clustering call, a custom summary, or any
-computation that needs the whole group in memory at once. `group_modify()`
-recombines per-shard data.frames into one table.
-
-```r
-# Prepare once, then let bigglm re-read the spill on every pass
-s <- offload(tbl("occurrences.vtr") |> select(presence, bio1, bio12))
-biglm::bigglm(presence ~ bio1 + bio12, data = chunk_feeder(s),
-              family = binomial())
-
-# Per-region: group_map runs any function on each in-memory shard (here a GLM)
-p <- offload(tbl("occurrences.vtr"), by = "region")
-fits <- group_map(p, function(d, region)
-  glm(presence ~ bio1 + bio12, data = d, family = binomial()))
-```
-
-## Verbs
-
-vectra covers the dplyr surface most analysis pipelines use: `filter()`, `select()`,
-`mutate()`, `group_by()` / `summarise()` with the common aggregations, all the joins
-(`left_join()` through `cross_join()`, plus `fuzzy_join()`), `arrange()` and the
-`slice_*()` family, and window functions (`row_number()`, `rank()`, `lag()`, `lead()`,
-`cumsum()`, `ntile()`, and more). Date/time and string functions evaluate in the engine.
-`select()`, `rename()`, `relocate()`, and `across()` accept the full tidyselect helper set
-(`starts_with()`, `where()`, `all_of()`, and the rest).
-
-The [Function Reference](https://gillescolling.com/vectra/reference/) lists every verb and
-expression with examples.
+Models that re-read the data on every iteration use `chunk_feeder()`, which exposes a query as a resettable generator for `biglm::bigglm()`. `offload()` writes a prepared query to disk once and streams it back, and with a `by` key it splits the query into per-key shards that each fit in memory, so `group_map()` can run any R function on each shard. [Offloading: streaming, monoids, and out-of-core fits](https://gillescolling.com/vectra/articles/offload.html) covers both.
 
 ## Documentation
 
+Start with [Getting Started with vectra](https://gillescolling.com/vectra/articles/quickstart.html), which takes one query from a file to a collected result.
+
 Engine:
 
-- [Getting Started](https://gillescolling.com/vectra/articles/quickstart.html)
-- [Engine Reference](https://gillescolling.com/vectra/articles/engine.html)
-- [Format Backends](https://gillescolling.com/vectra/articles/formats.html)
-- [Joins](https://gillescolling.com/vectra/articles/joins.html)
-- [Star Schemas](https://gillescolling.com/vectra/articles/schema.html)
-- [String Operations](https://gillescolling.com/vectra/articles/string-ops.html)
-- [Indexing and Optimization](https://gillescolling.com/vectra/articles/indexing.html)
-- [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html)
-- [Offloading and Out-of-core Fits](https://gillescolling.com/vectra/articles/offload.html)
+- [vectra Engine Reference](https://gillescolling.com/vectra/articles/engine.html): the engine's verbs and expressions.
+- [Format Backends](https://gillescolling.com/vectra/articles/formats.html): opening and writing each file format.
+- [Joins](https://gillescolling.com/vectra/articles/joins.html): the join verbs.
+- [Star Schemas and Lookup](https://gillescolling.com/vectra/articles/schema.html): registering dimension tables and pulling columns from them.
+- [String Operations and Fuzzy Matching](https://gillescolling.com/vectra/articles/string-ops.html): string functions and distance joins.
+- [Indexing and Query Optimization](https://gillescolling.com/vectra/articles/indexing.html): hash indexes and the optimizer's rewrites.
+- [Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html): keeping memory bounded on large inputs.
+- [Offloading: streaming, monoids, and out-of-core fits](https://gillescolling.com/vectra/articles/offload.html): model fits on data larger than memory.
 
 Spatial:
 
-- [Out-of-core GIS](https://gillescolling.com/vectra/articles/spatial.html)
-- [Streaming Spatial Operations](https://gillescolling.com/vectra/articles/streaming-spatial.html)
-- [Geometry Functions in Expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html)
-- [Coverage and Topology](https://gillescolling.com/vectra/articles/coverage-topology.html)
-- [Network Analysis](https://gillescolling.com/vectra/articles/networks.html)
-- [Species Distribution Models](https://gillescolling.com/vectra/articles/sdm.html)
+- [Out-of-core GIS with vectra](https://gillescolling.com/vectra/articles/spatial.html): vector and raster operations on large layers.
+- [Streaming spatial operations](https://gillescolling.com/vectra/articles/streaming-spatial.html): the streaming spatial verbs.
+- [Geometry functions in expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html): `st_*` functions inside `filter()` and `mutate()`.
+- [Coverage and topology](https://gillescolling.com/vectra/articles/coverage-topology.html): overlay and coverage cleaning.
+- [Network analysis](https://gillescolling.com/vectra/articles/networks.html): routing and service areas on line networks.
+- [Species Distribution Models](https://gillescolling.com/vectra/articles/sdm.html): a model fit on out-of-core occurrence data.
+
+The [function reference](https://gillescolling.com/vectra/reference/) lists every exported function, grouped by job.
+
+## Getting help
+
+Questions and bug reports go to the [GitHub issue tracker](https://github.com/gcol33/vectra/issues). A bug report with a small reproducible example (a reprex) is the quickest to fix.
 
 ## Support
 
 > "Software is like sex: it's better when it's free." — Linus Torvalds
 
-I'm a PhD student who builds R packages in my free time because I believe good tools
-should be free and open. I started these projects for my own work and figured others
-might find them useful too.
+I'm a PhD student who builds R packages in my free time because I believe good tools should be free and open. I started these projects for my own work and figured others might find them useful too.
 
-If this package saved you some time, buying me a coffee is a nice way to say thanks.
-It helps with my coffee addiction.
+If this package saved you some time, buying me a coffee is a nice way to say thanks. It helps with my coffee addiction.
 
 [![Buy Me A Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
+
+## Acknowledgements
+
+vectra vendors the zstd decoder and xxHash by Yann Collet and Meta Platforms, Inc., and miniz by Rich Geldreich, Martin Raiber and contributors. tdc, the compression library written for vectra, is vendored into the package.
 
 ## License
 
@@ -302,11 +240,22 @@ MIT (see the LICENSE.md file)
 
 ## Citation
 
-```bibtex
-@software{vectra,
-  author = {Colling, Gilles},
-  title  = {vectra: Columnar Query Engine for Larger-Than-RAM Data},
-  year   = {2026},
-  url    = {https://github.com/gcol33/vectra}
+``` text
+Colling G (2026). _vectra: Columnar Query Engine for Larger-than-RAM
+Data_. doi:10.32614/CRAN.package.vectra
+<https://doi.org/10.32614/CRAN.package.vectra>. R package version
+0.13.2, <https://gillescolling.com/vectra/>.
+```
+
+BibTeX:
+
+``` bibtex
+@Manual{colling2026vectra,
+  title = {vectra: Columnar Query Engine for Larger-than-RAM Data},
+  author = {Gilles Colling},
+  year = {2026},
+  note = {R package version 0.13.2},
+  url = {https://gillescolling.com/vectra/},
+  doi = {10.32614/CRAN.package.vectra},
 }
 ```
