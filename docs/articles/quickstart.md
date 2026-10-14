@@ -1,5 +1,15 @@
 # Getting Started with vectra
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## Introduction
 
 vectra is a columnar query engine for R. It stores data in a binary

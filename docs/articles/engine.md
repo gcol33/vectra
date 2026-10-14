@@ -11,6 +11,16 @@ See [`?tbl`](https://gillescolling.com/vectra/reference/tbl.md),
 and [`?explain`](https://gillescolling.com/vectra/reference/explain.md)
 for function-level documentation.
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## What vectra is
 
 vectra is an R-native columnar query engine for datasets that don’t fit

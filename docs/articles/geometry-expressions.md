@@ -18,11 +18,20 @@ one row at a time, with no per-batch round-trip through sf.
 that any later verb can read. The per-row decode is parallelised with
 OpenMP, so a measure over a large layer uses every core.
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ``` r
 
 library(vectra)
 library(sf)
-#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## A layer to work on

@@ -15,11 +15,20 @@ coverage, decomposing geometry into its parts, set-wise constructions,
 and linear referencing. Every block runs on the optional
 [sf](https://r-spatial.github.io/sf/) package.
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ``` r
 
 library(vectra)
 library(sf)
-#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## From lines to polygons

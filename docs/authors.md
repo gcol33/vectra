@@ -32,15 +32,18 @@
 ## Citation
 
 Source:
-[`DESCRIPTION`](https://github.com/gcol33/vectra/blob/HEAD/DESCRIPTION)
+[`inst/CITATION`](https://github.com/gcol33/vectra/blob/HEAD/inst/CITATION)
 
 Colling G (2026). *vectra: Columnar Query Engine for Larger-than-RAM
-Data*. R package version 0.13.2, <https://gillescolling.com/vectra/>.
+Data*.
+[doi:10.32614/CRAN.package.vectra](https://doi.org/10.32614/CRAN.package.vectra).
+R package version 0.13.2, <https://gillescolling.com/vectra/>.
 
-    @Manual{,
+    @Manual{colling2026vectra,
       title = {vectra: Columnar Query Engine for Larger-than-RAM Data},
       author = {Gilles Colling},
       year = {2026},
       note = {R package version 0.13.2},
       url = {https://gillescolling.com/vectra/},
+      doi = {10.32614/CRAN.package.vectra},
     }

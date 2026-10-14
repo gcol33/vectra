@@ -1,5 +1,15 @@
 # Format Backends
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## Introduction
 
 vectra reads its native `.vtr`, Parquet, CSV, SQLite, Excel and GeoTIFF,

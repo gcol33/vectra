@@ -1,5 +1,15 @@
 # Out-of-core GIS with vectra
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## The streaming envelope
 
 Every desktop GIS runs its toolbox one in-memory layer at a time. Open a

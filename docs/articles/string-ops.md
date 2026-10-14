@@ -1,5 +1,15 @@
 # String Operations and Fuzzy Matching
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## Introduction
 
 String-heavy datasets are common in ecology. Species names arrive with

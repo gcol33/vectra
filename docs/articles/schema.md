@@ -1,5 +1,15 @@
 # Star Schemas and Lookup
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## The flat-table problem
 
 Ecological analyses almost always involve multiple tables. Observations

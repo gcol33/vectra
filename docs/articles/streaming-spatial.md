@@ -9,11 +9,20 @@ execute and check. It needs the optional
 use to take layers and coordinate reference systems as arguments, and
 which runs the operations vectra has no native path for.
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ``` r
 
 library(vectra)
 library(sf)
-#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## The problem

@@ -12,11 +12,20 @@ The graph and the shortest-path solver are pure C, a binary-heap
 Dijkstra over a compressed adjacency, with no `igraph` dependency. The
 solver parallelises over a batch of origins with OpenMP.
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ``` r
 
 library(vectra)
 library(sf)
-#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## Building a network

@@ -1,5 +1,15 @@
 # Working with Large Data
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## Introduction
 
 R holds data.frames entirely in memory. A 10 GB CSV loaded with

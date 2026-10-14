@@ -1,5 +1,15 @@
 # Species Distribution Models
 
+## Installation
+
+``` r
+
+install.packages("vectra")            # CRAN
+
+install.packages("pak")               # development version
+pak::pak("gcol33/vectra")
+```
+
 ## What vectra does for a distribution model
 
 A species distribution model relates occurrence records to environmental
