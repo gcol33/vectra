@@ -96,7 +96,7 @@
 <!-- badges: start -->
 
 <p align="center">
-<img src="reference/figures/vectra-hero.png" alt="A grid of 192 row groups, eight rows of 24, from one .vtr file. A filter on year and station reads 24 row groups, shown filled, and skips the other 168, shown as outlines." width="100%"></p>
+<img src="reference/figures/vectra-hero.png" alt="A grid of 64 row groups, eight rows of 8, from one .vtr file. A filter on year and station reads 9 row groups, shown filled, and skips the other 55, shown as outlines." width="100%"></p>
 <p>vectra runs <a href="https://dplyr.tidyverse.org" class="external-link">dplyr</a>-style queries on files that are too large to load into memory: multi-gigabyte CSV and Parquet files, SQLite databases, GeoTIFF rasters and its own <code>.vtr</code> columnar format.</p>
 <p>The verbs build a lazy query plan, and <code><a href="reference/collect.html">collect()</a></code> executes it in a C11 engine that pulls one row group (a block of rows that is stored and decoded together) through the plan at a time. Peak memory therefore stays bounded however large the file is. Row groups whose stored minimum and maximum rule out a filter are skipped without being read. You decide what comes back into R: a result small enough to fit, or a stream that feeds a model fit or a file.</p>
 <p>vectra supports:</p>
