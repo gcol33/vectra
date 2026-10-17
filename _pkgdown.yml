@@ -45,9 +45,6 @@ articles:
   - offload
   - spatial
   - streaming-spatial
-  - geometry-expressions
-  - coverage-topology
-  - networks
   - sdm
 reference:
 - title: Data sources

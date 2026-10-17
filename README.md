@@ -1,3 +1,4 @@
+
 # vectra <img src="man/figures/logo.svg" align="right" height="139" alt="vectra logo" />
 
 *querying data that won't fit in memory*
@@ -20,7 +21,7 @@ vectra supports:
 - **Larger-than-memory queries.** `filter()`, `mutate()`, `group_by()` with `summarise()`, joins and window functions stream through the engine, and sorts, joins and aggregations spill to disk when they reach a memory budget ([Working with Large Data](https://gillescolling.com/vectra/articles/large-data.html)).
 - **Several file formats.** `.vtr`, Parquet, CSV, SQLite and GeoTIFF open into the same lazy query nodes, so one pipeline runs against any of them ([Format Backends](https://gillescolling.com/vectra/articles/formats.html)).
 - **Skipping what a query does not need.** The scan reads only the columns a query references, and row group statistics and optional hash indexes skip row groups that cannot match a filter ([Indexing and Query Optimization](https://gillescolling.com/vectra/articles/indexing.html)).
-- **Fuzzy matching and geometry in expressions.** The string distances `levenshtein()`, `dl_dist()` and `jaro_winkler()` and the `st_*` geometry functions evaluate inside `filter()` and `mutate()`, in C, with no round trip to R per row ([String Operations and Fuzzy Matching](https://gillescolling.com/vectra/articles/string-ops.html), [Geometry functions in expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html)).
+- **Fuzzy matching and geometry in expressions.** The string distances `levenshtein()`, `dl_dist()` and `jaro_winkler()` and the `st_*` geometry functions evaluate inside `filter()` and `mutate()`, in C, with no round trip to R per row ([String Operations and Fuzzy Matching](https://gillescolling.com/vectra/articles/string-ops.html), [Geometry functions in expressions](https://gillescolling.com/vectra/articles/streaming-spatial.html#geometry-functions-in-expressions)).
 - **Spatial and raster data.** Spatial joins, overlay, dissolve, routing on line networks, and raster operations such as `zonal()`, `focal()` and `terrain()` process one batch or tile at a time ([Out-of-core GIS with vectra](https://gillescolling.com/vectra/articles/spatial.html)).
 - **Model fits on out-of-core data.** `collect_chunked()` folds a function over a query one batch at a time, and `chunk_feeder()` and `offload()` feed `biglm::bigglm()` ([Offloading: streaming, monoids, and out-of-core fits](https://gillescolling.com/vectra/articles/offload.html)).
 - **No system libraries.** The C engine and its codecs are compiled from the package sources. The only compiled R dependency is [libgeos](https://paleolimbot.github.io/libgeos/), which supplies GEOS (Geometry Engine, Open Source) for the spatial functions.
@@ -29,14 +30,48 @@ The test suite checks the optimizer's rewrites, such as column pruning and predi
 
 ## Installation
 
-``` r
-install.packages("vectra")            # CRAN
+The release on CRAN installs as a binary on Windows and macOS, so no build tools are needed:
 
-install.packages("pak")               # development version
+``` r
+install.packages("vectra")
+```
+
+The development version compiles C code, so install the build tools for your operating system first:
+
+| Operating system | Build tools |
+|----|----|
+| Windows | [Rtools](https://cran.r-project.org/bin/windows/Rtools/), the version that matches your R version |
+| macOS | Run `xcode-select --install` in Terminal |
+| Debian / Ubuntu | Install `r-base-dev` |
+
+Check that R can find the compiler:
+
+``` r
+pkgbuild::has_build_tools(debug = TRUE)
+```
+
+Then install vectra:
+
+``` r
+# install.packages("pak")
 pak::pak("gcol33/vectra")
 ```
 
-The development version compiles C code, which needs Rtools on Windows, the Xcode command line tools on macOS, or `r-base-dev` on Linux.
+vectra needs GNU make, which Rtools and the Linux and macOS toolchains include. The spatial functions use [libgeos](https://paleolimbot.github.io/libgeos/), which installs automatically as a dependency. It carries its own copy of GEOS, so no system GEOS, GDAL or PROJ is required.
+
+### Optional: multithreading
+
+String distances, geometry functions and the compression kernels use OpenMP to run on several CPU threads. Rtools on Windows and the default compiler on Linux include OpenMP. Without it, vectra installs and returns the same results on one thread.
+
+#### macOS setup
+
+Apple's compiler does not ship an OpenMP runtime. The installer first tries the runtime that CRAN's R for macOS includes, then a Homebrew `libomp`, and builds on one thread if neither works. To make the second option available, run this in Terminal before installing vectra:
+
+``` sh
+brew install libomp
+```
+
+The installer prints a line starting with `configure: wrote src/Makevars (OpenMP: ...)`. It shows the flags it chose, or `off` when vectra was built on one thread. The [R for macOS OpenMP page](https://mac.r-project.org/openmp/) describes other ways to install the runtime.
 
 ## Usage
 
@@ -209,9 +244,9 @@ Spatial:
 
 - [Out-of-core GIS with vectra](https://gillescolling.com/vectra/articles/spatial.html): vector and raster operations on large layers.
 - [Streaming spatial operations](https://gillescolling.com/vectra/articles/streaming-spatial.html): the streaming spatial verbs.
-- [Geometry functions in expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html): `st_*` functions inside `filter()` and `mutate()`.
-- [Coverage and topology](https://gillescolling.com/vectra/articles/coverage-topology.html): overlay and coverage cleaning.
-- [Network analysis](https://gillescolling.com/vectra/articles/networks.html): routing and service areas on line networks.
+- [Geometry functions in expressions](https://gillescolling.com/vectra/articles/streaming-spatial.html#geometry-functions-in-expressions): `st_*` functions inside `filter()` and `mutate()`.
+- [Coverage and topology](https://gillescolling.com/vectra/articles/streaming-spatial.html#coverage-and-topology): overlay and coverage cleaning.
+- [Network analysis](https://gillescolling.com/vectra/articles/streaming-spatial.html#network-analysis): routing and service areas on line networks.
 - [Species Distribution Models](https://gillescolling.com/vectra/articles/sdm.html): a model fit on out-of-core occurrence data.
 
 The [function reference](https://gillescolling.com/vectra/reference/) lists every exported function, grouped by job.
@@ -259,3 +294,5 @@ BibTeX:
   doi = {10.32614/CRAN.package.vectra},
 }
 ```
+
+Download the citation as [BibTeX](https://gillescolling.com/vectra/vectra.bib) or [RIS](https://gillescolling.com/vectra/vectra.ris).

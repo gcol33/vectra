@@ -176,6 +176,29 @@ tdc_status tdc_stream_encoder_write_block(tdc_stream_encoder       *enc,
                                           const tdc_codec_spec     *spec);
 
 /*
+ * Write one block record that the caller already encoded with
+ * tdc_encode_block. Same position in the sequence and same bookkeeping as
+ * tdc_stream_encoder_write_block; the container bytes are identical to
+ * what write_block would have produced from the same block and spec.
+ *
+ * This splits encoding from writing: tdc_encode_block keeps no shared
+ * state, so a caller can encode the columns of a row group concurrently
+ * (one tdc_buffer per column, one thread each) and then hand the records
+ * to the encoder in column order. The encoder itself is not thread-safe;
+ * calls on one encoder must be serialized.
+ *
+ *   rec, rec_size   exactly one block record (header + sections). The
+ *                   header is validated and its section sizes must sum
+ *                   to rec_size; the payload is not decoded.
+ *
+ * Returns TDC_E_CORRUPT / TDC_E_VERSION for a malformed record and
+ * TDC_E_INVAL on a widening encoder (use tdc_stream_encoder_widen_block).
+ */
+tdc_status tdc_stream_encoder_write_record(tdc_stream_encoder *enc,
+                                           const uint8_t      *rec,
+                                           size_t              rec_size);
+
+/*
  * Signal end of current row group.  n_rows is the row count.
  * Must be called after writing all n_cols blocks for the group.
  * Optional — if never called, no row-group index is written.

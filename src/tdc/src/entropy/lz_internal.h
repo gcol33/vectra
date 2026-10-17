@@ -215,10 +215,20 @@ tdc_status tdc_lz_serialize_sequences(const uint8_t *src, uint32_t src_size,
  * lazy_depth: lazy matching.
  *   0 = no lazy (emit first match found).
  *   1 = single lazy (check position+1; if longer match, emit literal at P).
- *   2 = double lazy (check position+2 as well). */
+ *   2 = double lazy (check position+2 as well).
+ *
+ * min_gain: minimum bytes a match must save under the single-stream LZ
+ *   cost (match_len - 1 tag byte - offset field size). A match below it
+ *   is dropped and its bytes stay literal.
+ *   0 = keep every match >= LZ_MIN_MATCH (callers with their own cost
+ *       model, e.g. LZ_STREAMS).
+ *
+ * Applies only when chain_depth > 0 or lazy_depth > 0; the flat-hash
+ * no-lazy configuration runs a separate fast parser. */
 tdc_status tdc_lz_parse_greedy(const uint8_t *src, uint32_t src_size,
                                 tdc_buffer *dst,
                                 uint32_t chain_depth, uint32_t lazy_depth,
+                                uint32_t min_gain,
                                 LZSeq **out_seqs, uint32_t *out_seq_count);
 
 /* Shared optimal-parser match-finder (defined in lz_opt.c). Walks src

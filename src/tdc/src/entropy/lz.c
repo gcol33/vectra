@@ -505,9 +505,37 @@ static tdc_status lz_parse_fast(const uint8_t *src, uint32_t src_size,
     return TDC_OK;
 }
 
+/* Miss-streak skipping for the hash-chain parser. After a miss, the next
+ * probe lands 1 + (run >> LZ_SKIP_STRENGTH) bytes further on, where run is
+ * the length of the pending literal run. Inside matchable data a match
+ * resets the run within a few probes, so the step stays at or near 1.
+ * Across high-entropy bytes (the mantissa planes of measured doubles) the
+ * run grows and the parser probes, and chain-inserts, only a thinning
+ * subset of positions, capped at one probe per LZ_SKIP_MAX_STEP bytes so a
+ * matchable region that follows is entered with bounded delay. */
+#define LZ_SKIP_STRENGTH 6u
+#define LZ_SKIP_MAX_STEP 64u
+
+/* min_gain the single-stream encoder passes to the greedy parser: a match
+ * must save at least one byte over coding its bytes as literals. */
+#define LZ_SINGLE_MIN_GAIN 1u
+
+static inline uint32_t lz_miss_step(uint32_t lit_run) {
+    uint32_t step = 1u + (lit_run >> LZ_SKIP_STRENGTH);
+    return step < LZ_SKIP_MAX_STEP ? step : LZ_SKIP_MAX_STEP;
+}
+
+/* Bytes a match saves in the single-stream format: the match_len literal
+ * bytes it replaces, minus its tag byte and offset field. Length and
+ * literal-run extension bytes are ignored. */
+static inline int32_t lz_single_stream_gain(uint32_t match_len, uint32_t match_off) {
+    return (int32_t)match_len - 1 - (int32_t)lz_offset_size(match_off);
+}
+
 tdc_status tdc_lz_parse_greedy(const uint8_t *src, uint32_t src_size,
                                 tdc_buffer *dst,
                                 uint32_t chain_depth, uint32_t lazy_depth,
+                                uint32_t min_gain,
                                 LZSeq **out_seqs, uint32_t *out_seq_count) {
     /* Fast path: flat hash + no lazy + accelerating step. */
     if (chain_depth == 0 && lazy_depth == 0) {
@@ -624,6 +652,11 @@ tdc_status tdc_lz_parse_greedy(const uint8_t *src, uint32_t src_size,
 
         mf->insert(mf_ctx, sp);
 
+        if (match_len >= LZ_MIN_MATCH && min_gain > 0u &&
+            lz_single_stream_gain(match_len, match_off) < (int32_t)min_gain) {
+            match_len = 0;
+        }
+
         if (match_len >= LZ_MIN_MATCH) {
             uint32_t pending_lit = sp - lit_start;
 
@@ -658,7 +691,7 @@ tdc_status tdc_lz_parse_greedy(const uint8_t *src, uint32_t src_size,
             sp += match_len;
             lit_start = sp;
         } else {
-            sp++;
+            sp += lz_miss_step(sp - lit_start);
         }
     }
 
@@ -724,7 +757,7 @@ static tdc_status lz_encode_core(const uint8_t *src, uint32_t src_size,
     LZSeq *seqs = NULL;
     uint32_t seq_count = 0;
     tdc_status st = tdc_lz_parse_greedy(src, src_size, dst,
-                                         chain_depth, lazy_depth,
+                                         chain_depth, lazy_depth, LZ_SINGLE_MIN_GAIN,
                                          &seqs, &seq_count);
     if (st != TDC_OK) return st;
 

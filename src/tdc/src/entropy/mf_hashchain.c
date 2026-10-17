@@ -7,7 +7,9 @@
  *   htab[1 << hash_bits]   — head of chain per bucket (most recent pos)
  *   chain_prev[src_size]   — link to previous position sharing the same
  *                            bucket (allocated only when chain_depth > 0;
- *                            chain_depth == 0 collapses to flat hash)
+ *                            chain_depth == 0 collapses to flat hash).
+ *                            Only entries of inserted positions are ever
+ *                            read, so the array is not initialised.
  *
  * Hash function: 4-byte little-endian load, multiplied by the Fibonacci
  * constant 2654435761u, top hash_bits bits taken. Same constant the
@@ -127,7 +129,9 @@ static tdc_lz_mf_ctx *mf_hashchain_create(const uint8_t *src, uint32_t src_size,
             (void)alloc->realloc_fn(alloc->user, ctx, 0);
             return NULL;
         }
-        memset(ctx->chain_prev, 0xFF, (size_t)src_size * sizeof(uint32_t));
+        /* Left uninitialised: chain_prev[p] is written by insert(p) before
+         * any walk can reach p, because every walk starts at an htab head
+         * and follows links, and both only ever hold inserted positions. */
     }
 
     return ctx;

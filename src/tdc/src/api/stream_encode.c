@@ -286,23 +286,12 @@ tdc_status tdc_stream_encoder_open(const tdc_stream_encoder_config *cfg,
     return TDC_OK;
 }
 
-tdc_status tdc_stream_encoder_write_block(tdc_stream_encoder       *enc,
-                                          const tdc_block          *src,
-                                          const tdc_codec_spec     *spec) {
-    if (!enc || !src || !spec) return TDC_E_INVAL;
-
-    v2_stream_encoder_state *e = (v2_stream_encoder_state *)enc;
-
-    /* A widening encoder adds columns to row groups that already exist, and
-     * names the one it means per call; the open-row-group accumulator this
-     * path feeds has nothing to attach to. Use widen_block there. */
-    if (e->mode == V2_MODE_WIDEN) return TDC_E_INVAL;
-
-    /* Encode the block into the scratch buffer. */
-    e->scratch.size = 0;
-    tdc_status st = tdc_encode_block(src, spec, &e->scratch);
-    if (st != TDC_OK) return st;
-
+/* Append one encoded block record to the open row group: record its
+ * offset and size for the index, then write it through io. Shared by
+ * write_block (record encoded here) and write_record (record encoded by
+ * the caller). */
+static tdc_status v2_append_record(v2_stream_encoder_state *e,
+                                   const uint8_t *rec, size_t rec_size) {
     /* Track the first block's offset for the current row group. */
     if (e->cur_n_cols == 0) {
         e->cur_group_offset = e->write_pos;
@@ -320,16 +309,59 @@ tdc_status tdc_stream_encoder_write_block(tdc_stream_encoder       *enc,
 
     /* Record this column's block entry. */
     e->cur_cols[e->cur_n_cols].block_offset = e->write_pos;
-    e->cur_cols[e->cur_n_cols].block_total  = e->scratch.size;
+    e->cur_cols[e->cur_n_cols].block_total  = rec_size;
     e->cur_n_cols++;
 
     /* Write the encoded block record to the output stream. */
-    st = v2_io_write_exact(&e->io, e->scratch.data, e->scratch.size);
+    tdc_status st = v2_io_write_exact(&e->io, rec, rec_size);
     if (st != TDC_OK) return st;
 
-    e->write_pos += e->scratch.size;
+    e->write_pos += rec_size;
     e->n_blocks++;
     return TDC_OK;
+}
+
+tdc_status tdc_stream_encoder_write_block(tdc_stream_encoder       *enc,
+                                          const tdc_block          *src,
+                                          const tdc_codec_spec     *spec) {
+    if (!enc || !src || !spec) return TDC_E_INVAL;
+
+    v2_stream_encoder_state *e = (v2_stream_encoder_state *)enc;
+
+    /* A widening encoder adds columns to row groups that already exist, and
+     * names the one it means per call; the open-row-group accumulator this
+     * path feeds has nothing to attach to. Use widen_block there. */
+    if (e->mode == V2_MODE_WIDEN) return TDC_E_INVAL;
+
+    /* Encode the block into the scratch buffer. */
+    e->scratch.size = 0;
+    tdc_status st = tdc_encode_block(src, spec, &e->scratch);
+    if (st != TDC_OK) return st;
+
+    return v2_append_record(e, e->scratch.data, e->scratch.size);
+}
+
+tdc_status tdc_stream_encoder_write_record(tdc_stream_encoder *enc,
+                                           const uint8_t      *rec,
+                                           size_t              rec_size) {
+    if (!enc || !rec) return TDC_E_INVAL;
+
+    v2_stream_encoder_state *e = (v2_stream_encoder_state *)enc;
+    if (e->mode == V2_MODE_WIDEN) return TDC_E_INVAL;
+
+    /* The record must be exactly one well-formed block record: a valid
+     * header whose section sizes add up to rec_size. */
+    if (rec_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
+    tdc_block_record hdr;
+    memcpy(&hdr, rec, TDC_BLOCK_HEADER_SIZE);
+    tdc_status st = tdc_block_record_validate(&hdr);
+    if (st != TDC_OK) return st;
+    uint64_t total = (uint64_t)TDC_BLOCK_HEADER_SIZE
+                   + hdr.side_meta_size + hdr.xform_params_size
+                   + hdr.payload_size + hdr.validity_size;
+    if (total != (uint64_t)rec_size) return TDC_E_CORRUPT;
+
+    return v2_append_record(e, rec, rec_size);
 }
 
 tdc_status tdc_stream_encoder_end_rowgroup(tdc_stream_encoder *enc,

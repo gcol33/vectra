@@ -1124,7 +1124,7 @@ static tdc_status lzs_encode(const uint8_t *src, size_t src_size,
         default: chain_depth = 16; lazy_depth = 2; break;
         }
         st = tdc_lz_parse_greedy(src, (uint32_t)src_size, dst,
-                                  chain_depth, lazy_depth,
+                                  chain_depth, lazy_depth, 0u,
                                   &seqs, &seq_count);
         if (st != TDC_OK) return st;
     } else {
