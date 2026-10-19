@@ -128,6 +128,16 @@ figure {
   border-color: #495057;
 }
 
+/* pkgdown inverts figures and widgets in dark mode, which turns the white plot */
+/* background black and flips every colour of a raster map. SVG figures are */
+/* inlined and themed below; raster figures and widgets are shown as drawn. */
+[data-bs-theme="dark"] img.r-plt,
+[data-bs-theme="dark"] pre .r-plt.img img,
+[data-bs-theme="dark"] .cell-output-display img,
+[data-bs-theme="dark"] .html-widget {
+  filter: none;
+}
+
 /* Dark mode colors for inline SVG elements (base R svg format) */
 /* Use !important to override embedded SVG <style> blocks */
 [data-bs-theme="dark"] .theme-bg {

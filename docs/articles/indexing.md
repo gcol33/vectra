@@ -1,14 +1,7 @@
 # Indexing and Query Optimization
 
-## Installation
-
-``` r
-
-install.packages("vectra")            # CRAN
-
-install.packages("pak")               # development version
-pak::pak("gcol33/vectra")
-```
+Installation is covered in [Get
+started](https://gillescolling.com/vectra/articles/quickstart.md).
 
 ## Introduction
 
@@ -328,9 +321,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.15 s
+#> Without index: 0.12 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.15 s
+#> With index:    0.12 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -493,7 +486,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.19 s
+#> With index, %in% filter: 0.14 s
 ```
 
 Without an index, the same query reads all row groups and filters in

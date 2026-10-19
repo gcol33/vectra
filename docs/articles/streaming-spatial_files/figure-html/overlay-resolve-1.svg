@@ -1,0 +1,94 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40'>
+<g class='svglite'>
+<defs>
+  <style type='text/css'><![CDATA[
+    /* theme-aware-processed */
+    .svglite line, .svglite polyline, .svglite polygon, .svglite path, .svglite circle {
+      fill: none;
+      stroke: #3E3F3A;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-miterlimit: 10.00;
+    }
+    .svglite > g > rect {
+      fill: none;
+      stroke: #3E3F3A;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-miterlimit: 10.00;
+    }
+    .svglite text {
+      white-space: pre;
+      fill: #3E3F3A;
+    }
+    .svglite g.glyphgroup path {
+      fill: inherit;
+      stroke: none;
+    }
+  ]]></style>
+</defs>
+<rect width='100%' height='100%' style='stroke: none; fill: #F5F6F8;'/>
+<defs>
+  <clipPath id='cpMC4wMHw1MDQuMDB8MC4wMHwzMDIuNDA='>
+    <rect x='0.00' y='0.00' width='504.00' height='302.40' />
+  </clipPath>
+</defs>
+<g clip-path='url(#cpMC4wMHw1MDQuMDB8MC4wMHwzMDIuNDA=)'>
+</g>
+<defs>
+  <clipPath id='cpMC4wMHw1MDQuMDB8MjUxLjM4fDMwMi40MA=='>
+    <rect x='0.00' y='251.38' width='504.00' height='51.02' />
+  </clipPath>
+</defs>
+<g clip-path='url(#cpMC4wMHw1MDQuMDB8MjUxLjM4fDMwMi40MA==)'>
+</g>
+<defs>
+  <clipPath id='cpMTQuNDB8NDg5LjYwfDI1MS4zOHwyNzIuMTY='>
+    <rect x='14.40' y='251.38' width='475.20' height='20.78' />
+  </clipPath>
+</defs>
+<g clip-path='url(#cpMTQuNDB8NDg5LjYwfDI1MS4zOHwyNzIuMTY=)'>
+<polygon points='105.16,272.16 252.00,272.16 252.00,255.53 105.16,255.53 ' style='stroke-width: 0.75; stroke: none; fill: #0000B3;' />
+<polygon points='252.00,272.16 398.84,272.16 398.84,255.53 252.00,255.53 ' style='stroke-width: 0.75; stroke: none; fill: #FFF50A;' />
+<polygon points='105.16,272.16 398.84,272.16 398.84,255.53 105.16,255.53 ' style='stroke-width: 0.75;' />
+</g>
+<g clip-path='url(#cpMC4wMHw1MDQuMDB8MC4wMHwzMDIuNDA=)'>
+<line x1='178.58' y1='272.16' x2='325.42' y2='272.16' style='stroke-width: 0.75;' />
+<line x1='178.58' y1='272.16' x2='178.58' y2='279.36' style='stroke-width: 0.75;' />
+<line x1='252.00' y1='272.16' x2='252.00' y2='279.36' style='stroke-width: 0.75;' />
+<line x1='325.42' y1='272.16' x2='325.42' y2='279.36' style='stroke-width: 0.75;' />
+<text x='178.58' y='298.08' text-anchor='middle' style='font-size: 1.2em; font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;'>1990</text>
+<text x='252.00' y='298.08' text-anchor='middle' style='font-size: 1.2em; font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;'>1995</text>
+<text x='325.42' y='298.08' text-anchor='middle' style='font-size: 1.2em; font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;'>2000</text>
+</g>
+<defs>
+  <clipPath id='cpMTQuNDB8NDg5LjYwfDE3LjI4fDIzNi45OA=='>
+    <rect x='14.40' y='17.28' width='475.20' height='219.70' />
+  </clipPath>
+</defs>
+<g clip-path='url(#cpMTQuNDB8NDg5LjYwfDE3LjI4fDIzNi45OA==)'>
+<rect class='legend-bg' x='14.40' y='17.28' width='475.20' height='219.70' style='stroke-width: 0.75; stroke: #F5F6F8; fill: #F5F6F8;' />
+<path d='M 32.00 64.27 L 157.71 64.27 L 157.71 189.99 L 32.00 189.99 L 32.00 64.27 Z' style='fill-rule: evenodd; fill: #0000B3; stroke-width: 0.75;' />
+<path d='M 157.71 64.27 L 220.57 64.27 L 220.57 189.99 L 157.71 189.99 L 157.71 64.27 Z' style='fill-rule: evenodd; fill: #0000B3; stroke-width: 0.75;' />
+<path d='M 220.57 64.27 L 283.43 64.27 L 283.43 189.99 L 220.57 189.99 L 220.57 64.27 Z' style='fill-rule: evenodd; fill: #0000B3; stroke-width: 0.75;' />
+<path d='M 283.43 189.99 L 283.43 64.27 L 409.14 64.27 L 409.14 189.99 L 283.43 189.99 Z' style='fill-rule: evenodd; fill: #FFF50A; stroke-width: 0.75;' />
+<path d='M 409.14 189.99 L 409.14 64.27 L 472.00 64.27 L 472.00 189.99 L 409.14 189.99 Z' style='fill-rule: evenodd; fill: #FFF50A; stroke-width: 0.75;' />
+</g>
+<defs>
+  <clipPath id='cpMC4wMHw1MDQuMDB8MC4wMHwyNTEuMzg='>
+    <rect x='0.00' y='0.00' width='504.00' height='251.38' />
+  </clipPath>
+</defs>
+<g clip-path='url(#cpMC4wMHw1MDQuMDB8MC4wMHwyNTEuMzg=)'>
+<text x='252.00' y='13.79' text-anchor='middle' style='font-size: 1.44em; font-weight: bold; font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;'>Overlay pieces, earliest year wins</text>
+</g>
+<defs>
+  <clipPath id='cpNTkuMDR8NDczLjc2fDU5LjA0fDIyOC45Ng=='>
+    <rect x='59.04' y='59.04' width='414.72' height='169.92' />
+  </clipPath>
+</defs>
+<g clip-path='url(#cpNTkuMDR8NDczLjc2fDU5LjA0fDIyOC45Ng==)'>
+</g>
+</g>
+</svg>

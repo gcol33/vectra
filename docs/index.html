@@ -66,9 +66,6 @@
     <li><a class="dropdown-item" href="articles/offload.html">Offloading: streaming, monoids, and out-of-core fits</a></li>
     <li><a class="dropdown-item" href="articles/spatial.html">Out-of-core GIS with vectra</a></li>
     <li><a class="dropdown-item" href="articles/streaming-spatial.html">Streaming spatial operations</a></li>
-    <li><a class="dropdown-item" href="articles/geometry-expressions.html">Geometry functions in expressions</a></li>
-    <li><a class="dropdown-item" href="articles/coverage-topology.html">Coverage and topology</a></li>
-    <li><a class="dropdown-item" href="articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="articles/sdm.html">Species Distribution Models</a></li>
   </ul>
 </li>
@@ -108,7 +105,7 @@
 <li>
 <strong>Skipping what a query does not need.</strong> The scan reads only the columns a query references, and row group statistics and optional hash indexes skip row groups that cannot match a filter (<a href="https://gillescolling.com/vectra/articles/indexing.html">Indexing and Query Optimization</a>).</li>
 <li>
-<strong>Fuzzy matching and geometry in expressions.</strong> The string distances <code>levenshtein()</code>, <code>dl_dist()</code> and <code>jaro_winkler()</code> and the <code>st_*</code> geometry functions evaluate inside <code><a href="reference/filter.html">filter()</a></code> and <code><a href="reference/mutate.html">mutate()</a></code>, in C, with no round trip to R per row (<a href="https://gillescolling.com/vectra/articles/string-ops.html">String Operations and Fuzzy Matching</a>, <a href="https://gillescolling.com/vectra/articles/geometry-expressions.html">Geometry functions in expressions</a>).</li>
+<strong>Fuzzy matching and geometry in expressions.</strong> The string distances <code>levenshtein()</code>, <code>dl_dist()</code> and <code>jaro_winkler()</code> and the <code>st_*</code> geometry functions evaluate inside <code><a href="reference/filter.html">filter()</a></code> and <code><a href="reference/mutate.html">mutate()</a></code>, in C, with no round trip to R per row (<a href="https://gillescolling.com/vectra/articles/string-ops.html">String Operations and Fuzzy Matching</a>, <a href="https://gillescolling.com/vectra/articles/streaming-spatial.html#geometry-functions-in-expressions">Geometry functions in expressions</a>).</li>
 <li>
 <strong>Spatial and raster data.</strong> Spatial joins, overlay, dissolve, routing on line networks, and raster operations such as <code><a href="reference/zonal.html">zonal()</a></code>, <code><a href="reference/focal.html">focal()</a></code> and <code><a href="reference/terrain.html">terrain()</a></code> process one batch or tile at a time (<a href="https://gillescolling.com/vectra/articles/spatial.html">Out-of-core GIS with vectra</a>).</li>
 <li>
@@ -120,18 +117,62 @@
 <div class="section level2">
 <h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
 </h2>
+<p>The release on CRAN installs as a binary on Windows and macOS, so no build tools are needed:</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
-<span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span></span></code></pre></div>
+<p>The development version compiles C code, so install the build tools for your operating system first:</p>
+<table class="table">
+<colgroup>
+<col width="50%">
+<col width="50%">
+</colgroup>
+<thead><tr>
+<th>Operating system</th>
+<th>Build tools</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td>
+<a href="https://cran.r-project.org/bin/windows/Rtools/" class="external-link">Rtools</a>, the version that matches your R version</td>
+</tr>
+<tr>
+<td>macOS</td>
+<td>Run <code>xcode-select --install</code> in Terminal</td>
+</tr>
+<tr>
+<td>Debian / Ubuntu</td>
+<td>Install <code>r-base-dev</code>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Check that R can find the compiler:</p>
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu">pkgbuild</span><span class="fu">::</span><span class="fu"><a href="https://pkgbuild.r-lib.org/reference/has_build_tools.html" class="external-link">has_build_tools</a></span><span class="op">(</span>debug <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
+<p>Then install vectra:</p>
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># install.packages("pak")</span></span>
 <span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
-<p>The development version compiles C code, which needs Rtools on Windows, the Xcode command line tools on macOS, or <code>r-base-dev</code> on Linux.</p>
+<p>vectra needs GNU make, which Rtools and the Linux and macOS toolchains include. The spatial functions use <a href="https://paleolimbot.github.io/libgeos/" class="external-link">libgeos</a>, which installs automatically as a dependency. It carries its own copy of GEOS, so no system GEOS, GDAL or PROJ is required.</p>
+<div class="section level3">
+<h3 id="optional-multithreading">Optional: multithreading<a class="anchor" aria-label="anchor" href="#optional-multithreading"></a>
+</h3>
+<p>String distances, geometry functions and the compression kernels use OpenMP to run on several CPU threads. Rtools on Windows and the default compiler on Linux include OpenMP. Without it, vectra installs and returns the same results on one thread.</p>
+<div class="section level4">
+<h4 id="macos-setup">macOS setup<a class="anchor" aria-label="anchor" href="#macos-setup"></a>
+</h4>
+<p>Apple’s compiler does not ship an OpenMP runtime. The installer first tries the runtime that CRAN’s R for macOS includes, then a Homebrew <code>libomp</code>, and builds on one thread if neither works. To make the second option available, run this in Terminal before installing vectra:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="ex">brew</span> install libomp</span></code></pre></div>
+<p>The installer prints a line starting with <code>configure: wrote src/Makevars (OpenMP: ...)</code>. It shows the flags it chose, or <code>off</code> when vectra was built on one thread. The <a href="https://mac.r-project.org/openmp/" class="external-link">R for macOS OpenMP page</a> describes other ways to install the runtime.</p>
+</div>
+</div>
 </div>
 <div class="section level2">
 <h2 id="usage">Usage<a class="anchor" aria-label="anchor" href="#usage"></a>
 </h2>
 <p>A vectra query has three parts. A source function such as <code><a href="reference/tbl.html">tbl()</a></code> opens a file, verbs describe the query, and <code><a href="reference/collect.html">collect()</a></code> runs it. The verbs only extend the plan, so nothing is read until <code><a href="reference/collect.html">collect()</a></code>.</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; Attaching package: 'vectra'</span></span>
@@ -161,7 +202,7 @@
 <h2 id="one-pipeline-for-several-file-formats">One pipeline for several file formats<a class="anchor" aria-label="anchor" href="#one-pipeline-for-several-file-formats"></a>
 </h2>
 <p>Each source function opens its format into the same lazy query nodes.</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># A folder of Parquet files as one table</span></span>
 <span><span class="fu"><a href="reference/tbl_parquet.html">tbl_parquet</a></span><span class="op">(</span><span class="st">"occurrence.parquet/"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">countrycode</span> <span class="op">==</span> <span class="st">"AT"</span>, <span class="va">year</span> <span class="op">&gt;=</span> <span class="fl">2000</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -184,7 +225,7 @@
 <h2 id="reading-the-query-plan">Reading the query plan<a class="anchor" aria-label="anchor" href="#reading-the-query-plan"></a>
 </h2>
 <p><code><a href="reference/explain.html">explain()</a></code> prints the optimized plan, including the columns and row groups that the scan skips.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="va">f</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="va">mpg</span> <span class="op">&gt;</span> <span class="fl">25</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">cyl</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -203,7 +244,7 @@
 <h2 id="fuzzy-matching">Fuzzy matching<a class="anchor" aria-label="anchor" href="#fuzzy-matching"></a>
 </h2>
 <p>String distance functions run inside the engine, so a fuzzy filter costs no round trip to R per row.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"taxa.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/filter.html">filter</a></span><span class="op">(</span><span class="fu">levenshtein</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span> <span class="op">&lt;=</span> <span class="fl">2</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/mutate.html">mutate</a></span><span class="op">(</span>similarity <span class="op">=</span> <span class="fu">jaro_winkler</span><span class="op">(</span><span class="va">species</span>, <span class="st">"Quercus robur"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -214,7 +255,7 @@
 <h2 id="spatial-data">Spatial data<a class="anchor" aria-label="anchor" href="#spatial-data"></a>
 </h2>
 <p>Geometry travels through the engine as WKB (well-known binary) in an ordinary column, so the spatial verbs stream one batch at a time like the rest. This call tags a stream of points with the polygon each one falls in, holding the polygons and one batch in memory.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"gps_pings.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
@@ -227,7 +268,7 @@
 <h2 id="star-schemas">Star schemas<a class="anchor" aria-label="anchor" href="#star-schemas"></a>
 </h2>
 <p>A star schema registers dimension tables once. <code><a href="reference/lookup.html">lookup()</a></code> then pulls columns from any of them, builds the joins and reports unmatched keys.</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">s</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/vtr_schema.html">vtr_schema</a></span><span class="op">(</span></span>
 <span>  fact    <span class="op">=</span> <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"observations.vtr"</span><span class="op">)</span>,</span>
 <span>  species <span class="op">=</span> <span class="fu"><a href="reference/link.html">link</a></span><span class="op">(</span><span class="st">"sp_id"</span>, <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"species.vtr"</span><span class="op">)</span><span class="op">)</span>,</span>
@@ -242,7 +283,7 @@
 <h2 id="incremental-updates">Incremental updates<a class="anchor" aria-label="anchor" href="#incremental-updates"></a>
 </h2>
 <p><code><a href="reference/append_vtr.html">append_vtr()</a></code> adds new rows to a <code>.vtr</code> file as new row groups without rewriting the existing ones, and <code><a href="reference/diff_vtr.html">diff_vtr()</a></code> compares two snapshots by key.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/append_vtr.html">append_vtr</a></span><span class="op">(</span><span class="va">new_rows_df</span>, <span class="st">"data.vtr"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">d</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/diff_vtr.html">diff_vtr</a></span><span class="op">(</span><span class="st">"snapshot_old.vtr"</span>, <span class="st">"snapshot_new.vtr"</span>, key_col <span class="op">=</span> <span class="st">"id"</span><span class="op">)</span></span>
@@ -253,7 +294,7 @@
 <h2 id="streaming-results-into-a-model-fit">Streaming results into a model fit<a class="anchor" aria-label="anchor" href="#streaming-results-into-a-model-fit"></a>
 </h2>
 <p><code><a href="reference/collect_chunked.html">collect_chunked()</a></code> folds a function over a query one batch at a time. It holds a single batch and the accumulator, so a result larger than memory reduces to a small summary in one pass. This example accumulates the cross-products behind an exact linear fit.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">acc</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/tbl.html">tbl</a></span><span class="op">(</span><span class="st">"survey.vtr"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/select.html">select</a></span><span class="op">(</span><span class="va">mpg</span>, <span class="va">wt</span>, <span class="va">hp</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu"><a href="reference/collect_chunked.html">collect_chunked</a></span><span class="op">(</span></span>
@@ -297,11 +338,11 @@
 <li>
 <a href="https://gillescolling.com/vectra/articles/streaming-spatial.html">Streaming spatial operations</a>: the streaming spatial verbs.</li>
 <li>
-<a href="https://gillescolling.com/vectra/articles/geometry-expressions.html">Geometry functions in expressions</a>: <code>st_*</code> functions inside <code><a href="reference/filter.html">filter()</a></code> and <code><a href="reference/mutate.html">mutate()</a></code>.</li>
+<a href="https://gillescolling.com/vectra/articles/streaming-spatial.html#geometry-functions-in-expressions">Geometry functions in expressions</a>: <code>st_*</code> functions inside <code><a href="reference/filter.html">filter()</a></code> and <code><a href="reference/mutate.html">mutate()</a></code>.</li>
 <li>
-<a href="https://gillescolling.com/vectra/articles/coverage-topology.html">Coverage and topology</a>: overlay and coverage cleaning.</li>
+<a href="https://gillescolling.com/vectra/articles/streaming-spatial.html#coverage-and-topology">Coverage and topology</a>: overlay and coverage cleaning.</li>
 <li>
-<a href="https://gillescolling.com/vectra/articles/networks.html">Network analysis</a>: routing and service areas on line networks.</li>
+<a href="https://gillescolling.com/vectra/articles/streaming-spatial.html#network-analysis">Network analysis</a>: routing and service areas on line networks.</li>
 <li>
 <a href="https://gillescolling.com/vectra/articles/sdm.html">Species Distribution Models</a>: a model fit on out-of-core occurrence data.</li>
 </ul>
@@ -340,14 +381,15 @@ Data_. doi:10.32614/CRAN.package.vectra
 &lt;https://doi.org/10.32614/CRAN.package.vectra&gt;. R package version
 0.13.2, &lt;https://gillescolling.com/vectra/&gt;.</code></pre>
 <p>BibTeX:</p>
-<div class="sourceCode" id="cb11"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a><span class="va">@Manual</span>{<span class="ot">colling2026vectra</span>,</span>
-<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a>  <span class="dt">title</span> = {vectra: Columnar Query Engine for Larger-than-RAM Data},</span>
-<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a>  <span class="dt">author</span> = {Gilles Colling},</span>
-<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a>  <span class="dt">year</span> = {2026},</span>
-<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a>  <span class="dt">note</span> = {R package version 0.13.2},</span>
-<span id="cb11-6"><a href="#cb11-6" tabindex="-1"></a>  <span class="dt">url</span> = {https://gillescolling.com/vectra/},</span>
-<span id="cb11-7"><a href="#cb11-7" tabindex="-1"></a>  <span class="dt">doi</span> = {10.32614/CRAN.package.vectra},</span>
-<span id="cb11-8"><a href="#cb11-8" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="va">@Manual</span>{<span class="ot">colling2026vectra</span>,</span>
+<span id="cb14-2"><a href="#cb14-2" tabindex="-1"></a>  <span class="dt">title</span> = {vectra: Columnar Query Engine for Larger-than-RAM Data},</span>
+<span id="cb14-3"><a href="#cb14-3" tabindex="-1"></a>  <span class="dt">author</span> = {Gilles Colling},</span>
+<span id="cb14-4"><a href="#cb14-4" tabindex="-1"></a>  <span class="dt">year</span> = {2026},</span>
+<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a>  <span class="dt">note</span> = {R package version 0.13.2},</span>
+<span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a>  <span class="dt">url</span> = {https://gillescolling.com/vectra/},</span>
+<span id="cb14-7"><a href="#cb14-7" tabindex="-1"></a>  <span class="dt">doi</span> = {10.32614/CRAN.package.vectra},</span>
+<span id="cb14-8"><a href="#cb14-8" tabindex="-1"></a>}</span></code></pre></div>
+<p>Download the citation as <a href="https://gillescolling.com/vectra/vectra.bib">BibTeX</a> or <a href="https://gillescolling.com/vectra/vectra.ris">RIS</a>.</p>
 </div>
 </div>
   </main><aside class="col-md-3"><div class="links">

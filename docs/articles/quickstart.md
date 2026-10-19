@@ -6,9 +6,14 @@
 
 install.packages("vectra")            # CRAN
 
-install.packages("pak")               # development version
+# install.packages("pak")             # development version
 pak::pak("gcol33/vectra")
 ```
+
+The development version compiles C code and needs build tools;
+[Installation](https://gillescolling.com/vectra/#installation) lists
+them for each operating system and explains the optional multithreading
+setup.
 
 ## Introduction
 

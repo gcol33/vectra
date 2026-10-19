@@ -20,6 +20,10 @@ template:
         };
       })();
       </script>
+figures:
+  dev: svglite::svglite
+  fig.ext: svg
+  bg: '#F5F6F8'
 navbar:
   structure:
     left:

@@ -1,14 +1,7 @@
 # Star Schemas and Lookup
 
-## Installation
-
-``` r
-
-install.packages("vectra")            # CRAN
-
-install.packages("pak")               # development version
-pak::pak("gcol33/vectra")
-```
+Installation is covered in [Get
+started](https://gillescolling.com/vectra/articles/quickstart.md).
 
 ## The flat-table problem
 

@@ -49,7 +49,7 @@ vectra supports:
   C, with no round trip to R per row ([String Operations and Fuzzy
   Matching](https://gillescolling.com/vectra/articles/string-ops.html),
   [Geometry functions in
-  expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html)).
+  expressions](https://gillescolling.com/vectra/articles/streaming-spatial.html#geometry-functions-in-expressions)).
 - **Spatial and raster data.** Spatial joins, overlay, dissolve, routing
   on line networks, and raster operations such as
   [`zonal()`](https://gillescolling.com/vectra/reference/zonal.md),
@@ -78,16 +78,67 @@ integration.
 
 ## Installation
 
+The release on CRAN installs as a binary on Windows and macOS, so no
+build tools are needed:
+
 ``` r
 
-install.packages("vectra")            # CRAN
+install.packages("vectra")
+```
 
-install.packages("pak")               # development version
+The development version compiles C code, so install the build tools for
+your operating system first:
+
+| Operating system | Build tools |
+|----|----|
+| Windows | [Rtools](https://cran.r-project.org/bin/windows/Rtools/), the version that matches your R version |
+| macOS | Run `xcode-select --install` in Terminal |
+| Debian / Ubuntu | Install `r-base-dev` |
+
+Check that R can find the compiler:
+
+``` r
+
+pkgbuild::has_build_tools(debug = TRUE)
+```
+
+Then install vectra:
+
+``` r
+
+# install.packages("pak")
 pak::pak("gcol33/vectra")
 ```
 
-The development version compiles C code, which needs Rtools on Windows,
-the Xcode command line tools on macOS, or `r-base-dev` on Linux.
+vectra needs GNU make, which Rtools and the Linux and macOS toolchains
+include. The spatial functions use
+[libgeos](https://paleolimbot.github.io/libgeos/), which installs
+automatically as a dependency. It carries its own copy of GEOS, so no
+system GEOS, GDAL or PROJ is required.
+
+### Optional: multithreading
+
+String distances, geometry functions and the compression kernels use
+OpenMP to run on several CPU threads. Rtools on Windows and the default
+compiler on Linux include OpenMP. Without it, vectra installs and
+returns the same results on one thread.
+
+#### macOS setup
+
+Apple’s compiler does not ship an OpenMP runtime. The installer first
+tries the runtime that CRAN’s R for macOS includes, then a Homebrew
+`libomp`, and builds on one thread if neither works. To make the second
+option available, run this in Terminal before installing vectra:
+
+``` sh
+brew install libomp
+```
+
+The installer prints a line starting with
+`configure: wrote src/Makevars (OpenMP: ...)`. It shows the flags it
+chose, or `off` when vectra was built on one thread. The [R for macOS
+OpenMP page](https://mac.r-project.org/openmp/) describes other ways to
+install the runtime.
 
 ## Usage
 
@@ -370,15 +421,15 @@ Spatial:
   operations](https://gillescolling.com/vectra/articles/streaming-spatial.html):
   the streaming spatial verbs.
 - [Geometry functions in
-  expressions](https://gillescolling.com/vectra/articles/geometry-expressions.html):
+  expressions](https://gillescolling.com/vectra/articles/streaming-spatial.html#geometry-functions-in-expressions):
   `st_*` functions inside
   [`filter()`](https://gillescolling.com/vectra/reference/filter.md) and
   [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md).
 - [Coverage and
-  topology](https://gillescolling.com/vectra/articles/coverage-topology.html):
+  topology](https://gillescolling.com/vectra/articles/streaming-spatial.html#coverage-and-topology):
   overlay and coverage cleaning.
 - [Network
-  analysis](https://gillescolling.com/vectra/articles/networks.html):
+  analysis](https://gillescolling.com/vectra/articles/streaming-spatial.html#network-analysis):
   routing and service areas on line networks.
 - [Species Distribution
   Models](https://gillescolling.com/vectra/articles/sdm.html): a model
@@ -439,3 +490,7 @@ BibTeX:
   doi = {10.32614/CRAN.package.vectra},
 }
 ```
+
+Download the citation as
+[BibTeX](https://gillescolling.com/vectra/vectra.bib) or
+[RIS](https://gillescolling.com/vectra/vectra.ris).

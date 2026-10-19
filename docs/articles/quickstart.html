@@ -49,7 +49,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -63,9 +63,6 @@
     <li><a class="dropdown-item" href="../articles/offload.html">Offloading: streaming, monoids, and out-of-core fits</a></li>
     <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
-    <li><a class="dropdown-item" href="../articles/geometry-expressions.html">Geometry functions in expressions</a></li>
-    <li><a class="dropdown-item" href="../articles/coverage-topology.html">Coverage and topology</a></li>
-    <li><a class="dropdown-item" href="../articles/networks.html">Network analysis</a></li>
     <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
   </ul>
 </li>
@@ -93,7 +90,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-14</h4>
+            <h4 data-toc-skip class="date">2026-10-19</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/quickstart.Rmd" class="external-link"><code>vignettes/quickstart.Rmd</code></a></small>
       <div class="d-none name"><code>quickstart.Rmd</code></div>
@@ -107,8 +104,11 @@ Colling</h4>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"vectra"</span><span class="op">)</span>            <span class="co"># CRAN</span></span>
 <span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"pak"</span><span class="op">)</span>               <span class="co"># development version</span></span>
+<span><span class="co"># install.packages("pak")             # development version</span></span>
 <span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"gcol33/vectra"</span><span class="op">)</span></span></code></pre></div>
+<p>The development version compiles C code and needs build tools; <a href="https://gillescolling.com/vectra/#installation">Installation</a>
+lists them for each operating system and explains the optional
+multithreading setup.</p>
 <script>
 /* Shared canvas engine for the vectra vignette figures.
    Inlined by the `va-engine` chunk of every vignette that draws one. */
