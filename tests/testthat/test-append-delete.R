@@ -536,6 +536,25 @@ test_that("repeated row appends never move the rows already written", {
   expect_equal(tbl(f) |> collect() |> getElement("x"), as.double(1:1100))
 })
 
+test_that("appends succeed while tbl() maps of the same file are open", {
+  # Readers map a file with every share mode, so an append in place (rows or
+  # columns) needs no collection of the maps a session still holds, whether
+  # they are referenced or garbage.
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = 1:100), f)
+  live <- tbl(f)
+  for (i in 1:5) {
+    invisible(tbl(f) |> collect())
+    append_vtr(data.frame(x = (100L * i + 1L):(100L * i + 100L)), f)
+  }
+  expect_equal(tbl(f) |> collect() |> getElement("x"), as.double(1:600))
+  append_vtr(data.frame(y = 600:1), f, along = "cols")
+  wide <- tbl(f) |> collect()
+  expect_equal(wide$y, as.double(600:1))
+  expect_s3_class(live, "vectra_node")
+})
+
 test_that("a row append honours compress", {
   f_none  <- tempfile(fileext = ".vtr")
   f_small <- tempfile(fileext = ".vtr")

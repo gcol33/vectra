@@ -482,11 +482,6 @@ append_vtr.vectra_node <- function(x, path, along = c("rows", "cols"),
   check_scalar_string(path)
   along <- match.arg(along)
   path <- normalizePath(path, mustWork = TRUE)
-  # Force GC so any lingering tbl()-owned file handles on `path` are closed
-  # before we write to it. On Windows the rename at the end of C_append_vtr,
-  # and the r+b open in the column path, otherwise fail with a sharing
-  # violation.
-  gc(verbose = FALSE)
   indexed <- length(.index_files(path)) > 0L
   pre <- if (indexed) .store_fingerprint(path)
   if (along == "cols") {

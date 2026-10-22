@@ -1,3 +1,14 @@
+# vectra 0.13.3
+
+## Bug fixes
+
+* `append_vtr()` no longer runs a full garbage collection on every call. The
+  collection cost grew with every object the session held (17 ms per append
+  in an empty session, 240 ms with six million live objects), so building
+  stores by many appends from a session with large state slowed to a crawl.
+  An append grows the store in place, and readers map files with every share
+  mode, so no open map has to be collected first.
+
 # vectra 0.13.2
 
 ## Bug fixes
