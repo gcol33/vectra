@@ -126,12 +126,12 @@ char *r_col_annotation(SEXP col) {
 
 /* --- Convert R data.frame to VecBatch --- */
 
-VecBatch *df_to_batch(SEXP df) {
+/* Rows start .. start + n_rows - 1 of a data.frame as a batch. Column c takes
+   type types[c] when types is given (an integer column may be narrowed to
+   int8/int16/int32), else the type r_col_type() gives it. */
+VecBatch *df_to_batch_range(SEXP df, int64_t start, int64_t n_rows, const VecType *types) {
     int n_cols = Rf_length(df);
     if (n_cols == 0) vectra_error("data.frame has no columns");
-
-    SEXP first_col = VECTOR_ELT(df, 0);
-    int64_t n_rows = (int64_t)XLENGTH(first_col);
 
     VecBatch *batch = vec_batch_alloc(n_cols, n_rows);
 
@@ -145,7 +145,7 @@ VecBatch *df_to_batch(SEXP df) {
     for (int c = 0; c < n_cols; c++) {
         SEXP col = VECTOR_ELT(df, c);
         int is_factor = Rf_isFactor(col);
-        VecType type = r_col_type(col);
+        VecType type = types ? types[c] : r_col_type(col);
         VecArray arr = vec_array_alloc(type, n_rows);
         vec_array_set_all_valid(&arr);
 
@@ -156,8 +156,8 @@ VecBatch *df_to_batch(SEXP df) {
             /* First pass: compute total string length */
             int64_t total_len = 0;
             for (int64_t i = 0; i < n_rows; i++) {
-                if (ip[i] == NA_INTEGER) continue;
-                total_len += (int64_t)strlen(CHAR(STRING_ELT(levels, ip[i] - 1)));
+                if (ip[start + i] == NA_INTEGER) continue;
+                total_len += (int64_t)strlen(CHAR(STRING_ELT(levels, ip[start + i] - 1)));
             }
             free(arr.buf.str.data);  /* free 1-byte from vec_array_alloc */
             arr.buf.str.data = (char *)malloc((size_t)(total_len > 0 ? total_len : 1));
@@ -167,10 +167,10 @@ VecBatch *df_to_batch(SEXP df) {
             int64_t offset = 0;
             for (int64_t i = 0; i < n_rows; i++) {
                 arr.buf.str.offsets[i] = offset;
-                if (ip[i] == NA_INTEGER) {
+                if (ip[start + i] == NA_INTEGER) {
                     vec_array_set_null(&arr, i);
                 } else {
-                    const char *lev = CHAR(STRING_ELT(levels, ip[i] - 1));
+                    const char *lev = CHAR(STRING_ELT(levels, ip[start + i] - 1));
                     int64_t slen = (int64_t)strlen(lev);
                     memcpy(arr.buf.str.data + offset, lev, (size_t)slen);
                     offset += slen;
@@ -185,19 +185,19 @@ VecBatch *df_to_batch(SEXP df) {
                 /* Fast scan for NA */
                 int has_na = 0;
                 for (int64_t i = 0; i < n_rows; i++) {
-                    if (ip[i] == NA_INTEGER) { has_na = 1; break; }
+                    if (ip[start + i] == NA_INTEGER) { has_na = 1; break; }
                 }
                 if (!has_na) {
                     /* Widen int32 → int64 in bulk (no NA checks) */
                     for (int64_t i = 0; i < n_rows; i++)
-                        arr.buf.i64[i] = (int64_t)ip[i];
+                        arr.buf.i64[i] = (int64_t)ip[start + i];
                 } else {
                     for (int64_t i = 0; i < n_rows; i++) {
-                        if (ip[i] == NA_INTEGER) {
+                        if (ip[start + i] == NA_INTEGER) {
                             vec_array_set_null(&arr, i);
                             arr.buf.i64[i] = 0;
                         } else {
-                            arr.buf.i64[i] = (int64_t)ip[i];
+                            arr.buf.i64[i] = (int64_t)ip[start + i];
                         }
                     }
                 }
@@ -206,7 +206,7 @@ VecBatch *df_to_batch(SEXP df) {
                 double *dp = REAL(col);
                 for (int64_t i = 0; i < n_rows; i++) {
                     int64_t v;
-                    memcpy(&v, &dp[i], sizeof(int64_t));
+                    memcpy(&v, &dp[start + i], sizeof(int64_t));
                     if (v == INT64_MIN) {
                         vec_array_set_null(&arr, i);
                         arr.buf.i64[i] = 0;
@@ -219,11 +219,11 @@ VecBatch *df_to_batch(SEXP df) {
         case VEC_INT8: {
             int *ip = INTEGER(col);
             for (int64_t i = 0; i < n_rows; i++) {
-                if (ip[i] == NA_INTEGER) {
+                if (ip[start + i] == NA_INTEGER) {
                     vec_array_set_null(&arr, i);
                     arr.buf.i8[i] = 0;
                 } else {
-                    arr.buf.i8[i] = (int8_t)ip[i];
+                    arr.buf.i8[i] = (int8_t)ip[start + i];
                 }
             }
             break;
@@ -231,11 +231,11 @@ VecBatch *df_to_batch(SEXP df) {
         case VEC_INT16: {
             int *ip = INTEGER(col);
             for (int64_t i = 0; i < n_rows; i++) {
-                if (ip[i] == NA_INTEGER) {
+                if (ip[start + i] == NA_INTEGER) {
                     vec_array_set_null(&arr, i);
                     arr.buf.i16[i] = 0;
                 } else {
-                    arr.buf.i16[i] = (int16_t)ip[i];
+                    arr.buf.i16[i] = (int16_t)ip[start + i];
                 }
             }
             break;
@@ -243,11 +243,11 @@ VecBatch *df_to_batch(SEXP df) {
         case VEC_INT32: {
             int *ip = INTEGER(col);
             for (int64_t i = 0; i < n_rows; i++) {
-                if (ip[i] == NA_INTEGER) {
+                if (ip[start + i] == NA_INTEGER) {
                     vec_array_set_null(&arr, i);
                     arr.buf.i32[i] = 0;
                 } else {
-                    arr.buf.i32[i] = (int32_t)ip[i];
+                    arr.buf.i32[i] = (int32_t)ip[start + i];
                 }
             }
             break;
@@ -257,20 +257,20 @@ VecBatch *df_to_batch(SEXP df) {
             /* Fast scan: check if any NAs exist */
             int has_na = 0;
             for (int64_t i = 0; i < n_rows; i++) {
-                if (ISNAN(dp[i])) { has_na = 1; break; }
+                if (ISNAN(dp[start + i])) { has_na = 1; break; }
             }
             if (!has_na && n_rows > 0) {
                 /* Bulk copy — no NAs. A zero-length column has no data and
                  * REAL() can hand back a degenerate pointer, so skip the
                  * copy rather than pass it to memcpy. */
-                memcpy(arr.buf.dbl, dp, (size_t)n_rows * sizeof(double));
+                memcpy(arr.buf.dbl, dp + start, (size_t)n_rows * sizeof(double));
             } else if (has_na) {
                 for (int64_t i = 0; i < n_rows; i++) {
-                    if (ISNA(dp[i]) || ISNAN(dp[i])) {
+                    if (ISNA(dp[start + i]) || ISNAN(dp[start + i])) {
                         vec_array_set_null(&arr, i);
                         arr.buf.dbl[i] = 0.0;
                     } else {
-                        arr.buf.dbl[i] = dp[i];
+                        arr.buf.dbl[i] = dp[start + i];
                     }
                 }
             }
@@ -279,11 +279,11 @@ VecBatch *df_to_batch(SEXP df) {
         case VEC_BOOL: {
             int *lp = LOGICAL(col);
             for (int64_t i = 0; i < n_rows; i++) {
-                if (lp[i] == NA_LOGICAL) {
+                if (lp[start + i] == NA_LOGICAL) {
                     vec_array_set_null(&arr, i);
                     arr.buf.bln[i] = 0;
                 } else {
-                    arr.buf.bln[i] = (uint8_t)(lp[i] != 0);
+                    arr.buf.bln[i] = (uint8_t)(lp[start + i] != 0);
                 }
             }
             break;
@@ -292,7 +292,7 @@ VecBatch *df_to_batch(SEXP df) {
             /* First pass: compute total string length */
             int64_t total_len = 0;
             for (int64_t i = 0; i < n_rows; i++) {
-                SEXP s = STRING_ELT(col, (R_xlen_t)i);
+                SEXP s = STRING_ELT(col, (R_xlen_t)(start + i));
                 if (s == NA_STRING) continue;
                 total_len += (int64_t)strlen(CHAR(s));
             }
@@ -305,7 +305,7 @@ VecBatch *df_to_batch(SEXP df) {
             int64_t offset = 0;
             for (int64_t i = 0; i < n_rows; i++) {
                 arr.buf.str.offsets[i] = offset;
-                SEXP s = STRING_ELT(col, (R_xlen_t)i);
+                SEXP s = STRING_ELT(col, (R_xlen_t)(start + i));
                 if (s == NA_STRING) {
                     vec_array_set_null(&arr, i);
                 } else {
@@ -325,6 +325,11 @@ VecBatch *df_to_batch(SEXP df) {
     }
 
     return batch;
+}
+
+VecBatch *df_to_batch(SEXP df) {
+    if (Rf_length(df) == 0) vectra_error("data.frame has no columns");
+    return df_to_batch_range(df, 0, (int64_t)XLENGTH(VECTOR_ELT(df, 0)), NULL);
 }
 
 /* --- Expression parser: R list -> VecExpr --- */

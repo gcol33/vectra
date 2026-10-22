@@ -1,3 +1,17 @@
+# vectra 0.13.4
+
+## Changes
+
+* `append_vtr()` appends the rows of a data.frame straight from its R columns,
+  in row groups of the store's column types, instead of writing the frame to
+  a temporary `.vtr` and scanning it back. An integer column can now be
+  appended to a store column narrowed to `int8`, `int16` or `int32`.
+* The `.vtri` sidecars of a store are looked up by name in C (on Windows a
+  single directory query for the store's own prefix) rather than by listing
+  the whole directory in R.
+* Together a 2,000-row append into a directory of 2,000 stores goes from 4.4
+  ms to 0.6 ms.
+
 # vectra 0.13.3
 
 ## Bug fixes

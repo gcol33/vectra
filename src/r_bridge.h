@@ -70,6 +70,7 @@ SEXP C_interval_join_node(SEXP probe_xptr, SEXP build_xptr,
 /* Hash index */
 SEXP C_create_index(SEXP path, SEXP col_name, SEXP ci, SEXP mem);
 SEXP C_has_index(SEXP path, SEXP col_name);
+SEXP C_index_names(SEXP dir, SEXP base);
 SEXP C_index_spec(SEXP path, SEXP vtri_path);
 SEXP C_extend_index(SEXP path, SEXP vtri_path, SEXP pre_fingerprint, SEXP mem);
 SEXP C_store_fingerprint(SEXP path);

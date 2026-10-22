@@ -536,6 +536,33 @@ test_that("repeated row appends never move the rows already written", {
   expect_equal(tbl(f) |> collect() |> getElement("x"), as.double(1:1100))
 })
 
+test_that("a data.frame row append reads the same back as write_vtr() of the whole", {
+  f <- tempfile(fileext = ".vtr"); g <- tempfile(fileext = ".vtr")
+  on.exit(unlink(c(f, g)))
+  mk <- function(i) data.frame(
+    i = c(i, NA, i + 1L), d = c(i / 3, NA, Inf), b = c(TRUE, NA, FALSE),
+    s = c(paste0("s", i), NA, ""), k = factor(c("a", NA, "b"), levels = c("b", "a")),
+    stringsAsFactors = FALSE)
+  write_vtr(mk(1L), f)
+  for (i in 2:4) append_vtr(mk(i), f)
+  write_vtr(do.call(rbind, lapply(1:4, mk)), g)
+  expect_identical(collect(tbl(f)), collect(tbl(g)))
+})
+
+test_that("a data.frame row append is cut into row groups and fills narrow integer columns", {
+  f <- tempfile(fileext = ".vtr")
+  on.exit(unlink(f))
+  write_vtr(data.frame(x = 1:3, y = 0.5), f, col_types = c(x = "int32"))
+  n <- 300000L
+  append_vtr(data.frame(x = seq_len(n), y = 1), f)
+  r <- collect(tbl(f))
+  expect_equal(nrow(r), n + 3L)
+  expect_equal(r$x, as.double(c(1:3, seq_len(n))))
+  expect_error(append_vtr(data.frame(x = "a", y = 1), f), "type mismatch at column 'x'")
+  expect_error(append_vtr(data.frame(y = 1, x = 1L), f), "name mismatch")
+  expect_equal(nrow(collect(tbl(f))), n + 3L)
+})
+
 test_that("appends succeed while tbl() maps of the same file are open", {
   # Readers map a file with every share mode, so an append in place (rows or
   # columns) needs no collection of the maps a session still holds, whether

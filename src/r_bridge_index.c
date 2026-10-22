@@ -7,6 +7,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <dirent.h>
+#endif
 
 /* A fingerprint crosses into R as 16 hex digits: R has no unsigned 64-bit
    type, and a string round-trips every bit. */
@@ -168,5 +173,56 @@ SEXP C_index_spec(SEXP path, SEXP vtri_path) {
     SET_STRING_ELT(nms, 1, Rf_mkChar("ci"));
     Rf_setAttrib(out, R_NamesSymbol, nms);
     UNPROTECT(3);
+    return out;
+}
+
+/* --- C_index_names(dir, base) ---
+   Names of the files in dir that start with "<base>." and end in ".vtri": the
+   .vtri sidecars of the store dir/base. Compared by prefix rather than by
+   glob, so a name holding glob metacharacters still resolves. On Windows the
+   directory is queried for "<base>.*" (a file name cannot hold * or ?), so
+   the call reads the matching entries only. */
+
+static int is_sidecar(const char *name, const char *base, size_t nb) {
+    size_t n = strlen(name);
+    return n >= nb + 1 && n >= 5 && strncmp(name, base, nb) == 0 && name[nb] == '.' &&
+           strcmp(name + n - 5, ".vtri") == 0;
+}
+
+SEXP C_index_names(SEXP dir_sexp, SEXP base_sexp) {
+    const char *dir = CHAR(STRING_ELT(dir_sexp, 0));
+    const char *base = CHAR(STRING_ELT(base_sexp, 0));
+    size_t nb = strlen(base);
+    int cap = 4, n = 0;
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, cap));
+#ifdef _WIN32
+    size_t len = strlen(dir) + 1 + nb + 3;
+    char *pattern = R_alloc(len, 1);
+    snprintf(pattern, len, "%s/%s.*", dir, base);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (!is_sidecar(fd.cFileName, base, nb)) continue;
+            if (n == cap) { cap *= 2; out = Rf_lengthgets(out, cap); UNPROTECT(1); PROTECT(out); }
+            SET_STRING_ELT(out, n++, Rf_mkChar(fd.cFileName));
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (!is_sidecar(e->d_name, base, nb)) continue;
+            if (n == cap) { cap *= 2; out = Rf_lengthgets(out, cap); UNPROTECT(1); PROTECT(out); }
+            SET_STRING_ELT(out, n++, Rf_mkChar(e->d_name));
+        }
+        closedir(d);
+    }
+#endif
+    out = Rf_lengthgets(out, n);
+    UNPROTECT(1);
     return out;
 }

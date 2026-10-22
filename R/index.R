@@ -100,14 +100,10 @@ has_index <- function(path, column) {
   .Call(C_has_index, path, column)
 }
 
-# The .vtri sidecars sitting beside a store. Matched by prefix rather than by
-# glob, so a path holding glob metacharacters still resolves.
+# The .vtri sidecars sitting beside a store (see C_index_names).
 .index_files <- function(path) {
   dir <- dirname(path)
-  base <- basename(path)
-  files <- list.files(dir, all.files = FALSE, no.. = TRUE)
-  keep <- startsWith(files, paste0(base, ".")) & endsWith(files, ".vtri")
-  file.path(dir, files[keep])
+  file.path(dir, sort(.Call(C_index_names, dir, basename(path))))
 }
 
 # What each of a store's indexes covers, read from the sidecar headers, so an

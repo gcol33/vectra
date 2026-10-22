@@ -479,28 +479,38 @@ append_vtr <- function(x, path, along = c("rows", "cols"),
 #' @export
 append_vtr.vectra_node <- function(x, path, along = c("rows", "cols"),
                                    compress = c("fast", "small", "none"), ...) {
-  check_scalar_string(path)
   along <- match.arg(along)
-  path <- normalizePath(path, mustWork = TRUE)
-  indexed <- length(.index_files(path)) > 0L
-  pre <- if (indexed) .store_fingerprint(path)
-  if (along == "cols") {
-    .Call(C_append_cols_vtr, x$.node, path, .check_compress(compress))
-  } else {
-    .Call(C_append_vtr, x$.node, path, .check_compress(compress))
-  }
-  # The existing row groups have not moved, so each index still maps its keys
-  # to the row groups they sit in; what it does not yet cover is the row groups
-  # just appended, and the store's new fingerprint. Take those in rather than
-  # rebuilding from the whole store, so an indexed store's append stays off the
-  # store's size.
-  if (indexed) .extend_indexes(path, pre)
-  invisible(NULL)
+  compress <- .check_compress(compress)
+  .append_to(path, function(path) {
+    if (along == "cols") .Call(C_append_cols_vtr, x$.node, path, compress)
+    else .Call(C_append_vtr, x$.node, path, compress)
+  })
 }
 
 #' @export
 append_vtr.data.frame <- function(x, path, along = c("rows", "cols"),
                                   compress = c("fast", "small", "none"), ...) {
-  append_vtr.vectra_node(df_to_node(x), path, along = along,
-                         compress = compress, ...)
+  along <- match.arg(along)
+  if (along == "cols")
+    return(append_vtr.vectra_node(df_to_node(x), path, along = along, compress = compress, ...))
+  compress <- .check_compress(compress)
+  # Rows go from the R columns straight into row groups of the store's column
+  # types, as write_vtr() cuts a data.frame.
+  .append_to(path, function(path) .Call(C_append_vtr_df, x, path, compress, 131072L))
+}
+
+# Run append(path) on an existing store and bring its indexes up to date. The
+# existing row groups have not moved, so each index still maps its keys to the
+# row groups they sit in; what it does not yet cover is the row groups just
+# appended, and the store's new fingerprint. Take those in rather than
+# rebuilding from the whole store, so an indexed store's append stays off the
+# store's size.
+.append_to <- function(path, append) {
+  check_scalar_string(path)
+  path <- normalizePath(path, mustWork = TRUE)
+  indexed <- length(.index_files(path)) > 0L
+  pre <- if (indexed) .store_fingerprint(path)
+  append(path)
+  if (indexed) .extend_indexes(path, pre)
+  invisible(NULL)
 }

@@ -14,4 +14,7 @@ void vtr_append_node(VecNode *node, const char *path, int comp_level);
 /* .Call entry point: C_append_vtr(node_xptr, path, compress) */
 SEXP C_append_vtr(SEXP node_xptr, SEXP path, SEXP compress);
 
+/* .Call entry point: C_append_vtr_df(df, path, compress, row_group_rows) */
+SEXP C_append_vtr_df(SEXP df, SEXP path, SEXP compress, SEXP rg_rows);
+
 #endif /* VECTRA_VTR_APPEND_H */

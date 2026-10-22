@@ -20,6 +20,7 @@ char      *r_col_annotation(SEXP col);
 
 /* --- r_bridge_core.c: data.frame -> VecBatch --- */
 VecBatch  *df_to_batch(SEXP df);
+VecBatch  *df_to_batch_range(SEXP df, int64_t start, int64_t n_rows, const VecType *types);
 
 /* --- r_bridge_core.c: expression parser --- */
 const char *list_get_string(SEXP lst, const char *field);
