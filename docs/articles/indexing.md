@@ -321,9 +321,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.12 s
+#> Without index: 0.13 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.12 s
+#> With index:    0.13 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index

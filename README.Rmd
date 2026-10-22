@@ -88,7 +88,11 @@ The installer prints a line starting with `configure: wrote src/Makevars (OpenMP
 
 ## Usage
 
-A vectra query has three parts. A source function such as `tbl()` opens a file, verbs describe the query, and `collect()` runs it. The verbs only extend the plan, so nothing is read until `collect()`.
+1. Open a file with a source function such as `tbl()`.
+2. Describe the query with dplyr verbs such as `filter()` and `summarise()`.
+3. Run it with `collect()`, which returns a data frame.
+
+The verbs only extend the plan, so nothing is read until `collect()`.
 
 ```{r usage}
 library(vectra)
@@ -245,7 +249,7 @@ The [function reference](https://gillescolling.com/vectra/reference/) lists ever
 
 ## Getting help
 
-Questions and bug reports go to the [GitHub issue tracker](https://github.com/gcol33/vectra/issues). A bug report with a small reproducible example (a reprex) is the quickest to fix.
+Questions and bug reports go to the [GitHub issue tracker](https://github.com/gcol33/vectra/issues). A bug report is easiest to act on with a small reproducible example, for instance made with [reprex](https://reprex.tidyverse.org/).
 
 ## Support
 
@@ -263,15 +267,12 @@ vectra vendors the zstd decoder and xxHash by Yann Collet and Meta Platforms, In
 
 ## License
 
-MIT (see the LICENSE.md file)
+vectra is licensed under MIT.
 
 ## Citation
 
 ```{r citation, echo = FALSE, results = "asis"}
-cit <- utils::readCitationFile(
-  "inst/CITATION",
-  meta = as.list(read.dcf("DESCRIPTION")[1, ])
-)
+cit <- citation("vectra")
 fence <- function(lang, x) cat("```", lang, "\n", paste(x, collapse = "\n\n"), "\n```\n\n", sep = "")
 cat(attr(cit, "mheader"), "\n\n", sep = "")
 fence("text", format(cit, style = "text"))
@@ -279,7 +280,4 @@ cat("BibTeX:\n\n")
 fence("bibtex", format(cit, style = "bibtex"))
 ```
 
-Download the citation as
-[BibTeX](https://gillescolling.com/vectra/vectra.bib)
-or
-[RIS](https://gillescolling.com/vectra/vectra.ris).
+Download the citation as [BibTeX](https://gillescolling.com/vectra/vectra.bib) or [RIS](https://gillescolling.com/vectra/vectra.ris).

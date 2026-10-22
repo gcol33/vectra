@@ -4,7 +4,7 @@ TI  - vectra: Columnar Query Engine for Larger-than-RAM Data
 PY  - 2026
 DO  - 10.32614/CRAN.package.vectra
 UR  - https://gillescolling.com/vectra/
-N1  - R package version 0.13.2
+N1  - R package version 0.13.4
 ID  - colling2026vectra
 ER  - 
 

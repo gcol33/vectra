@@ -43,7 +43,7 @@
 
     <a class="navbar-brand me-2" href="index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.4</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -171,7 +171,12 @@
 <div class="section level2">
 <h2 id="usage">Usage<a class="anchor" aria-label="anchor" href="#usage"></a>
 </h2>
-<p>A vectra query has three parts. A source function such as <code><a href="reference/tbl.html">tbl()</a></code> opens a file, verbs describe the query, and <code><a href="reference/collect.html">collect()</a></code> runs it. The verbs only extend the plan, so nothing is read until <code><a href="reference/collect.html">collect()</a></code>.</p>
+<ol style="list-style-type: decimal">
+<li>Open a file with a source function such as <code><a href="reference/tbl.html">tbl()</a></code>.</li>
+<li>Describe the query with dplyr verbs such as <code><a href="reference/filter.html">filter()</a></code> and <code><a href="reference/summarise.html">summarise()</a></code>.</li>
+<li>Run it with <code><a href="reference/collect.html">collect()</a></code>, which returns a data frame.</li>
+</ol>
+<p>The verbs only extend the plan, so nothing is read until <code><a href="reference/collect.html">collect()</a></code>.</p>
 <div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://gillescolling.com/vectra/">vectra</a></span><span class="op">)</span></span>
 <span><span class="co">#&gt; </span></span>
@@ -351,7 +356,7 @@
 <div class="section level2">
 <h2 id="getting-help">Getting help<a class="anchor" aria-label="anchor" href="#getting-help"></a>
 </h2>
-<p>Questions and bug reports go to the <a href="https://github.com/gcol33/vectra/issues" class="external-link">GitHub issue tracker</a>. A bug report with a small reproducible example (a reprex) is the quickest to fix.</p>
+<p>Questions and bug reports go to the <a href="https://github.com/gcol33/vectra/issues" class="external-link">GitHub issue tracker</a>. A bug report is easiest to act on with a small reproducible example, for instance made with <a href="https://reprex.tidyverse.org/" class="external-link">reprex</a>.</p>
 </div>
 <div class="section level2">
 <h2 id="support">Support<a class="anchor" aria-label="anchor" href="#support"></a>
@@ -371,7 +376,7 @@
 <div class="section level2">
 <h2 id="license">License<a class="anchor" aria-label="anchor" href="#license"></a>
 </h2>
-<p>MIT (see the LICENSE.md file)</p>
+<p>vectra is licensed under MIT.</p>
 </div>
 <div class="section level2">
 <h2 id="citation">Citation<a class="anchor" aria-label="anchor" href="#citation"></a>
@@ -379,13 +384,13 @@
 <pre class="text"><code>Colling G (2026). _vectra: Columnar Query Engine for Larger-than-RAM
 Data_. doi:10.32614/CRAN.package.vectra
 &lt;https://doi.org/10.32614/CRAN.package.vectra&gt;. R package version
-0.13.2, &lt;https://gillescolling.com/vectra/&gt;.</code></pre>
+0.13.4, &lt;https://gillescolling.com/vectra/&gt;.</code></pre>
 <p>BibTeX:</p>
 <div class="sourceCode" id="cb14"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="va">@Manual</span>{<span class="ot">colling2026vectra</span>,</span>
 <span id="cb14-2"><a href="#cb14-2" tabindex="-1"></a>  <span class="dt">title</span> = {vectra: Columnar Query Engine for Larger-than-RAM Data},</span>
 <span id="cb14-3"><a href="#cb14-3" tabindex="-1"></a>  <span class="dt">author</span> = {Gilles Colling},</span>
 <span id="cb14-4"><a href="#cb14-4" tabindex="-1"></a>  <span class="dt">year</span> = {2026},</span>
-<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a>  <span class="dt">note</span> = {R package version 0.13.2},</span>
+<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a>  <span class="dt">note</span> = {R package version 0.13.4},</span>
 <span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a>  <span class="dt">url</span> = {https://gillescolling.com/vectra/},</span>
 <span id="cb14-7"><a href="#cb14-7" tabindex="-1"></a>  <span class="dt">doi</span> = {10.32614/CRAN.package.vectra},</span>
 <span id="cb14-8"><a href="#cb14-8" tabindex="-1"></a>}</span></code></pre></div>

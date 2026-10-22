@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.4</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -59,6 +59,24 @@
       <small>Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.13.4" id="vectra-0134">vectra 0.13.4<a class="anchor" aria-label="anchor" href="#vectra-0134"></a></h2>
+<div class="section level3">
+<h3 id="changes-0-13-4">Changes<a class="anchor" aria-label="anchor" href="#changes-0-13-4"></a></h3>
+<ul><li>
+<code><a href="../reference/append_vtr.html">append_vtr()</a></code> appends the rows of a data.frame straight from its R columns, in row groups of the store’s column types, instead of writing the frame to a temporary <code>.vtr</code> and scanning it back. An integer column can now be appended to a store column narrowed to <code>int8</code>, <code>int16</code> or <code>int32</code>.</li>
+<li>The <code>.vtri</code> sidecars of a store are looked up by name in C (on Windows a single directory query for the store’s own prefix) rather than by listing the whole directory in R.</li>
+<li>Together a 2,000-row append into a directory of 2,000 stores goes from 4.4 ms to 0.6 ms.</li>
+</ul></div>
+</div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.13.3" id="vectra-0133">vectra 0.13.3<a class="anchor" aria-label="anchor" href="#vectra-0133"></a></h2>
+<div class="section level3">
+<h3 id="bug-fixes-0-13-3">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-0-13-3"></a></h3>
+<ul><li>
+<code><a href="../reference/append_vtr.html">append_vtr()</a></code> no longer runs a full garbage collection on every call. The collection cost grew with every object the session held (17 ms per append in an empty session, 240 ms with six million live objects), so building stores by many appends from a session with large state slowed to a crawl. An append grows the store in place, and readers map files with every share mode, so no open map has to be collected first.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.13.2" id="vectra-0132">vectra 0.13.2<a class="anchor" aria-label="anchor" href="#vectra-0132"></a></h2>
 <div class="section level3">

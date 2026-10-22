@@ -1,5 +1,32 @@
 # Changelog
 
+## vectra 0.13.4
+
+### Changes
+
+- [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  appends the rows of a data.frame straight from its R columns, in row
+  groups of the store’s column types, instead of writing the frame to a
+  temporary `.vtr` and scanning it back. An integer column can now be
+  appended to a store column narrowed to `int8`, `int16` or `int32`.
+- The `.vtri` sidecars of a store are looked up by name in C (on Windows
+  a single directory query for the store’s own prefix) rather than by
+  listing the whole directory in R.
+- Together a 2,000-row append into a directory of 2,000 stores goes from
+  4.4 ms to 0.6 ms.
+
+## vectra 0.13.3
+
+### Bug fixes
+
+- [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  no longer runs a full garbage collection on every call. The collection
+  cost grew with every object the session held (17 ms per append in an
+  empty session, 240 ms with six million live objects), so building
+  stores by many appends from a session with large state slowed to a
+  crawl. An append grows the store in place, and readers map files with
+  every share mode, so no open map has to be collected first.
+
 ## vectra 0.13.2
 
 ### Bug fixes

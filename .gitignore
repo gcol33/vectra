@@ -41,3 +41,4 @@ inst/benchmarks/baseline.rds
 /dev_notes/0.6.2_worklist.md
 src/Makevars
 paper/refs/
+.run*

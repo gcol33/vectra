@@ -16,7 +16,6 @@ started](https://gillescolling.com/vectra/articles/quickstart.md).
 
 library(vectra)
 library(sf)
-#> Warning: package 'sf' was built under R version 4.6.1
 ```
 
 ## The problem

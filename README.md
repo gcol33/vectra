@@ -75,7 +75,11 @@ The installer prints a line starting with `configure: wrote src/Makevars (OpenMP
 
 ## Usage
 
-A vectra query has three parts. A source function such as `tbl()` opens a file, verbs describe the query, and `collect()` runs it. The verbs only extend the plan, so nothing is read until `collect()`.
+1.  Open a file with a source function such as `tbl()`.
+2.  Describe the query with dplyr verbs such as `filter()` and `summarise()`.
+3.  Run it with `collect()`, which returns a data frame.
+
+The verbs only extend the plan, so nothing is read until `collect()`.
 
 ``` r
 library(vectra)
@@ -253,7 +257,7 @@ The [function reference](https://gillescolling.com/vectra/reference/) lists ever
 
 ## Getting help
 
-Questions and bug reports go to the [GitHub issue tracker](https://github.com/gcol33/vectra/issues). A bug report with a small reproducible example (a reprex) is the quickest to fix.
+Questions and bug reports go to the [GitHub issue tracker](https://github.com/gcol33/vectra/issues). A bug report is easiest to act on with a small reproducible example, for instance made with [reprex](https://reprex.tidyverse.org/).
 
 ## Support
 
@@ -271,7 +275,7 @@ vectra vendors the zstd decoder and xxHash by Yann Collet and Meta Platforms, In
 
 ## License
 
-MIT (see the LICENSE.md file)
+vectra is licensed under MIT.
 
 ## Citation
 
@@ -279,7 +283,7 @@ MIT (see the LICENSE.md file)
 Colling G (2026). _vectra: Columnar Query Engine for Larger-than-RAM
 Data_. doi:10.32614/CRAN.package.vectra
 <https://doi.org/10.32614/CRAN.package.vectra>. R package version
-0.13.2, <https://gillescolling.com/vectra/>.
+0.13.4, <https://gillescolling.com/vectra/>.
 ```
 
 BibTeX:
@@ -289,7 +293,7 @@ BibTeX:
   title = {vectra: Columnar Query Engine for Larger-than-RAM Data},
   author = {Gilles Colling},
   year = {2026},
-  note = {R package version 0.13.2},
+  note = {R package version 0.13.4},
   url = {https://gillescolling.com/vectra/},
   doi = {10.32614/CRAN.package.vectra},
 }

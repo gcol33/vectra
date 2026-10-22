@@ -142,11 +142,17 @@ install the runtime.
 
 ## Usage
 
-A vectra query has three parts. A source function such as
-[`tbl()`](https://gillescolling.com/vectra/reference/tbl.md) opens a
-file, verbs describe the query, and
-[`collect()`](https://gillescolling.com/vectra/reference/collect.md)
-runs it. The verbs only extend the plan, so nothing is read until
+1.  Open a file with a source function such as
+    [`tbl()`](https://gillescolling.com/vectra/reference/tbl.md).
+2.  Describe the query with dplyr verbs such as
+    [`filter()`](https://gillescolling.com/vectra/reference/filter.md)
+    and
+    [`summarise()`](https://gillescolling.com/vectra/reference/summarise.md).
+3.  Run it with
+    [`collect()`](https://gillescolling.com/vectra/reference/collect.md),
+    which returns a data frame.
+
+The verbs only extend the plan, so nothing is read until
 [`collect()`](https://gillescolling.com/vectra/reference/collect.md).
 
 ``` r
@@ -441,8 +447,9 @@ lists every exported function, grouped by job.
 ## Getting help
 
 Questions and bug reports go to the [GitHub issue
-tracker](https://github.com/gcol33/vectra/issues). A bug report with a
-small reproducible example (a reprex) is the quickest to fix.
+tracker](https://github.com/gcol33/vectra/issues). A bug report is
+easiest to act on with a small reproducible example, for instance made
+with [reprex](https://reprex.tidyverse.org/).
 
 ## Support
 
@@ -467,7 +474,7 @@ vendored into the package.
 
 ## License
 
-MIT (see the LICENSE.md file)
+vectra is licensed under MIT.
 
 ## Citation
 
@@ -475,7 +482,7 @@ MIT (see the LICENSE.md file)
 Colling G (2026). _vectra: Columnar Query Engine for Larger-than-RAM
 Data_. doi:10.32614/CRAN.package.vectra
 <https://doi.org/10.32614/CRAN.package.vectra>. R package version
-0.13.2, <https://gillescolling.com/vectra/>.
+0.13.4, <https://gillescolling.com/vectra/>.
 ```
 
 BibTeX:
@@ -485,7 +492,7 @@ BibTeX:
   title = {vectra: Columnar Query Engine for Larger-than-RAM Data},
   author = {Gilles Colling},
   year = {2026},
-  note = {R package version 0.13.2},
+  note = {R package version 0.13.4},
   url = {https://gillescolling.com/vectra/},
   doi = {10.32614/CRAN.package.vectra},
 }

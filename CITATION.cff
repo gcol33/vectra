@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: If you use this software, please cite it as below.
 type: software
 title: 'vectra: Columnar Query Engine for Larger-than-RAM Data'
-version: 0.13.2
+version: 0.13.4
 authors:
 - family-names: Colling
   given-names: Gilles
@@ -20,4 +20,4 @@ preferred-citation:
   year: 2026
   doi: 10.32614/CRAN.package.vectra
   url: https://gillescolling.com/vectra/
-  notes: R package version 0.13.2
+  notes: R package version 0.13.4
