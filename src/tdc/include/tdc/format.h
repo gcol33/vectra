@@ -61,15 +61,21 @@ extern "C" {
  *   tdc_stream_encoder_open_widen   adds columns to the existing row groups
  *   tdc_stream_encoder_open_extend  adds row groups
  *
- * Both write past the container's trailing index and patch the header last,
- * which is what makes an interrupted run harmless. Two consequences follow,
- * and this stamp is what warns a reader about them:
+ * Both start writing at the end of the container's live data, over the
+ * superseded index, so a container grown by any number of passes holds one
+ * index. The index the header names is never overwritten: a byte-identical
+ * copy is kept ahead of the write cursor and the header points at it until
+ * the rebuilt index is complete and the header is patched last, which is what
+ * makes an interrupted run harmless. Two consequences follow, and this stamp
+ * is what warns a reader about them:
  *
- *   1. The superseded index is left behind as a GAP between the old blocks
- *      and the new ones. Blocks are located solely by the trailing index, so
- *      random access is unaffected, but walking the blocks region
- *      sequentially is no longer meaningful and is refused outright rather
- *      than allowed to read the stale index as a block record.
+ *   1. The blocks region may hold bytes that are not block records: a
+ *      relocated schema between old and new blocks, or, after an interrupted
+ *      pass, bytes no index refers to (the next pass writes over them).
+ *      Blocks are located solely by the trailing index, so random access is
+ *      unaffected, but walking the blocks region sequentially is no longer
+ *      meaningful and is refused outright rather than allowed to read such
+ *      bytes as a block record.
  *   2. The schema is located by an explicit header field rather than by
  *      position. A v1 schema sits at offset 64, immediately before the first
  *      block record, so it cannot grow in place: widening writes a full
@@ -78,7 +84,7 @@ extern "C" {
  *      it already had. Either way the header, not the layout, is authoritative.
  *
  * This is a deliberate one-way version bump: a v1-only reader must REFUSE such
- * a container rather than walk a gapped blocks region or read a schema the
+ * a container rather than walk such a blocks region or read a schema the
  * header no longer points at. Containers that are never reopened stay v1 and
  * are unchanged byte-for-byte.
  */
