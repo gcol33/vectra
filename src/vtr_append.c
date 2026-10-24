@@ -13,22 +13,24 @@
 /*
  * Row append.
  *
- * The store's existing row groups are neither read nor rewritten. tdc appends
- * the new blocks and a rebuilt row-group index past the container's trailing
- * index and patches the 64-byte header last (see vtr1_tdc.h), so the cost
- * tracks the rows being appended rather than the size of the store, and
- * building a store by appending batch after batch is linear in the rows
- * written rather than quadratic.
+ * The store's existing row groups are neither read nor rewritten. tdc writes
+ * the new blocks from where the container's trailing index starts, then a
+ * rebuilt row-group index, and patches the 64-byte header last (see
+ * vtr1_tdc.h). The superseded index is written over rather than left behind,
+ * so a store built by appending batch after batch holds one index and is as
+ * long as the same row groups written by write_vtr().
  *
- * The container keeps its row-group index in the trailer, so there is no count
- * to bump at a fixed offset: an append cannot simply seek to EOF and write. It
- * works anyway because that index is rebuilt wholesale on every close -- the
- * entries describing the existing row groups are carried over verbatim, and
- * they stay correct because nothing before the old trailer is touched.
+ * The container keeps its row-group index at its end, so there is no count to
+ * bump at a fixed offset: an append cannot simply seek to EOF and write. It
+ * works because that index is rebuilt wholesale on every close -- the entries
+ * describing the existing row groups are carried over verbatim, and they stay
+ * correct because nothing before the old index is touched.
  *
- * Peak memory is one row group, and an interrupted append leaves the store
- * exactly as it was -- the appended bytes sit past the trailer referenced by
- * nothing, and the next append writes over them.
+ * Peak memory is one row group. Until the header is patched it names the
+ * original index, at its own offset or as a copy tdc keeps ahead of the bytes
+ * being written, closed by the store's original trailer; so an interrupted
+ * append leaves the store readable exactly as it was, with the same
+ * fingerprint, and the next append starts over from that index.
  */
 
 /* Open the store at path for a row append of columns named names[0..n_cols-1]

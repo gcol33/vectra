@@ -434,17 +434,30 @@ write_vtr.data.frame <- function(x, path, compress = c("fast", "small", "none"),
 #' valid across a column append: it is restamped for the grown store without
 #' being rebuilt.
 #'
+#' # File size
+#'
+#' Either direction writes from the end of the store's data, where its
+#' row-group index starts, and writes a new index after the appended data, so the file holds one index
+#' however many appends built it. A store built by appending batch after batch
+#' is about as large as the same rows written by [write_vtr()] with the same
+#' row-group sizes. A store grown by appends in vectra 0.13.4 or earlier holds
+#' one superseded index per append; it reads and appends as usual, and
+#' writing it out with [write_vtr()] to a new file drops them.
+#'
 #' # Interruption
 #'
-#' Either direction writes everything past the end of the existing data and
-#' rewrites the file header last, so an interruption -- a crash, a full disk,
-#' a killed process -- leaves the store readable exactly as it was before the
-#' call. The appended bytes are referenced by nothing and the next append
-#' writes over them.
+#' The index the file header points to is never overwritten while an append
+#' runs: before the appended data would reach it, a copy is written further
+#' along the file and the header is pointed at the copy, and the header is
+#' pointed at the new index only once that index is complete. So an
+#' interruption -- a crash, a full disk, a killed process -- at any point
+#' leaves the store readable either as it was before the call or as it is
+#' after it. The bytes an interrupted append wrote are referenced by nothing,
+#' and the next append writes over them.
 #'
-#' The trade is that a store grown in place is stamped so that readers
-#' predating this format refuse it rather than misread it, and is
-#' random-access only, which is how vectra reads a `.vtr` anyway.
+#' A store grown in place is stamped so that readers predating this format
+#' refuse it rather than misread it, and is random-access only, which is how
+#' vectra reads a `.vtr` anyway.
 #'
 #' @param x A `vectra_node` (lazy query) or a `data.frame`.
 #' @param path File path of an existing `.vtr` file to append to.

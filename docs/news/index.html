@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.4</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.5</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -59,6 +59,16 @@
       <small>Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.13.5" id="vectra-0135">vectra 0.13.5<a class="anchor" aria-label="anchor" href="#vectra-0135"></a></h2>
+<div class="section level3">
+<h3 id="fixes-0-13-5">Fixes<a class="anchor" aria-label="anchor" href="#fixes-0-13-5"></a></h3>
+<ul><li>
+<code><a href="../reference/append_vtr.html">append_vtr()</a></code> no longer leaves the store’s previous row-group index behind on every call. Both directions now write from the end of the store’s data, over the superseded index, and end with one new index, so a store built by repeated appends is the size of the same row groups written by <code><a href="../reference/write_vtr.html">write_vtr()</a></code>. Before, each append added an index the size of all row groups so far and file size grew quadratically with the number of appends: 999 appends of 200 rows to a 2-column store gave 69.6 MB, now 0.77 MB, the same as <code>write_vtr(batch_size = 200)</code> of those rows.</li>
+<li>An interrupted append still leaves the store readable as it was: the index the file header points to is never overwritten, because a copy is moved ahead of the bytes being written and the header is pointed at it until the new index is complete. The store also keeps its trailer and fingerprint through the interruption, so its <code>.vtri</code> indexes stay in use, and the next append writes over the bytes the interrupted one left.</li>
+<li>Stores grown by appends in vectra 0.13.4 and earlier read and append as before; the indexes earlier appends left inside them stay until the store is rewritten with <code><a href="../reference/write_vtr.html">write_vtr()</a></code>.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.13.4" id="vectra-0134">vectra 0.13.4<a class="anchor" aria-label="anchor" href="#vectra-0134"></a></h2>
 <div class="section level3">

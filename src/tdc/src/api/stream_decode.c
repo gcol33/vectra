@@ -15,24 +15,24 @@
  *   [trailing row-group index]      (at index_offset, if present)
  *
  * Container layout, version 2 (TDC_CONTAINER_VERSION_WIDENED) — produced
- * only by tdc_stream_encoder_open_widen, which appends columns to an
- * existing container without rewriting its body:
+ * by tdc_stream_encoder_open_widen and tdc_stream_encoder_open_extend, which
+ * add columns or row groups to an existing container without rewriting its
+ * body. A widened container looks like:
  *
  *   [64-byte header]                (schema_offset / blocks_start set)
  *   [stale v1 schema bytes]         (dead; superseded, kept so the block
  *                                    offsets recorded in the index stay valid)
  *   [original block records ...]
- *   [stale trailing index]          (dead; see below)
- *   [appended column blocks ...]
+ *   [appended column blocks ...]    (written from where the old index began)
  *   [widened schema]                (at header.u.het.schema_offset)
  *   [rebuilt trailing row-group index]
  *
- * A widened container therefore has a gap in its blocks region (the stale
- * index the widen pass wrote past rather than over, so that a crash before
- * the header patch leaves the pre-widen container intact). Blocks are
+ * Its blocks region can therefore hold bytes that are not block records: a
+ * superseded schema, and whatever an interrupted pass wrote before the
+ * header was repointed (see tdc_relocated_fn in tdc/stream.h). Blocks are
  * located solely by the index, so random access is unaffected; sequential
  * walking is not meaningful and peek_block refuses it explicitly rather
- * than silently truncating at the gap.
+ * than read such bytes as a block record.
  *
  * Schema wire format:
  *   u16 n_columns

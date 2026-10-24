@@ -242,11 +242,13 @@ tdc_status tdc_stream_encoder_close(tdc_stream_encoder **enc);
  * writes nothing -- no index, no schema, no header patch. Sets *enc to
  * NULL; safe on a NULL *enc.
  *
- * For a widening encoder this is what makes a failed widen harmless: the
- * blocks it already wrote sit past the container's trailing index and are
- * referenced only by the header patch that now never happens, so the
- * container is left exactly as it was found. (The caller may truncate the
- * file back to its previous length to reclaim those bytes.)
+ * For a widening or extending encoder this is what makes a failed pass
+ * harmless: if the original index was moved ahead of the write cursor, it is
+ * written back at its own offset and the original header is restored, so the
+ * container reads exactly as it was found. Those are the only writes abort
+ * makes; it returns the status of the first that fails, in which case the
+ * header still names the intact copy. The caller may truncate the file back
+ * to its previous length to drop the bytes past the original index.
  *
  * On an encoder from tdc_stream_encoder_open the header was already written
  * at open, so aborting leaves a container with n_blocks = 0 and no index.
@@ -256,12 +258,52 @@ tdc_status tdc_stream_encoder_abort(tdc_stream_encoder **enc);
 /* Number of blocks written so far. */
 uint64_t tdc_stream_encoder_block_count(const tdc_stream_encoder *enc);
 
+/* ----- Growing an existing container in place ----------------------------- */
+
+/*
+ * Widening (tdc_stream_encoder_open_widen) and extending
+ * (tdc_stream_encoder_open_extend) reopen a container and write their new
+ * bytes from the end of its live data: the last block or schema byte the
+ * container refers to, which is where its trailing row-group index starts
+ * unless an earlier pass was interrupted. The space the superseded index
+ * occupied, and anything an interrupted pass left, is reused. A container
+ * grown by many passes is therefore about as long as one written in a single
+ * pass: its blocks, one schema, one index.
+ *
+ * Write order. The index the header points at is never overwritten. Before
+ * the first write, and again whenever a write would reach it, a byte-identical
+ * copy of the container's original index is written further along the file
+ * and the header is repointed at it (stamped TDC_CONTAINER_VERSION_WIDENED).
+ * The distance from the write start to the copy at least doubles with each
+ * move, so a pass that writes D bytes moves it O(log D) times, and a pass
+ * that adds less than the index's own size moves it once. The new blocks, the schema (widening) and the
+ * rebuilt index land before the copy, and the header is patched to the
+ * rebuilt index last.
+ *
+ * Crash safety. At every instant the header names either the original index
+ * (at its own offset or as a copy) or the complete rebuilt one, so a process
+ * that dies at any point leaves a file that reads either as the container
+ * before the pass or as the container after it. The bytes past the end of the
+ * index the header names are not part of the container: a caller that can
+ * truncate the file cuts it there after close. tdc_stream_encoder_abort puts
+ * the original index back at its own offset and restores the original header.
+ *
+ * Optional hook, called after each move of the original index once the header
+ * points at the copy, with container_end one past the copy: the end of the
+ * container as the header now describes it. A caller that keeps a record of
+ * its own at the end of the file rewrites it there. The io position on entry
+ * is unspecified and the encoder repositions afterwards; a non-OK return fails
+ * the write that needed the move, with the header left at the copy.
+ */
+typedef tdc_status (*tdc_relocated_fn)(void *user, uint64_t container_end);
+
 /* ----- Widening an existing container ------------------------------------ */
 
 /*
  * Configuration for opening an existing container to APPEND COLUMNS.
  * io must supply write_fn, read_fn and seek_fn: the existing header and
- * row-group index are read back, and the new bytes are written past them.
+ * row-group index are read back, and the new bytes are written from the end
+ * of the container's live data (see tdc_relocated_fn).
  */
 typedef struct {
     tdc_io io;
@@ -276,6 +318,10 @@ typedef struct {
 
     void *(*realloc_fn)(void *user, void *ptr, size_t new_size);
     void   *alloc_user;
+
+    /* Optional; see tdc_relocated_fn. */
+    tdc_relocated_fn relocated_fn;
+    void            *relocated_user;
 } tdc_stream_encoder_widen_config;
 
 /*
@@ -292,12 +338,10 @@ typedef struct {
  * relocates the schema to the tail (the section at offset 64 sits directly
  * before the first block and cannot grow in place).
  *
- * Crash safety: everything is written past the existing trailing index,
- * and the 64-byte header is patched last. If the process dies before that
- * patch, the file still reads as the container did before the widen. The
- * trade is that the superseded index remains as a gap in the blocks
- * region, so a widened container is random-access only -- see
- * tdc_stream_decoder_peek_block.
+ * Crash safety and write order: see tdc_relocated_fn. A widened container
+ * is random-access only -- see tdc_stream_decoder_peek_block -- since its
+ * superseded schema, and any bytes an interrupted pass left behind, sit in
+ * the blocks region.
  *
  * Use tdc_stream_encoder_widen_block to write the appended columns, then
  * tdc_stream_encoder_close to emit the schema, the rebuilt index, and the
@@ -337,7 +381,8 @@ tdc_status tdc_stream_encoder_widen_block(tdc_stream_encoder     *enc,
 /*
  * Configuration for opening an existing container to APPEND ROW GROUPS.
  * io must supply write_fn, read_fn and seek_fn: the existing header and
- * row-group index are read back, and the new bytes are written past them.
+ * row-group index are read back, and the new bytes are written from the end
+ * of the container's live data (see tdc_relocated_fn).
  *
  * There is deliberately no schema field. Appended row groups carry the columns
  * the container already declares, so its schema is reused untouched -- and
@@ -348,6 +393,10 @@ typedef struct {
 
     void *(*realloc_fn)(void *user, void *ptr, size_t new_size);
     void   *alloc_user;
+
+    /* Optional; see tdc_relocated_fn. */
+    tdc_relocated_fn relocated_fn;
+    void            *relocated_user;
 } tdc_stream_encoder_extend_config;
 
 /*
@@ -356,14 +405,14 @@ typedef struct {
  *
  * This is the other axis of tdc_stream_encoder_open_widen: widening gives the
  * row groups already present a new column, extending adds row groups carrying
- * the columns already declared. Both reopen a container, write past its
- * trailing index, rebuild that index at close, and patch the header last.
+ * the columns already declared. Both reopen a container, write from the end
+ * of its live data, rebuild the index at close, and patch the header last.
  *
  * Cost is proportional to the appended row groups plus the rebuilt index, not
  * to the container's size: existing block records are never read, decoded or
  * moved, and the index entries describing them are carried over verbatim --
  * they still point where they always did, because nothing before the old
- * trailer is touched.
+ * index is touched.
  *
  * The container must carry TDC_CONTAINER_FLAG_HETEROGENEOUS, a trailing
  * row-group index, and a schema. Write the new row groups with the ordinary
@@ -375,14 +424,14 @@ typedef struct {
  * column count. Closing without writing any row group leaves the container's
  * contents as they were.
  *
- * Crash safety: as for widening, every byte goes PAST the existing trailing
- * index and the 64-byte header is patched last, so a process that dies before
- * that patch leaves a file that still reads exactly as it did before.
+ * Crash safety and write order: see tdc_relocated_fn.
  *
  * The result is stamped TDC_CONTAINER_VERSION_WIDENED whatever the input
- * version, because the superseded index stays behind as a gap between the old
- * blocks and the new ones -- which is what that stamp tells a reader. The
- * schema is NOT moved; the header simply records where it already sits.
+ * version: while the pass runs the header points at an index copy past a
+ * region being rewritten, and a pass that does not finish leaves bytes no
+ * index refers to in the blocks region -- which is what that stamp tells a
+ * reader. The schema is NOT moved; the header simply records where it
+ * already sits.
  */
 tdc_status tdc_stream_encoder_open_extend(
     const tdc_stream_encoder_extend_config *cfg,

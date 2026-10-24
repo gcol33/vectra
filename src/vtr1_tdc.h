@@ -65,14 +65,15 @@ void vtr1_close_tdc_writer(Vtr1TdcWriter *w);
 /*
  * Appends columns to an existing container WITHOUT reading or rewriting the
  * data already in it. tdc writes the new blocks, a replacement schema, and
- * a rebuilt row-group index past the existing trailer, then patches the
- * 64-byte header last, so the cost tracks the appended columns rather than
- * the file's size and an interrupted append leaves the container readable
- * as it was.
+ * a rebuilt row-group index from where the existing index starts, then
+ * patches the 64-byte header last, so the cost tracks the appended columns
+ * rather than the file's size. The index the header names is never
+ * overwritten (tdc keeps a copy of it ahead of the write cursor), so an
+ * interrupted append leaves the container readable as it was.
  *
  * The container is stamped as widened, which older readers refuse rather
- * than misread; the superseded index stays behind as a gap in the blocks
- * region, so a widened container is random-access only. Existing row-group
+ * than misread; the superseded schema stays behind in the blocks region, so
+ * a widened container is random-access only. Existing row-group
  * boundaries and block offsets are unchanged, so the entries of any `.vtri`
  * sidecar index over the original columns stay true; only the store's
  * fingerprint changes, which the sidecar stamps, so each one is restamped
@@ -97,8 +98,9 @@ void vtr1_widen_rowgroup_tdc(Vtr1TdcWidener *w, uint32_t rg_idx,
 /* Finalize (schema + index + header patch) and free. */
 void vtr1_close_tdc_widener(Vtr1TdcWidener *w);
 
-/* Free without committing: the container is left exactly as it was found
- * and the bytes written so far are truncated away. */
+/* Free without committing: tdc writes the original index and header back,
+ * the bytes written past the original index are truncated away and the
+ * original trailer is restored, so the file is left as it was found. */
 void vtr1_abort_tdc_widener(Vtr1TdcWidener *w);
 
 /* ---------- extender (append row groups in place) ------------------------- */
@@ -106,19 +108,21 @@ void vtr1_abort_tdc_widener(Vtr1TdcWidener *w);
 /*
  * Appends row groups to an existing container WITHOUT reading or rewriting the
  * ones already in it -- the widener's other axis, on the same terms. tdc writes
- * the new blocks and a rebuilt row-group index past the existing trailer, then
- * patches the 64-byte header last, so the cost tracks the appended rows rather
- * than the store's size and an interrupted append leaves the container readable
- * as it was. Growing a store by repeated appends is therefore linear in the
- * total rows written, not quadratic.
+ * the new blocks and a rebuilt row-group index from where the existing index
+ * starts, then patches the 64-byte header last, so the cost tracks the
+ * appended rows plus one index, and the file holds one index however many
+ * appends built it: a store grown by appends is as long as the same row groups
+ * written in one pass. The index the header names is never overwritten, so an
+ * interrupted append leaves the container readable as it was.
  *
  * The schema is reused rather than rewritten: appended row groups carry the
  * columns the container already declares, and tdc rejects a row group whose
  * column count disagrees.
  *
  * As with widening, the container is stamped as grown-in-place (older readers
- * refuse it rather than misread it) and the superseded index stays behind as a
- * gap, so it is random-access only. Existing row-group boundaries and block
+ * refuse it rather than misread it) and is random-access only, since an
+ * interrupted append can leave bytes no index refers to between its blocks.
+ * Existing row-group boundaries and block
  * offsets are unchanged, so a `.vtri` sidecar's entries still name the row
  * groups its keys sit in; only the store's row/row-group counts and its
  * fingerprint change, which the sidecar stamps.
@@ -144,8 +148,9 @@ void vtr1_extend_rowgroup_tdc(Vtr1TdcExtender       *x,
 /* Finalize (index + header patch) and free. */
 void vtr1_close_tdc_extender(Vtr1TdcExtender *x);
 
-/* Free without committing: the container is left exactly as it was found
- * and the bytes written so far are truncated away. */
+/* Free without committing: tdc writes the original index and header back,
+ * the bytes written past the original index are truncated away and the
+ * original trailer is restored, so the file is left as it was found. */
 void vtr1_abort_tdc_extender(Vtr1TdcExtender *x);
 
 /* ---------- reader -------------------------------------------------------- */
@@ -267,8 +272,11 @@ void vtr1_close_tdc(Vtr1TdcFile *file);
  * the header it patches at close, and appends the trailer once the container
  * is complete. Growing a store in place (the extender and the widener) seeds
  * the digest with the store's fingerprint before the append and feeds it the
- * bytes the append writes, then rewrites the trailer past the new end; an
- * aborted append puts the old trailer back.
+ * bytes the append writes, then rewrites the trailer past the new end. While
+ * the append runs, each time tdc moves the store's original index ahead of
+ * the write cursor the old trailer is rewritten after the moved index, so an
+ * interrupted append leaves the store with its old digest; an aborted append
+ * puts the old trailer back where it was.
  *
  * The trailer sits past everything tdc addresses -- the decoder reads the
  * header, the schema and the row-group index at the offsets the header names

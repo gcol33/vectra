@@ -40,7 +40,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.4</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.5</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -49,7 +49,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
-<li class="nav-item dropdown">
+<li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
@@ -90,7 +90,7 @@
                         <h4 data-toc-skip class="author">Gilles
 Colling</h4>
             
-            <h4 data-toc-skip class="date">2026-10-23</h4>
+            <h4 data-toc-skip class="date">2026-10-24</h4>
       
       <small class="dont-index">Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/vignettes/streaming-spatial.Rmd" class="external-link"><code>vignettes/streaming-spatial.Rmd</code></a></small>
       <div class="d-none name"><code>streaming-spatial.Rmd</code></div>
@@ -220,7 +220,7 @@ decodes the geometry.</p>
 <span>     main <span class="op">=</span> <span class="st">"County centroids buffered by 15 km"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">b_sf</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"#3366cc"</span>, col <span class="op">=</span> <span class="st">"#3366cc22"</span>, add <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
 <p><div class="svg-container"><button type="button" class="btn btn-primary btn-copy-svg" title="Copy SVG to clipboard" aria-label="Copy SVG to clipboard" data-bs-toggle="tooltip" data-bs-placement="left"><i class="fa fa-copy"></i></button>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;">
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;" aria-hidden="true">
 <g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[
@@ -573,7 +573,7 @@ points against the dropped ones.</p>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/points.html" class="external-link">points</a></span><span class="op">(</span><span class="va">pts</span>, pch <span class="op">=</span> <span class="fl">16</span>, cex <span class="op">=</span> <span class="fl">0.5</span>, col <span class="op">=</span> <span class="st">"grey70"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/points.html" class="external-link">points</a></span><span class="op">(</span><span class="va">keep_xy</span><span class="op">$</span><span class="va">x</span>, <span class="va">keep_xy</span><span class="op">$</span><span class="va">y</span>, pch <span class="op">=</span> <span class="fl">16</span>, cex <span class="op">=</span> <span class="fl">0.6</span>, col <span class="op">=</span> <span class="st">"#cc3344"</span><span class="op">)</span></span></code></pre></div>
 <p><div class="svg-container"><button type="button" class="btn btn-primary btn-copy-svg" title="Copy SVG to clipboard" aria-label="Copy SVG to clipboard" data-bs-toggle="tooltip" data-bs-placement="left"><i class="fa fa-copy"></i></button>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;">
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;" aria-hidden="true">
 <g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[
@@ -1306,7 +1306,7 @@ slivers over the full state.</p>
 <span>     main <span class="op">=</span> <span class="st">"Counties clipped to the region"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_geometry.html" class="external-link">st_geometry</a></span><span class="op">(</span><span class="va">c_sf</span><span class="op">)</span>, border <span class="op">=</span> <span class="st">"#2a9d5c"</span>, col <span class="op">=</span> <span class="st">"#2a9d5c33"</span>, add <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
 <p><div class="svg-container"><button type="button" class="btn btn-primary btn-copy-svg" title="Copy SVG to clipboard" aria-label="Copy SVG to clipboard" data-bs-toggle="tooltip" data-bs-placement="left"><i class="fa fa-copy"></i></button>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;">
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;" aria-hidden="true">
 <g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[
@@ -1592,7 +1592,7 @@ join. Colour the points by the county they were tagged with.</p>
 <span>     main <span class="op">=</span> <span class="st">"Points tagged with their county"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="va">tagged_sf</span><span class="op">[</span><span class="st">"NAME"</span><span class="op">]</span>, pch <span class="op">=</span> <span class="fl">16</span>, cex <span class="op">=</span> <span class="fl">0.5</span>, add <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
 <p><div class="svg-container"><button type="button" class="btn btn-primary btn-copy-svg" title="Copy SVG to clipboard" aria-label="Copy SVG to clipboard" data-bs-toggle="tooltip" data-bs-placement="left"><i class="fa fa-copy"></i></button>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;">
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;" aria-hidden="true">
 <g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[
@@ -2448,7 +2448,7 @@ two bands.</p>
 <div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="va">m_sf</span><span class="op">[</span><span class="st">"band"</span><span class="op">]</span>, main <span class="op">=</span> <span class="st">"Counties dissolved into two SIDS bands"</span><span class="op">)</span></span></code></pre></div>
 <p><div class="svg-container"><button type="button" class="btn btn-primary btn-copy-svg" title="Copy SVG to clipboard" aria-label="Copy SVG to clipboard" data-bs-toggle="tooltip" data-bs-placement="left"><i class="fa fa-copy"></i></button>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;">
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;" aria-hidden="true">
 <g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[
@@ -2601,7 +2601,7 @@ wins:</p>
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/graphics/plot.default.html" class="external-link">plot</a></span><span class="op">(</span><span class="va">first</span><span class="op">[</span><span class="st">"year"</span><span class="op">]</span>, main <span class="op">=</span> <span class="st">"Overlay pieces, earliest year wins"</span><span class="op">)</span></span></code></pre></div>
 <p><div class="svg-container"><button type="button" class="btn btn-primary btn-copy-svg" title="Copy SVG to clipboard" aria-label="Copy SVG to clipboard" data-bs-toggle="tooltip" data-bs-placement="left"><i class="fa fa-copy"></i></button>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;">
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='504.00pt' height='302.40pt' viewBox='0 0 504.00 302.40' class="r-plt inline-svg" style="width:100%;height:auto;" aria-hidden="true">
 <g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[

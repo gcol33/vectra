@@ -321,9 +321,9 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.13 s
+#> Without index: 0.09 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
-#> With index:    0.13 s
+#> With index:    0.11 s
 ```
 
 The magnitude of the speedup depends on how many row groups the index
@@ -486,7 +486,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.14 s
+#> With index, %in% filter: 0.11 s
 ```
 
 Without an index, the same query reads all row groups and filters in

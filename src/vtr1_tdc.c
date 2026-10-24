@@ -173,15 +173,9 @@ static int vtr1_read_trailer(FILE *fp, const tdc_container_header *hdr,
     return 1;
 }
 
-/* Close a finished container with its trailer: placed where the header says
- * the container ends, and the file cut to end with it. Returns 1 on success. */
-static int vtr1_write_trailer(FILE *fp, uint64_t digest) {
-    if (fflush(fp) != 0) return 0;
-    tdc_container_header hdr;
-    if (!vtr1_read_header(fp, &hdr)) return 0;
-    uint64_t end = vtr1_container_end(&hdr);
-    if (end == 0) return 0;
-
+/* Place a trailer at `end`, where the container ends, and cut the file to end
+ * with it. Returns 1 on success. */
+static int vtr1_put_trailer(FILE *fp, uint64_t end, uint64_t digest) {
     uint8_t buf[VTR1_TRAILER_SIZE];
     uint32_t version = VTR1_TRAILER_VERSION;
     memcpy(buf, &end, 8);
@@ -199,9 +193,21 @@ static int vtr1_write_trailer(FILE *fp, uint64_t digest) {
     return 1;
 }
 
+/* Close a finished container with its trailer: placed where the header says
+ * the container ends, and the file cut to end with it. Returns 1 on success. */
+static int vtr1_write_trailer(FILE *fp, uint64_t digest) {
+    if (fflush(fp) != 0) return 0;
+    tdc_container_header hdr;
+    if (!vtr1_read_header(fp, &hdr)) return 0;
+    uint64_t end = vtr1_container_end(&hdr);
+    if (end == 0) return 0;
+    return vtr1_put_trailer(fp, end, digest);
+}
+
 /* The store a grow-in-place operation starts from: its fingerprint seeds the
- * digest of the grown store, and its trailer bytes are kept so an aborted
- * append can put them back where the appended blocks overwrote them. */
+ * digest of the grown store, and its trailer bytes are kept so the store can
+ * be closed with the same trailer wherever its index sits while the
+ * operation runs, and so an aborted operation can put them back. */
 typedef struct {
     uint64_t seed;
     int      had_trailer;
@@ -223,8 +229,9 @@ static void vtr1_capture_pre_store(const char *path, FILE *fp,
     vtr1_tdc_io_seek(fp, 0, TDC_SEEK_SET);
 }
 
-/* Undo an uncommitted grow-in-place: cut the file back to its length before
- * the append, then restore the trailer the appended bytes wrote over. */
+/* Undo an uncommitted grow-in-place once tdc has put the original index and
+ * header back: cut the file back to its length before the operation, then
+ * restore the trailer the operation wrote over. */
 static void vtr1_restore_pre_store(FILE *fp, int64_t orig_size,
                                    const Vtr1PreStore *pre) {
     fflush(fp);
@@ -234,6 +241,57 @@ static void vtr1_restore_pre_store(FILE *fp, int64_t orig_size,
         fwrite(pre->trailer, 1, VTR1_TRAILER_SIZE, fp);
         fflush(fp);
     }
+}
+
+/* The file a grow-in-place operation (the extender or the widener) writes,
+ * and the store it starts from. */
+typedef struct {
+    Vtr1TdcSink  sink;
+    Vtr1PreStore pre;
+    int64_t      orig_size;  /* file length before any write */
+} Vtr1GrowFile;
+
+static void vtr1_grow_open(Vtr1GrowFile *g, const char *path, FILE *fp) {
+    g->sink.fp   = fp;
+    g->orig_size = vtr_file_size(fp);
+    vtr1_capture_pre_store(path, fp, &g->pre);
+    vtr_digest_init(&g->sink.dg, g->pre.seed);
+}
+
+/* tdc has moved the store's original index ahead of the bytes being written
+ * and pointed the header at the copy, so the container now ends at `end`.
+ * The store is closed there with the trailer it had: its contents are those
+ * it was opened with, so it keeps its digest, and with it its fingerprint and
+ * the validity of its .vtri sidecars, until the grown store is committed. */
+static tdc_status vtr1_grow_relocated(void *user, uint64_t end) {
+    Vtr1GrowFile *g = (Vtr1GrowFile *)user;
+    if (!g->pre.had_trailer) return TDC_OK;
+    uint64_t digest;
+    memcpy(&digest, g->pre.trailer + 8, 8);
+    return vtr1_put_trailer(g->sink.fp, end, digest) ? TDC_OK : TDC_E_IO;
+}
+
+/* Free a grow-in-place encoder without committing. tdc writes the original
+ * index and header back; only once it has can the file be cut back to the
+ * store it was. If tdc could not, the header still names an intact copy of
+ * the original index, closed by its trailer, and the file is left so. */
+static void vtr1_grow_abort(Vtr1GrowFile *g, tdc_stream_encoder **enc) {
+    tdc_status st = TDC_OK;
+    if (*enc) st = tdc_stream_encoder_abort(enc);
+    if (g->sink.fp && st == TDC_OK)
+        vtr1_restore_pre_store(g->sink.fp, g->orig_size, &g->pre);
+}
+
+/* Commit a grow-in-place encoder: tdc writes the rebuilt index and patches the
+ * header, then the trailer closes the grown store and the file is cut to end
+ * with it. Returns the tdc status; *trailer_ok reports the trailer. */
+static tdc_status vtr1_grow_close(Vtr1GrowFile *g, tdc_stream_encoder **enc,
+                                  int *trailer_ok) {
+    tdc_status st = TDC_OK;
+    if (*enc) st = tdc_stream_encoder_close(enc);
+    *trailer_ok = (st != TDC_OK) ||
+        vtr1_write_trailer(g->sink.fp, vtr_digest_final(&g->sink.dg));
+    return st;
 }
 
 /* ---------- schema mapping ----------------------------------------------- */
@@ -674,22 +732,21 @@ void vtr1_close_tdc_writer(Vtr1TdcWriter *w) {
 /*
  * Appends columns to an existing container in place. The existing column
  * data is never read: tdc writes the new blocks, a replacement schema, and
- * a rebuilt index past the old trailer, then patches the 64-byte header
- * last. Interrupted before that patch, the file still reads as it did
- * before -- so unlike vtr1_open_tdc_writer this path deliberately opens the
- * target itself, in update mode, rather than going through a temp file.
+ * a rebuilt index from where the old index started, then patches the 64-byte
+ * header last. Interrupted at any point, the file reads as it did before or
+ * as it does after -- so unlike vtr1_open_tdc_writer this path deliberately
+ * opens the target itself, in update mode, rather than going through a temp
+ * file. The write order is tdc's (see tdc_relocated_fn in tdc/stream.h).
  */
 
 struct Vtr1TdcWidener {
-    Vtr1TdcSink         sink;
-    Vtr1PreStore        pre;
+    Vtr1GrowFile        g;
     tdc_stream_encoder *enc;
     VecSchema           schema;     /* the FULL widened schema, deep-copied */
     tdc_column_desc    *desc_buf;
     char              **ann_buf;
     int                 n_cols;     /* of the widened schema */
     int                 n_new;      /* appended columns */
-    int64_t             orig_size;  /* file length before any widen write */
 };
 
 Vtr1TdcWidener *vtr1_open_tdc_widener(const char *path,
@@ -705,13 +762,10 @@ Vtr1TdcWidener *vtr1_open_tdc_widener(const char *path,
 
     Vtr1TdcWidener *w = (Vtr1TdcWidener *)calloc(1, sizeof(*w));
     if (!w) { fclose(fp); vectra_error("alloc failed for Vtr1TdcWidener"); }
-    w->sink.fp = fp;
     w->schema = vec_schema_copy(widened_schema);
     w->n_cols = widened_schema->n_cols;
     w->n_new  = n_new_cols;
-    w->orig_size = vtr_file_size(fp);
-    vtr1_capture_pre_store(path, fp, &w->pre);
-    vtr_digest_init(&w->sink.dg, w->pre.seed);
+    vtr1_grow_open(&w->g, path, fp);
 
     if (!vtr1_tdc_build_desc(&w->schema, &w->desc_buf, &w->ann_buf)) {
         vec_schema_free(&w->schema); free(w); fclose(fp);
@@ -723,10 +777,12 @@ Vtr1TdcWidener *vtr1_open_tdc_widener(const char *path,
     sch.columns   = w->desc_buf;
 
     tdc_stream_encoder_widen_config cfg = {0};
-    vtr1_sink_io(&w->sink, &cfg.io);
-    cfg.schema      = &sch;
-    cfg.realloc_fn  = vtr1_tdc_realloc;
-    cfg.alloc_user  = NULL;
+    vtr1_sink_io(&w->g.sink, &cfg.io);
+    cfg.schema         = &sch;
+    cfg.realloc_fn     = vtr1_tdc_realloc;
+    cfg.alloc_user     = NULL;
+    cfg.relocated_fn   = vtr1_grow_relocated;
+    cfg.relocated_user = &w->g;
 
     tdc_status st = tdc_stream_encoder_open_widen(&cfg, &w->enc);
     if (st != TDC_OK) {
@@ -806,27 +862,24 @@ void vtr1_widen_rowgroup_tdc(Vtr1TdcWidener *w, uint32_t rg_idx,
 
 /* Free the widener without committing: no schema, no index, no header
  * patch. The container is left exactly as it was found, and the bytes
- * written past its trailer -- referenced by nothing -- are truncated away
- * so a repeatedly-failing append cannot grow the file without bound. */
+ * written past its original index are truncated away so a
+ * repeatedly-failing append cannot grow the file without bound. */
 void vtr1_abort_tdc_widener(Vtr1TdcWidener *w) {
     if (!w) return;
-    if (w->enc) tdc_stream_encoder_abort(&w->enc);
-    if (w->sink.fp) vtr1_restore_pre_store(w->sink.fp, w->orig_size, &w->pre);
+    vtr1_grow_abort(&w->g, &w->enc);
     vtr1_tdc_free_desc(w->desc_buf, w->ann_buf, w->n_cols);
     vec_schema_free(&w->schema);
-    if (w->sink.fp) fclose(w->sink.fp);
+    if (w->g.sink.fp) fclose(w->g.sink.fp);
     free(w);
 }
 
 void vtr1_close_tdc_widener(Vtr1TdcWidener *w) {
     if (!w) return;
-    tdc_status st = TDC_OK;
-    if (w->enc) st = tdc_stream_encoder_close(&w->enc);
-    int trailer_ok = (st != TDC_OK) ||
-        vtr1_write_trailer(w->sink.fp, vtr_digest_final(&w->sink.dg));
+    int trailer_ok;
+    tdc_status st = vtr1_grow_close(&w->g, &w->enc, &trailer_ok);
     vtr1_tdc_free_desc(w->desc_buf, w->ann_buf, w->n_cols);
     vec_schema_free(&w->schema);
-    if (w->sink.fp) fclose(w->sink.fp);
+    if (w->g.sink.fp) fclose(w->g.sink.fp);
     free(w);
     if (st != TDC_OK)
         vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);
@@ -839,10 +892,11 @@ void vtr1_close_tdc_widener(Vtr1TdcWidener *w) {
 /*
  * Appends row groups to an existing container in place: the widener's other
  * axis, on the same bargain. The row groups already in the file are never read,
- * decoded or moved -- tdc writes the new blocks and a rebuilt index past the
- * old trailer and patches the 64-byte header last -- so an append costs the
- * rows being appended rather than the size of the store, and growing a store by
- * repeated appends is linear rather than quadratic.
+ * decoded or moved -- tdc writes the new blocks and a rebuilt index from where
+ * the old index started and patches the 64-byte header last -- so an append
+ * costs the rows being appended plus one index, and a store grown by repeated
+ * appends holds one index and is as long as the same row groups written by
+ * vtr1_open_tdc_writer.
  *
  * The schema is not rewritten, only re-addressed, since appended row groups
  * carry the columns the container already declares.
@@ -857,11 +911,9 @@ void vtr1_close_tdc_widener(Vtr1TdcWidener *w) {
  */
 
 struct Vtr1TdcExtender {
-    Vtr1TdcSink         sink;
-    Vtr1PreStore        pre;
+    Vtr1GrowFile        g;
     tdc_stream_encoder *enc;
     VecSchema           schema;     /* the container's own schema, deep-copied */
-    int64_t             orig_size;  /* file length before any extend write */
 };
 
 Vtr1TdcExtender *vtr1_open_tdc_extender(const char *path,
@@ -875,18 +927,17 @@ Vtr1TdcExtender *vtr1_open_tdc_extender(const char *path,
 
     Vtr1TdcExtender *x = (Vtr1TdcExtender *)calloc(1, sizeof(*x));
     if (!x) { fclose(fp); vectra_error("alloc failed for Vtr1TdcExtender"); }
-    x->sink.fp   = fp;
-    x->schema    = vec_schema_copy(schema);
-    x->orig_size = vtr_file_size(fp);
-    vtr1_capture_pre_store(path, fp, &x->pre);
-    vtr_digest_init(&x->sink.dg, x->pre.seed);
+    x->schema = vec_schema_copy(schema);
+    vtr1_grow_open(&x->g, path, fp);
 
     /* No schema is handed over: tdc reuses the container's own, and checks
      * every appended row group against the column count it declares. */
     tdc_stream_encoder_extend_config cfg = {0};
-    vtr1_sink_io(&x->sink, &cfg.io);
-    cfg.realloc_fn  = vtr1_tdc_realloc;
-    cfg.alloc_user  = NULL;
+    vtr1_sink_io(&x->g.sink, &cfg.io);
+    cfg.realloc_fn     = vtr1_tdc_realloc;
+    cfg.alloc_user     = NULL;
+    cfg.relocated_fn   = vtr1_grow_relocated;
+    cfg.relocated_user = &x->g;
 
     tdc_status st = tdc_stream_encoder_open_extend(&cfg, &x->enc);
     if (st != TDC_OK) {
@@ -909,25 +960,22 @@ void vtr1_extend_rowgroup_tdc(Vtr1TdcExtender       *x,
 
 /* Free the extender without committing: no index, no header patch. The
  * container is left exactly as it was found, and the bytes written past its
- * trailer -- referenced by nothing -- are truncated away so a repeatedly
- * failing append cannot grow the file without bound. */
+ * original index are truncated away so a repeatedly failing append cannot
+ * grow the file without bound. */
 void vtr1_abort_tdc_extender(Vtr1TdcExtender *x) {
     if (!x) return;
-    if (x->enc) tdc_stream_encoder_abort(&x->enc);
-    if (x->sink.fp) vtr1_restore_pre_store(x->sink.fp, x->orig_size, &x->pre);
+    vtr1_grow_abort(&x->g, &x->enc);
     vec_schema_free(&x->schema);
-    if (x->sink.fp) fclose(x->sink.fp);
+    if (x->g.sink.fp) fclose(x->g.sink.fp);
     free(x);
 }
 
 void vtr1_close_tdc_extender(Vtr1TdcExtender *x) {
     if (!x) return;
-    tdc_status st = TDC_OK;
-    if (x->enc) st = tdc_stream_encoder_close(&x->enc);
-    int trailer_ok = (st != TDC_OK) ||
-        vtr1_write_trailer(x->sink.fp, vtr_digest_final(&x->sink.dg));
+    int trailer_ok;
+    tdc_status st = vtr1_grow_close(&x->g, &x->enc, &trailer_ok);
     vec_schema_free(&x->schema);
-    if (x->sink.fp) fclose(x->sink.fp);
+    if (x->g.sink.fp) fclose(x->g.sink.fp);
     free(x);
     if (st != TDC_OK)
         vectra_error("tdc_stream_encoder_close failed: status=%d", (int)st);

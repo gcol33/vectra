@@ -16,10 +16,10 @@
  *
  * The store's existing columns are neither read nor rewritten -- that is
  * the whole point, and what separates this from vtr_append_node (row
- * append), which restreams the file through a fresh writer. tdc appends the
- * new blocks past the container's trailing index and patches the header
- * last (see vtr1_tdc.h), so peak memory is one row group of the incoming
- * columns and an interrupted append leaves the store as it was.
+ * append), which restreams the file through a fresh writer. tdc writes the
+ * new blocks from where the container's trailing index starts and patches the
+ * header last (see vtr1_tdc.h), so peak memory is one row group of the
+ * incoming columns and an interrupted append leaves the store as it was.
  *
  * The one thing that has to be arranged here is chunking. Row-group
  * boundaries are fixed by the existing file: a new column's block for row

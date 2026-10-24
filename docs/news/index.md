@@ -1,5 +1,31 @@
 # Changelog
 
+## vectra 0.13.5
+
+### Fixes
+
+- [`append_vtr()`](https://gillescolling.com/vectra/reference/append_vtr.md)
+  no longer leaves the store’s previous row-group index behind on every
+  call. Both directions now write from the end of the store’s data, over
+  the superseded index, and end with one new index, so a store built by
+  repeated appends is the size of the same row groups written by
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md).
+  Before, each append added an index the size of all row groups so far
+  and file size grew quadratically with the number of appends: 999
+  appends of 200 rows to a 2-column store gave 69.6 MB, now 0.77 MB, the
+  same as `write_vtr(batch_size = 200)` of those rows.
+- An interrupted append still leaves the store readable as it was: the
+  index the file header points to is never overwritten, because a copy
+  is moved ahead of the bytes being written and the header is pointed at
+  it until the new index is complete. The store also keeps its trailer
+  and fingerprint through the interruption, so its `.vtri` indexes stay
+  in use, and the next append writes over the bytes the interrupted one
+  left.
+- Stores grown by appends in vectra 0.13.4 and earlier read and append
+  as before; the indexes earlier appends left inside them stay until the
+  store is rewritten with
+  [`write_vtr()`](https://gillescolling.com/vectra/reference/write_vtr.md).
+
 ## vectra 0.13.4
 
 ### Changes

@@ -171,42 +171,39 @@ svg.inline-svg .svg-bg {
 /* Dark mode stroke - only elements drawn in the theme default stroke color */
 /* Colored strokes (blue edges, red threshold lines) are left alone: they are */
 /* a deliberate part of the figure and read on both backgrounds */
-[data-bs-theme="dark"] svg.inline-svg .svglite line:not([style*="stroke:"]),
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline:not([style*="stroke:"]),
-[data-bs-theme="dark"] svg.inline-svg .svglite polygon:not([style*="stroke:"]),
-[data-bs-theme="dark"] svg.inline-svg .svglite path:not([style*="stroke:"]),
-[data-bs-theme="dark"] svg.inline-svg .svglite circle:not([style*="stroke:"]) {
+[data-bs-theme="dark"] svg.inline-svg .svglite line:not([style*="stroke:"]):not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline:not([style*="stroke:"]):not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polygon:not([style*="stroke:"]):not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite path:not([style*="stroke:"]):not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite circle:not([style*="stroke:"]):not(.preserve-color) {
   stroke: #DFD7CA !important;
 }
 
 /* Same for elements carrying the light theme stroke color inline */
-[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3E3F3A"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #3E3F3A"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polygon[style*="stroke: #3E3F3A"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite path[style*="stroke: #3E3F3A"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite circle[style*="stroke: #3E3F3A"]:not(.preserve-color) {
   stroke: #DFD7CA !important;
 }
 
 /* Shape fills that follow the theme instead of staying at the device default */
 /* theme-fill-bg: white fills (node interiors, legend keys, filled polygons) */
 /* theme-fill-fg: black fills (pch 19 points, legend dots, arrow heads) */
-[data-bs-theme="dark"] svg.inline-svg .theme-fill-bg {
+[data-bs-theme="dark"] svg.inline-svg .theme-fill-bg:not(.preserve-color) {
   fill: #343739 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .theme-fill-fg {
+[data-bs-theme="dark"] svg.inline-svg .theme-fill-fg:not(.preserve-color) {
   fill: #DFD7CA !important;
 }
 
-/* Dark mode text color - but NOT for text on custom legend backgrounds */
+/* Dark mode text color */
+/* preserve-color marks content painted on a fixed-colour surface (a cream */
+/* legend box, a grey panel, a bar): it keeps its light-mode paint in dark mode */
 [data-bs-theme="dark"] svg.inline-svg .svglite text:not(.preserve-color) {
   fill: #DFD7CA !important;
-}
-
-/* Text on custom legend backgrounds keeps dark color for contrast */
-svg.inline-svg .svglite text.preserve-color {
-  fill: #3E3F3A !important;
 }
 
 /* Rect strokes (histogram bars, etc.) keep their light-mode outline in dark */
@@ -238,35 +235,38 @@ svg.inline-svg .svglite rect.legend-bg[style*="stroke: #f5f6f8"] {
 }
 
 /* Grid lines */
-/* White grid lines need to become dark in light mode, stay light in dark mode */
-/* Light mode: dark grid on light bg */
-svg.inline-svg .svglite polyline[style*="stroke: #FFFFFF"],
-svg.inline-svg .svglite polyline[style*="stroke: #ffffff"] {
-  stroke: #3E3F3A !important;
+/* White grid lines are theme_grey() gridlines meant for a grey panel; on a
+   transparent panel they take the theme border colour, like theme_minimal()
+   gridlines, so they stay a subtle guide in both modes */
+svg.inline-svg .svglite polyline[style*="stroke: #FFFFFF"]:not(.preserve-color),
+svg.inline-svg .svglite polyline[style*="stroke: #ffffff"]:not(.preserve-color) {
+  stroke: #DFD7CA !important;
 }
-/* Dark mode: light grid on dark bg */
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #FFFFFF"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #ffffff"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3e3f3a"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #FFFFFF"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #ffffff"]:not(.preserve-color) {
+  stroke: #495057 !important;
+}
+/* Polylines in the light-mode text colour (data lines, axes) turn light */
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3E3F3A"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #3e3f3a"]:not(.preserve-color) {
   stroke: #DFD7CA !important;
 }
 
 /* ggplot2 theme_minimal() gridlines - light grey, adapt to dark mode */
-[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #EBEBEB"],
-[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #ebebeb"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #EBEBEB"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #ebebeb"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #DFD7CA"],
-[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #dfd7ca"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #EBEBEB"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite line[style*="stroke: #ebebeb"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #EBEBEB"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #ebebeb"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #DFD7CA"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg .svglite polyline[style*="stroke: #dfd7ca"]:not(.preserve-color) {
   stroke: #495057 !important;
 }
 
 /* Base R and other grey gridline variants */
-[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: #EBEBEB"],
-[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: #ebebeb"],
-[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: grey"],
-[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: gray"] {
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: #EBEBEB"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: #ebebeb"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: grey"]:not(.preserve-color),
+[data-bs-theme="dark"] svg.inline-svg line[style*="stroke: gray"]:not(.preserve-color) {
   stroke: #495057 !important;
 }
 
@@ -371,93 +371,93 @@ svg.inline-svg {
 /* both themes. Colors outside this table are passed through untouched. */
 
 /* blue */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #2E6F9E"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #2E6F9E"]:not(.preserve-color) {
   stroke: #7FB2D9 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #2E6F9E"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #2E6F9E"]:not(.preserve-color) {
   fill: #7FB2D9 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #2E6F9E"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #2E6F9E"]:not(.preserve-color) {
   fill: #7FB2D9 !important;
 }
 
 /* red */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #B5342B"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #B5342B"]:not(.preserve-color) {
   stroke: #E8837A !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #B5342B"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #B5342B"]:not(.preserve-color) {
   fill: #E8837A !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #B5342B"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #B5342B"]:not(.preserve-color) {
   fill: #E8837A !important;
 }
 
 /* green */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #3F7A3D"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #3F7A3D"]:not(.preserve-color) {
   stroke: #86C384 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #3F7A3D"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #3F7A3D"]:not(.preserve-color) {
   fill: #86C384 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #3F7A3D"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #3F7A3D"]:not(.preserve-color) {
   fill: #86C384 !important;
 }
 
 /* orange */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #9E5E0F"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #9E5E0F"]:not(.preserve-color) {
   stroke: #E2A85A !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #9E5E0F"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #9E5E0F"]:not(.preserve-color) {
   fill: #E2A85A !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #9E5E0F"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #9E5E0F"]:not(.preserve-color) {
   fill: #E2A85A !important;
 }
 
 /* purple */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #7A4F9E"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #7A4F9E"]:not(.preserve-color) {
   stroke: #BFA0DC !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #7A4F9E"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #7A4F9E"]:not(.preserve-color) {
   fill: #BFA0DC !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #7A4F9E"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #7A4F9E"]:not(.preserve-color) {
   fill: #BFA0DC !important;
 }
 
 /* teal */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #2A7A7A"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #2A7A7A"]:not(.preserve-color) {
   stroke: #6FC0C0 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #2A7A7A"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #2A7A7A"]:not(.preserve-color) {
   fill: #6FC0C0 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #2A7A7A"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #2A7A7A"]:not(.preserve-color) {
   fill: #6FC0C0 !important;
 }
 
 /* grey */
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #5C6166"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="stroke: #5C6166"]:not(.preserve-color) {
   stroke: #A9B0B5 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #5C6166"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite [style*="fill: #5C6166"]:not(.preserve-color) {
   fill: #A9B0B5 !important;
 }
 
-[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #5C6166"] {
+[data-bs-theme="dark"] svg.inline-svg .svglite text[style*="fill: #5C6166"]:not(.preserve-color) {
   fill: #A9B0B5 !important;
 }
 
