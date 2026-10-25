@@ -28,7 +28,9 @@ NEWS.md lists every change.
 
 ## R CMD check results
 
-0 errors | 0 warnings | 1 note
+* Local (--as-cran): 0 errors | 0 warnings | 1 note
+* win-builder R-devel (2026-10-24 r90762): Status 1 NOTE, check time 575 s
+* win-builder R-release (4.6.1): Status 1 NOTE, check time 530 s
 
 The note is from the incoming feasibility check, counting the updates in the
 past six months. This release is submitted because of the CRAN request above.
