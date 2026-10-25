@@ -4,7 +4,7 @@
 /*
  * vtr1_tdc.h — tdc-backed row-group container writer/reader.
  *
- * Writes a tdc heterogeneous container (TDC1 magic, per-block
+ * Writes a tdc heterogeneous container ('TDCF' magic, per-block
  * dtype/layout, attached schema, trailing row-group index). Each row
  * group becomes one tdc row group; each column becomes one
  * self-describing tdc_block_record.

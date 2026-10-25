@@ -27,13 +27,21 @@
  *   4. Fixed little-endian on disk. Documented here and in types.h.
  *   5. Fixed-size header. tdc_block_record is exactly 80 bytes so it can
  *      be read with a single mmap/pread without loops or growth logic.
- *      Adding fields requires version bump to v3.
+ *      Adding fields requires a version bump.
  *
- * v0->v2 changes (one atomic bump, never shipped a v0 reader):
- *   - +xform_params_size (u32):  TLV section between side_meta and payload
- *   - +validity_size (u32):      explicit byte count for the trailing bitmap
- *   - +_reserved1 (u64):         padding for the next field, future use
- *   - struct grows from 64 to 80 bytes.
+ * Format generations. The current format is identified by its own magic
+ * numbers ('TDCF' container, 'TDBK' block) and starts at version 1. It
+ * differs from the legacy format ('TDC1' container at version 1 or 2,
+ * 'BLKB' block at version 2) in two places:
+ *   - a block's side metadata is stored run through the block's entropy
+ *     chain (see the block record below), so a string dictionary is
+ *     compressed like the payload instead of stored verbatim;
+ *   - a grown-in-place container is marked by TDC_CONTAINER_FLAG_WIDENED,
+ *     not by a second container version.
+ * Writers emit only the current format. Readers accept both, deciding per
+ * record through tdc_container_header_is_legacy() and
+ * tdc_block_record_is_legacy(); a legacy-only reader refuses the current
+ * format on its magic.
  */
 
 #ifndef TDC_FORMAT_H
@@ -48,15 +56,22 @@ extern "C" {
 
 /* ----- Magic numbers and versions ----------------------------------------- */
 
-#define TDC_CONTAINER_MAGIC   0x31434454u   /* 'TDC1' little-endian */
-#define TDC_BLOCK_MAGIC       0x424B4C42u   /* 'BLKB' little-endian */
+#define TDC_CONTAINER_MAGIC   0x46434454u   /* 'TDCF' little-endian */
+#define TDC_BLOCK_MAGIC       0x4B424454u   /* 'TDBK' little-endian */
 
 #define TDC_CONTAINER_VERSION 1
+#define TDC_BLOCK_VERSION     1
+
+/* Legacy format, read-only. */
+#define TDC_LEGACY_CONTAINER_MAGIC   0x31434454u   /* 'TDC1' little-endian */
+#define TDC_LEGACY_BLOCK_MAGIC       0x424B4C42u   /* 'BLKB' little-endian */
+#define TDC_LEGACY_CONTAINER_VERSION 1
+#define TDC_LEGACY_BLOCK_VERSION     2
 
 /*
- * Version stamped on a container that has been GROWN IN PLACE: reopened and
- * added to without its existing body being read or rewritten. Two operations
- * produce one, along the two axes --
+ * A container that has been GROWN IN PLACE: reopened and added to without its
+ * existing body being read or rewritten. Two operations produce one, along the
+ * two axes --
  *
  *   tdc_stream_encoder_open_widen   adds columns to the existing row groups
  *   tdc_stream_encoder_open_extend  adds row groups
@@ -66,8 +81,8 @@ extern "C" {
  * index. The index the header names is never overwritten: a byte-identical
  * copy is kept ahead of the write cursor and the header points at it until
  * the rebuilt index is complete and the header is patched last, which is what
- * makes an interrupted run harmless. Two consequences follow, and this stamp
- * is what warns a reader about them:
+ * makes an interrupted run harmless. Two consequences follow, and the
+ * TDC_CONTAINER_FLAG_WIDENED flag is what warns a reader about them:
  *
  *   1. The blocks region may hold bytes that are not block records: a
  *      relocated schema between old and new blocks, or, after an interrupted
@@ -77,20 +92,19 @@ extern "C" {
  *      meaningful and is refused outright rather than allowed to read such
  *      bytes as a block record.
  *   2. The schema is located by an explicit header field rather than by
- *      position. A v1 schema sits at offset 64, immediately before the first
- *      block record, so it cannot grow in place: widening writes a full
+ *      position. An unwidened schema sits at offset 64, immediately before the
+ *      first block record, so it cannot grow in place: widening writes a full
  *      replacement at the tail and points the header there. Extending does
  *      not change the schema and leaves it where it is, recording the address
  *      it already had. Either way the header, not the layout, is authoritative.
  *
- * This is a deliberate one-way version bump: a v1-only reader must REFUSE such
- * a container rather than walk such a blocks region or read a schema the
- * header no longer points at. Containers that are never reopened stay v1 and
- * are unchanged byte-for-byte.
+ * In the legacy format the same state was stamped as container version 2
+ * (TDC_LEGACY_CONTAINER_VERSION_WIDENED). Growing a legacy container rewrites
+ * its header in the current format: the new blocks are current-format records,
+ * and the self-describing block records let a reader decode both kinds side
+ * by side. Containers that are never reopened are unchanged byte-for-byte.
  */
-#define TDC_CONTAINER_VERSION_WIDENED 2
-
-#define TDC_BLOCK_VERSION     2
+#define TDC_LEGACY_CONTAINER_VERSION_WIDENED 2
 
 /* ----- Container header --------------------------------------------------- */
 /*
@@ -108,7 +122,7 @@ extern "C" {
  *
  *   offset  size  field
  *   ------  ----  -----
- *        0     4  magic            = TDC_CONTAINER_MAGIC ('TDC1')
+ *        0     4  magic            = TDC_CONTAINER_MAGIC ('TDCF')
  *        4     2  version          = TDC_CONTAINER_VERSION
  *        6     2  flags
  *        8     8  n_blocks
@@ -128,16 +142,16 @@ extern "C" {
  * and the two meanings can never coexist:
  *
  *   homogeneous   (HETEROGENEOUS clear): u.global_dim[3], the global shape.
- *   heterogeneous (HETEROGENEOUS set):   u.het, which is all-zero for a v1
- *                                        container (the shape fields are
- *                                        required zero there) and carries
- *                                        the relocated-schema pointers for
- *                                        a v2 (widened) container.
+ *   heterogeneous (HETEROGENEOUS set):   u.het, which is all-zero for an
+ *                                        unwidened container (the shape
+ *                                        fields are required zero there) and
+ *                                        carries the relocated-schema
+ *                                        pointers for a widened one.
  *
  * u.het.schema_offset is the absolute file offset of the schema section
  * and u.het.blocks_start the absolute offset of the first block record.
- * Both are 0 in a v1 container, where they are implied: the schema sits at
- * TDC_CONTAINER_HEADER_SIZE and the blocks at header + schema_size.
+ * Both are 0 in an unwidened container, where they are implied: the schema
+ * sits at TDC_CONTAINER_HEADER_SIZE and the blocks at header + schema_size.
  */
 
 #define TDC_CONTAINER_HEADER_SIZE 64
@@ -146,6 +160,9 @@ extern "C" {
 #define TDC_CONTAINER_FLAG_HAS_STATS     0x0002u  /* >=1 row group carries
                                                      per-column min/max stats
                                                      in the trailing index */
+#define TDC_CONTAINER_FLAG_WIDENED       0x0004u  /* grown in place; requires
+                                                     HETEROGENEOUS. Current
+                                                     format only. */
 
 typedef struct {
     uint32_t magic;
@@ -163,7 +180,7 @@ typedef struct {
         /* Homogeneous containers: the global shape. */
         int64_t global_dim[TDC_MAX_RANK];
         /* Heterogeneous containers: where the schema and the blocks live.
-         * Both zero unless the container has been widened (v2). */
+         * Both zero unless the container has been widened. */
         struct {
             uint64_t schema_offset;
             uint64_t blocks_start;
@@ -187,7 +204,7 @@ typedef struct {
  *
  *   offset  size  field
  *   ------  ----  -----
- *        0     4  magic                 = TDC_BLOCK_MAGIC ('BLKB')
+ *        0     4  magic                 = TDC_BLOCK_MAGIC ('TDBK')
  *        4     2  version               = TDC_BLOCK_VERSION
  *        6     2  flags
  *        8     2  model_id              (tdc_model_id)
@@ -212,6 +229,23 @@ typedef struct {
  *       80 + side_meta_size                                      xform_params  (xform_params_size)
  *       80 + side_meta_size + xform_params_size                  payload       (payload_size)
  *       80 + side_meta_size + xform_params_size + payload_size   validity      (validity_size)
+ *
+ * The side_meta section is empty when the model emits no side metadata.
+ * Otherwise it is
+ *
+ *     u32  raw_size        (bytes of side metadata before the entropy chain)
+ *     the side metadata run through the block's entropy chain, in the same
+ *     serialized form as the payload: a u32 stage-input size table, one entry
+ *     per entropy stage, then the final stage's bytes (no table and the raw
+ *     bytes when the chain is empty).
+ *
+ * Side metadata enters the chain in its packed form where the model has one.
+ * TDC_MODEL_DICT_1D is the one model that does: the dictionary is held in
+ * memory as u32 count, u32 total, u32 offsets[count + 1], heap[total], and
+ * packed as u32 count, LEB128 length[count], heap[total].
+ *
+ * side_meta_size is the on-disk size of the section. In a legacy ('BLKB')
+ * record the section is the in-memory form, uncompressed.
  *
  * xform_params_size is the byte count of the TLV section that carries
  * per-slot transform parameters. Layout of the TLV section:
@@ -307,6 +341,25 @@ _Static_assert(sizeof(tdc_index_entry_v1) == TDC_INDEX_ENTRY_SIZE,
 
 tdc_status tdc_container_header_validate(const tdc_container_header *h);
 tdc_status tdc_block_record_validate(const tdc_block_record *r);
+
+/* Magic + version only: TDC_E_CORRUPT for an unknown magic, TDC_E_VERSION
+ * for a version the magic's generation does not define. The full validators
+ * call it first; stream code that reads a header before validating the rest
+ * calls it alone. */
+tdc_status tdc_container_header_check_generation(const tdc_container_header *h);
+
+static inline int tdc_block_magic_known(uint32_t magic) {
+    return magic == TDC_BLOCK_MAGIC || magic == TDC_LEGACY_BLOCK_MAGIC;
+}
+
+/* Format generation of a header that passed validation: nonzero for the
+ * legacy ('TDC1' / 'BLKB') format. */
+int tdc_container_header_is_legacy(const tdc_container_header *h);
+int tdc_block_record_is_legacy(const tdc_block_record *r);
+
+/* Has the container been grown in place? TDC_CONTAINER_FLAG_WIDENED in the
+ * current format, container version 2 in the legacy one. */
+int tdc_container_header_is_widened(const tdc_container_header *h);
 
 #ifdef __cplusplus
 }

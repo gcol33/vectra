@@ -8,11 +8,12 @@
  *
  * Container header is fixed at 64 bytes (TDC_CONTAINER_HEADER_SIZE).
  *
- * Two container versions exist: TDC_CONTAINER_VERSION, and
- * TDC_CONTAINER_VERSION_WIDENED for a container whose schema has been
- * relocated to the tail so that columns could be appended without
- * rewriting the body. They differ only in where the schema and the first
- * block live, which the header records explicitly in the widened case.
+ * Two container generations are accepted: the current format ('TDCF',
+ * version 1, a grown container marked by TDC_CONTAINER_FLAG_WIDENED) and
+ * the legacy one ('TDC1', where version 2 marks a grown container). A grown
+ * container's schema has been relocated to the tail so that columns could
+ * be appended without rewriting the body; it differs only in where the
+ * schema and the first block live, which the header records explicitly.
  *
  * Validator scope mirrors tdc_block_record_validate: magic, version,
  * reserved bytes, flag/field coherence, dim sanity, no n_elems overflow.
@@ -46,12 +47,11 @@ static int hdr_layout_rank(uint8_t lo) {
 tdc_status tdc_container_header_validate(const tdc_container_header *h) {
     if (!h) return TDC_E_INVAL;
 
-    if (h->magic != TDC_CONTAINER_MAGIC) return TDC_E_CORRUPT;
-    if (h->version != TDC_CONTAINER_VERSION &&
-        h->version != TDC_CONTAINER_VERSION_WIDENED) return TDC_E_VERSION;
+    tdc_status st = tdc_container_header_check_generation(h);
+    if (st != TDC_OK) return st;
     if (h->_reserved0 != 0u) return TDC_E_CORRUPT;
 
-    const int widened = (h->version == TDC_CONTAINER_VERSION_WIDENED);
+    const int widened = tdc_container_header_is_widened(h);
 
     /* Heterogeneous containers leave global dtype/layout/rank/dim zeroed
      * because each block carries its own. Homogeneous containers fill
@@ -65,7 +65,7 @@ tdc_status tdc_container_header_validate(const tdc_container_header *h) {
         if (h->global_rank   != 0u) return TDC_E_CORRUPT;
 
         /* The shape slots are the widened-schema pointers for this kind of
-         * container: zero throughout at v1, both set at v2. */
+         * container: zero throughout unless it has been widened. */
         if (h->u.het._reserved1 != 0u) return TDC_E_CORRUPT;
         if (widened) {
             if (h->u.het.schema_offset == 0u) return TDC_E_CORRUPT;
@@ -123,4 +123,31 @@ tdc_status tdc_container_header_validate(const tdc_container_header *h) {
     }
 
     return TDC_OK;
+}
+
+
+tdc_status tdc_container_header_check_generation(const tdc_container_header *h) {
+    if (!h) return TDC_E_INVAL;
+    if (h->magic == TDC_CONTAINER_MAGIC) {
+        if (h->version != TDC_CONTAINER_VERSION) return TDC_E_VERSION;
+        return TDC_OK;
+    }
+    if (h->magic == TDC_LEGACY_CONTAINER_MAGIC) {
+        if (h->version != TDC_LEGACY_CONTAINER_VERSION &&
+            h->version != TDC_LEGACY_CONTAINER_VERSION_WIDENED) return TDC_E_VERSION;
+        if (h->flags & TDC_CONTAINER_FLAG_WIDENED) return TDC_E_CORRUPT;
+        return TDC_OK;
+    }
+    return TDC_E_CORRUPT;
+}
+
+int tdc_container_header_is_legacy(const tdc_container_header *h) {
+    return h && h->magic == TDC_LEGACY_CONTAINER_MAGIC;
+}
+
+int tdc_container_header_is_widened(const tdc_container_header *h) {
+    if (!h) return 0;
+    if (h->magic == TDC_LEGACY_CONTAINER_MAGIC)
+        return h->version == TDC_LEGACY_CONTAINER_VERSION_WIDENED;
+    return (h->flags & TDC_CONTAINER_FLAG_WIDENED) != 0;
 }

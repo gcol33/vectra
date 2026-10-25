@@ -17,7 +17,9 @@
  *      decode can recover it without consulting the in-memory spec.
  *   4. Look up entropy vtable from spec->entropy. Encode the final
  *      transform output into a payload buffer.
- *   5. Serialize a tdc_block_record into out, followed by side_meta,
+ *   5. Run side_meta (when the model emitted any) through the same entropy
+ *      chain and prefix its raw size.
+ *   6. Serialize a tdc_block_record into out, followed by side_meta,
  *      then xform_params (TLV), then the entropy payload, then the
  *      validity bitmap if HAS_VALIDITY is set.
  *
@@ -210,78 +212,15 @@ tdc_status tdc_encode_block(const tdc_block      *src,
 
     /* ----- Stage 3: entropy chain -------------------------------------- *
      *
-     * Same ping-pong shape as the transform chain: each entropy stage
-     * takes bytes in and produces bytes out. The chain is walked LTR on
-     * encode and RTL on decode. An empty chain (entropy_len == 0) is an
-     * implicit NONE passthrough: the payload is the residual stream
-     * verbatim.
-     *
-     * Intermediate sizes between stages are NOT stored in the 80-byte
-     * block header. Instead, for a non-empty chain we prepend a small
-     * size table to the payload:
-     *
-     *     [ u32 * entropy_len ]  stage-input sizes (stage 0 first, LE)
-     *     [ final entropy-encoded bytes ]
-     *
-     * The innermost stage's input size is redundant with
-     * hdr.uncompressed_size — kept in the table anyway as a cross-check
-     * and to avoid a special-case branch in the decoder.
+     * The payload is [stage-input size table][final entropy bytes]; an
+     * empty chain is a passthrough. The serialized form is owned by
+     * driver_entropy_chain_encode, shared with the side-meta path below.
      */
 
-    if (entropy_len == 0) {
-        /* Passthrough: copy residuals into payload directly. bufs[cur]
-         * is scratch memory we can't hand to the caller (freed at
-         * cleanup), so a memcpy into the dedicated payload buffer is
-         * required. */
-        st = tdc_buf_reserve(&payload, uncompressed_size > 0 ? uncompressed_size : 1u);
-        if (st != TDC_OK) goto cleanup;
-        if (uncompressed_size > 0) {
-            memcpy(payload.data, bufs[cur].data, uncompressed_size);
-        }
-        payload.size = uncompressed_size;
-    } else {
-        /* Step 1: walk the chain, ping-ponging bufs[cur]/bufs[1-cur].
-         * Record the input size of each stage for the decode-side
-         * RTL walk. */
-        uint32_t stage_in_sizes[TDC_MAX_ENTROPY];
-        const uint8_t *stage_src      = bufs[cur].data;
-        size_t         stage_src_size = uncompressed_size;
-
-        for (int i = 0; i < entropy_len; ++i) {
-            if (stage_src_size > UINT32_MAX) { st = TDC_E_INVAL; goto cleanup; }
-            stage_in_sizes[i] = (uint32_t)stage_src_size;
-
-            tdc_entropy_id eid = spec->entropy[i];
-            const tdc_entropy_vt *evt = tdc_entropy_get(eid);
-            if (!evt) { st = TDC_E_UNSUPPORTED; goto cleanup; }
-
-            bufs[1 - cur].size = 0;
-            st = evt->encode(stage_src, stage_src_size,
-                             spec->entropy_params[i], &bufs[1 - cur]);
-            if (st != TDC_OK) goto cleanup;
-
-            stage_src      = bufs[1 - cur].data;
-            stage_src_size = bufs[1 - cur].size;
-            cur = 1 - cur;
-        }
-
-        /* Step 2: assemble payload = [sizes table][final stage bytes].
-         * bufs[cur] currently holds the final entropy-encoded bytes. */
-        size_t sizes_bytes  = (size_t)entropy_len * sizeof(uint32_t);
-        size_t final_bytes  = stage_src_size;
-        size_t total_payload = sizes_bytes + final_bytes;
-        if (total_payload < sizes_bytes) { st = TDC_E_INVAL; goto cleanup; } /* overflow */
-        st = tdc_buf_reserve(&payload, total_payload > 0 ? total_payload : 1u);
-        if (st != TDC_OK) goto cleanup;
-        for (int i = 0; i < entropy_len; ++i) {
-            uint32_t le = stage_in_sizes[i];
-            memcpy(payload.data + (size_t)i * sizeof(uint32_t), &le, sizeof(le));
-        }
-        if (final_bytes > 0) {
-            memcpy(payload.data + sizes_bytes, bufs[cur].data, final_bytes);
-        }
-        payload.size = total_payload;
-    }
+    st = driver_entropy_chain_encode(spec->entropy, spec->entropy_params,
+                                     entropy_len, bufs[cur].data,
+                                     uncompressed_size, &payload, out);
+    if (st != TDC_OK) goto cleanup;
     if (timing_on) { double t1 = tdc_now_secs(); t_entropy = t1 - t0; t0 = t1; }
     if (timing_on) {
         int64_t n = shape_n_elems(&src->shape);
@@ -301,6 +240,43 @@ tdc_status tdc_encode_block(const tdc_block      *src,
     }
 
     } /* end if (!zero_residual) */
+
+    /* ----- Stage 3b: side metadata through the entropy chain ----------- *
+     *
+     * A string dictionary keeps every distinct value in side metadata, so a
+     * column of mostly unique names would otherwise reach disk verbatim. The
+     * side metadata is packed when its model's on-disk form differs from the
+     * in-memory one (driver_side_pack), then goes through the same entropy
+     * chain as the payload; the section is [u32 raw_size][entropy chain
+     * form], raw_size counting the packed bytes (format.h). */
+
+    if (side_meta.size > 0) {
+        if (driver_side_packs((tdc_model_id)spec->model)) {
+            tdc_buffer packed;
+            driver_scratch_init(&packed, out);
+            st = driver_side_pack((tdc_model_id)spec->model, side_meta.data,
+                                  side_meta.size, &packed);
+            if (st != TDC_OK) { driver_scratch_free(&packed); goto cleanup; }
+            driver_scratch_free(&side_meta);
+            side_meta = packed;
+        }
+        if (side_meta.size > UINT32_MAX) { st = TDC_E_INVAL; goto cleanup; }
+        tdc_buffer side_enc;
+        driver_scratch_init(&side_enc, out);
+        st = driver_entropy_chain_encode(spec->entropy, spec->entropy_params,
+                                         entropy_len, side_meta.data,
+                                         side_meta.size, &side_enc, out);
+        if (st == TDC_OK) {
+            st = tdc_buf_reserve(&side_enc, side_enc.size + sizeof(uint32_t));
+        }
+        if (st != TDC_OK) { driver_scratch_free(&side_enc); goto cleanup; }
+        memmove(side_enc.data + sizeof(uint32_t), side_enc.data, side_enc.size);
+        uint32_t raw_le = (uint32_t)side_meta.size;
+        memcpy(side_enc.data, &raw_le, sizeof(raw_le));
+        side_enc.size += sizeof(uint32_t);
+        driver_scratch_free(&side_meta);
+        side_meta = side_enc;
+    }
 
     /* ----- Stage 4: assemble block record ------------------------------ */
 

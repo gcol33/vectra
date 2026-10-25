@@ -49,7 +49,7 @@ typedef tdc_rg_group     v2_rowgroup_entry;
  * they differ only in what they add. Widening gives the row groups already
  * present a new column; extending adds row groups carrying the columns
  * already declared. Both rebuild the index at close and patch the header
- * last, and both stamp the result TDC_CONTAINER_VERSION_WIDENED.
+ * last, and both stamp the result TDC_CONTAINER_FLAG_WIDENED.
  */
 typedef enum {
     V2_MODE_CREATE = 0,
@@ -155,11 +155,15 @@ static void v2_free(v2_stream_encoder_state *e, void *ptr) {
 }
 
 /* The original header with its index moved to index_offset: stamped as a
- * relocated layout, since the region before the index is being rewritten. */
+ * relocated layout, since the region before the index is being rewritten.
+ * A legacy header is rewritten in the current format, which is what the
+ * blocks appended to it are. */
 static tdc_container_header v2_moved_header(const v2_stream_encoder_state *e,
                                             uint64_t index_offset) {
     tdc_container_header h = e->orig_hdr;
-    h.version             = TDC_CONTAINER_VERSION_WIDENED;
+    h.magic               = TDC_CONTAINER_MAGIC;
+    h.version             = TDC_CONTAINER_VERSION;
+    h.flags              |= TDC_CONTAINER_FLAG_WIDENED;
     h.u.het.schema_offset = e->orig_schema_offset;
     h.u.het.blocks_start  = e->blocks_start;
     h.index_offset        = index_offset;
@@ -218,9 +222,9 @@ static tdc_status v2_write_header(v2_stream_encoder_state *e,
     tdc_container_header hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic   = TDC_CONTAINER_MAGIC;
-    hdr.version = schema_offset ? TDC_CONTAINER_VERSION_WIDENED
-                                : TDC_CONTAINER_VERSION;
-    hdr.flags   = e->flags;
+    hdr.version = TDC_CONTAINER_VERSION;
+    hdr.flags   = (uint16_t)(e->flags & ~TDC_CONTAINER_FLAG_WIDENED);
+    if (schema_offset) hdr.flags |= TDC_CONTAINER_FLAG_WIDENED;
 
     if (schema_offset) {
         hdr.u.het.schema_offset = schema_offset;
@@ -643,7 +647,7 @@ tdc_status tdc_stream_encoder_close(tdc_stream_encoder **enc) {
  * An interrupted pass leaves bytes no index refers to between the original
  * blocks and the copy; the next pass writes over them. A reopened container is
  * random-access only (see tdc_stream_decoder_peek_block) and is stamped
- * TDC_CONTAINER_VERSION_WIDENED whichever axis it grew along. Abort writes the
+ * TDC_CONTAINER_FLAG_WIDENED whichever axis it grew along. Abort writes the
  * original index back at its own offset and restores the original header.
  */
 
@@ -717,10 +721,8 @@ static tdc_status v2_reopen_existing(v2_stream_encoder_state *e,
     st = v2_read_exact(e, (uint8_t *)&hdr, TDC_CONTAINER_HEADER_SIZE);
     if (st != TDC_OK) return st;
 
-    if (hdr.magic != TDC_CONTAINER_MAGIC) return TDC_E_CORRUPT;
-    if (hdr.version != TDC_CONTAINER_VERSION &&
-        hdr.version != TDC_CONTAINER_VERSION_WIDENED)
-        return TDC_E_VERSION;
+    st = tdc_container_header_check_generation(&hdr);
+    if (st != TDC_OK) return st;
     /* Only a heterogeneous container can be reopened: the relocated-schema
      * pointers occupy the global-shape slots, and a per-column schema is what
      * both operations are defined against. */
@@ -729,7 +731,7 @@ static tdc_status v2_reopen_existing(v2_stream_encoder_state *e,
     if (hdr.index_offset == 0 || hdr.index_size == 0) return TDC_E_INVAL;
 
     e->flags = hdr.flags;
-    e->blocks_start = (hdr.version == TDC_CONTAINER_VERSION_WIDENED)
+    e->blocks_start = tdc_container_header_is_widened(&hdr)
                     ? hdr.u.het.blocks_start
                     : TDC_CONTAINER_HEADER_SIZE + hdr.schema_size;
     e->n_blocks  = hdr.n_blocks;
@@ -767,7 +769,7 @@ static tdc_status v2_reopen_existing(v2_stream_encoder_state *e,
      * of the index, which then sits past bytes no index refers to; those are
      * reused too. */
     e->orig_hdr           = hdr;
-    e->orig_schema_offset = (hdr.version == TDC_CONTAINER_VERSION_WIDENED)
+    e->orig_schema_offset = tdc_container_header_is_widened(&hdr)
                           ? hdr.u.het.schema_offset
                           : TDC_CONTAINER_HEADER_SIZE;
     {
@@ -883,7 +885,7 @@ tdc_status tdc_stream_encoder_open_extend(
     if (hdr.schema_size == 0) { v2_open_abort(e); return TDC_E_INVAL; }
 
     e->schema_size        = hdr.schema_size;
-    e->kept_schema_offset = (hdr.version == TDC_CONTAINER_VERSION_WIDENED)
+    e->kept_schema_offset = tdc_container_header_is_widened(&hdr)
                           ? hdr.u.het.schema_offset
                           : TDC_CONTAINER_HEADER_SIZE;
 

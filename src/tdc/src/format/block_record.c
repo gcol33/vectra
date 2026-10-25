@@ -92,8 +92,13 @@ static int blk_entropy_id_valid(uint16_t id) {
 tdc_status tdc_block_record_validate(const tdc_block_record *r) {
     if (!r) return TDC_E_INVAL;
 
-    if (r->magic   != TDC_BLOCK_MAGIC)   return TDC_E_CORRUPT;
-    if (r->version != TDC_BLOCK_VERSION) return TDC_E_VERSION;
+    if (r->magic == TDC_BLOCK_MAGIC) {
+        if (r->version != TDC_BLOCK_VERSION) return TDC_E_VERSION;
+    } else if (r->magic == TDC_LEGACY_BLOCK_MAGIC) {
+        if (r->version != TDC_LEGACY_BLOCK_VERSION) return TDC_E_VERSION;
+    } else {
+        return TDC_E_CORRUPT;
+    }
     if (r->_reserved0 != 0)              return TDC_E_CORRUPT;
     if (r->_reserved_pad != 0)           return TDC_E_CORRUPT;
 
@@ -151,4 +156,9 @@ tdc_status tdc_block_record_validate(const tdc_block_record *r) {
     }
 
     return TDC_OK;
+}
+
+
+int tdc_block_record_is_legacy(const tdc_block_record *r) {
+    return r && r->magic == TDC_LEGACY_BLOCK_MAGIC;
 }

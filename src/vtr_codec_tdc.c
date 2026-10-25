@@ -215,7 +215,12 @@ tdc_status vtr_codec_tdc_prepare_request(
         req->spec.xform[1]        = TDC_XFORM_BYTE_SHUFFLE;
         req->spec.entropy[0]      = TDC_ENTROPY_LZ;
     } else if (col->type == VEC_STRING) {
+        /* The residual is one u32 dictionary index per row: for a column of
+         * mostly distinct values (names, ids) the sequence 0, 1, 2, ...,
+         * which LZ cannot match until BYTE_SHUFFLE splits it into a cycling
+         * low-byte plane and near-constant high-byte planes. */
         req->spec.model      = TDC_MODEL_DICT_1D;
+        req->spec.xform[0]   = TDC_XFORM_BYTE_SHUFFLE;
         req->spec.entropy[0] = TDC_ENTROPY_LZ;
     } else if (col->type == VEC_INT64 && vtr_should_delta_encode(col, n_rows)) {
         req->spec.model      = TDC_MODEL_DELTA_1D;
@@ -372,6 +377,25 @@ static int vtr_small_build_candidates(const VecArray      *col,
                     s.xform_params[x] = req->spec.xform_params[x];
             }
             s.entropy[0] = VTR_SMALL_ENTROPY[e];
+            out[n++] = s;
+        }
+        /* LZ_STREAMS under its multi-pass optimal parser (level < 0): repeat
+         * offsets, log2-prefix offsets and per-stream FSE/Huffman put it
+         * within reach of zstd -19 on text, at a slow encode that SMALL
+         * accepts. */
+        if (n < cap) {
+            req->lzs_opt.level     = -1;
+            req->lzs_opt.min_match = 0;
+            tdc_codec_spec s = {0};
+            s.model = tpl[i].model;
+            for (int x = 0; x < TDC_MAX_TRANSFORMS; ++x) s.xform[x] = tpl[i].xform[x];
+            if (carry_baseline_params) {
+                s.model_params = req->spec.model_params;
+                for (int x = 0; x < TDC_MAX_TRANSFORMS; ++x)
+                    s.xform_params[x] = req->spec.xform_params[x];
+            }
+            s.entropy[0]        = TDC_ENTROPY_LZ_STREAMS;
+            s.entropy_params[0] = &req->lzs_opt;
             out[n++] = s;
         }
         /* One LANE candidate per byte-shuffle-terminated template. */

@@ -1,3 +1,22 @@
+# vectra 0.14.0
+
+## Storage format
+
+* `.vtr` files are written in a new on-disk format (tdc 'TDCF' container,
+  'TDBK' block records), and files of the previous format are still read and
+  can still be appended to. Strings compress far better: a string column's
+  values sit in a dictionary that the previous format stored uncompressed, and
+  the new one runs through the column's entropy coder, with its offsets table
+  stored as per-value lengths. On the World Flora Online backbone (1.66 M
+  rows, 30 columns, mostly names) `write_vtr()` gives 233 MiB at
+  `compress = "fast"` and 178 MiB at `"small"`, from 739 MiB in the previous
+  format. Files written by 0.14.0 cannot be read by earlier versions.
+* String columns byte-shuffle the per-row dictionary index ahead of the
+  entropy coder, which turns the index sequence of a column of distinct values
+  into runs the coder matches.
+* `compress = "small"` also tries tdc's LZ_STREAMS coder under its
+  multi-pass optimal parser, which on text comes within reach of zstd -19.
+
 # vectra 0.13.5
 
 ## Fixes

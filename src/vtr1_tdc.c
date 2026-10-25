@@ -130,7 +130,7 @@ static const char VTR1_TRAILER_MAGIC[4] = { 'V', 'T', 'R', 'D' };
 static uint64_t vtr1_container_end(const tdc_container_header *hdr) {
     if (hdr->index_offset > 0 && hdr->index_size > 0)
         return hdr->index_offset + hdr->index_size;
-    if (hdr->version == TDC_CONTAINER_VERSION)
+    if (!tdc_container_header_is_widened(hdr))
         return (uint64_t)TDC_CONTAINER_HEADER_SIZE + hdr->schema_size;
     return 0;
 }
@@ -139,7 +139,7 @@ static int vtr1_read_header(FILE *fp, tdc_container_header *hdr) {
     return vtr1_tdc_io_seek(fp, 0, TDC_SEEK_SET) == TDC_OK &&
            fread(hdr, 1, TDC_CONTAINER_HEADER_SIZE, fp) ==
                TDC_CONTAINER_HEADER_SIZE &&
-           hdr->magic == TDC_CONTAINER_MAGIC;
+           tdc_container_header_check_generation(hdr) == TDC_OK;
 }
 
 /* Read the trailer of an open store. Returns 1 and fills *digest (and `raw`,

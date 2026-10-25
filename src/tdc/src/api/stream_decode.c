@@ -7,14 +7,14 @@
  * returns NULL from tdc_stream_decoder_schema() and row-group index
  * queries degrade to sequential-only reads when index_offset is 0.
  *
- * Container layout, version 1 (TDC_CONTAINER_VERSION):
+ * Container layout, unwidened:
  *
  *   [64-byte header]                (schema_size recorded in header)
  *   [schema_size bytes of schema]   (column descriptors; absent if 0)
  *   [block records ...]             (self-describing)
  *   [trailing row-group index]      (at index_offset, if present)
  *
- * Container layout, version 2 (TDC_CONTAINER_VERSION_WIDENED) — produced
+ * Container layout, widened (tdc_container_header_is_widened) — produced
  * by tdc_stream_encoder_open_widen and tdc_stream_encoder_open_extend, which
  * add columns or row groups to an existing container without rewriting its
  * body. A widened container looks like:
@@ -326,22 +326,14 @@ tdc_status tdc_stream_decoder_open(const tdc_stream_decoder_config *cfg,
                                      TDC_CONTAINER_HEADER_SIZE);
     if (st != TDC_OK) { v2_free(d, d); return st; }
 
-    if (d->header.magic != TDC_CONTAINER_MAGIC) {
-        v2_free(d, d);
-        return TDC_E_CORRUPT;
-    }
-    if (d->header.version != TDC_CONTAINER_VERSION &&
-        d->header.version != TDC_CONTAINER_VERSION_WIDENED) {
-        v2_free(d, d);
-        return TDC_E_VERSION;
-    }
+    st = tdc_container_header_check_generation(&d->header);
+    if (st != TDC_OK) { v2_free(d, d); return st; }
 
     /* A widened container relocates its schema to the tail and records
      * where the blocks region starts, because the original schema slot at
      * offset 64 cannot grow in place. Reading it needs a seek, so a widened
      * container cannot be opened forward-only. */
-    const int widened =
-        (d->header.version == TDC_CONTAINER_VERSION_WIDENED);
+    const int widened = tdc_container_header_is_widened(&d->header);
     if (widened) {
         if (!cfg->io.seek_fn) { v2_free(d, d); return TDC_E_INVAL; }
         if (d->header.u.het.schema_offset == 0 ||
@@ -563,7 +555,7 @@ static tdc_status peek_block_here(tdc_stream_decoder *dec,
         return TDC_OK;
     }
 
-    if (magic != TDC_BLOCK_MAGIC) {
+    if (!tdc_block_magic_known(magic)) {
         memset(rec, 0, sizeof(*rec));
         return TDC_OK;
     }
@@ -604,7 +596,7 @@ tdc_status tdc_stream_decoder_peek_block(tdc_stream_decoder *dec,
      * read a magic mismatch, and report a clean end-of-blocks partway
      * through. Refuse the walk instead of silently truncating it -- every
      * block is still reachable through seek_rowgroup. */
-    if (dec->header.version == TDC_CONTAINER_VERSION_WIDENED)
+    if (tdc_container_header_is_widened(&dec->header))
         return TDC_E_INVAL;
 
     return peek_block_here(dec, rec);

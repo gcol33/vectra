@@ -137,6 +137,60 @@ static inline void driver_scratch_free(tdc_buffer *s) {
     }
 }
 
+/* ----- Entropy chain ------------------------------------------------------ */
+/*
+ * Single source of truth for running a block's entropy chain over a byte
+ * stream. The residual payload and the model side metadata both go through
+ * it, so the two sections share one serialized form:
+ *
+ *     [ u32 * len ]  stage-input sizes (stage 0 first, LE)
+ *     [ final stage bytes ]
+ *
+ * An empty chain (len == 0) is a passthrough with no size table.
+ *
+ * driver_entropy_chain_encode writes that form into `out` (size set on
+ * success). Scratch for the ping-pong comes from `scratch_parent`.
+ *
+ * driver_entropy_chain_decode reverses it into bufs[*cur], which holds
+ * exactly `out_size` bytes afterwards (capacity carries the +16 wildcopy
+ * slack LZ-family decoders write into). Stage 0's recorded input size
+ * must equal out_size, else TDC_E_CORRUPT.
+ */
+tdc_status driver_entropy_chain_encode(const tdc_entropy_id *ids,
+                                       const void *const    *params,
+                                       int                   len,
+                                       const uint8_t        *src,
+                                       size_t                src_size,
+                                       tdc_buffer           *out,
+                                       const tdc_buffer     *scratch_parent);
+
+tdc_status driver_entropy_chain_decode(const uint16_t *ids,
+                                       int             len,
+                                       const uint8_t  *payload,
+                                       size_t          payload_size,
+                                       size_t          out_size,
+                                       tdc_buffer      bufs[2],
+                                       int            *cur);
+
+/* ----- Side metadata packing --------------------------------------------- */
+/*
+ * Some models' side metadata is stored packed in the current format (see
+ * side_pack.c for the layouts). driver_side_packs says whether a model's is;
+ * driver_side_pack converts the in-memory form the model emitted to the
+ * on-disk form before the entropy chain, and driver_side_unpack converts it
+ * back after entropy decode, so the model and every other consumer of
+ * decoded side metadata see only the in-memory form. Legacy records store
+ * the in-memory form and skip both. Both write `out` and set its size;
+ * TDC_E_UNSUPPORTED for a model that does not pack.
+ */
+int        driver_side_packs(tdc_model_id model);
+tdc_status driver_side_pack(tdc_model_id model,
+                            const uint8_t *side, size_t side_size,
+                            tdc_buffer *out);
+tdc_status driver_side_unpack(tdc_model_id model,
+                              const uint8_t *packed, size_t packed_size,
+                              tdc_buffer *out);
+
 /* ----- Per-slot transform params: TLV (de)serialization ------------------- */
 /*
  * The TLV section in the on-disk block record is a sequence of entries:

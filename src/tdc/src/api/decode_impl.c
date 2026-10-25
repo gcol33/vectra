@@ -120,6 +120,40 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
     const uint8_t *xform_params_p = side_meta_p + hdr.side_meta_size;
     const uint8_t *payload_p      = xform_params_p + hdr.xform_params_size;
 
+    /* ----- Stage 0: side metadata ------------------------------------- */
+    /*
+     * A current-format record stores side metadata as [u32 raw_size] plus
+     * the entropy chain form, packed for some models; decode and unpack it
+     * once here so every consumer below (residual dtype/length walk,
+     * pre-model hook, model) sees the in-memory form. A legacy record
+     * stores that form raw. */
+    tdc_buffer side_bufs[2];
+    tdc_buffer side_unpacked;
+    driver_scratch_init(&side_bufs[0], scratch_parent);
+    driver_scratch_init(&side_bufs[1], scratch_parent);
+    driver_scratch_init(&side_unpacked, scratch_parent);
+    size_t side_size = (size_t)hdr.side_meta_size;
+    if (side_size > 0 && !tdc_block_record_is_legacy(&hdr)) {
+        if (side_size < sizeof(uint32_t)) { st = TDC_E_CORRUPT; goto cleanup_side; }
+        uint32_t raw_le;
+        memcpy(&raw_le, side_meta_p, sizeof(raw_le));
+        int side_cur = 0;
+        st = driver_entropy_chain_decode(hdr.entropy_ids, entropy_len,
+                                         side_meta_p + sizeof(uint32_t),
+                                         side_size - sizeof(uint32_t),
+                                         (size_t)raw_le, side_bufs, &side_cur);
+        if (st != TDC_OK) goto cleanup_side;
+        side_meta_p = side_bufs[side_cur].data;
+        side_size   = (size_t)raw_le;
+        if (driver_side_packs((tdc_model_id)hdr.model_id)) {
+            st = driver_side_unpack((tdc_model_id)hdr.model_id, side_meta_p,
+                                    side_size, &side_unpacked);
+            if (st != TDC_OK) goto cleanup_side;
+            side_meta_p = side_unpacked.data;
+            side_size   = side_unpacked.size;
+        }
+    }
+
     /* ----- Stage 1a: parse TLV xform params ---------------------------- */
 
     driver_xform_params_table xparams;
@@ -139,10 +173,10 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
      */
     tdc_dtype residual_dtype = driver_model_residual_dtype(
         (tdc_model_id)hdr.model_id, dst->dtype,
-        (hdr.side_meta_size > 0) ? side_meta_p : NULL,
-        (size_t)hdr.side_meta_size);
+        (side_size > 0) ? side_meta_p : NULL,
+        side_size);
     size_t    residual_elem_size = tdc_dtype_size(residual_dtype);
-    if (residual_elem_size == 0) return TDC_E_UNSUPPORTED;
+    if (residual_elem_size == 0) { st = TDC_E_UNSUPPORTED; goto cleanup_side; }
 
     /* Residual length in ELEMENTS. Equals n_elems for every model except
      * SPARSE_ZERO_1D, whose residual carries one u32 position per non-zero
@@ -150,9 +184,9 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
      * the uncompressed_size cross-check must both use this, not n_elems. */
     int64_t residual_len = driver_model_residual_len(
         (tdc_model_id)hdr.model_id, n_elems,
-        (hdr.side_meta_size > 0) ? side_meta_p : NULL,
-        (size_t)hdr.side_meta_size);
-    if (residual_len < 0) return TDC_E_CORRUPT;
+        (side_size > 0) ? side_meta_p : NULL,
+        side_size);
+    if (residual_len < 0) { st = TDC_E_CORRUPT; goto cleanup_side; }
 
     int       chain_len = 0;
     tdc_dtype xform_in[TDC_MAX_TRANSFORMS];
@@ -162,13 +196,13 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
     for (int i = 0; i < TDC_MAX_TRANSFORMS; ++i) {
         tdc_xform_id xid = (tdc_xform_id)hdr.xform_ids[i];
         if (xid == TDC_XFORM_NONE) break;
-        if (!tdc_xform_get(xid)) return TDC_E_UNSUPPORTED;
+        if (!tdc_xform_get(xid)) { st = TDC_E_UNSUPPORTED; goto cleanup_side; }
         xform_in[i]       = walk;
         xform_in_bytes[i] = walk_bytes;
         tdc_dtype next = driver_xform_out_dtype(xid, walk, xparams.xform_params[i]);
-        if (next == (tdc_dtype)0) return TDC_E_UNSUPPORTED;
+        if (next == (tdc_dtype)0) { st = TDC_E_UNSUPPORTED; goto cleanup_side; }
         size_t next_elem_size = tdc_dtype_size(next);
-        if (next_elem_size == 0) return TDC_E_UNSUPPORTED;
+        if (next_elem_size == 0) { st = TDC_E_UNSUPPORTED; goto cleanup_side; }
         walk       = next;
         walk_bytes = (size_t)residual_len * next_elem_size;
         chain_len  = i + 1;
@@ -181,11 +215,11 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
      * count, reinterpreted as residual_len * residual_elem_size directly. */
     const int zero_residual = (hdr.flags & TDC_BLOCK_FLAG_ZERO_RESIDUAL) != 0;
     if (zero_residual) {
-        if (hdr.payload_size != 0u || hdr.xform_params_size != 0u) return TDC_E_CORRUPT;
+        if (hdr.payload_size != 0u || hdr.xform_params_size != 0u) { st = TDC_E_CORRUPT; goto cleanup_side; }
         size_t residual_bytes = (size_t)residual_len * residual_elem_size;
-        if ((uint64_t)residual_bytes != hdr.uncompressed_size) return TDC_E_CORRUPT;
+        if ((uint64_t)residual_bytes != hdr.uncompressed_size) { st = TDC_E_CORRUPT; goto cleanup_side; }
     } else {
-        if ((uint64_t)walk_bytes != hdr.uncompressed_size) return TDC_E_CORRUPT;
+        if ((uint64_t)walk_bytes != hdr.uncompressed_size) { st = TDC_E_CORRUPT; goto cleanup_side; }
     }
 
     /* ----- Stage 2: scratch buffers + entropy decode ------------------ */
@@ -199,13 +233,6 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
     if (hdr.uncompressed_size > SIZE_MAX) { st = TDC_E_INVAL; goto cleanup; }
     size_t entropy_out_size = (size_t)hdr.uncompressed_size;
 
-    /* Reserve at least 1 byte even for empty inputs so bufs[cur].data
-     * is non-NULL. Add 16 bytes of wildcopy slack so LZ-family decoders
-     * can safely touch the 15-byte tail past their declared output. */
-    st = tdc_buf_reserve(&bufs[cur],
-                         (entropy_out_size > 0 ? entropy_out_size : 1u) + 16u);
-    if (st != TDC_OK) goto cleanup;
-
     const int dec_timing_on = tdc_stage_timers_enabled();
     double t_entropy = 0.0, t_xform = 0.0, t_model = 0.0;
     double dt0 = dec_timing_on ? tdc_now_secs() : 0.0;
@@ -215,64 +242,18 @@ tdc_status driver_decode_block_impl(const uint8_t        *src,
      * model body never reads from it. The buffer's *size* must be set
      * correctly because the model validates residual_size == bytes. */
     if (zero_residual) {
+        st = tdc_buf_reserve(&bufs[cur],
+                             (entropy_out_size > 0 ? entropy_out_size : 1u) + 16u);
+        if (st != TDC_OK) goto cleanup;
         bufs[cur].size = entropy_out_size;
         if (dec_timing_on) { double t1 = tdc_now_secs(); t_entropy = t1 - dt0; dt0 = t1; t_xform = 0.0; }
         goto run_model;
     }
 
-    /* Entropy decode: walk the chain RTL. An empty chain is an implicit
-     * NONE passthrough. */
-    if (entropy_len == 0) {
-        if ((size_t)hdr.payload_size != entropy_out_size) {
-            st = TDC_E_CORRUPT; goto cleanup;
-        }
-        if (entropy_out_size > 0) {
-            memcpy(bufs[cur].data, payload_p, entropy_out_size);
-        }
-        bufs[cur].size = entropy_out_size;
-    } else {
-        /* Parse stage-input sizes table from the start of the payload. */
-        size_t sizes_bytes = (size_t)entropy_len * sizeof(uint32_t);
-        if ((size_t)hdr.payload_size < sizes_bytes) {
-            st = TDC_E_CORRUPT; goto cleanup;
-        }
-        uint32_t stage_in_sizes[TDC_MAX_ENTROPY];
-        for (int i = 0; i < entropy_len; ++i) {
-            uint32_t le;
-            memcpy(&le, payload_p + (size_t)i * sizeof(uint32_t), sizeof(le));
-            stage_in_sizes[i] = le;
-        }
-        if ((uint64_t)stage_in_sizes[0] != hdr.uncompressed_size) {
-            st = TDC_E_CORRUPT; goto cleanup;
-        }
-
-        const uint8_t *stage_src      = payload_p      + sizes_bytes;
-        size_t         stage_src_size = (size_t)hdr.payload_size - sizes_bytes;
-
-        for (int i = entropy_len - 1; i >= 0; --i) {
-            tdc_entropy_id eid = (tdc_entropy_id)hdr.entropy_ids[i];
-            const tdc_entropy_vt *evt = tdc_entropy_get(eid);
-            if (!evt) { st = TDC_E_UNSUPPORTED; goto cleanup; }
-
-            size_t dst_size = (size_t)stage_in_sizes[i];
-
-            st = tdc_buf_reserve(&bufs[1 - cur],
-                                 (dst_size > 0 ? dst_size : 1u) + 16u);
-            if (st != TDC_OK) goto cleanup;
-
-            st = evt->decode(stage_src, stage_src_size,
-                             bufs[1 - cur].data, dst_size);
-            if (st != TDC_OK) goto cleanup;
-            bufs[1 - cur].size = dst_size;
-
-            stage_src      = bufs[1 - cur].data;
-            stage_src_size = dst_size;
-            cur = 1 - cur;
-        }
-        if (bufs[cur].size != entropy_out_size) {
-            st = TDC_E_CORRUPT; goto cleanup;
-        }
-    }
+    st = driver_entropy_chain_decode(hdr.entropy_ids, entropy_len, payload_p,
+                                     (size_t)hdr.payload_size,
+                                     entropy_out_size, bufs, &cur);
+    if (st != TDC_OK) goto cleanup;
     if (dec_timing_on) { double t1 = tdc_now_secs(); t_entropy = t1 - dt0; dt0 = t1; }
 
     /* ----- Stage 3: reverse the transform chain ----------------------- */
@@ -309,8 +290,8 @@ run_model:
      * non-NULL contract before the model runs. */
     if (hook) {
         st = hook(dst, bufs[cur].data, bufs[cur].size,
-                  (hdr.side_meta_size > 0) ? side_meta_p : NULL,
-                  hdr.side_meta_size,
+                  (side_size > 0) ? side_meta_p : NULL,
+                  side_size,
                   residual_dtype,
                   (tdc_model_id)hdr.model_id,
                   hook_user);
@@ -334,8 +315,8 @@ run_model:
 
     st = model_vt->decode(dst, NULL, residual_dtype,
                           bufs[cur].data, bufs[cur].size,
-                          (hdr.side_meta_size > 0) ? side_meta_p : NULL,
-                          hdr.side_meta_size);
+                          (side_size > 0) ? side_meta_p : NULL,
+                          side_size);
     if (st != TDC_OK) goto cleanup;
     if (dec_timing_on) { double t1 = tdc_now_secs(); t_model = t1 - dt0; }
 
@@ -362,5 +343,9 @@ run_model:
 cleanup:
     driver_scratch_free(&bufs[0]);
     driver_scratch_free(&bufs[1]);
+cleanup_side:
+    driver_scratch_free(&side_bufs[0]);
+    driver_scratch_free(&side_bufs[1]);
+    driver_scratch_free(&side_unpacked);
     return st;
 }

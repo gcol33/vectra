@@ -99,6 +99,7 @@ typedef struct {
     tdc_lane_entropy_params      lane; /* backs a SMALL-mode LANE candidate;
                                         * n_lanes set per column element width */
     tdc_entropy_level            lz_level; /* backs the FAST LZ level */
+    tdc_lz_streams_params        lzs_opt;  /* backs the SMALL LZ_STREAMS optimal-parse candidate */
     uint32_t                    *str_offsets_owned;  /* NULL unless VEC_STRING */
 } VtrTdcEncodeRequest;
 
