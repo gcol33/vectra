@@ -1,50 +1,41 @@
-## Resubmission
-
-The first 0.13.0 upload failed one test on r-devel-linux-x86_64-debian-gcc:
-it compared `NaN^NA` with base R, which gives `NaN` there and `NA` elsewhere
-(`?NA` leaves this platform-dependent). The test now only requires those rows
-to be missing. No package code changed.
-
 ## Submission
 
-This is a feature update. The main changes are:
+This is a feature update, 0.13.0 having been published on 2026-09-30. It is
+submitted now because taxify, vectra's only reverse dependency, needs it to
+answer a CRAN request: on 2026-10-25 Prof. Ripley reported that taxify had
+left 4.4 GB of backbone data in `~/.local/share/R/taxify` on his check server
+and scheduled taxify for archival on 2026-11-02. Part of taxify's fix is to
+make the data it downloads much smaller, and that depends on this release.
 
-* `tbl_parquet()`, a native Parquet reader implemented in C with no
-  dependency on 'arrow'. ZSTD-compressed pages are decoded by the zstd
-  decompressor, included in `src/zstd` under its BSD license.
-* `vectra_mem()` is now a single memory bound per query plan, shared by the
-  sort, join and aggregation nodes, and grouped `summarise()` aggregates in
-  hash tables that spill to disk past that bound.
-* LZW-compressed GeoTIFF input, trigonometric functions in expressions, and
-  fixes to `bind_rows()` type widening and filter pushdown.
+The main change is the on-disk format of `.vtr` files. String columns were
+stored with their dictionary uncompressed; in the new format the dictionary is
+entropy-coded like the rest of the column. On the World Flora Online backbone
+that taxify downloads (1.66 million rows), the file goes from 739 MiB to
+118 MiB and reads back in 9 s instead of 19 s.
+
+Files of the previous format are still read, and can still be appended to.
+Files written by this version cannot be read by earlier versions; NEWS.md
+says so. For taxify this is handled on the data side: the stores published
+for taxify < 0.7.0 stay in the previous format under their existing names, and
+taxify 0.7.0 (to be submitted after this release) reads the new ones.
 
 NEWS.md lists every change.
 
-## Authors@R
-
-`Authors@R` now lists the authors and copyright holders of the bundled third
-party code: Yann Collet and Meta Platforms (zstd and xxHash, `src/zstd`), and
-Rich Geldreich, Martin Raiber, RAD Game Tools and Valve Software, and Tenacious
-Software (miniz, `src/miniz`). Alistair Moffat and Jyrki Katajainen are listed
-as contributors because a routine in miniz credits them by name.
-
 ## Test environments
 
-* Local: Windows 11, R 4.6.1, `R CMD check --as-cran` on the built tarball
-* win-builder: R-devel
-* GitHub Actions: R-CMD-check (macOS, Windows, Ubuntu release/devel/oldrel-1),
-  gcc ASAN/UBSAN, clang `-fsanitize=undefined,function`
+* Local: Windows 11, R 4.6.0, `R CMD check --as-cran` on the built tarball
+* win-builder: R-devel, R-release
 
 ## R CMD check results
 
 0 errors | 0 warnings | 1 note
 
-The note is from the incoming feasibility check: 12 updates in the past six
-months. This release collects the development since 0.12.4 into one feature
-update.
+The note is from the incoming feasibility check, counting the updates in the
+past six months. This release is submitted because of the CRAN request above.
 
 ## Reverse dependencies
 
-taxify imports vectra. `R CMD check` of taxify 0.5.5 (the CRAN version)
-against this release: Status OK, its test suite passes in full (9004
-expectations, 0 failures).
+taxify imports vectra. `R CMD check --as-cran` of taxify 0.6.0 (the CRAN
+version) against this release passes, with its test suite in full; the one
+flag is the incoming check's "Insufficient package version", from checking the
+version already on CRAN. The check left the user data directory empty.
