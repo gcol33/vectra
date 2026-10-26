@@ -1,3 +1,9 @@
+# vectra 0.14.1
+
+* Reading a corrupted `.vtr` record no longer reads past the record header's
+  dimension array: the header is validated before its element count is
+  taken. Valid files were not affected.
+
 # vectra 0.14.0
 
 ## Storage format
