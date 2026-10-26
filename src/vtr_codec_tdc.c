@@ -583,6 +583,26 @@ static tdc_status vtr_extract_validity_from_record(const tdc_block_record *hdr,
     return TDC_OK;
 }
 
+/*
+ * Copy the record header out of src (memcpy: src is not guaranteed aligned
+ * for tdc_block_record), validate it, and return its element count. The
+ * validator bounds rank and dims, so the count cannot read past dim[] or
+ * overflow on a corrupt record.
+ */
+static tdc_status vtr_read_record_header(const uint8_t    *src,
+                                         size_t            src_size,
+                                         tdc_block_record *hdr,
+                                         int64_t          *n_elems) {
+    if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
+    memcpy(hdr, src, TDC_BLOCK_HEADER_SIZE);
+    tdc_status st = tdc_block_record_validate(hdr);
+    if (st != TDC_OK) return st;
+    int64_t n = 1;
+    for (uint8_t i = 0; i < hdr->rank; ++i) n *= hdr->dim[i];
+    *n_elems = n;
+    return TDC_OK;
+}
+
 tdc_status vtr_decode_column_tdc_into(VecType         type,
                                       int64_t         n_rows,
                                       void           *dst_data,
@@ -592,14 +612,14 @@ tdc_status vtr_decode_column_tdc_into(VecType         type,
     if (!src || n_rows < 0)             return TDC_E_INVAL;
     if (n_rows > 0 && dst_data == NULL) return TDC_E_INVAL;
     if (type == VEC_STRING)             return TDC_E_UNSUPPORTED;
-    if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
 
     tdc_dtype expected = vtr_type_to_tdc_dtype(type);
     if (expected == (tdc_dtype)0) return TDC_E_DTYPE;
 
-    /* Pull header (memcpy: src is not guaranteed aligned for tdc_block_record). */
     tdc_block_record hdr;
-    memcpy(&hdr, src, TDC_BLOCK_HEADER_SIZE);
+    int64_t header_n_elems;
+    tdc_status st = vtr_read_record_header(src, src_size, &hdr, &header_n_elems);
+    if (st != TDC_OK) return st;
 
     tdc_block dst = {0};
     dst.dtype        = expected;
@@ -614,11 +634,9 @@ tdc_status vtr_decode_column_tdc_into(VecType         type,
     /* Header rank/shape carry the *block* shape (could be RASTER_2D for
      * spatial); the caller asserts only n_rows. Validate the element count
      * matches across whatever the header advertises. */
-    int64_t header_n_elems = 1;
-    for (uint8_t i = 0; i < hdr.rank; ++i) header_n_elems *= hdr.dim[i];
     if (header_n_elems != n_rows) return TDC_E_SHAPE;
 
-    tdc_status st = tdc_decode_block_into(src, src_size, &dst);
+    st = tdc_decode_block_into(src, src_size, &dst);
     if (st != TDC_OK) return st;
 
     return vtr_extract_validity_from_record(&hdr, src, src_size, n_rows, dst_validity);
@@ -633,14 +651,12 @@ tdc_status vtr_decode_column_tdc_into(VecType         type,
 static tdc_status vtr_decode_string_column_tdc(VecArray       *col_out,
                                                const uint8_t  *src,
                                                size_t          src_size) {
-    if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
-
     tdc_block_record hdr;
-    memcpy(&hdr, src, TDC_BLOCK_HEADER_SIZE);
+    int64_t header_n_elems;
+    tdc_status st = vtr_read_record_header(src, src_size, &hdr, &header_n_elems);
+    if (st != TDC_OK) return st;
 
     int64_t n_rows = col_out->length;
-    int64_t header_n_elems = 1;
-    for (uint8_t i = 0; i < hdr.rank; ++i) header_n_elems *= hdr.dim[i];
     if (header_n_elems != n_rows) return TDC_E_SHAPE;
     if ((tdc_dtype)hdr.dtype != TDC_DT_STRING) return TDC_E_DTYPE;
 
@@ -658,7 +674,7 @@ static tdc_status vtr_decode_string_column_tdc(VecArray       *col_out,
     tdc_buffer alloc = {0};
     alloc.realloc_fn = vtr_tdc_realloc;
 
-    tdc_status st = tdc_decode_block_varlen(src, src_size, &dst, &alloc);
+    st = tdc_decode_block_varlen(src, src_size, &dst, &alloc);
     if (st != TDC_OK) return st;
 
     /* Widen uint32 offsets -> int64 (vectra's storage type). */
@@ -707,14 +723,13 @@ tdc_status vtr_decode_column_tdc_dict(VecArray       *col_out,
     if (!col_out || !src)              return TDC_E_INVAL;
     if (col_out->type != VEC_STRING)   return TDC_E_DTYPE;
     if (col_out->str_dict)             return TDC_E_INVAL;
-    if (src_size < TDC_BLOCK_HEADER_SIZE) return TDC_E_CORRUPT;
 
     tdc_block_record hdr;
-    memcpy(&hdr, src, TDC_BLOCK_HEADER_SIZE);
+    int64_t header_n_elems;
+    tdc_status st = vtr_read_record_header(src, src_size, &hdr, &header_n_elems);
+    if (st != TDC_OK) return st;
 
     int64_t n_rows = col_out->length;
-    int64_t header_n_elems = 1;
-    for (uint8_t i = 0; i < hdr.rank; ++i) header_n_elems *= hdr.dim[i];
     if (header_n_elems != n_rows)              return TDC_E_SHAPE;
     if ((tdc_dtype)hdr.dtype != TDC_DT_STRING) return TDC_E_DTYPE;
 
@@ -722,7 +737,7 @@ tdc_status vtr_decode_column_tdc_dict(VecArray       *col_out,
     alloc.realloc_fn = vtr_tdc_realloc;
 
     tdc_dict_block db = {0};
-    tdc_status st = tdc_decode_block_dict(src, src_size, &db, &alloc);
+    st = tdc_decode_block_dict(src, src_size, &db, &alloc);
     if (st != TDC_OK) return st;  /* TDC_E_UNSUPPORTED -> caller flattens */
 
     if (db.n != n_rows) {
