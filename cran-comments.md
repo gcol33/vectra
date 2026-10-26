@@ -1,3 +1,15 @@
+## Resubmission (hotfix)
+
+This upload replaces the vectra 0.14.0 submitted on 2026-10-25, which is
+pending manual inspection. It fixes one bug found by our sanitizer CI after
+that upload: on a deliberately corrupted file (a test in
+test-append-size.R), the new decoder read the record header's dimensions
+before validating it, so a garbage rank byte indexed past a 3-element array
+and the element count overflowed (UBSAN: "index 3 out of bounds", "signed
+integer overflow" in src/vtr_codec_tdc.c). The header is now validated
+first. Valid files were never affected; nothing else changed. I kept the
+version at 0.14.0 because the previous upload was not accepted.
+
 ## Submission
 
 This is a feature update, 0.13.0 having been published on 2026-09-30. It is
