@@ -1,8 +1,9 @@
 ## Resubmission (hotfix)
 
 This upload replaces the vectra 0.14.0 submitted on 2026-10-25, which is
-pending manual inspection. It fixes one bug found by our sanitizer CI after
-that upload: on a deliberately corrupted file (a test in
+pending manual inspection. That upload went out under time pressure, so that
+taxify 0.7.0 can follow before taxify's archival date of 2026-11-02, and I
+missed that our sanitizer CI had flagged a bug. This upload fixes it: on a deliberately corrupted file (a test in
 test-append-size.R), the new decoder read the record header's dimensions
 before validating it, so a garbage rank byte indexed past a 3-element array
 and the element count overflowed (UBSAN: "index 3 out of bounds", "signed
