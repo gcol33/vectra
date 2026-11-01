@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-Installation is covered in [Get started](quickstart.html).
+Installation is covered in [Get started](vectra.html).
 
 ```{r va-engine, echo = FALSE, results = "asis", eval = TRUE}
 cat("<script>\n", paste(readLines("va-engine.js"), collapse = "\n"), "\n</script>\n", sep = "")

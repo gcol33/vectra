@@ -35,14 +35,7 @@ navbar:
     - search
     - github
     - lightswitch
-  components:
-    intro:
-      text: Get started
-      href: articles/quickstart.html
 articles:
-- title: Get started
-  contents:
-  - quickstart
 - title: Guides
   navbar: Guides
   contents:
@@ -250,3 +243,5 @@ reference:
   - embedding_distance
   - feature_knn
   - rast_feature_distance
+redirects:
+- ["articles/quickstart.html", "articles/vectra.html"]

@@ -23,7 +23,7 @@ guarantees stop. It is the reference for what vectra promises.
 See `?tbl`, `?filter`, `?left_join`, and `?explain` for function-level
 documentation.
 
-Installation is covered in [Get started](quickstart.html).
+Installation is covered in [Get started](vectra.html).
 
 ## What vectra is
 

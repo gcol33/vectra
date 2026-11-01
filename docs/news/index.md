@@ -2976,8 +2976,7 @@ CRAN release: 2026-04-21
 
 ### Documentation
 
-- New quickstart vignette:
-  [`vignette("quickstart")`](https://gillescolling.com/vectra/articles/quickstart.md).
+- New quickstart vignette: `vignette("quickstart")`.
 - `@details` sections added to
   [`filter()`](https://gillescolling.com/vectra/reference/filter.md),
   [`mutate()`](https://gillescolling.com/vectra/reference/mutate.md),

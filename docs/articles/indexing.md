@@ -1,7 +1,7 @@
 # Indexing and Query Optimization
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## Introduction
 
@@ -321,7 +321,7 @@ t_idx <- system.time({
 })
 
 cat("Without index:", t_no_idx["elapsed"], "s\n")
-#> Without index: 0.1 s
+#> Without index: 0.09 s
 cat("With index:   ", t_idx["elapsed"], "s\n")
 #> With index:    0.08 s
 ```
@@ -486,7 +486,7 @@ t_in_no_idx <- system.time({
 })
 
 cat("With index, %in% filter:", t_in_no_idx["elapsed"], "s\n")
-#> With index, %in% filter: 0.09 s
+#> With index, %in% filter: 0.11 s
 ```
 
 Without an index, the same query reads all row groups and filters in

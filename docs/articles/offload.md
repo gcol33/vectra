@@ -12,7 +12,7 @@ Along the way the same principle explains both what streams cheaply and
 what needs a sort.
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## Two cost models
 

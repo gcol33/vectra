@@ -1,7 +1,7 @@
 # Working with Large Data
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## Introduction
 

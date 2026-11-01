@@ -231,7 +231,7 @@ Models that re-read the data on every iteration use `chunk_feeder()`, which expo
 
 ## Documentation
 
-Start with [Getting Started with vectra](https://gillescolling.com/vectra/articles/quickstart.html), which takes one query from a file to a collected result.
+Start with [Getting Started with vectra](https://gillescolling.com/vectra/articles/vectra.html), which takes one query from a file to a collected result.
 
 Engine:
 

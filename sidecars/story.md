@@ -53,7 +53,7 @@ Not stated in the docs yet.
 ## Documents
 - DESCRIPTION: claim, formats, spatial and raster scope
 - README / landing: claim, list of arcs, installation (compiled, OpenMP), first query, routing
-- Get started (quickstart.Rmd): one query from a file to a collected result
+- Get started (vectra.Rmd): one query from a file to a collected result
 - articles: engine, formats, joins, schema, string-ops, indexing, large-data, offload, spatial, streaming-spatial, sdm
 
 ## Open

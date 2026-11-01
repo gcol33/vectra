@@ -16,7 +16,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-Installation is covered in [Get started](quickstart.html).
+Installation is covered in [Get started](vectra.html).
 
 ## Introduction
 

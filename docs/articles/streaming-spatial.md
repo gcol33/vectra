@@ -10,7 +10,7 @@ use to take layers and coordinate reference systems as arguments, and
 which runs the operations vectra has no native path for.
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ``` r
 

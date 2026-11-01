@@ -1,7 +1,7 @@
 # Star Schemas and Lookup
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## The flat-table problem
 

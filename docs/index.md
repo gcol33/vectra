@@ -389,8 +389,8 @@ both.
 ## Documentation
 
 Start with [Getting Started with
-vectra](https://gillescolling.com/vectra/articles/quickstart.html),
-which takes one query from a file to a collected result.
+vectra](https://gillescolling.com/vectra/articles/vectra.html), which
+takes one query from a file to a collected result.
 
 Engine:
 

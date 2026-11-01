@@ -19,7 +19,7 @@ has_biglm <- requireNamespace("biglm", quietly = TRUE)
 library(vectra)
 ```
 
-Installation is covered in [Get started](quickstart.html).
+Installation is covered in [Get started](vectra.html).
 
 ## What vectra does for a distribution model
 

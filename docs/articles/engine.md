@@ -12,7 +12,7 @@ and [`?explain`](https://gillescolling.com/vectra/reference/explain.md)
 for function-level documentation.
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## What vectra is
 

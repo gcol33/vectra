@@ -1,7 +1,7 @@
 # Species Distribution Models
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## What vectra does for a distribution model
 

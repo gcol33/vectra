@@ -1,10 +1,5 @@
 # Articles
 
-### Get started
-
-- [Getting Started with
-  vectra](https://gillescolling.com/vectra/articles/quickstart.md):
-
 ### Guides
 
 - [vectra Engine

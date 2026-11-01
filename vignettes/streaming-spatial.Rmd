@@ -31,7 +31,7 @@ every block below is code you can execute and check. It needs the optional
 take layers and coordinate reference systems as arguments, and which runs the
 operations vectra has no native path for.
 
-Installation is covered in [Get started](quickstart.html).
+Installation is covered in [Get started](vectra.html).
 
 ```{r libs, message = FALSE}
 library(vectra)

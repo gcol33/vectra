@@ -1,7 +1,7 @@
 # Out-of-core GIS with vectra
 
 Installation is covered in [Get
-started](https://gillescolling.com/vectra/articles/quickstart.md).
+started](https://gillescolling.com/vectra/articles/vectra.md).
 
 ## The streaming envelope
 
