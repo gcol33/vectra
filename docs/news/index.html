@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">vectra</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.13.5</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.14.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -28,9 +28,12 @@
     </button>
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
-      <ul class="navbar-nav me-auto"><li class="nav-item dropdown">
+      <ul class="navbar-nav me-auto"><li class="nav-item"><a class="nav-link" href="../articles/quickstart.html">Get started</a></li>
+<li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
+<li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Getting Started with vectra</a></li>
+  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><hr class="dropdown-divider"></li>
+    <li><h6 class="dropdown-header" data-toc-skip>Guides</h6></li>
     <li><a class="dropdown-item" href="../articles/engine.html">vectra Engine Reference</a></li>
     <li><a class="dropdown-item" href="../articles/formats.html">Format Backends</a></li>
     <li><a class="dropdown-item" href="../articles/joins.html">Joins</a></li>
@@ -42,12 +45,19 @@
     <li><a class="dropdown-item" href="../articles/spatial.html">Out-of-core GIS with vectra</a></li>
     <li><a class="dropdown-item" href="../articles/streaming-spatial.html">Streaming spatial operations</a></li>
     <li><a class="dropdown-item" href="../articles/sdm.html">Species Distribution Models</a></li>
+    <li><hr class="dropdown-divider"></li>
+    <li><a class="dropdown-item" href="../articles/index.html">More articles...</a></li>
   </ul></li>
-<li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="active nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
  <input class="form-control" type="search" name="search-input" id="search-input" autocomplete="off" aria-label="Search site" placeholder="Search for" data-search-index="../search.json"></form></li>
 <li class="nav-item"><a class="external-link nav-link" href="https://github.com/gcol33/vectra/" aria-label="GitHub"><span class="fa fab fa-github fa-lg"></span></a></li>
+<li class="nav-item dropdown">
+  <button class="nav-link dropdown-toggle" type="button" id="dropdown-lightswitch" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true" aria-label="Light switch"><span class="fa fa-sun"></span></button>
+  <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="dropdown-lightswitch"><li><button class="dropdown-item" data-bs-theme-value="light"><span class="fa fa-sun"></span> Light</button></li>
+    <li><button class="dropdown-item" data-bs-theme-value="dark"><span class="fa fa-moon"></span> Dark</button></li>
+    <li><button class="dropdown-item" data-bs-theme-value="auto"><span class="fa fa-adjust"></span> Auto</button></li>
+  </ul></li>
       </ul></div>
 
 
@@ -59,6 +69,21 @@
       <small>Source: <a href="https://github.com/gcol33/vectra/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.14.1" id="vectra-0141">vectra 0.14.1<a class="anchor" aria-label="anchor" href="#vectra-0141"></a></h2><p class="text-muted">CRAN release: 2026-10-27</p>
+<ul><li>Reading a corrupted <code>.vtr</code> record no longer reads past the record header’s dimension array: the header is validated before its element count is taken. Valid files were not affected.</li>
+</ul></div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.14.0" id="vectra-0140">vectra 0.14.0<a class="anchor" aria-label="anchor" href="#vectra-0140"></a></h2><p class="text-muted">CRAN release: 2026-10-26</p>
+<div class="section level3">
+<h3 id="storage-format-0-14-0">Storage format<a class="anchor" aria-label="anchor" href="#storage-format-0-14-0"></a></h3>
+<ul><li>
+<code>.vtr</code> files are written in a new on-disk format (tdc ‘TDCF’ container, ‘TDBK’ block records), and files of the previous format are still read and can still be appended to. Strings compress far better: a string column’s values sit in a dictionary that the previous format stored uncompressed, and the new one runs through the column’s entropy coder, with its offsets table stored as per-value lengths. On the World Flora Online backbone (1.66 M rows of names and identifiers), 739 MiB in the previous format, <code><a href="../reference/write_vtr.html">write_vtr()</a></code> gives about 230 MiB at <code>compress = "fast"</code> and 118 MiB at <code>"small"</code>, and the whole table reads back in 9 s instead of 19 s. Files written by 0.14.0 cannot be read by earlier versions.</li>
+<li>String columns byte-shuffle the per-row dictionary index ahead of the entropy coder, which turns the index sequence of a column of distinct values into runs the coder matches.</li>
+<li>
+<code>compress = "small"</code> also tries tdc’s LZ_STREAMS coder under its multi-pass optimal parser, which on text comes within reach of zstd -19.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.13.5" id="vectra-0135">vectra 0.13.5<a class="anchor" aria-label="anchor" href="#vectra-0135"></a></h2>
 <div class="section level3">

@@ -28,17 +28,24 @@ navbar:
   structure:
     left:
     - intro
-    - articles
     - reference
+    - articles
     - news
     right:
     - search
     - github
+    - lightswitch
+  components:
+    intro:
+      text: Get started
+      href: articles/quickstart.html
 articles:
-- title: Guides
-  navbar: ~
+- title: Get started
   contents:
   - quickstart
+- title: Guides
+  navbar: Guides
+  contents:
   - engine
   - formats
   - joins
