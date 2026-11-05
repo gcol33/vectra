@@ -35,6 +35,20 @@
 #  define TDC_HAVE_NEON 0
 #endif
 
+/* ---- Vector-argument helpers ------------------------------------------ */
+
+/* A helper that takes or returns a 256-bit vector by value is always
+ * inlined. Called out of line, GCC spills the vector argument with aligned
+ * 32-byte moves, and on Windows x64 the stack is only 16-byte aligned, so
+ * an unoptimized build faults on the first call. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define TDC_SIMD_INLINE static inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#  define TDC_SIMD_INLINE static __forceinline
+#else
+#  define TDC_SIMD_INLINE static inline
+#endif
+
 /* ---- Prefetch --------------------------------------------------------- */
 
 #if defined(__GNUC__) || defined(__clang__)

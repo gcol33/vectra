@@ -68,6 +68,7 @@
 #include "model_load_store.h"
 #include "../core/buffer.h"
 #include "../core/float_order.h"
+#include "../core/simd.h"
 #include "float_pred_helpers.h"
 
 #include <stddef.h>
@@ -276,7 +277,7 @@ static inline __m128i paeth_4x_sse2(__m128i a, __m128i b, __m128i c) {
  * SSE2 helper above.
  */
 #ifdef TDC_PRED2D_HAVE_AVX2
-static inline __m256i paeth_8x_avx2(__m256i a, __m256i b, __m256i c) {
+TDC_SIMD_INLINE __m256i paeth_8x_avx2(__m256i a, __m256i b, __m256i c) {
     __m256i bc = _mm256_sub_epi32(b, c);
     __m256i ac = _mm256_sub_epi32(a, c);
 

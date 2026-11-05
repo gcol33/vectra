@@ -261,9 +261,19 @@ tdc_status tdc_encode_block(const tdc_block      *src,
             side_meta = packed;
         }
         if (side_meta.size > UINT32_MAX) { st = TDC_E_INVAL; goto cleanup; }
+        /* A LANE stage's lane count is the residual's element width, which
+         * side metadata does not have, so LANE codes it as one lane. The
+         * lane header records the count, so the decoder needs no change. */
+        static const tdc_lane_entropy_params side_lane = { .n_lanes = 1 };
+        const void *side_params[TDC_MAX_ENTROPY];
+        for (int i = 0; i < entropy_len; ++i) {
+            side_params[i] = (spec->entropy[i] == TDC_ENTROPY_LANE)
+                                 ? (const void *)&side_lane
+                                 : spec->entropy_params[i];
+        }
         tdc_buffer side_enc;
         driver_scratch_init(&side_enc, out);
-        st = driver_entropy_chain_encode(spec->entropy, spec->entropy_params,
+        st = driver_entropy_chain_encode(spec->entropy, side_params,
                                          entropy_len, side_meta.data,
                                          side_meta.size, &side_enc, out);
         if (st == TDC_OK) {

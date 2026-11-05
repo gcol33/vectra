@@ -61,6 +61,7 @@
 #include "model_load_store.h"
 #include "../core/buffer.h"
 #include "../core/log.h"
+#include "../core/simd.h"
 #include "../format/metadata_internal.h"
 
 /* ----- SIMD capability detection ------------------------------------------ */
@@ -252,7 +253,7 @@ static inline int64_t plane2d_eval(const int32_t *coeffs_for_tile,
  */
 #ifdef TDC_PLANE2D_HAVE_AVX2
 
-static inline __m256i avx2_round_div256_epi32(__m256i acc) {
+TDC_SIMD_INLINE __m256i avx2_round_div256_epi32(__m256i acc) {
     __m256i sign    = _mm256_srai_epi32(acc, 31);
     __m256i abs_acc = _mm256_sub_epi32(_mm256_xor_si256(acc, sign), sign);
     __m256i q       = _mm256_srli_epi32(
