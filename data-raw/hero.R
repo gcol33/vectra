@@ -1,4 +1,4 @@
-# Build the README banner man/figures/vectra-hero.png.
+# Build the README banner man/figures/vectra-hero.svg.
 #
 # A .vtr file of eight years of observations, written in year order with 8 row
 # groups per year and sorted by station within each year. Each block is one row
@@ -14,7 +14,7 @@
 # The labels stand in the panel next to the blocks they name.
 #
 # Run from the package root:  Rscript data-raw/hero.R
-# Needs ggplot2 and ragg only here; they are not package dependencies.
+# Needs ggplot2 and svglite only here; they are not package dependencies.
 
 suppressMessages({
   library(ggplot2)
@@ -122,5 +122,11 @@ p <- ggplot() +
         plot.margin = margin(0, 0, 0, 0))
 
 dir.create("man/figures", recursive = TRUE, showWarnings = FALSE)
-ggsave("man/figures/vectra-hero.png", p, width = W / 120, height = H / 120, dpi = 120,
-       bg = "white", device = ragg::agg_png)
+out <- "man/figures/vectra-hero.svg"
+sans_stack <- '"Segoe UI", Helvetica, Arial, sans-serif'
+ggsave(out, p, width = W / 120, height = H / 120, bg = "white",
+       device = svglite::svglite, web_fonts = list(), fix_text_size = FALSE,
+       system_fonts = list(sans = "Arial"))
+svg <- readLines(out, warn = FALSE)
+svg <- gsub("font-family: *(\"|')?Arial(\"|')?", paste0("font-family: ", sans_stack), svg)
+writeLines(svg, out)

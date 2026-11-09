@@ -4,7 +4,7 @@
 
 ![A grid of 64 row groups, eight rows of 8, from one .vtr file. A filter
 on year and station reads 9 row groups, shown filled, and skips the
-other 55, shown as outlines.](reference/figures/vectra-hero.png)
+other 55, shown as outlines.](reference/figures/vectra-hero.svg)
 
 vectra runs [dplyr](https://dplyr.tidyverse.org)-style queries on files
 that are too large to load into memory: multi-gigabyte CSV and Parquet
